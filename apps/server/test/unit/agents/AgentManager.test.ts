@@ -90,6 +90,26 @@ describe('AgentManager: world lifecycle', () => {
     expect(crewFile.records[0]).toMatchObject({ handle: 'ada', ceo: true, sessionStarted: false });
   });
 
+  it('re-sends the brain after the crew list, so a new CEO shows its head icon during its first turn', async () => {
+    h = await createHarness();
+    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    const ceoId = h.manager.listAgents()[0]?.agentId ?? '';
+    const events = h.events.map((e) => ({
+      type: e.type,
+      payload: e.payload as { agentId?: string; status?: string; crew?: { agentId: string }[] },
+    }));
+    const firstCrew = events.findIndex(
+      (e) => e.type === 'crew' && (e.payload.crew ?? []).some((c) => c.agentId === ceoId),
+    );
+    expect(firstCrew).toBeGreaterThanOrEqual(0);
+    // The brain was already queued/thinking before the crew list named the CEO; it is said again after it.
+    expect(events.slice(0, firstCrew).some((e) => e.type === 'brain' && e.payload.agentId === ceoId)).toBe(
+      true,
+    );
+    const after = events.slice(firstCrew + 1).find((e) => e.type === 'brain' && e.payload.agentId === ceoId);
+    expect(after?.payload.status).toBe(h.manager.brain(ceoId)?.status);
+  });
+
   it('runs the startup assertions: a third-party provider puts the brain to sleep with a toast', async () => {
     h = await createHarness();
     await h.manager.openWorld({ worldId: 'w1', gen: 1 });

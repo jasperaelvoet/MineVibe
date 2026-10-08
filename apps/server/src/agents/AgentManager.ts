@@ -467,7 +467,6 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         }
       }
       this.#emitCrew();
-      for (const b of this.#brains.values()) this.emit('brain', b.brainPayload());
       return;
     }
     if (this.#world) await this.#closeWorld('world changed');
@@ -1280,8 +1279,14 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     return { ...this.scheduler.summary(), ...this.governor.summaryFields() };
   }
 
+  /**
+   * `crew.state`, then every brain again: the mod ignores `agent.brain` for an agent its crew list does not have yet,
+   * and a new agent's brain starts (queued, thinking) before it joins the list, so without the re-send its head icon
+   * stays blank through its first turn.
+   */
   #emitCrew(): void {
     this.emit('crew', this.crewState());
+    for (const b of this.#brains.values()) this.emit('brain', b.brainPayload());
   }
 
   #emitBrains(): void {
