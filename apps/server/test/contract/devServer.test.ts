@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../../src/log.js';
 import { type DevServer, startDevServer } from '../../src/orchestrator/devServer.js';
 import { ModClient } from '../helpers/modClient.js';
@@ -38,6 +38,17 @@ afterEach(async () => {
 });
 
 const hello = { t: 'hello', v: 1, id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jasper' };
+
+/** Boots into World #1, dies there and waits for Node's ack and world.next{world-2}. */
+async function dieInWorld1(mod: ModClient): Promise<void> {
+  mod.send(hello);
+  await mod.next('hello.ok');
+  await mod.next('world.open');
+  mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready', fresh: true });
+  mod.send({ t: 'player.died', v: 1, id: 'd-1', worldId: 'world-1', cause: 'fell', day: 1, ticksAlive: 10 });
+  await mod.next('ok', (m) => m.re === 'd-1');
+  await mod.next('world.next');
+}
 
 describe('dev server', () => {
   it('writes .dev-token and run/bridge.json privately under the dev home', async () => {
@@ -154,6 +165,94 @@ describe('dev server', () => {
 
     again.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'closed' });
     expect(await again.next('world.open')).toMatchObject({ worldId: 'world-2', gen: 2, fresh: true });
+  });
+
+  it('acknowledges world.state{closed} before opening the next world', async () => {
+    const { server, token } = await start();
+    const mod = await connect(server.port, token);
+    await dieInWorld1(mod);
+
+    const order: string[] = [];
+    mod.ws.on('message', (data) => order.push(JSON.parse(String(data)).t));
+    mod.send({ t: 'world.state', v: 1, id: 'c-1', worldId: 'world-1', phase: 'closed' });
+    expect(await mod.next('ok')).toEqual({ t: 'ok', v: 1, re: 'c-1' });
+    expect(await mod.next('world.open')).toMatchObject({ worldId: 'world-2', gen: 2, fresh: true });
+    // The ack comes first: the mod's re-send loop for `closed` has stopped before the next world arrives.
+    expect(order).toEqual(['ok', 'world.open']);
+
+    // A repeat (the first ack was lost) is acknowledged as ignored, and the mod is told where to go again.
+    mod.send({ t: 'world.state', v: 1, id: 'c-2', worldId: 'world-1', phase: 'closed' });
+    expect(await mod.next('ok')).toEqual({ t: 'ok', v: 1, re: 'c-2', ignored: true });
+    expect(await mod.next('world.open')).toMatchObject({ worldId: 'world-2', gen: 2 });
+    expect(server.store.current).toMatchObject({ worldId: 'world-2', status: 'alive' });
+  });
+
+  it('advances when the mod is already in the next world (its closed was lost)', async () => {
+    const { server, token, repo } = await start();
+    const saves = join(repo, 'apps', 'mod', 'run', 'saves');
+    mkdirSync(join(saves, 'world-1'), { recursive: true });
+    writeFileSync(join(saves, 'world-1', 'level.dat'), 'x');
+    const mod = await connect(server.port, token);
+    await dieInWorld1(mod);
+    mod.ws.terminate();
+
+    // The mod made world-2 and reconnects from inside it; Node never got world.state{closed} for world-1.
+    const again = await connect(server.port, token);
+    again.send({ ...hello, id: 'm-2', phase: 'in_world', worldId: 'world-2' });
+    expect(await again.next('hello.ok')).toMatchObject({ re: 'm-2', world: { id: 'world-2', gen: 2 } });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(again.messages.some((m) => m.t === 'world.open' || m.t === 'world.next')).toBe(false);
+    expect(server.store.current).toMatchObject({ worldId: 'world-2', gen: 2, status: 'alive' });
+    expect(existsSync(join(saves, '_graveyard', 'world-1', 'level.dat'))).toBe(true);
+  });
+
+  it('advances on world.state{ready} for the allocated next world', async () => {
+    const { server, token } = await start();
+    const mod = await connect(server.port, token);
+    await dieInWorld1(mod);
+    mod.send({ t: 'world.state', v: 1, worldId: 'world-2', phase: 'ready', fresh: true });
+    await vi.waitFor(() => expect(server.store.current).toMatchObject({ worldId: 'world-2', created: true }));
+  });
+
+  it('takes player.died for the next world as an implicit advance', async () => {
+    const { server, token } = await start();
+    const mod = await connect(server.port, token);
+    await dieInWorld1(mod);
+
+    mod.send({
+      t: 'player.died',
+      v: 1,
+      id: 'd-2',
+      worldId: 'world-2',
+      cause: 'drowned',
+      day: 1,
+      ticksAlive: 5,
+    });
+    expect(await mod.next('ok', (m) => m.re === 'd-2')).toEqual({ t: 'ok', v: 1, re: 'd-2' });
+    expect(await mod.next('world.next', (m) => m.worldId === 'world-3')).toMatchObject({
+      gen: 3,
+      summary: { worldId: 'world-2', cause: 'drowned' },
+    });
+    expect(server.store.current).toMatchObject({
+      worldId: 'world-2',
+      status: 'dead',
+      next: { worldId: 'world-3' },
+    });
+
+    // A death in a world Node never allocated is still only acknowledged.
+    mod.send({ t: 'player.died', v: 1, id: 'd-3', worldId: 'world-9', cause: 'x', day: 1, ticksAlive: 1 });
+    expect(await mod.next('ok', (m) => m.re === 'd-3')).toEqual({ t: 'ok', v: 1, re: 'd-3', ignored: true });
+  });
+
+  it('answers closed for a world Node never saw die with ignored, and reopens the current world', async () => {
+    const { server, token } = await start();
+    const mod = await connect(server.port, token);
+    mod.send(hello);
+    await mod.next('world.open');
+    mod.send({ t: 'world.state', v: 1, id: 'c-1', worldId: 'world-1', phase: 'closed' });
+    expect(await mod.next('ok')).toEqual({ t: 'ok', v: 1, re: 'c-1', ignored: true });
+    expect(await mod.next('world.open')).toMatchObject({ worldId: 'world-1', gen: 1 });
+    expect(server.store.current).toMatchObject({ worldId: 'world-1', status: 'alive' });
   });
 
   it('buries the dead save in saves/_graveyard once the world is closed', async () => {

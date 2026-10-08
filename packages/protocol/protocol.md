@@ -200,7 +200,11 @@ BootScreen calls `openWorld` if the folder exists, otherwise `createFreshLevel(�
 | `office` | `{ origin: BlockPos, slots: [{ kind, pos: BlockPos, pcId? }] }`? | OfficeBuilder result |
 | `clockTime` | int≥0? | `getOverworldClockTime()` ticks; pushed at 1 Hz while `ready` |
 
-Fixtures: `world.state.json`, `world.state--closed.json`.
+`loading` and `ready` (and the 1 Hz clock pushes) are fire-and-forget. **`closed` is a request**: the mod sends it
+with an `id` and re-sends it until Node replies (the reply is `ok {}` when Node moved on to the next world, or
+`ok {"ignored": true}` when it did not, see 6.6). A lost `closed` therefore never leaves Node on a dead world.
+
+Fixtures: `world.state.json`, `world.state--closed.json`, `ok--ignored.json`.
 
 ### 6.5 `player.died` (M→N, request)
 
@@ -228,16 +232,32 @@ idempotent per `worldId`. A re-send for a world that is no longer current is ack
 | `summary.crewFates` | `[{ agentId, name, role, fate: died\|dismissed\|lost_with_world, detail? }]` | |
 | `summary.vaultCommits` | `[{ mount: string, commits: int≥0 }]` | |
 
-Enables **[Begin World #N]** on the Game Over screen. When the player clicks it, the mod closes the world and
-reports `world.state{phase:"closed"}` for the dead world; Node answers with `world.open` for the next one.
+Enables **[Begin World #N]** on the Game Over screen. When the player clicks it, the mod closes the world (the
+integrated server has saved and stopped), makes sure its `player.died` was acknowledged, and reports
+`world.state{phase:"closed"}` for the dead world until Node acknowledges it. Node durably moves to the next world,
+replies `ok`, and then sends `world.open` for the next one. **The mod never creates the next world on its own**: it
+waits on BootScreen for Node's `world.open` (and uses its `seed`, if any).
 
 ```
-M hello{phase:boot}            → N hello.ok, world.open{world-1, fresh}
+M hello{phase:boot}                  → N hello.ok, world.open{world-1, fresh}
 M world.state{world-1, ready}
 … the player dies …
-M player.died{id:m-9, world-1} → N ok{re:m-9}, world.next{world-2, summary}
-M world.state{world-1, closed} → N world.open{world-2, fresh}
+M player.died{id:m-9, world-1}       → N ok{re:m-9}, world.next{world-2, summary}
+M world.state{id:m-12, world-1, closed} → N ok{re:m-12}, world.open{world-2, fresh}
 ```
+
+Rules that keep both sides in step when a message is lost or the game restarts:
+
+- A `closed` for a world that is not Node's current dead world (a repeat after Node already moved on, or a world
+  Node never saw die) gets `ok {"ignored": true}`, followed by whatever a `hello{phase:boot}` would get
+  (`world.open` of the current world, or `world.next` when it is dead).
+- The mod ignores a `world.next` whose `summary.worldId` is the dead world it already closed, and, while its
+  `closed` is not yet acknowledged, a `world.open` of that world (Node may still be processing the death).
+- **Implicit advance.** While the current world is dead, Node treats any sign that the mod is already in the
+  allocated next world as the missing `closed`: `hello{in_world, worldId: <next>}`, `world.state{loading|ready}`
+  for `<next>`, or `player.died` for `<next>` (which then also marks `<next>` dead and allocates the one after).
+- The mod forgets a `player.died` that Node answered `ok {"ignored": true}`, so a later Game Over for that world
+  (for example after Node reopened it) reports it again.
 
 If the game restarts while the world is dead (quit or crash on Game Over), the next `hello{phase:boot}` gets
 `hello.ok` and then `world.next` again (not `world.open`): the mod goes straight to the Game Over screen, and its
@@ -245,8 +265,8 @@ If the game restarts while the world is dead (quit or crash on Game Over), the n
 dead world current until that `closed` arrives.
 
 ```
-M hello{phase:boot}            → N hello.ok{world: world-1}, world.next{world-2, summary}
-M world.state{world-1, closed} → N world.open{world-2, fresh}
+M hello{phase:boot}                     → N hello.ok{world: world-1}, world.next{world-2, summary}
+M world.state{id:m-3, world-1, closed}  → N ok{re:m-3}, world.open{world-2, fresh}
 ```
 
 When Node never heard of the death (the game died before `player.died` was acknowledged), Node sends

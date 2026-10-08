@@ -121,7 +121,9 @@ public final class ProtocolCodec {
 		}
 		List<String> errors = type.schema().validate(obj);
 		if (!errors.isEmpty()) throw new ProtocolException(type.name() + ": " + summarize(errors));
-		String text = WRITER.toJson(obj);
+		// A lone surrogate (e.g. from a clipped string) cannot be encoded as UTF-8, and java.net.http rejects the
+		// whole frame; replace it so the message still goes out.
+		String text = wellFormed(WRITER.toJson(obj));
 		if (exceedsTextFrameLimit(text)) {
 			throw new ProtocolException(type.name() + " frame exceeds " + Messages.MAX_TEXT_FRAME_BYTES + " bytes");
 		}
@@ -141,8 +143,41 @@ public final class ProtocolCodec {
 
 	/** An {@code err} reply. The message is cut to 2000 characters. */
 	public static String encodeErr(String re, String code, String msg) {
-		String m = msg.length() > 2000 ? msg.substring(0, 2000) : msg;
-		return encode(Messages.ERR, new Messages.Err(code, m), null, re);
+		return encode(Messages.ERR, new Messages.Err(code, clip(msg, 2000)), null, re);
+	}
+
+	/**
+	 * Cuts {@code s} to at most {@code max} UTF-16 units (what the schemas count) without splitting a surrogate
+	 * pair: a pair that would straddle the cut is dropped whole.
+	 */
+	public static String clip(String s, int max) {
+		if (s.length() <= max) return s;
+		int end = Math.max(0, max);
+		if (end > 0 && Character.isHighSurrogate(s.charAt(end - 1)) && Character.isLowSurrogate(s.charAt(end))) end--;
+		return s.substring(0, end);
+	}
+
+	/** {@code s} with every unpaired surrogate replaced by U+FFFD (same length), so it encodes as UTF-8. */
+	public static String wellFormed(String s) {
+		StringBuilder out = null;
+		int n = s.length();
+		for (int i = 0; i < n; i++) {
+			char c = s.charAt(i);
+			boolean lone;
+			if (Character.isHighSurrogate(c)) {
+				lone = i + 1 >= n || !Character.isLowSurrogate(s.charAt(i + 1));
+				if (!lone) {
+					if (out != null) out.append(c).append(s.charAt(i + 1));
+					i++;
+					continue;
+				}
+			} else {
+				lone = Character.isLowSurrogate(c);
+			}
+			if (lone && out == null) out = new StringBuilder(n).append(s, 0, i);
+			if (out != null) out.append(lone ? '\uFFFD' : c);
+		}
+		return out == null ? s : out.toString();
 	}
 
 	/** True when {@code text} encodes to more than {@link Messages#MAX_TEXT_FRAME_BYTES} bytes of UTF-8. */

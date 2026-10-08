@@ -1,14 +1,22 @@
 package dev.minevibe.client;
 
 import dev.minevibe.bridge.protocol.Messages;
+import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 
 /**
  * What the client knows about its world: the target Node asked for ({@code world.open}), the next world
- * ({@code world.next}), and the world it is in or loading. Written by bridge handlers and screens on the client
- * thread; read from bridge threads too (the {@code hello} snapshot), hence the volatile fields.
+ * ({@code world.next}), the world it is in or loading, and the dead world it closed. Written by bridge handlers,
+ * screens and the client tick on the client thread; read from bridge threads too (the {@code hello} snapshot), hence
+ * the volatile fields.
  */
 public final class ClientSession {
+	/**
+	 * A load that has not produced a world after this long is no longer treated as in progress (the integrated
+	 * server never became ready, or a vanilla prompt replaced the loading screen and was left).
+	 */
+	public static final long LOAD_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(120);
+
 	private static final ClientSession INSTANCE = new ClientSession();
 
 	public static ClientSession get() {
@@ -26,10 +34,19 @@ public final class ClientSession {
 	private volatile long loadStartedNanos;
 	private volatile @Nullable String readyWorldId;
 
+	/** The dead world this client closed last (Begin); Node may still talk about it for a moment. */
+	private volatile @Nullable String closedWorldId;
+	/** True from Begin until Node acknowledged {@code world.state{closed}} for {@link #closedWorldId}. */
+	private volatile boolean closeUnacknowledged;
+
 	private volatile @Nullable String gameOverWorldId;
 	private volatile long gameOverSinceNanos;
 
-	private ClientSession() {}
+	/** Published from the client tick, so {@code hello} never touches game state off the client thread. */
+	private volatile boolean levelLoaded;
+	private volatile @Nullable String playerName;
+
+	ClientSession() {}
 
 	// --- Node's instructions --------------------------------------------------------------------
 
@@ -51,10 +68,18 @@ public final class ClientSession {
 		return true;
 	}
 
+	/**
+	 * Records Node's {@code world.next}. One that follows the dead world this client already closed is never shown
+	 * as Game Over again (Node re-sends it after every {@code hello} until it has taken the {@code closed}).
+	 */
 	public void offerNext(Messages.WorldNext next) {
 		Messages.WorldNext previous = lastNext;
 		lastNext = next;
-		if (previous == null || !previous.worldId().equals(next.worldId())) lastNextShown = false;
+		if (isClosedWorld(next.summary().worldId())) {
+			lastNextShown = true;
+		} else if (previous == null || !previous.worldId().equals(next.worldId())) {
+			lastNextShown = false;
+		}
 	}
 
 	/** The {@code world.next} that follows {@code deadWorldId}, if Node sent it. */
@@ -68,6 +93,7 @@ public final class ClientSession {
 		Messages.WorldNext next = lastNext;
 		if (next == null || lastNextShown) return null;
 		lastNextShown = true;
+		if (isClosedWorld(next.summary().worldId())) return null;
 		return next;
 	}
 
@@ -79,12 +105,45 @@ public final class ClientSession {
 
 	/** Opening or creating {@code id} is starting. */
 	public void beginLoading(String id, int gen, boolean fresh) {
+		beginLoading(id, gen, fresh, System.nanoTime());
+	}
+
+	void beginLoading(String id, int gen, boolean fresh, long nowNanos) {
 		this.worldId = id;
 		this.gen = gen;
 		this.fresh = fresh;
 		this.loading = true;
-		this.loadStartedNanos = System.nanoTime();
+		this.loadStartedNanos = nowNanos;
 		this.readyWorldId = null;
+	}
+
+	/** Opening or creating {@code id} failed or was cancelled: nothing is loading any more. */
+	public void loadFailed(String id) {
+		if (id.equals(worldId)) {
+			loading = false;
+			readyWorldId = null;
+		}
+	}
+
+	/**
+	 * A load of {@code id} is really under way: it was started, the integrated server exists (world loads run
+	 * inside one client task, so outside it a load in progress always has a server), and it is not older than
+	 * {@link #LOAD_TIMEOUT_NANOS}.
+	 */
+	public boolean isLoadInProgress(String id, boolean serverExists, long nowNanos) {
+		return loading && id.equals(worldId) && serverExists && nowNanos - loadStartedNanos < LOAD_TIMEOUT_NANOS;
+	}
+
+	/**
+	 * Clears the loading flag when no load is really under way (no integrated server, or the timeout passed).
+	 * Returns true if it cleared one, so the caller can log it.
+	 */
+	public boolean clearStaleLoad(boolean serverExists, long nowNanos) {
+		if (!loading) return false;
+		if (serverExists && nowNanos - loadStartedNanos < LOAD_TIMEOUT_NANOS) return false;
+		loading = false;
+		readyWorldId = null;
+		return true;
 	}
 
 	/** The world is loaded and reported {@code ready}. Returns false if it already was. */
@@ -98,6 +157,7 @@ public final class ClientSession {
 		}
 		readyWorldId = id;
 		loading = false;
+		if (id.equals(closedWorldId)) closedWorldId = null;
 		return true;
 	}
 
@@ -107,7 +167,10 @@ public final class ClientSession {
 		loading = false;
 	}
 
-	/** The dead world was closed and reported; it is no longer the client's world. */
+	/**
+	 * The dead world was closed (Begin): it is no longer the client's world, and Node's acknowledgement of
+	 * {@code world.state{closed}} is outstanding until {@link #closeAcknowledged(String)}.
+	 */
 	public void markClosed(String id) {
 		if (id.equals(worldId)) {
 			worldId = null;
@@ -116,7 +179,27 @@ public final class ClientSession {
 		}
 		readyWorldId = null;
 		loading = false;
+		closedWorldId = id;
+		closeUnacknowledged = true;
 		if (id.equals(gameOverWorldId)) gameOverWorldId = null;
+	}
+
+	/** Node acknowledged {@code world.state{closed}} for {@code id}. */
+	public void closeAcknowledged(String id) {
+		if (id.equals(closedWorldId)) closeUnacknowledged = false;
+	}
+
+	/** {@code id} is the dead world this client closed last. */
+	public boolean isClosedWorld(@Nullable String id) {
+		return id != null && id.equals(closedWorldId);
+	}
+
+	/**
+	 * A {@code world.open} of {@code id} must wait: it is the dead world this client just closed, and Node has not
+	 * acknowledged that yet (it may still be processing the death and will send the next world instead).
+	 */
+	public boolean isAwaitingCloseAck(@Nullable String id) {
+		return closeUnacknowledged && isClosedWorld(id);
 	}
 
 	public @Nullable String worldId() {
@@ -151,5 +234,27 @@ public final class ClientSession {
 			gameOverSinceNanos = System.nanoTime();
 		}
 		return gameOverSinceNanos;
+	}
+
+	// --- Snapshot for hello ----------------------------------------------------------------------
+
+	/** Client thread: whether a client level exists right now (read by {@code hello} on bridge threads). */
+	public void publishLevelLoaded(boolean loaded) {
+		levelLoaded = loaded;
+	}
+
+	/** Client thread: the local profile name. */
+	public void publishPlayerName(@Nullable String name) {
+		playerName = name;
+	}
+
+	/** The world {@code hello} reports as {@code in_world}: the client's world while a level is loaded. */
+	public @Nullable String helloWorldId() {
+		String id = worldId;
+		return levelLoaded && Messages.isWorldId(id) ? id : null;
+	}
+
+	public @Nullable String playerName() {
+		return playerName;
 	}
 }

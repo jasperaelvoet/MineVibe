@@ -4,6 +4,7 @@ import dev.minevibe.MineVibeMod;
 import dev.minevibe.bridge.BridgeClient;
 import dev.minevibe.bridge.BridgeClient.Route;
 import dev.minevibe.bridge.protocol.Messages;
+import dev.minevibe.bridge.protocol.ProtocolCodec;
 import dev.minevibe.client.boot.BootScreen;
 import dev.minevibe.client.boot.GameOverScreen;
 import dev.minevibe.client.boot.WorldLauncher;
@@ -13,6 +14,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,24 +22,40 @@ import org.slf4j.LoggerFactory;
 public final class ClientBridge {
 	private static final Logger LOG = LoggerFactory.getLogger("MineVibe/Bridge");
 
+	/** Mod and Minecraft versions: constant for the JVM's life, read once on the client thread. */
+	private static volatile @Nullable String modVersion;
+	private static volatile @Nullable String mcVersion;
+
 	private ClientBridge() {}
 
-	/** Builds {@code hello}: {@code boot} on BootScreen / Game Over without a world, {@code in_world} otherwise. */
-	public static Messages.Hello hello() {
-		Minecraft mc = Minecraft.getInstance();
-		String mod = FabricLoader.getInstance()
+	/**
+	 * Reads the constants {@code hello} needs on the client thread. Call during client init; {@link #hello()} falls
+	 * back to placeholders until then.
+	 */
+	public static void initHelloConstants() {
+		modVersion = FabricLoader.getInstance()
 				.getModContainer(MineVibeMod.MOD_ID)
 				.map(c -> c.getMetadata().getVersion().getFriendlyString())
 				.orElse("0.0.0");
-		String mcVersion = SharedConstants.getCurrentVersion().name();
-		String worldId = ClientSession.get().worldId();
-		boolean inWorld = mc.level != null && Messages.isWorldId(worldId);
-		String name = mc.getUser().getName();
+		mcVersion = SharedConstants.getCurrentVersion().name();
+	}
+
+	/**
+	 * Builds {@code hello}: {@code boot} on BootScreen / Game Over without a world, {@code in_world} otherwise. Runs
+	 * on bridge threads (every new connection), so it reads only the snapshot the client tick publishes in
+	 * {@link ClientSession}, never {@code Minecraft} itself.
+	 */
+	public static Messages.Hello hello() {
+		ClientSession session = ClientSession.get();
+		String worldId = session.helloWorldId();
+		String name = session.playerName();
+		String mod = modVersion;
+		String mc = mcVersion;
 		return new Messages.Hello(
-				clip(mod, 64),
-				clip(mcVersion, 32),
-				inWorld ? Messages.Hello.PHASE_IN_WORLD : Messages.Hello.PHASE_BOOT,
-				inWorld ? worldId : null,
+				ProtocolCodec.clip(mod != null ? mod : "0.0.0", 64),
+				ProtocolCodec.clip(mc != null ? mc : "unknown", 32),
+				worldId != null ? Messages.Hello.PHASE_IN_WORLD : Messages.Hello.PHASE_BOOT,
+				worldId,
 				Messages.isPlayerName(name) ? name : null);
 	}
 
@@ -62,8 +80,13 @@ public final class ClientBridge {
 		Minecraft mc = Minecraft.getInstance();
 		ClientSession session = ClientSession.get();
 		String id = open.worldId();
+		long now = System.nanoTime();
+		boolean serverExists = mc.getSingleplayerServer() != null;
+		if (mc.level == null && session.clearStaleLoad(serverExists, now)) {
+			LOG.warn("Loading {} is no longer in progress (it failed or timed out)", session.worldId());
+		}
 		boolean same = id.equals(session.worldId());
-		if (same && (session.loading() || mc.level != null)) {
+		if (same && (mc.level != null || session.isLoadInProgress(id, serverExists, now))) {
 			LOG.debug("world.open {}: already there", id);
 			return;
 		}
@@ -84,8 +107,13 @@ public final class ClientBridge {
 	private static void onWorldNext(Messages.WorldNext next) {
 		Minecraft mc = Minecraft.getInstance();
 		ClientSession session = ClientSession.get();
-		LOG.info("Next world allocated: World #{} ({}) after {}", next.gen(), next.worldId(), next.summary().worldId());
 		session.offerNext(next);
+		if (session.isClosedWorld(next.summary().worldId())) {
+			// This client already closed that dead world (Begin) and is waiting for Node to take the closed.
+			LOG.debug("world.next for {}, which is already closed; waiting for World #{}", next.summary().worldId(), next.gen());
+			return;
+		}
+		LOG.info("Next world allocated: World #{} ({}) after {}", next.gen(), next.worldId(), next.summary().worldId());
 		Screen screen = mc.gui.screen();
 		if (screen instanceof GameOverScreen gameOver) {
 			gameOver.onWorldNext(next);
@@ -93,9 +121,5 @@ public final class ClientBridge {
 			session.markNextShown();
 			mc.gui.setScreen(GameOverScreen.fromNext(next));
 		}
-	}
-
-	private static String clip(String s, int max) {
-		return s.length() <= max ? s : s.substring(0, max);
 	}
 }

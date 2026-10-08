@@ -1,6 +1,6 @@
 import { type MessageOf, type PayloadOf, PROTOCOL_VERSION } from '@minevibe/protocol';
 import type { Logger } from 'pino';
-import type { BridgeServer } from '../bridge/BridgeServer.js';
+import type { BridgeServer, HandlerResult } from '../bridge/BridgeServer.js';
 import type { CurrentWorldRecord, CurrentWorldStore } from './currentWorld.js';
 
 export interface WorldLifecycleOptions {
@@ -21,6 +21,11 @@ export interface WorldLifecycleOptions {
  * M1 world lifecycle over the bridge (PLAN §7.9): handshake, which world to open, and the hardcore loop
  * (player death -> durable dead mark -> `world.next` -> world closed -> `world.open` of the next world).
  * Later milestones add the crew, PCs and the Game Over summary contents.
+ *
+ * Node only moves past a dead world when the mod says it closed it (`world.state{closed}`, acknowledged so the
+ * mod can re-send it), or when the mod shows that it is already in the allocated next world (`hello{in_world}`,
+ * `world.state{loading|ready}` or `player.died` for that world): a lost `closed` can never leave Node on the
+ * dead world while the mod plays the next one.
  */
 export class WorldLifecycle {
   readonly #bridge: BridgeServer;
@@ -42,7 +47,7 @@ export class WorldLifecycle {
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
-      this.#bridge.on('world.state', (msg) => this.#onWorldState(msg)),
+      this.#bridge.handle('world.state', (msg) => this.#onWorldState(msg)),
       this.#bridge.on('client.stopping', (msg) => {
         this.#log.info({ reason: msg.reason }, 'game client stopping');
       }),
@@ -58,13 +63,24 @@ export class WorldLifecycle {
     for (const off of this.#unsubscribe.splice(0)) off();
   }
 
-  #onHello(msg: MessageOf<'hello'>): void {
+  async #onHello(msg: MessageOf<'hello'>): Promise<void> {
     if (msg.playerName) this.#playerName = msg.playerName;
     this.#log.info({ mod: msg.mod, mc: msg.mc, phase: msg.phase, worldId: msg.worldId }, 'mod hello');
+    const modWorld = msg.phase === 'in_world' ? msg.worldId : undefined;
+    // Only wait when there is something to adopt, so hello.ok normally goes out at once.
+    if (modWorld !== undefined && this.#isAllocatedNext(modWorld)) await this.#adoptNext(modWorld, 'hello');
 
     const rec = this.#store.current;
     this.#bridge.send('hello.ok', this.#helloOk(rec), msg.id !== undefined ? { re: msg.id } : {});
+    this.#resync(rec, modWorld);
+  }
 
+  /**
+   * Tells the mod where it should be: `world.next` while the current world is dead (the mod shows Game Over,
+   * or already did and is waiting for its `closed` to be taken), `world.open` when the mod is not in the
+   * current world.
+   */
+  #resync(rec: CurrentWorldRecord, modWorld: string | undefined): void {
     if (rec.status === 'dead') {
       // Either the mod is still in the dead world (Game Over), or the game restarted on Game Over (crash
       // recovery, PLAN §7.9). Both show Game Over with this summary; the mod's world.state{closed} for the
@@ -72,45 +88,57 @@ export class WorldLifecycle {
       this.#sendWorldNext(rec);
       return;
     }
-    if (msg.phase === 'boot' || msg.worldId !== rec.worldId) {
-      if (msg.phase === 'in_world') {
-        this.#log.warn({ modWorld: msg.worldId, current: rec.worldId }, 'mod is in a stale world; reopening');
+    if (modWorld !== rec.worldId) {
+      if (modWorld !== undefined) {
+        this.#log.warn({ modWorld, current: rec.worldId }, 'mod is in a stale world; reopening');
       }
       this.#sendWorldOpen(rec);
     }
   }
 
-  async #onWorldState(msg: MessageOf<'world.state'>): Promise<void> {
+  async #onWorldState(msg: MessageOf<'world.state'>): Promise<HandlerResult> {
     if (msg.phase !== this.#lastPhase) {
       this.#log.info({ worldId: msg.worldId, phase: msg.phase }, 'world state');
       this.#lastPhase = msg.phase;
     }
-    if (msg.phase === 'ready') {
-      await this.#store.markCreated(msg.worldId);
-    } else if (msg.phase === 'closed') {
-      const before = this.#store.current;
-      const next = await this.#store.advanceFrom(msg.worldId);
-      if (next) {
-        if (this.#onWorldEnded) {
-          try {
-            await this.#onWorldEnded(before, next);
-          } catch (err) {
-            this.#log.error({ err, worldId: before.worldId }, 'world-ended hook failed');
-          }
-        }
-        this.#log.info({ worldId: next.worldId, gen: next.gen }, 'opening next world');
-        this.#sendWorldOpen(next);
-      }
+    if (msg.phase === 'loading' || msg.phase === 'ready') {
+      if (this.#isAllocatedNext(msg.worldId)) await this.#adoptNext(msg.worldId, `world.state{${msg.phase}}`);
+      if (msg.phase === 'ready') await this.#store.markCreated(msg.worldId);
+      return {};
     }
+    if (msg.phase !== 'closed') return {};
+
+    const before = this.#store.current;
+    const next = await this.#store.advanceFrom(msg.worldId);
+    if (next) {
+      await this.#worldEnded(before, next);
+      this.#log.info({ worldId: next.worldId, gen: next.gen }, 'opening next world');
+      // The `ok` reply goes out first (a microtask), then the next world.
+      setImmediate(() => this.#sendWorldOpen(next));
+      return {};
+    }
+    // Not an advance: a repeat after Node already moved on, or a world Node never saw die. The mod has no world
+    // now, so tell it where to go, exactly as after hello{boot}.
+    const rec = this.#store.current;
+    this.#log.warn(
+      { closed: msg.worldId, current: rec.worldId, status: rec.status },
+      'world.state{closed} for a world that is not the current dead world; resyncing the mod',
+    );
+    setImmediate(() => this.#resync(rec, undefined));
+    return { ignored: true };
   }
 
   async #onPlayerDied(msg: MessageOf<'player.died'>): Promise<Record<string, unknown>> {
-    const rec = await this.#store.markDead(msg.worldId, {
+    const death = {
       cause: msg.cause,
       ...(msg.killer !== undefined ? { killer: msg.killer } : {}),
       day: msg.day,
       ticksAlive: msg.ticksAlive,
-    });
+    };
+    let rec = await this.#store.markDead(msg.worldId, death);
+    if (rec === null && (await this.#adoptNext(msg.worldId, 'player.died'))) {
+      rec = await this.#store.markDead(msg.worldId, death);
+    }
     if (rec === null) {
       // A re-send for a world that is no longer current: acknowledge so the mod stops retrying.
       this.#log.warn({ worldId: msg.worldId }, 'player.died for a world that is not current; ignored');
@@ -118,8 +146,41 @@ export class WorldLifecycle {
     }
     this.#log.info({ worldId: rec.worldId, cause: msg.cause, day: msg.day, next: rec.next }, 'player died');
     // Ack first (the handler's reply), then announce the next world.
-    setImmediate(() => this.#sendWorldNext(rec));
+    const dead = rec;
+    setImmediate(() => this.#sendWorldNext(dead));
     return {};
+  }
+
+  /** `worldId` is the next world Node allocated after the current, dead world. */
+  #isAllocatedNext(worldId: string): boolean {
+    const rec = this.#store.current;
+    return rec.status === 'dead' && rec.next?.worldId === worldId;
+  }
+
+  /**
+   * The mod is in (or loading, or dying in) `worldId`, which is the next world Node allocated after the current
+   * dead world: its `world.state{closed}` never arrived. Advance now, as if it had. Returns whether it advanced.
+   */
+  async #adoptNext(worldId: string, via: string): Promise<boolean> {
+    if (!this.#isAllocatedNext(worldId)) return false;
+    const rec = this.#store.current;
+    const next = await this.#store.advanceFrom(rec.worldId);
+    if (!next) return false;
+    this.#log.warn(
+      { dead: rec.worldId, worldId, via },
+      'mod is already in the next world; advancing (its world.state{closed} was lost)',
+    );
+    await this.#worldEnded(rec, next);
+    return true;
+  }
+
+  async #worldEnded(dead: CurrentWorldRecord, next: CurrentWorldRecord): Promise<void> {
+    if (!this.#onWorldEnded) return;
+    try {
+      await this.#onWorldEnded(dead, next);
+    } catch (err) {
+      this.#log.error({ err, worldId: dead.worldId }, 'world-ended hook failed');
+    }
   }
 
   #helloOk(rec: CurrentWorldRecord): PayloadOf<'hello.ok'> {

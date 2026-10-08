@@ -1,10 +1,15 @@
 package dev.minevibe.hardcore;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import dev.minevibe.bridge.BridgeClient;
+import dev.minevibe.bridge.BridgeException;
 import dev.minevibe.bridge.MineVibeBridge;
 import dev.minevibe.bridge.protocol.Messages;
+import dev.minevibe.bridge.protocol.ProtocolCodec;
 import java.time.Duration;
-import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -34,7 +39,8 @@ public final class HardcoreHooks {
 	static final Duration REPORT_TIMEOUT = Duration.ofSeconds(3);
 	static final Duration REPORT_RETRY = Duration.ofSeconds(2);
 
-	private static final Set<String> reported = ConcurrentHashMap.newKeySet();
+	/** The {@code player.died} report per world: in flight, or acknowledged (and not ignored) by Node. */
+	private static final Map<String, CompletableFuture<JsonObject>> reports = new ConcurrentHashMap<>();
 	private static volatile @Nullable DeathRecord lastDeath;
 	private static boolean registered;
 
@@ -87,32 +93,76 @@ public final class HardcoreHooks {
 	}
 
 	/**
-	 * Sends {@code player.died} for {@code record} until Node acknowledges it. At most once per world per JVM; a
-	 * no-op without a bridge.
+	 * Sends {@code player.died} for {@code record} until Node acknowledges it, and returns that acknowledgement. A
+	 * report that is in flight or was accepted is not repeated (the same future is returned); one that Node answered
+	 * {@code ok {"ignored": true}} (the world was not its current world) or that failed is forgotten, so a later Game
+	 * Over for the world reports it again. Without a bridge it fails at once.
 	 */
-	public static void report(DeathRecord record) {
+	public static synchronized CompletableFuture<JsonObject> report(DeathRecord record) {
 		lastDeath = record;
 		BridgeClient bridge = MineVibeBridge.get();
 		if (bridge == null) {
 			LOG.warn("No bridge: player.died for {} is not reported", record.worldId());
-			return;
+			return CompletableFuture.failedFuture(new BridgeException(Messages.Codes.DISCONNECTED, "no bridge"));
 		}
 		if (!Messages.isWorldId(record.worldId())) {
 			LOG.warn("World folder '{}' is not a MineVibe world id; player.died not reported", record.worldId());
-			return;
+			return CompletableFuture.failedFuture(new BridgeException(Messages.Codes.BAD_MESSAGE, "not a world id"));
 		}
-		if (!reported.add(record.worldId())) return;
+		CompletableFuture<JsonObject> existing = reports.get(record.worldId());
+		if (existing != null) return existing;
 		Messages.PlayerDied payload = new Messages.PlayerDied(
 				record.worldId(), record.cause(), record.killer(), Math.max(1, record.day()), record.ticksAlive());
-		bridge.requestUntilAcked(Messages.PLAYER_DIED, () -> payload, REPORT_TIMEOUT, REPORT_RETRY)
+		CompletableFuture<JsonObject> report = bridge.requestUntilAcked(Messages.PLAYER_DIED, () -> payload, REPORT_TIMEOUT, REPORT_RETRY);
+		reports.put(record.worldId(), report);
+		report.whenComplete((ok, err) -> {
+			if (err != null) {
+				reports.remove(record.worldId(), report);
+				LOG.error("player.died for {} failed: {}", record.worldId(), err.getMessage());
+			} else if (isIgnored(ok)) {
+				reports.remove(record.worldId(), report);
+				LOG.warn("Node ignored player.died for {} (not its current world)", record.worldId());
+			} else {
+				LOG.info("Node acknowledged the death in {}", record.worldId());
+			}
+		});
+		return report;
+	}
+
+	/**
+	 * Reports {@code world.state{closed}} for the dead world {@code worldId} after Begin closed it, re-sending until
+	 * Node acknowledges it. The death is reported (and acknowledged) first when this JVM recorded it, so Node never
+	 * sees the close of a world it does not know is dead. Completes with Node's reply; Node sends the next world's
+	 * {@code world.open} right after it. Fails at once without a bridge.
+	 */
+	public static CompletableFuture<JsonObject> reportClosed(String worldId) {
+		BridgeClient bridge = MineVibeBridge.get();
+		if (bridge == null || !Messages.isWorldId(worldId)) {
+			return CompletableFuture.failedFuture(new BridgeException(Messages.Codes.DISCONNECTED, "no bridge"));
+		}
+		DeathRecord death = lastDeath;
+		CompletableFuture<?> deathAck = death != null && death.worldId().equals(worldId)
+				? report(death).handle((ok, err) -> null)
+				: CompletableFuture.completedFuture(null);
+		return deathAck
+				.thenCompose(ignored -> bridge.requestUntilAcked(
+						Messages.WORLD_STATE,
+						() -> Messages.WorldState.phase(worldId, Messages.WorldState.CLOSED),
+						REPORT_TIMEOUT,
+						REPORT_RETRY))
 				.whenComplete((ok, err) -> {
-					if (err == null) {
-						LOG.info("Node acknowledged the death in {}", record.worldId());
+					if (err != null) {
+						LOG.error("world.state{closed} for {} failed: {}", worldId, err.getMessage());
 					} else {
-						reported.remove(record.worldId());
-						LOG.error("player.died for {} failed: {}", record.worldId(), err.getMessage());
+						LOG.info("Node took the close of {}{}", worldId, isIgnored(ok) ? " (ignored: it was not its dead world)" : "");
 					}
 				});
+	}
+
+	/** Node answered {@code ok {"ignored": true}}. */
+	public static boolean isIgnored(@Nullable JsonObject ok) {
+		JsonElement e = ok == null ? null : ok.get("ignored");
+		return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean() && e.getAsBoolean();
 	}
 
 	/** The save-folder name of the server's world, which MineVibe uses as the world id. */
@@ -121,6 +171,6 @@ public final class HardcoreHooks {
 	}
 
 	private static String clip(String s, int max) {
-		return s.length() <= max ? s : s.substring(0, max);
+		return ProtocolCodec.clip(s, max);
 	}
 }

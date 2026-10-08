@@ -1,7 +1,5 @@
 package dev.minevibe.client.boot;
 
-import dev.minevibe.bridge.BridgeClient;
-import dev.minevibe.bridge.MineVibeBridge;
 import dev.minevibe.bridge.protocol.Messages;
 import dev.minevibe.client.ClientSession;
 import dev.minevibe.hardcore.DeathRecord;
@@ -22,7 +20,8 @@ import org.slf4j.LoggerFactory;
  * Replaces the death screen (PLAN §7.9): the world number, the day and the cause of death, and
  * <b>[Begin World #N+1]</b>. The button enables once Node sends {@code world.next} (the next world is durably
  * allocated) or after 10 s with what the mod knows locally. Begin closes the dead world (blocking until the
- * integrated server has stopped), reports it {@code closed}, and creates the next world.
+ * integrated server has stopped), reports it {@code closed} until Node acknowledges it, and hands over to BootScreen,
+ * which opens the next world when Node's {@code world.open} for it arrives.
  *
  * <p>Also shown without a loaded world when the game restarts on Game Over: from the world's dead marker, or from
  * Node's {@code world.next}.
@@ -129,23 +128,21 @@ public final class GameOverScreen extends Screen {
 	}
 
 	private void doBegin() {
-		Messages.WorldNext n = next != null ? next : ClientSession.get().nextFor(worldId);
 		long t0 = System.nanoTime();
 		LOG.info("Begin: closing {}", worldId);
 		if (minecraft.level != null || minecraft.getSingleplayerServer() != null) {
 			WorldLauncher.leaveWorld(minecraft);
 		}
-		BridgeClient bridge = MineVibeBridge.get();
-		if (bridge != null && Messages.isWorldId(worldId)) {
-			bridge.send(Messages.WORLD_STATE, Messages.WorldState.phase(worldId, Messages.WorldState.CLOSED));
-		}
-		ClientSession.get().markClosed(worldId);
+		ClientSession session = ClientSession.get();
+		session.markClosed(worldId);
 		LOG.info("World {} closed in {} ms", worldId, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0));
-		if (n != null) {
-			WorldLauncher.openOrCreate(minecraft, new Messages.WorldOpen(n.worldId(), n.gen(), true, true, "hard", null));
-		} else {
-			minecraft.gui.setScreen(new BootScreen(Component.literal("Waiting for the next world…")));
-		}
+		int nextGen = next != null ? next.gen() : gen > 0 ? gen + 1 : 0;
+		minecraft.gui.setScreen(BootScreen.waiting(Component.literal(
+				nextGen > 0 ? "Waking up World #" + nextGen + "…" : "Waking up the next world…")));
+		// Node moves to the next world once it has the close (re-sent until it is acknowledged) and then sends that
+		// world's world.open, seed included; BootScreen acts on it. Nothing is created here: Node owns which world
+		// comes next, so a lost message can never leave Node on the dead world while the game plays a new one.
+		HardcoreHooks.reportClosed(worldId).whenComplete((ok, err) -> session.closeAcknowledged(worldId));
 	}
 
 	private Component beginLabel() {

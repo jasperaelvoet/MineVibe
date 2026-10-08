@@ -13,7 +13,9 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Reports the world to Node from the client tick: {@code world.state{ready}} once the player is standing in a
- * loaded world, then the overworld clock at 1 Hz (protocol §6.4).
+ * loaded world, then the overworld clock at 1 Hz (protocol §6.4). It also keeps {@link ClientSession} honest: the
+ * {@code hello} snapshot, and a "loading" flag that no load backs any more (no integrated server, or too old) is
+ * cleared, so the next {@code world.open} is acted on.
  */
 public final class WorldTicker {
 	private static final Logger LOG = LoggerFactory.getLogger("MineVibe/World");
@@ -24,8 +26,16 @@ public final class WorldTicker {
 	public static void onEndTick(Minecraft mc) {
 		ClientSession session = ClientSession.get();
 		IntegratedServer server = mc.getSingleplayerServer();
+		// The hello snapshot (bridge threads build hello from it, never from Minecraft itself).
+		session.publishLevelLoaded(mc.level != null);
 		if (mc.level == null || mc.player == null || server == null || mc.gui.overlay() != null) {
-			if (mc.level == null && !session.loading()) session.leftWorld();
+			if (mc.level == null) {
+				if (session.clearStaleLoad(server != null, System.nanoTime())) {
+					LOG.warn("Loading {} ended without a world (failed or timed out)", session.worldId());
+				} else if (!session.loading()) {
+					session.leftWorld();
+				}
+			}
 			return;
 		}
 		// The save folder name is the world id (worlds are created with levelId = worldId).

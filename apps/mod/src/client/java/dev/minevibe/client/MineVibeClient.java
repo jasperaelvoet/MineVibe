@@ -38,6 +38,10 @@ public final class MineVibeClient implements ClientModInitializer {
 
 		HardcoreHooks.register();
 		ClientTickEvents.END_CLIENT_TICK.register(WorldTicker::onEndTick);
+		// hello is built on bridge threads from a snapshot; fill the parts that never change now (client thread).
+		ClientBridge.initHelloConstants();
+		publishPlayerName(Minecraft.getInstance());
+		ClientLifecycleEvents.CLIENT_STARTED.register(MineVibeClient::publishPlayerName);
 
 		// Client GameTests inherit runClient's -D properties, but drive their own worlds: no bridge there (a dev
 		// server that happens to be running must not open or close their worlds).
@@ -61,5 +65,14 @@ public final class MineVibeClient implements ClientModInitializer {
 		}
 
 		config.parentPid().ifPresent(ParentWatchdog::start);
+	}
+
+	/** Client thread: the profile name for {@code hello} (the user is set before mods initialise, but be careful). */
+	private static void publishPlayerName(Minecraft mc) {
+		try {
+			if (mc != null && mc.getUser() != null) ClientSession.get().publishPlayerName(mc.getUser().getName());
+		} catch (RuntimeException e) {
+			MineVibeMod.LOGGER.debug("Player name not available yet", e);
+		}
 	}
 }

@@ -37,7 +37,8 @@ public final class WorldLauncher {
 	/**
 	 * Acts on {@code world.open}: a world marked dead goes straight to Game Over (and its death is reported again
 	 * until Node acknowledges it); an existing world is opened; a missing one is created as a hardcore HARD survival
-	 * world.
+	 * world with Node's seed, if it sent one. Every way this can fail leaves the session not loading (a thrown
+	 * exception is rethrown for the caller, BootScreen, to show).
 	 */
 	public static void openOrCreate(Minecraft mc, Messages.WorldOpen open) {
 		String id = open.worldId();
@@ -69,11 +70,16 @@ public final class WorldLauncher {
 		LOG.info("Opening World #{} ({})", gen, id);
 		ClientSession.get().beginLoading(id, gen, false);
 		reportLoading(id, false);
-		mc.createWorldOpenFlows().openWorld(id, () -> {
-			LOG.warn("Opening {} was cancelled", id);
-			ClientSession.get().leftWorld();
-			mc.gui.setScreen(new BootScreen(Component.literal("World #" + gen + " could not be opened.")));
-		});
+		try {
+			mc.createWorldOpenFlows().openWorld(id, () -> {
+				LOG.warn("Opening {} was cancelled", id);
+				ClientSession.get().loadFailed(id);
+				mc.gui.setScreen(new BootScreen(Component.literal("World #" + gen + " could not be opened.")));
+			});
+		} catch (RuntimeException e) {
+			ClientSession.get().loadFailed(id);
+			throw e;
+		}
 	}
 
 	/** Creates world {@code id}: hardcore, HARD (locked), survival, normal world preset, random seed unless given. */
@@ -90,12 +96,19 @@ public final class WorldLauncher {
 				WorldDataConfiguration.DEFAULT);
 		WorldOptions options = WorldOptions.defaultWithRandomSeed();
 		if (seed != null && !seed.isBlank()) options = options.withSeed(WorldOptions.parseSeed(seed));
-		mc.createWorldOpenFlows().createFreshLevel(
-				id,
-				settings,
-				options,
-				WorldPresets::createNormalWorldDimensions,
-				new BootScreen(Component.literal("World #" + gen + " could not be created.")));
+		try {
+			// On a datapack failure vanilla shows this screen (and starts no server); it clears the loading state
+			// when it appears, so the next world.open is acted on.
+			mc.createWorldOpenFlows().createFreshLevel(
+					id,
+					settings,
+					options,
+					WorldPresets::createNormalWorldDimensions,
+					new BootScreen(Component.literal("World #" + gen + " could not be created.")));
+		} catch (RuntimeException e) {
+			ClientSession.get().loadFailed(id);
+			throw e;
+		}
 	}
 
 	/** Leaves the current world, blocking until the integrated server has saved and stopped. */
