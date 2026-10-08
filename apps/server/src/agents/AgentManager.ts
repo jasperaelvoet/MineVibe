@@ -39,7 +39,7 @@ import type {
   CrewEvents,
   DeliveryResult,
 } from '../contracts/CrewApi.js';
-import { ApiError, PLAYER } from '../contracts/common.js';
+import { ApiError, isApiError, PLAYER } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
 import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
@@ -126,7 +126,10 @@ export interface AgentManagerOptions {
   readonly authMode?: 'subscription' | 'api_key';
   /** Autonomy ticker period (default 30 s; 0 disables). */
   readonly autonomyTickMs?: number;
-  /** Decides an agent-created calendar event the player approved (no OrgApi method exists yet). */
+  /**
+   * Decides an agent-created calendar event the player approved. Optional: by default the card's answer goes to
+   * `OrgApi.calendar.decide`.
+   */
   readonly approveCalendarEvent?: (eventId: string) => Promise<void>;
   readonly lastWordsMs?: number;
   /** Re-sit debounce after a stand (default 60 s). */
@@ -924,27 +927,19 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   }
 
   #onCalendarFired(fired: PayloadOf<'calendar.fired'>): void {
-    if (fired.kind === 'meeting') return; // the MeetingRunner's
-    let task: string | null = null;
-    try {
-      task = this.#o.org.calendar.state().events.find((e) => e.id === fired.eventId)?.task ?? null;
-    } catch {
-      task = null;
-    }
+    // Only reminders (zero-token bubbles) are handled here. Meetings are the MeetingRunner's, and task text reaches
+    // the assignees through the org module's CrewHooks.deliver(…, 'scheduled') (orchestrator/modules.ts); the same
+    // occurrence is also re-sent as assignees accept it (a longer `walk`), so delivering here would wake them twice.
+    if (fired.kind !== 'reminder') return;
     for (const agentId of fired.assignees) {
       const record = this.#records.find((r) => r.agentId === agentId && r.status === 'alive');
       if (!record) continue;
-      if (fired.kind === 'reminder') {
-        this.emit('say', {
-          agentId,
-          text: singleLine(`Reminder: ${fired.title}`, 120),
-          style: 'speech',
-          ttlMs: 8_000,
-        });
-        continue;
-      }
-      // Re-sends of the same occurrence (more assignees walking) are coalesced by key.
-      this.#deliver(this.router.scheduled(this.#routerAgent(record), fired, task));
+      this.emit('say', {
+        agentId,
+        text: singleLine(`Reminder: ${fired.title}`, 120),
+        style: 'speech',
+        ttlMs: 8_000,
+      });
     }
   }
 
@@ -1294,7 +1289,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     let meeting: ChatContext['meeting'] = null;
     try {
       const m = this.#o.org.meeting.state();
-      if (m && m.phase !== 'done') {
+      // While the meeting gathers nobody takes the floor yet (the MeetingRunner ignores lines then): chat routes as
+      // usual until it opens.
+      if (m && m.phase !== 'done' && m.phase !== 'gathering') {
         meeting = {
           meetingId: m.meetingId,
           attendees: m.attendees
@@ -1511,13 +1508,23 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         break;
       case 'calendar.approve':
         if (card.kind === 'calendar') {
-          await this.#o.approveCalendarEvent?.(card.eventId);
+          // OrgApi.calendar.decide resolves without effect for an event that no longer waits, and an event that is
+          // gone altogether has nothing left to approve, so a stale card always clears; any other failure keeps the
+          // card up.
+          try {
+            if (this.#o.approveCalendarEvent) await this.#o.approveCalendarEvent(card.eventId);
+            else await this.#o.org.calendar.decide(PLAYER, card.eventId, { approve: true });
+          } catch (err) {
+            if (!isApiError(err, ERROR_CODES.CALENDAR_NOT_FOUND)) throw err;
+          }
           this.pending.resolve(card.id, { kind: 'approved' });
         }
         break;
       case 'calendar.decline':
         if (card.kind === 'calendar') {
-          await this.#o.org.calendar.cancel(PLAYER, card.eventId, 'all').catch(() => {});
+          await this.#o.org.calendar
+            .decide(PLAYER, card.eventId, { approve: false, note: interp.note ?? undefined })
+            .catch(() => {});
           this.pending.resolve(card.id, { kind: 'declined', note: interp.note });
         }
         break;

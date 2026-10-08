@@ -709,7 +709,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 - `codex.search` (request, `CodexSearchResult { hits: [{ id, title, category, scope, snippet, score }] }`):
   `{ query, tags?, category?, scope?, limit }`.
 - `codex.get` (request, `CodexGetResult { page }`): `{ pageId }`; `page` adds `body` (≤ 8192), `links` and `history:
-  [{ rev, at, author, summary }]` to the meta.
+  [{ rev, at, author, summary }]` to the meta. A page's `rev` is Node's revision token (7 zero-padded digits,
+  `0000003`), the one `baseRev` takes back; a history entry's `rev` is the commit of that change.
 - `codex.put` (request, `CodexPutResult { pageId, rev }`): `{ mode: create|update|append, pageId?, baseRev?, title,
   body, tags, category, scope, pinned? }`. `update` and `append` need `pageId`, `update` needs `baseRev`. Errors:
   `CODEX_CONFLICT` (stale `baseRev`), `CODEX_SIMILAR`, `CODEX_TOO_LARGE`, `CODEX_SECRET`, `CODEX_INVALID`,

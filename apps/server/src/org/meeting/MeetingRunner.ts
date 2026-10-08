@@ -59,6 +59,10 @@ export interface MeetingState {
   readonly chair: string | null;
   readonly format: MeetingFormat;
   readonly startedAt: number;
+  /** The 10-minute cap: `startedAt` plus the maximum duration (epoch ms). */
+  readonly endsBy: number;
+  /** `chair`, or before the meeting opens the one who will chair it (the CEO when attending, else the player). */
+  readonly plannedChair: string;
 }
 
 /** `full`; `short` (Tired: one round, no floor); `quick` (zero-token standup, blockers only). */
@@ -224,7 +228,8 @@ export interface MeetingRunnerOptions {
   /** "Day 3 08:00" for minutes titles. */
   readonly formatNow?: (() => string) | undefined;
   readonly clock?: OrgClock | undefined;
-  readonly playerName?: string | undefined;
+  /** The player's name, or a getter (it is known only once the mod says hello). */
+  readonly playerName?: string | (() => string) | undefined;
   readonly limits?: Partial<MeetingLimits> | undefined;
   readonly logger?: Logger | undefined;
 }
@@ -278,7 +283,7 @@ export class MeetingRunner {
   readonly #calendar: MeetingRunnerOptions['calendar'];
   readonly #formatNow: () => string;
   readonly #clock: OrgClock;
-  readonly #player: string;
+  readonly #playerName: () => string;
   readonly #limits: MeetingLimits;
   readonly #log: Logger | undefined;
 
@@ -299,9 +304,19 @@ export class MeetingRunner {
     this.#calendar = options.calendar;
     this.#formatNow = options.formatNow ?? (() => new Date(this.#clock.now()).toISOString().slice(0, 16));
     this.#clock = options.clock ?? systemClock;
-    this.#player = options.playerName ?? 'the player';
+    const name = options.playerName ?? 'the player';
+    this.#playerName = typeof name === 'function' ? name : () => name;
     this.#limits = { ...DEFAULT_MEETING_LIMITS, ...options.limits };
     this.#log = options.logger;
+  }
+
+  get #player(): string {
+    return this.#playerName();
+  }
+
+  /** The configured limits (the 10-minute cap is `meeting.state.endsBy`). */
+  get limits(): MeetingLimits {
+    return this.#limits;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -314,6 +329,23 @@ export class MeetingRunner {
 
   get queued(): number {
     return this.#queue.length;
+  }
+
+  /**
+   * Resolves when no meeting runs any more (after {@link cancelAll}: the adjourned meeting has written its partial
+   * minutes), or after `timeoutMs` at the latest, so a hung turn never blocks the caller.
+   */
+  async idle(timeoutMs = 5_000): Promise<void> {
+    const running = this.#running;
+    if (!running) return;
+    let timer: unknown = null;
+    await Promise.race([
+      running,
+      new Promise<void>((resolve) => {
+        timer = this.#clock.setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    if (timer !== null) this.#clock.clearTimeout(timer);
   }
 
   /** In the active meeting (walking, at the table or dialled in): tasks for them are deferred. */
@@ -436,6 +468,21 @@ export class MeetingRunner {
       this.#push();
       this.#active?.waker?.();
     }
+  }
+
+  /**
+   * An attendee on its way cannot reach the table (the crew could not walk it there): it dials in now instead of
+   * holding up the gathering until the 2-minute deadline.
+   */
+  cannotCome(agentId: string): void {
+    const m = this.#active;
+    const a = m?.attendees.get(agentId);
+    if (!m || !a || a.mode !== 'walking' || m.phase !== 'gathering') return;
+    a.mode = 'dial_in';
+    a.reason = 'unreachable';
+    this.#fx.dialIn?.(agentId, m.id, 'unreachable');
+    this.#push();
+    m.waker?.();
   }
 
   /** An attendee died (or was dismissed): drops out of the speaker order; the chair is replaced or the meeting adjourns. */
@@ -1067,6 +1114,8 @@ export class MeetingRunner {
       chair: m.chair,
       format: m.format,
       startedAt: m.startedAt,
+      endsBy: m.startedAt + this.#limits.maxDurationMs,
+      plannedChair: m.chair ?? (m.request.playerChairs ? 'player' : (this.#ceoOf(m.attendees) ?? 'player')),
     };
   }
 

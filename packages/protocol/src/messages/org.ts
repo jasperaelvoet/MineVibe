@@ -48,12 +48,17 @@ export const CodexPageMeta = z.object({
   author: Author,
   created: EpochMs,
   updated: EpochMs,
+  /**
+   * The page's current revision, an opaque token minted by Node (7 zero-padded digits, `0000003`). Pass it back as
+   * `baseRev`; history entries carry commit hashes instead.
+   */
   rev: Rev,
   pinned: z.boolean(),
 });
 export type CodexPageMeta = z.infer<typeof CodexPageMeta>;
 
 export const CodexHistoryEntry = z.object({
+  /** The commit of this change in the Codex repository. */
   rev: Rev,
   at: EpochMs,
   author: Author,

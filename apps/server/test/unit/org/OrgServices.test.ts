@@ -127,7 +127,9 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
       here: true,
     });
     expect(write.ok).toBe(true);
-    expect(write.text).toMatch(/^Created Codex page \[iron-cave\] rev 1 \(world\)\. stamped your position/);
+    expect(write.text).toMatch(
+      /^Created Codex page \[iron-cave\] rev 0000001 \(world\)\. stamped your position/,
+    );
     h.setCrew([...h.crew(), crewMember('neo', 'Neo')]);
     const found = h.org.codexSearch('neo', { query: 'iron' });
     expect(found.text).toContain('[iron-cave] Iron cave (places, world, by Bram): Iron cave at (120,40,-80)');
@@ -182,7 +184,10 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
     expect(h.delivered).toEqual([
       expect.objectContaining({ agentId: 'bram', priority: 'P1', location: 'farm' }),
     ]);
-    expect(h.delivered[0]?.text).toMatch(/^\[MV:beef SCHEDULED\] Farm wheat \(Day 3 06:00 at farm\)/);
+    expect(h.delivered[0]?.text).toMatch(
+      /^\[MV:beef SCHEDULED\] Calendar task \[ev-[0-9a-f]+\] due Day 3 06:00;/,
+    );
+    expect(h.delivered[0]?.text).toContain('Farm wheat\nLocation: farm');
     await h.clock.advance(0);
     expect(h.pushes.some((p) => p.type === 'calendar.fired')).toBe(true);
     expect(h.pushes.some((p) => p.type === 'calendar.state')).toBe(true);

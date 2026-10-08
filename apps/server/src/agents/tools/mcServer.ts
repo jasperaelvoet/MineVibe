@@ -18,10 +18,8 @@ import {
   Assignees,
   BlockPos,
   CalendarClock,
-  type CalendarEvent,
   CalendarKind,
   CodexCategory,
-  type CodexHit,
   CodexScope,
   CodexTag,
   CodexWriteMode,
@@ -34,11 +32,10 @@ import {
 import { z } from 'zod';
 import type { Actor } from '../../contracts/common.js';
 import { ApiError, isApiError } from '../../contracts/common.js';
-import type { CalendarEventInput, OrgApi } from '../../contracts/OrgApi.js';
+import type { OrgApi, OrgToolResult } from '../../contracts/OrgApi.js';
 import type { SkillApi } from '../../contracts/SkillApi.js';
 import { DEFAULT_WAIT_S, MAX_WAIT_S, MCP_TOOL_TIMEOUT_MS } from '../constants.js';
 import { summarizeResult } from '../EventRouter.js';
-import { authorLabel, singleLine, wrapNote } from '../envelope.js';
 import { MC_TOOLS, type McToolName } from './catalog.js';
 import {
   type CallToolResult,
@@ -155,75 +152,12 @@ const OBS_TOOLS = {
 
 const READ_ONLY = { annotations: { readOnlyHint: true } } as const;
 
-/** Day N hh:mm → overworld clock ticks (06:00 = tick 0 of the day; PLAN §6.6). */
-export function gameTimeToTicks(day: number, hour: number, minute: number): number {
-  const hourOfDay = (((hour - 6) % 24) + 24) % 24;
-  return (day - 1) * 24_000 + hourOfDay * 1000 + Math.floor((minute * 1000) / 60);
-}
+// The game-clock helpers moved to contracts/orgTools.ts (the fake OrgApi formats with them); re-exported here.
+export { gameTimeToTicks, parseWhen, ticksToGameTime } from '../../contracts/orgTools.js';
 
-/** Overworld ticks → "Day N hh:mm". */
-export function ticksToGameTime(ticks: number): string {
-  const day = Math.floor(ticks / 24_000) + 1;
-  const inDay = ticks % 24_000;
-  const hour = (Math.floor(inDay / 1000) + 6) % 24;
-  const minute = Math.floor(((inDay % 1000) * 60) / 1000);
-  return `Day ${day} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-}
-
-/** `when` of calendar_add: "now", ticks/epoch ms, "Day 3 06:00" (game) or an ISO date (real). */
-export function parseWhen(
-  when: unknown,
-  clock: 'game' | 'real',
-  now: { ticks: number | null; ms: number },
-): number {
-  if (when === 'now' || when === undefined) {
-    if (clock === 'game') {
-      if (now.ticks === null) throw new ApiError('CALENDAR_INVALID', 'the world clock is not known yet');
-      return now.ticks;
-    }
-    return now.ms;
-  }
-  if (typeof when === 'number' && Number.isFinite(when) && when >= 0) return Math.floor(when);
-  if (typeof when === 'string') {
-    const m = /^\s*day\s+(\d{1,5})\s+(\d{1,2}):(\d{2})\s*$/i.exec(when);
-    if (m) {
-      if (clock !== 'game')
-        throw new ApiError('CALENDAR_INVALID', '"Day N hh:mm" is a game-clock time; use clock:"game"');
-      const [day, hour, minute] = [Number(m[1]), Number(m[2]), Number(m[3])];
-      if (day < 1 || hour > 23 || minute > 59)
-        throw new ApiError('CALENDAR_INVALID', `bad game time "${when}"`);
-      return gameTimeToTicks(day, hour, minute);
-    }
-    const ms = Date.parse(when);
-    if (!Number.isNaN(ms)) {
-      if (clock !== 'real')
-        throw new ApiError('CALENDAR_INVALID', 'a date is a real-clock time; use clock:"real"');
-      return ms;
-    }
-  }
-  throw new ApiError(
-    'CALENDAR_INVALID',
-    `cannot read when=${JSON.stringify(when)}: use "now", "Day 3 06:00" or an ISO date`,
-  );
-}
-
-function formatHits(hits: readonly CodexHit[]): string {
-  if (hits.length === 0) return 'No Codex pages match.';
-  const body = hits.map((h) => `[${h.id}] ${h.title} (${h.category}, ${h.scope})\n${h.snippet}`).join('\n\n');
-  return `${hits.length} page(s); read one with mcp__mc__codex_read{id}.\n${wrapNote({ author: 'the Codex', kind: 'codex', text: body })}`;
-}
-
-function formatEvent(e: CalendarEvent): string {
-  const when = e.clock === 'game' ? ticksToGameTime(e.at) : new Date(e.at).toISOString();
-  const next =
-    e.nextAt === null
-      ? 'nothing due'
-      : e.clock === 'game'
-        ? ticksToGameTime(e.nextAt)
-        : new Date(e.nextAt).toISOString();
-  const who = e.assignees === 'all' ? 'all' : e.assignees.join(',');
-  const rec = e.recurrence.kind === 'every_n_days' ? `every ${e.recurrence.n} days` : e.recurrence.kind;
-  return `[${e.id}] ${e.kind} "${e.title}" for ${who}, ${rec} from ${when}; next ${next}; ${e.status}; by ${e.createdBy}${e.task ? `\n  task: ${e.task}` : ''}`;
+/** An org tool's result (the exact text the org services made) as a tool result. */
+function orgResult(result: OrgToolResult): CallToolResult {
+  return result.ok ? textResult(result.text) : errorResult(result.text);
 }
 
 /**
@@ -480,35 +414,14 @@ export function mcToolDefinitions(host: McHost): Def[] {
         tags: z.array(CodexTag).max(8).optional(),
         category: CodexCategory.optional(),
       },
-      (args) =>
-        run(async () => {
-          const hits = await host.org.codex.search(host.actor(), {
-            query: args.query,
-            tags: args.tags,
-            category: args.category,
-            limit: 8,
-          });
-          return textResult(formatHits(hits));
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.codexSearch(host.agentId, args))),
       READ_ONLY,
     ),
     tool(
       'codex_read',
       'Read one Codex page with its revision (pass it as base_rev to update).',
       { id: z.string().min(1).max(80) },
-      (args) =>
-        run(async () => {
-          const page = await host.org.codex.read(host.actor(), args.id);
-          const head = `Page ${page.id} rev ${page.rev} (${page.category}, ${page.scope}${page.pinned ? ', pinned' : ''}).`;
-          return textResult(
-            `${head}\n${wrapNote({
-              author: authorLabel(page.author),
-              kind: 'codex',
-              attrs: { id: page.id, title: page.title, scope: page.scope, rev: page.rev },
-              text: page.body,
-            })}`,
-          );
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.codexRead(host.agentId, args))),
       READ_ONLY,
     ),
     tool(
@@ -525,48 +438,13 @@ export function mcToolDefinitions(host: McHost): Def[] {
         base_rev: z.string().min(7).max(64).optional(),
         here: z.boolean().optional(),
       },
-      (args) =>
-        run(async () => {
-          const here = args.here ? host.here() : null;
-          if (args.here && !here)
-            return errorResult('Your position is not known yet; try again in a moment.');
-          try {
-            const res = await host.org.codex.write(host.actor(), {
-              mode: args.mode,
-              pageId: args.id,
-              baseRev: args.base_rev,
-              title: singleLine(args.title, 80),
-              body: args.body,
-              tags: args.tags ?? [],
-              category: args.category,
-              scope: args.scope,
-              here: here ?? undefined,
-            });
-            return textResult(`Saved page ${res.pageId} rev ${res.rev}.`);
-          } catch (err) {
-            if (isApiError(err, 'CODEX_CONFLICT') && typeof err.details?.body === 'string') {
-              return errorResult(
-                `Error CODEX_CONFLICT: the page changed (now rev ${String(err.details.rev)}). Merge your change into the current text and update with that base_rev:\n${wrapNote({ author: 'the Codex', kind: 'codex', text: err.details.body })}`,
-              );
-            }
-            throw err;
-          }
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.codexWrite(host.agentId, args))),
     ),
     tool(
       'codex_list',
       'List Codex pages, optionally by category or tag.',
       { category: CodexCategory.optional(), tag: CodexTag.optional() },
-      (args) =>
-        run(async () => {
-          const pages = await host.org.codex.list(host.actor(), { category: args.category, tag: args.tag });
-          if (pages.length === 0) return textResult('No pages.');
-          const body = pages
-            .slice(0, 60)
-            .map((p) => `[${p.id}] ${p.title} (${p.category}, ${p.scope}) by ${authorLabel(p.author)}`)
-            .join('\n');
-          return textResult(wrapNote({ author: 'the Codex', kind: 'codex', text: body }));
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.codexList(host.agentId, args))),
       READ_ONLY,
     ),
   );
@@ -585,22 +463,7 @@ export function mcToolDefinitions(host: McHost): Def[] {
         to: z.number().min(0).optional(),
         agent: z.string().min(1).max(64).optional(),
       },
-      (args) =>
-        run(async () => {
-          const events = await host.org.calendar.list(host.actor(), {
-            from: args.from,
-            to: args.to,
-            agentId: args.agent,
-          });
-          if (events.length === 0) return textResult('No events.');
-          return textResult(
-            wrapNote({
-              author: 'calendar',
-              kind: 'calendar',
-              text: events.slice(0, 40).map(formatEvent).join('\n'),
-            }),
-          );
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.calendarList(host.agentId, args))),
       READ_ONLY,
     ),
     tool(
@@ -619,29 +482,7 @@ export function mcToolDefinitions(host: McHost): Def[] {
         catch_up: z.enum(['skip', 'once_late']).optional(),
         run_while_away: z.boolean().optional(),
       },
-      (args) =>
-        run(async () => {
-          const at = parseWhen(args.when, args.clock, { ticks: host.clockTime(), ms: Date.now() });
-          const event: CalendarEventInput = {
-            title: singleLine(args.title, 80),
-            kind: args.kind,
-            assignees: args.assignees,
-            clock: args.clock,
-            at,
-            recurrence: args.recurrence ?? { kind: 'once' },
-            durationMin: args.duration_min ?? 30,
-            catchUp: args.catch_up ?? 'skip',
-            runWhileAway: args.run_while_away ?? false,
-            ...(args.location !== undefined ? { location: args.location } : {}),
-            ...(args.task !== undefined ? { task: args.task } : {}),
-          };
-          const res = await host.org.calendar.add(host.actor(), event);
-          return textResult(
-            res.needsApproval
-              ? `Created ${res.eventId}; it waits for ${host.playerName()}'s approval.`
-              : `Scheduled ${res.eventId}.`,
-          );
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.calendarAdd(host.agentId, args))),
     ),
     tool(
       'calendar_update',
@@ -657,35 +498,13 @@ export function mcToolDefinitions(host: McHost): Def[] {
         location: z.string().min(1).max(80).optional(),
         task: z.string().min(1).max(2000).optional(),
       },
-      (args) =>
-        run(async () => {
-          const patch: Partial<CalendarEventInput> = {};
-          if (args.title !== undefined) patch.title = singleLine(args.title, 80);
-          if (args.assignees !== undefined) patch.assignees = args.assignees;
-          if (args.recurrence !== undefined) patch.recurrence = args.recurrence;
-          if (args.duration_min !== undefined) patch.durationMin = args.duration_min;
-          if (args.location !== undefined) patch.location = args.location;
-          if (args.task !== undefined) patch.task = args.task;
-          if (args.clock !== undefined) patch.clock = args.clock;
-          if (args.when !== undefined) {
-            patch.at = parseWhen(args.when, args.clock ?? 'game', {
-              ticks: host.clockTime(),
-              ms: Date.now(),
-            });
-          }
-          await host.org.calendar.update(host.actor(), args.id, patch);
-          return textResult(`Updated ${args.id}.`);
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.calendarUpdate(host.agentId, args))),
     ),
     tool(
       'calendar_cancel',
       'Cancel an event (scope "all") or only its next occurrence ("next").',
       { id: z.string().min(1).max(64), scope: z.enum(['next', 'all']).optional() },
-      (args) =>
-        run(async () => {
-          await host.org.calendar.cancel(host.actor(), args.id, args.scope ?? 'all');
-          return textResult(`Cancelled ${args.id}${args.scope === 'next' ? ' (next occurrence)' : ''}.`);
-        }),
+      (args) => run(async () => orgResult(await host.org.tools.calendarCancel(host.agentId, args))),
     ),
     tool(
       'report_task',
@@ -697,10 +516,9 @@ export function mcToolDefinitions(host: McHost): Def[] {
       },
       (args) =>
         run(async () => {
-          const report = { eventId: args.event_id, status: args.status, note: args.note };
-          await host.org.calendar.report(host.actor(), report);
-          host.taskReported(report);
-          return textResult(`Reported ${args.event_id} ${args.status}.`);
+          const result = await host.org.tools.reportTask(host.agentId, args);
+          if (result.ok) host.taskReported({ eventId: args.event_id, status: args.status, note: args.note });
+          return orgResult(result);
         }),
     ),
   );

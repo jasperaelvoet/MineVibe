@@ -246,6 +246,34 @@ export class ApproachQueue {
     return true;
   }
 
+  /**
+   * Parks one card wherever it is in the queue (the player said "later" to that card in AgentScreen or chat). False
+   * when the card is unknown or already parked.
+   */
+  park(cardId: string): boolean {
+    const card = this.#cards.get(cardId);
+    if (!card || (card.parkedUntil !== null && card.parkedUntil > this.#clock.now())) return false;
+    this.#park(card);
+    this.#evaluate();
+    return true;
+  }
+
+  /**
+   * Drops every card and the presentation without walking anyone anywhere (world end: the crew is gone; the caller
+   * has already released the bodies). Ping settings are kept.
+   */
+  clear(): void {
+    this.#cards.clear();
+    this.#away.clear();
+    this.#current = null;
+    this.#pushState();
+  }
+
+  /** The cards known to the queue (for syncing with the card store). */
+  get cardIds(): readonly string[] {
+    return [...this.#cards.keys()];
+  }
+
   /** The "Ping instead of walking over" setting. */
   setPingPreference(agentId: string, ping: boolean): void {
     this.#pingPref.set(agentId, ping);

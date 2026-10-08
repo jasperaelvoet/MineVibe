@@ -133,7 +133,9 @@ function renderAttrs(meta: NoteMeta): string {
 
 /** Wraps shared text in a data envelope. The body is escaped; the author is stamped by Node. */
 export function wrapNote(meta: NoteMeta, body: string): string {
-  const text = escapeSharedText(body).replace(/\s+$/, '');
+  // The agent persona describes a note as `<<note …>> … >>`, so a `>>` inside the body could pass for the end of the
+  // note and make planted text look like Node's. Inside envelopes it becomes `››` (code survives everywhere else).
+  const text = escapeSharedText(body).replace(/>>/g, '››').replace(/\s+$/, '');
   return `<<note ${renderAttrs(meta)}>>\n${DATA_DISCLAIMER}\n${text}\n<</note>>`;
 }
 

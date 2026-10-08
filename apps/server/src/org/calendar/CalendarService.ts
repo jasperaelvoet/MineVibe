@@ -204,9 +204,16 @@ export interface CalendarServiceOptions {
   readonly worldFile?: ((worldId: string) => string) | null | undefined;
   readonly clock?: OrgClock | undefined;
   readonly timeZone?: string | undefined;
-  readonly playerName?: string | undefined;
+  /** The player's name, or a getter (it is known only once the mod says hello). */
+  readonly playerName?: string | (() => string) | undefined;
   readonly limits?: Partial<CalendarLimits> | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Whether `report_task` tells the CEO itself (default true). The org module turns it off: in the running app the
+   * crew does it (the `mc` server's `taskReported`, at P3 coalesced with the CEO's own session tag), and a second
+   * notice here would wake the CEO twice.
+   */
+  readonly reportToCeo?: boolean | undefined;
 }
 
 type ReportStatus = 'done' | 'failed' | 'blocked';
@@ -214,17 +221,51 @@ type ReportStatus = 'done' | 'failed' | 'blocked';
 interface Deferred {
   readonly eventId: string;
   readonly at: number;
+  /** The assignee, or `*` for the whole occurrence (`afk`, `catchup`). */
   readonly agentId: string;
-  readonly reason: 'asleep' | 'meeting' | 'queued' | 'afk';
+  /** `catchup`: a late `once_late` occurrence waiting for its staggered fire. */
+  readonly reason: 'asleep' | 'meeting' | 'queued' | 'afk' | 'catchup';
   /** Real ms when an `asleep` deferral may go out. */
   readonly until: number;
   /** Real ms after which it is missed. */
   readonly expiresAt: number;
 }
 
+/** A deferral as stored next to its event (`expiresAt: null` = never). */
+interface PersistedDeferred extends Omit<Deferred, 'expiresAt'> {
+  readonly expiresAt: number | null;
+}
+
 interface PersistedFile {
   v: 1;
   events: CalendarEvent[];
+  /** Deliveries waiting (asleep, meeting, queued, AFK, catch-up): they survive an app restart. */
+  deferred?: PersistedDeferred[];
+}
+
+const DEFERRAL_REASONS: ReadonlySet<string> = new Set(['asleep', 'meeting', 'queued', 'afk', 'catchup']);
+
+function parseDeferred(value: unknown): Deferred | null {
+  if (!value || typeof value !== 'object') return null;
+  const d = value as Record<string, unknown>;
+  if (typeof d.eventId !== 'string' || typeof d.agentId !== 'string') return null;
+  if (typeof d.at !== 'number' || !Number.isFinite(d.at)) return null;
+  if (typeof d.reason !== 'string' || !DEFERRAL_REASONS.has(d.reason)) return null;
+  const until = typeof d.until === 'number' && Number.isFinite(d.until) ? d.until : 0;
+  const expiresAt =
+    typeof d.expiresAt === 'number' && Number.isFinite(d.expiresAt) ? d.expiresAt : Number.POSITIVE_INFINITY;
+  return {
+    eventId: d.eventId,
+    at: d.at,
+    agentId: d.agentId,
+    reason: d.reason as Deferred['reason'],
+    until,
+    expiresAt,
+  };
+}
+
+function persistDeferred(d: Deferred): PersistedDeferred {
+  return { ...d, expiresAt: Number.isFinite(d.expiresAt) ? d.expiresAt : null };
 }
 
 const MAX_TASK_CHARS = 1000;
@@ -240,13 +281,16 @@ function normalizeRecurrence(input: RecurrenceInput | undefined): Recurrence | n
   if (input === 'daily') return { kind: 'daily' };
   if (input === 'weekdays') return { kind: 'weekdays' };
   if (typeof input === 'object' && input !== null) {
+    // Every 1 day is daily: the wire's every_n_days needs n >= 2 (protocol section 7.8).
     if ('every_n_days' in input) {
       const n = Number(input.every_n_days);
-      return Number.isInteger(n) && n >= 1 && n <= 365 ? { kind: 'every_n_days', n } : null;
+      if (n === 1) return { kind: 'daily' };
+      return Number.isInteger(n) && n >= 2 && n <= 365 ? { kind: 'every_n_days', n } : null;
     }
     if ('kind' in input) {
       if (input.kind === 'every_n_days') {
-        return Number.isInteger(input.n) && input.n >= 1 && input.n <= 365
+        if (input.n === 1) return { kind: 'daily' };
+        return Number.isInteger(input.n) && input.n >= 2 && input.n <= 365
           ? { kind: 'every_n_days', n: input.n }
           : null;
       }
@@ -265,7 +309,7 @@ export class CalendarService {
   readonly #worldFile: ((worldId: string) => string) | null;
   readonly #clock: OrgClock;
   readonly #tz: string;
-  readonly #playerName: string;
+  readonly #playerNameOf: () => string;
   readonly #limits: CalendarLimits;
   readonly #log: Logger | undefined;
   readonly #toasts: ToastBatcher;
@@ -276,6 +320,8 @@ export class CalendarService {
   #lastInputAt: number;
   #afk = false;
   #deferred: Deferred[] = [];
+  /** Deferrals released into the stagger queue but not retried yet (persisted with the rest). */
+  readonly #releasing = new Set<Deferred>();
   #stagger: Array<() => void> = [];
   #lastStaggerAt = Number.NEGATIVE_INFINITY;
   #offlineMissed: Array<{ title: string; assignees: readonly string[] }> = [];
@@ -283,6 +329,11 @@ export class CalendarService {
   #saveQueue: Promise<void> = Promise.resolve();
   #timer: unknown = null;
   #running = false;
+  /** Stopped for good (shutdown): nothing is delivered any more. */
+  #stopped = false;
+  /** Held (no crew to deliver to yet): nothing fires, nothing is retried or expired. */
+  #paused = false;
+  readonly #reportToCeo: boolean;
 
   constructor(options: CalendarServiceOptions) {
     this.#nonce = options.nonce;
@@ -293,11 +344,17 @@ export class CalendarService {
     this.#clock = options.clock ?? systemClock;
     const tz = options.timeZone ?? hostTimeZone();
     this.#tz = isValidTimeZone(tz) ? tz : 'UTC';
-    this.#playerName = options.playerName ?? 'the player';
+    const name = options.playerName ?? 'the player';
+    this.#playerNameOf = typeof name === 'function' ? name : () => name;
     this.#limits = { ...DEFAULT_CALENDAR_LIMITS, ...options.limits };
     this.#log = options.logger;
+    this.#reportToCeo = options.reportToCeo ?? true;
     this.#lastInputAt = this.#clock.now();
     this.#toasts = new ToastBatcher(this.#clock, (text) => this.#sink.toast?.(text));
+  }
+
+  get #playerName(): string {
+    return this.#playerNameOf();
   }
 
   get timeZone(): string {
@@ -324,27 +381,36 @@ export class CalendarService {
   async open(worldId: string | null): Promise<void> {
     // Load everything first, then swap in one step: a save during the awaits must never see a half-loaded map
     // (it would overwrite the files with an empty event list).
-    const lasting = await this.#loadFile(this.#lastingFile);
-    const world = worldId !== null && this.#worldFile ? await this.#loadFile(this.#worldFile(worldId)) : [];
+    const lasting = await this.#loadFile(this.#lastingFile, 'real');
+    const world =
+      worldId !== null && this.#worldFile
+        ? await this.#loadFile(this.#worldFile(worldId), 'game')
+        : { events: [], deferred: [] };
     const events = new Map<string, CalendarEvent>();
-    for (const ev of lasting) if (ev.clock === 'real') events.set(ev.id, ev);
-    for (const ev of world)
-      if (ev.clock === 'game') events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
+    for (const ev of lasting.events) events.set(ev.id, ev);
+    for (const ev of world.events) events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
     this.#events = events;
     this.#worldId = worldId;
     this.#gameTicks = null;
+    this.#deferred = [];
+    this.#releasing.clear();
+    this.#restoreDeferred([...lasting.deferred, ...world.deferred]);
     this.#changed();
   }
 
   /** Switches to a world's game-clock events (a new world after a death, or the first `world.open`). */
   async setWorld(worldId: string | null): Promise<void> {
     // Load before switching: while the file is read, saves keep going to the old world's file.
-    const loaded = worldId !== null && this.#worldFile ? await this.#loadFile(this.#worldFile(worldId)) : [];
+    const loaded =
+      worldId !== null && this.#worldFile
+        ? await this.#loadFile(this.#worldFile(worldId), 'game')
+        : { events: [], deferred: [] };
     for (const ev of [...this.#events.values()]) if (ev.clock === 'game') this.#events.delete(ev.id);
-    for (const ev of loaded)
-      if (ev.clock === 'game') this.#events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
+    for (const ev of loaded.events) this.#events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
+    this.#dropOrphanDeferrals();
     this.#worldId = worldId;
     this.#gameTicks = null;
+    this.#restoreDeferred(loaded.deferred);
     this.#changed();
   }
 
@@ -367,7 +433,7 @@ export class CalendarService {
         orphaned.push(ev.id);
       }
     }
-    this.#deferred = this.#deferred.filter((d) => this.#events.has(d.eventId));
+    this.#dropOrphanDeferrals();
     if (this.#worldId === worldId) {
       this.#worldId = null;
       this.#gameTicks = null;
@@ -381,6 +447,7 @@ export class CalendarService {
   start(): void {
     if (this.#running) return;
     this.#running = true;
+    this.#stopped = false;
     const loop = () => {
       if (!this.#running) return;
       try {
@@ -395,9 +462,26 @@ export class CalendarService {
 
   stop(): void {
     this.#running = false;
+    this.#stopped = true;
     if (this.#timer !== null) this.#clock.clearTimeout(this.#timer);
     this.#timer = null;
     this.#toasts.dispose();
+  }
+
+  /**
+   * Holds the calendar (`true`) or lets it run again (`false`). While held nothing fires and no deferred delivery is
+   * retried or expired: the org module holds it until a crew is bound, so that occurrences due at startup and
+   * deliveries restored from disk are not marked missed for want of anyone to deliver them to. The game clock is
+   * still recorded; on release the calendar catches up at once.
+   */
+  hold(held: boolean): void {
+    if (this.#paused === held) return;
+    this.#paused = held;
+    if (!held && this.#running) this.tick();
+  }
+
+  get held(): boolean {
+    return this.#paused;
   }
 
   /** Waits for pending saves. */
@@ -430,11 +514,13 @@ export class CalendarService {
 
   /** A meeting ended: deliveries deferred for its attendees go out (staggered). */
   meetingEnded(agentIds?: readonly string[]): void {
+    // A meeting cut short by shutdown keeps its deferrals: they are stored and go out after the next start.
+    if (this.#stopped) return;
     const set = agentIds ? new Set(agentIds) : null;
     const release = this.#deferred.filter((d) => d.reason === 'meeting' && (!set || set.has(d.agentId)));
     this.#deferred = this.#deferred.filter((d) => !release.includes(d));
-    for (const d of release) this.#queueStagger(() => this.#retryDeferred(d));
-    this.#pumpStagger();
+    for (const d of release) this.#queueRetry(d);
+    if (!this.#paused) this.#pumpStagger();
   }
 
   // -------------------------------------------------------------------------------------------
@@ -668,6 +754,7 @@ export class CalendarService {
       }
     }
     this.#deferred = this.#deferred.filter((d) => d.eventId !== id);
+    for (const d of [...this.#releasing]) if (d.eventId === id) this.#releasing.delete(d);
     this.#save();
     this.#changed();
     return { ok: true, event: structuredClone(ev) };
@@ -788,7 +875,7 @@ export class CalendarService {
     if (input.note) occ.note = singleLine(input.note, 200);
     ev.updatedAt = this.#clock.now();
 
-    const ceo = this.#crew.ceoId();
+    const ceo = this.#reportToCeo ? this.#crew.ceoId() : null;
     const who = this.#crew.name(agentId);
     const note = input.note ? `: ${singleLine(input.note, 200)}` : '';
     if (ceo && ceo !== agentId) {
@@ -828,12 +915,30 @@ export class CalendarService {
     this.#changed();
   }
 
+  /**
+   * "Start meeting now" for a scheduled meeting (`meeting.start{eventId}`): its next occurrence is held now, so it
+   * is logged as fired and `nextAt` moves on. Returns the occurrence, or null when nothing is due (inactive event).
+   */
+  takeNextOccurrence(eventId: string): { event: CalendarEvent; occurrence: number } | null {
+    const ev = this.#events.get(eventId);
+    if (ev?.status !== 'active' || ev.nextAt === null) return null;
+    const at = ev.nextAt;
+    this.#pushRing(ev, { at, status: 'fired', firedAt: this.#clock.now(), note: 'started early' });
+    ev.nextAt = occurrenceAfter(ev, at);
+    if (ev.nextAt === null && !isRecurring(ev.recurrence)) ev.status = 'completed';
+    ev.updatedAt = this.#clock.now();
+    this.#save();
+    this.#changed();
+    return { event: structuredClone(ev), occurrence: at };
+  }
+
   // -------------------------------------------------------------------------------------------
   // Firing
   // -------------------------------------------------------------------------------------------
 
   /** One firing pass. Called every second and on every game-clock update. */
   tick(): void {
+    if (this.#paused) return;
     const nowReal = this.#clock.now();
     const wasAfk = this.#afk;
     this.#afk = nowReal - this.#lastInputAt >= this.#limits.afkMs;
@@ -882,13 +987,16 @@ export class CalendarService {
       this.#fire(ev, latest, false);
     } else if (ev.catchUp === 'once_late' && lateness <= grace) {
       this.#pushRing(ev, { at: latest, status: 'deferred', note: 'catching up' });
-      // Look the event up again when the stagger comes round: it may have been edited (a new object), cancelled,
-      // or dropped with its world in the meantime.
-      const id = ev.id;
-      this.#queueStagger(() => {
-        const current = this.#events.get(id);
-        if (current?.ring.some((o) => o.at === latest && o.status === 'deferred'))
-          this.#fire(current, latest, true);
+      // The event is looked up again when the stagger comes round (#retryDeferred): it may have been edited (a new
+      // object), cancelled, or dropped with its world in the meantime. Tracked as a deferral so that it survives a
+      // restart.
+      this.#queueRetry({
+        eventId: ev.id,
+        at: latest,
+        agentId: '*',
+        reason: 'catchup',
+        until: 0,
+        expiresAt: Number.POSITIVE_INFINITY,
       });
     } else {
       this.#pushRing(ev, { at: latest, status: 'missed', note: 'missed while offline' });
@@ -1022,8 +1130,13 @@ export class CalendarService {
     }
     const selfScheduled = ev.createdBy === agentId;
     const when = this.formatWhen(ev, at);
-    const where = ev.location ? ` at ${singleLine(ev.location, 40)}` : '';
-    const headline = `${ev.title} (${when}${where}${late ? ', late' : ''}). When finished, report_task{eventId:"${ev.id}"}.`;
+    // The control line carries only Node's own words (the id, the time): the title, the place and the task were
+    // written by the player or an agent, so they stay inside the data envelope (PLAN §6.6 "Firing", principle 6).
+    // The crew tags this line with the assignee's session nonce, so shared text here would pass for Node's.
+    const headline = `Calendar task [${ev.id}] due ${when}${late ? ' (late)' : ''}; what and where are below. When finished, call mcp__mc__report_task{event_id:"${ev.id}", status}.`;
+    const lines = [singleLine(ev.title)];
+    if (ev.location) lines.push(`Location: ${singleLine(ev.location, 80)}`);
+    if (ev.task && ev.task !== ev.title) lines.push(ev.task);
     const envelope = wrapNote(
       {
         author: { kind: ev.createdBy === 'player' ? 'player' : 'agent', name: ev.createdByName },
@@ -1031,7 +1144,7 @@ export class CalendarService {
         id: ev.id,
         title: ev.title,
       },
-      ev.task || ev.title,
+      lines.join('\n'),
     );
     this.#sink.deliverTask?.({
       agentId,
@@ -1074,6 +1187,10 @@ export class CalendarService {
     if (!ev || ev.status === 'cancelled' || ev.status === 'declined') return;
     const occ = ev.ring.find((o) => o.at === d.at);
     if (!occ) return;
+    if (d.reason === 'catchup') {
+      if (occ.status === 'deferred') this.#fire(ev, d.at, true);
+      return;
+    }
     if (d.reason === 'afk') {
       // Back from AFK: apply the catch-up rule to the paused occurrence.
       const now = this.#nowFor(ev.clock);
@@ -1102,7 +1219,7 @@ export class CalendarService {
   #releaseAfk(): void {
     const held = this.#deferred.filter((d) => d.reason === 'afk');
     this.#deferred = this.#deferred.filter((d) => d.reason !== 'afk');
-    for (const d of held) this.#queueStagger(() => this.#retryDeferred(d));
+    for (const d of held) this.#queueRetry(d);
   }
 
   #expireDeferred(nowReal: number): void {
@@ -1110,7 +1227,7 @@ export class CalendarService {
     const released = new Set<string>();
     for (const d of this.#deferred) {
       if (d.reason === 'asleep' && nowReal >= d.until && nowReal < d.expiresAt) {
-        this.#queueStagger(() => this.#retryDeferred(d));
+        this.#queueRetry(d);
         continue;
       }
       // A queued CEO task goes out once the open one stops blocking (reported, or older than openTaskTtlMs);
@@ -1122,7 +1239,7 @@ export class CalendarService {
         !this.#openCeoTask(d.agentId, d.eventId, d.at)
       ) {
         released.add(d.agentId);
-        this.#queueStagger(() => this.#retryDeferred(d));
+        this.#queueRetry(d);
         continue;
       }
       if (nowReal >= d.expiresAt) {
@@ -1141,6 +1258,48 @@ export class CalendarService {
 
   #queueStagger(fn: () => void): void {
     this.#stagger.push(fn);
+  }
+
+  /** Releases a deferral into the stagger queue; it stays persisted until it is actually retried. */
+  #queueRetry(d: Deferred): void {
+    this.#releasing.add(d);
+    this.#queueStagger(() => {
+      this.#releasing.delete(d);
+      this.#retryDeferred(d);
+    });
+  }
+
+  /** Drops deferrals whose event is gone (cancelled, pruned, or its world switched away). */
+  #dropOrphanDeferrals(): void {
+    this.#deferred = this.#deferred.filter((d) => this.#events.has(d.eventId));
+    for (const d of [...this.#releasing]) if (!this.#events.has(d.eventId)) this.#releasing.delete(d);
+  }
+
+  /**
+   * Deferrals loaded from disk after a restart. Asleep and queued ones wait as before; a meeting is never running
+   * any more, the AFK state starts fresh, and catch-ups were already due, so those go out (staggered) right away.
+   */
+  #restoreDeferred(list: readonly Deferred[]): void {
+    for (const d of list) {
+      if (!this.#events.has(d.eventId)) continue;
+      if (d.reason === 'meeting' || d.reason === 'afk' || d.reason === 'catchup') this.#queueRetry(d);
+      else this.#deferred.push(d);
+    }
+  }
+
+  /** Deliveries still waiting (deferred, or released and waiting for their stagger slot). */
+  get pendingDeliveries(): ReadonlyArray<{
+    eventId: string;
+    at: number;
+    agentId: string;
+    reason: Deferred['reason'];
+  }> {
+    return [...this.#deferred, ...this.#releasing].map(({ eventId, at, agentId, reason }) => ({
+      eventId,
+      at,
+      agentId,
+      reason,
+    }));
   }
 
   #pumpStagger(): void {
@@ -1162,8 +1321,15 @@ export class CalendarService {
     this.#offlineMissed = [];
     const counts = new Map<string, number>();
     for (const i of items) counts.set(i.title, (counts.get(i.title) ?? 0) + 1);
-    const list = [...counts.entries()].map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(', ');
-    const line = this.#nonce.line('MISSED', `Missed while offline: ${list}.`);
+    const list = [...counts.entries()]
+      .map(([t, n]) => `- ${singleLine(t)}${n > 1 ? ` ×${n}` : ''}`)
+      .join('\n');
+    // Titles are shared text: they go in an envelope, never in the control line.
+    const line = this.#nonce.message(
+      'MISSED',
+      'Calendar events missed while offline (listed below).',
+      wrapNote({ author: { kind: 'system', name: 'MineVibe' }, kind: 'calendar' }, list),
+    );
     const targets = new Set<string>();
     const ceo = this.#crew.ceoId();
     if (ceo) targets.add(ceo);
@@ -1375,29 +1541,44 @@ export class CalendarService {
     }
   }
 
-  async #loadFile(path: string | null): Promise<CalendarEvent[]> {
-    if (!path) return [];
+  async #loadFile(
+    path: string | null,
+    clock: ClockKind,
+  ): Promise<{ events: CalendarEvent[]; deferred: Deferred[] }> {
+    if (!path) return { events: [], deferred: [] };
     try {
       const raw = JSON.parse(await readFile(path, 'utf8')) as Partial<PersistedFile>;
-      const events = Array.isArray(raw.events) ? raw.events : [];
+      const events = (Array.isArray(raw.events) ? raw.events : []).filter((ev) => ev.clock === clock);
+      const ids = new Set(events.map((ev) => ev.id));
+      const deferred = (Array.isArray(raw.deferred) ? raw.deferred : [])
+        .map(parseDeferred)
+        .filter((d): d is Deferred => d !== null && ids.has(d.eventId));
+      const kept = (eventId: string, at: number, agentId?: string) =>
+        deferred.some(
+          (d) =>
+            d.eventId === eventId &&
+            d.at === at &&
+            (agentId === undefined || d.agentId === agentId || d.agentId === '*'),
+        );
       for (const ev of events) {
-        // Deferred deliveries do not survive a restart.
-        for (const occ of ev.ring ?? []) {
-          if (occ.status === 'deferred') {
+        ev.ring = ev.ring ?? [];
+        // A deferred occurrence with no stored deferral (a file from before deferrals were stored, or one whose
+        // delivery expired) can never go out any more.
+        for (const occ of ev.ring) {
+          if (occ.status === 'deferred' && !kept(ev.id, occ.at)) {
             occ.status = 'missed';
             occ.note = 'app restarted';
           }
           for (const [a, st] of Object.entries(occ.assignees ?? {})) {
-            if (st === 'deferred' && occ.assignees) occ.assignees[a] = 'missed';
+            if (st === 'deferred' && occ.assignees && !kept(ev.id, occ.at, a)) occ.assignees[a] = 'missed';
           }
         }
-        ev.ring = ev.ring ?? [];
       }
-      return events;
+      return { events, deferred };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT')
         this.#log?.warn({ err: e, path }, 'calendar file unreadable');
-      return [];
+      return { events: [], deferred: [] };
     }
   }
 
@@ -1419,8 +1600,13 @@ export class CalendarService {
     const worldId = this.#worldId;
     const lastingFile = this.#lastingFile;
     const worldFile = worldId !== null && this.#worldFile ? this.#worldFile(worldId) : null;
-    const lastingText = `${JSON.stringify({ v: 1, events: lasting } satisfies PersistedFile, null, 1)}\n`;
-    const worldText = `${JSON.stringify({ v: 1, events: world } satisfies PersistedFile, null, 1)}\n`;
+    const waiting = [...this.#deferred, ...this.#releasing];
+    const deferredOf = (clock: ClockKind) =>
+      waiting.filter((d) => this.#events.get(d.eventId)?.clock === clock).map(persistDeferred);
+    const lastingFileData: PersistedFile = { v: 1, events: lasting, deferred: deferredOf('real') };
+    const worldFileData: PersistedFile = { v: 1, events: world, deferred: deferredOf('game') };
+    const lastingText = `${JSON.stringify(lastingFileData, null, 1)}\n`;
+    const worldText = `${JSON.stringify(worldFileData, null, 1)}\n`;
     this.#saveQueue = this.#saveQueue
       .then(async () => {
         if (lastingFile) await writeFileAtomic(lastingFile, lastingText, { mode: 0o600 });

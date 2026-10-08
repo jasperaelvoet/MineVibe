@@ -1,14 +1,18 @@
 /**
  * OrgApi: the organisation services (CodexStore, CalendarService, MeetingRunner; T5) as the agent tools
  * (`mcp__mc__codex_*`, `calendar_*`, `report_task`; T3) and the UI screens (CodexScreen, CalendarScreen, meeting HUD
- * via the bridge; T1/T6) use them. PLAN §6.6.
+ * via the bridge; T1/T6) use them. PLAN §6.6. This is the one OrgApi: `apps/server/src/org` implements it
+ * (`org/contractApi.ts`, built by `org/module.ts`), and the fake below implements it for tests.
  *
- * Every call names its {@link Actor}; rights are enforced here, not in prompts: only the player writes `rules` pages,
- * other agents schedule only for themselves, agents cannot edit player-created events, and so on. Failures reject with
- * {@link ApiError} using the protocol codes (`CODEX_*`, `CALENDAR_*`, `MEETING_*`, `NO_QUORUM`, `FORBIDDEN`).
- *
- * Shared text (page bodies, titles, tasks) is returned raw; wrapping it in the data envelope for agents is the agent
- * runtime's job (PLAN §3 principle 6).
+ * Two faces:
+ * - {@link OrgApi.tools}: the agent tools. Each takes the calling agent's id (stamped by Node, never taken from the
+ *   model) and the tool's raw arguments, validates them, and returns the exact text the agent sees, with all shared
+ *   text inside Node-made data envelopes ({@link OrgToolResult}).
+ * - `codex` / `calendar` / `meeting`: structured calls in the protocol's shapes, for the screens and for Node.
+ *   Every call names its {@link Actor}; rights are enforced here, not in prompts: only the player writes `rules`
+ *   pages, other agents schedule only for themselves, agents cannot edit player-created events, and so on. Failures
+ *   reject with {@link ApiError} using the protocol codes (`CODEX_*`, `CALENDAR_*`, `MEETING_*`, `NO_QUORUM`,
+ *   `FORBIDDEN`). Shared text (page bodies, titles, tasks) is returned raw here.
  */
 
 import type {
@@ -107,14 +111,29 @@ export interface TaskReport {
   readonly note?: string | undefined;
 }
 
+/** The player's answer to a `calendar` approval card. */
+export interface CalendarDecision {
+  readonly approve: boolean;
+  /** Passed on to the agent that created the event. */
+  readonly note?: string | undefined;
+}
+
 export interface CalendarApi {
   list(actor: Actor, filter?: CalendarListFilter): Promise<readonly CalendarEvent[]>;
   /** Rejects with `FORBIDDEN` (scheduling others is CEO only), `CALENDAR_LIMIT`, `CALENDAR_INVALID`. */
   add(actor: Actor, event: CalendarEventInput): Promise<CalendarAddResult>;
   /** Rejects with `CALENDAR_NOT_FOUND`, `FORBIDDEN` (player-created events), `CALENDAR_INVALID`. */
   update(actor: Actor, eventId: string, patch: Partial<CalendarEventInput>): Promise<void>;
+  /** The player cancelling an event that waits for approval declines it. */
   cancel(actor: Actor, eventId: string, scope: 'next' | 'all'): Promise<void>;
   report(actor: Actor, report: TaskReport): Promise<void>;
+  /**
+   * The player approves or declines an agent-created recurring event or meeting (the `calendar` PendingCard; PLAN
+   * §6.6 "Rights and limits"). The creating agent is told. Player only (`FORBIDDEN`). Resolves without effect when
+   * the event no longer waits for approval (it was edited, cancelled or decided meanwhile), so a stale card can
+   * always be cleared; rejects with `CALENDAR_NOT_FOUND` for an unknown event.
+   */
+  decide(actor: Actor, eventId: string, decision: CalendarDecision): Promise<void>;
   /** The `calendar.state` push. */
   state(): PayloadOf<'calendar.state'>;
 }
@@ -142,13 +161,46 @@ export interface MeetingApi {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Agent tools
+// ---------------------------------------------------------------------------------------------
+
+/** What an agent tool call returns. `text` goes to the agent verbatim (as an error result when `ok` is false). */
+export interface OrgToolResult {
+  readonly ok: boolean;
+  readonly text: string;
+  /** Machine-readable refusal code (`INVALID`, `FORBIDDEN`, `SIMILAR_EXISTS`, `CODEX_CONFLICT`, ...). */
+  readonly code?: string | undefined;
+}
+
+/**
+ * The org agent tools (`mcp__mc__codex_*`, `calendar_*`, `report_task`; PLAN §6.6). `agentId` is the calling agent
+ * (stamped by Node); `input` is the tool's arguments as the model sent them (the `mc` server's schemas: `base_rev`,
+ * `event_id`, `duration_min`, ...). Inputs are validated here; a malformed one is an `ok: false` result, never a throw.
+ */
+export interface OrgAgentTools {
+  codexSearch(agentId: string, input: unknown): Promise<OrgToolResult>;
+  codexRead(agentId: string, input: unknown): Promise<OrgToolResult>;
+  codexWrite(agentId: string, input: unknown): Promise<OrgToolResult>;
+  codexList(agentId: string, input: unknown): Promise<OrgToolResult>;
+  calendarList(agentId: string, input: unknown): Promise<OrgToolResult>;
+  calendarAdd(agentId: string, input: unknown): Promise<OrgToolResult>;
+  calendarUpdate(agentId: string, input: unknown): Promise<OrgToolResult>;
+  calendarCancel(agentId: string, input: unknown): Promise<OrgToolResult>;
+  reportTask(agentId: string, input: unknown): Promise<OrgToolResult>;
+}
+
+// ---------------------------------------------------------------------------------------------
 // OrgApi
 // ---------------------------------------------------------------------------------------------
 
-/** OrgApi events: the protocol payloads to forward to the mod. */
+/** OrgApi events: the protocol payloads the org module pushes to the mod, for in-process listeners. */
 export type OrgEvents = {
   codexIndex: [payload: PayloadOf<'codex.index'>];
   calendarState: [payload: PayloadOf<'calendar.state'>];
+  /**
+   * An occurrence fired, and again (same `occurrence`, longer `walk`) as assignees accept a task. Task text reaches
+   * the assignees through `CrewHooks.deliver` (orchestrator/modules.ts), not through this event.
+   */
   calendarFired: [payload: PayloadOf<'calendar.fired'>];
   meetingState: [payload: PayloadOf<'meeting.state'>];
 };
@@ -157,4 +209,5 @@ export interface OrgApi extends Subscribable<OrgEvents> {
   readonly codex: CodexApi;
   readonly calendar: CalendarApi;
   readonly meeting: MeetingApi;
+  readonly tools: OrgAgentTools;
 }
