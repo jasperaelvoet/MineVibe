@@ -176,11 +176,17 @@ public final class SkillFactory {
 					Args.Farm a = read(args, Args.Farm.class);
 					BlockPos from = pos(required(a.from(), "from"));
 					BlockPos to = pos(required(a.to(), "to"));
-					if (Math.abs(from.getX() - to.getX()) >= FarmJob.MAX_SIDE || Math.abs(from.getZ() - to.getZ()) >= FarmJob.MAX_SIDE
-						|| Math.abs(from.getY() - to.getY()) > 4) {
+					// Longs: int coordinates far apart would overflow the difference and pass the check.
+					if (Math.abs((long)from.getX() - to.getX()) >= FarmJob.MAX_SIDE || Math.abs((long)from.getZ() - to.getZ()) >= FarmJob.MAX_SIDE
+						|| Math.abs((long)from.getY() - to.getY()) > 4) {
 						throw Refs.badArgs("a farm is at most " + FarmJob.MAX_SIDE + "x" + FarmJob.MAX_SIDE + " and 4 blocks high");
 					}
-					yield new FarmJob(from, to, a.crop() == null ? null : Refs.item(a.crop()));
+					Refs.ItemMatcher crop = a.crop() == null ? null : Refs.item(a.crop());
+					if (crop != null && crop.item() != null && !FarmJob.isSeed(crop.item())) {
+						// Anything else would be "planted" as a block on the farmland (dirt, torches...).
+						throw Refs.badArgs("crop is a seed item (wheat_seeds, carrot, potato, beetroot_seeds), not " + a.crop());
+					}
+					yield new FarmJob(from, to, crop);
 				}
 				case "ride" -> new WorldJobs.Ride(required(read(args, Args.Ride.class).entity(), "entity"));
 				case "dismount" -> new WorldJobs.Dismount();

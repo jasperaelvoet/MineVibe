@@ -263,7 +263,8 @@ final class ShelterReflex implements Reflex {
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
 		BlockPos home = brain.home();
-		if (home == null || agent.tickCount < this.retryAt || !dusk(agent.level())) {
+		// The home (office door, bed) is an overworld position, and dusk is the overworld's.
+		if (home == null || agent.tickCount < this.retryAt || agent.level().dimension() != net.minecraft.world.level.Level.OVERWORLD || !dusk(agent.level())) {
 			return false;
 		}
 		if (brain.mode() == IdleMode.FOLLOW && brain.followTarget() != null) {

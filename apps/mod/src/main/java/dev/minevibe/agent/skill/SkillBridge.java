@@ -48,6 +48,17 @@ public final class SkillBridge {
 		tryHandle(() -> bridge.handle(Bodies.AGENT_MODE, Route.SERVER, req -> service().mode(req)));
 		tryHandle(() -> bridge.handle(Seats.AGENT_SEAT, Route.SERVER, req -> service().seat(req)));
 		tryHandle(() -> bridge.handle(Seats.AGENT_UNSEAT, Route.SERVER, req -> service().unseat(req)));
+		bridge.addListener(new BridgeClient.ConnectionListener() {
+			@Override
+			public void onDisconnected(final String reason) {
+				onServerThread(SkillService::connectionLost);
+			}
+
+			@Override
+			public void onHandshake(final dev.minevibe.bridge.protocol.Messages.HelloOk helloOk) {
+				onServerThread(SkillService::connectionRestored);
+			}
+		});
 		bridge.observe(Ui.AGENT_APPROACH, Route.SERVER, a -> {
 			SkillService s = SkillService.current();
 			if (s != null) {
@@ -63,6 +74,24 @@ public final class SkillBridge {
 		if (Boolean.getBoolean("minevibe.e2e")) {
 			tryHandle(() -> bridge.handle(Debug.DEBUG_KILL_AGENT, Route.SERVER, req -> service().debugKillAgent(req)));
 			tryHandle(() -> bridge.handle(Debug.DEBUG_SET_CLOCK, Route.SERVER, req -> service().debugSetClock(req)));
+		}
+	}
+
+	/** Runs {@code task} on the running server's thread (never inline here: a stopped server would run it on this thread). */
+	private static void onServerThread(final java.util.function.Consumer<SkillService> task) {
+		SkillService s = SkillService.current();
+		if (s == null) {
+			return;
+		}
+		Thread caller = Thread.currentThread();
+		try {
+			s.server().execute(() -> {
+				if (Thread.currentThread() != caller && SkillService.current() == s) {
+					task.accept(s);
+				}
+			});
+		} catch (java.util.concurrent.RejectedExecutionException e) {
+			SkillOutbox.LOG.debug("server is stopping: {}", e.getMessage());
 		}
 	}
 

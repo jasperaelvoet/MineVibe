@@ -233,6 +233,11 @@ public final class FarmJob extends SkillJob {
 
 	/** True if {@code stack} plants a crop. */
 	public static boolean isSeed(final ItemStack stack) {
-		return stack.getItem() instanceof BlockItem bi && bi.getBlock() instanceof CropBlock;
+		return isSeed(stack.getItem());
+	}
+
+	/** True if {@code item} plants a crop (wheat seeds, carrot, potato, beetroot seeds...). */
+	public static boolean isSeed(final net.minecraft.world.item.Item item) {
+		return item instanceof BlockItem bi && bi.getBlock() instanceof CropBlock;
 	}
 }

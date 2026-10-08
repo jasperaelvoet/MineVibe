@@ -73,6 +73,8 @@ public final class SkillService {
 	private final Map<String, Handle> running = new LinkedHashMap<>();
 	private final Deque<Handle> finished = new ArrayDeque<>();
 	private final Map<String, Seated> seated = new HashMap<>();
+	/** Jobs that ended while Node was not connected: their {@code skill.result} goes out on the next handshake. */
+	private final Deque<Handle> unreported = new ArrayDeque<>();
 	private final BodyEmitter emitter;
 
 	/** A job started through the bridge, with its reply and reporting state. */
@@ -276,14 +278,55 @@ public final class SkillService {
 		if (h.job instanceof SeatJob seat) {
 			this.seatEnded(h, seat, o);
 		}
+		boolean connected = this.outbox.connected();
 		CompletableFuture<Map<String, Object>> reply = h.reply;
 		if (reply != null && !reply.isDone()) {
-			reply.complete(this.finalReply(h, o));
+			if (connected) {
+				reply.complete(this.finalReply(h, o));
+				return;
+			}
+			// The request's connection is gone, and so would this answer be: report it as skill.result instead.
+			reply.complete(runningReply(h));
+		}
+		if (connected) {
+			this.sendResult(h);
+		} else {
+			this.unreported.addLast(h);
+			while (this.unreported.size() > FINISHED_KEPT) {
+				this.unreported.removeFirst();
+			}
+		}
+	}
+
+	private void sendResult(final Handle h) {
+		SkillJob.Outcome o = h.outcome;
+		if (o == null) {
 			return;
 		}
 		JsonObject result = this.withFooter(h.agentId, o.result());
 		this.outbox.send(Skills.SKILL_RESULT, new Skills.SkillResult(
 			h.jobId, h.agentId, o.status(), result, o.code() == null ? null : failure(o), Math.max(0L, h.elapsedMs())));
+	}
+
+	/**
+	 * Server thread, after the bridge lost its connection: a {@code skill.run} still waiting for its job can no longer be
+	 * answered (a reply only goes to the connection its request came on), so its outcome will follow as
+	 * {@code skill.result} on the next connection instead of being dropped.
+	 */
+	public void connectionLost() {
+		for (Handle h : List.copyOf(this.running.values())) {
+			CompletableFuture<Map<String, Object>> reply = h.reply;
+			if (reply != null && !reply.isDone()) {
+				reply.complete(runningReply(h));
+			}
+		}
+	}
+
+	/** Server thread, after a handshake: the outcomes of jobs that ended while Node was away. */
+	public void connectionRestored() {
+		while (!this.unreported.isEmpty() && this.outbox.connected()) {
+			this.sendResult(this.unreported.removeFirst());
+		}
 	}
 
 	/** {@code skill.cancel}: cancels one job of the agent, or all of them. */
@@ -497,13 +540,8 @@ public final class SkillService {
 			if (status != null && !"running".equals(status)) {
 				throw new BridgeException(Codes.PC_DOWN, pcId + " is " + status);
 			}
-			Seated already = this.seated.get(agent.agentId());
-			boolean sameSeat = already != null && pcId.equals(already.target().pcId());
-			long atPcs = this.seated.entrySet().stream()
-				.filter(e -> !e.getKey().equals(agent.agentId()) && SeatTarget.PC.equals(e.getValue().target().kind()))
-				.count();
-			if (!sameSeat && atPcs >= Seats.MAX_SEATED) {
-				throw new BridgeException(Codes.SEAT_CAP, Seats.MAX_SEATED + " agents already sit at PCs");
+			if (this.othersAtPcs(pcs, agent.agentId()) >= Seats.MAX_SEATED) {
+				throw new BridgeException(Codes.SEAT_CAP, Seats.MAX_SEATED + " agents already sit at (or hold) PCs");
 			}
 			Types.Occupant occupant = pcs.occupant(this.server, pcId);
 			if (occupant != null && occupant.isPlayer()) {
@@ -516,6 +554,9 @@ public final class SkillService {
 			if (r != null && !agent.agentId().equals(r.agentId())) {
 				throw new BridgeException(Codes.RESERVED, pcId + " is reserved for " + r.agentId());
 			}
+			// End the current job (an earlier seat job for this chair, say) before reserving: its end releases its own
+			// "coming" reservation, which would otherwise be the one made here.
+			agent.jobs().cancel("replaced by sit_at_pc");
 			pcs.reserve(pcId, agent.agentId(), PcRegistry.Reservation.COMING);
 		} else {
 			var meetings = Seats.meetings();
@@ -533,6 +574,39 @@ public final class SkillService {
 		out.put("jobId", req.jobId());
 		out.put("status", Skills.RUNNING);
 		return out;
+	}
+
+	/**
+	 * Agents other than {@code agentId} that sit at a PC or hold one ({@code coming}: walking there; {@code away}: asking
+	 * the player, chair kept): Node counts all of them as seated, so {@code maxSeated} counts them too.
+	 */
+	private int othersAtPcs(final PcRegistry pcs, final String agentId) {
+		java.util.Set<String> holders = new java.util.HashSet<>();
+		for (Map.Entry<String, Seated> e : this.seated.entrySet()) {
+			if (SeatTarget.PC.equals(e.getValue().target().kind())) {
+				holders.add(e.getKey());
+			}
+		}
+		for (String pcId : pcs.pcIds(this.server)) {
+			PcRegistry.Reservation r = pcs.reservation(pcId);
+			if (r != null) {
+				holders.add(r.agentId());
+			}
+		}
+		holders.remove(agentId);
+		return holders.size();
+	}
+
+	/** Once a second: reservations of agents that died or left (an {@code away} chair would otherwise stay held forever). */
+	private void sweepReservations() {
+		PcRegistry pcs = Seats.pcs();
+		AgentService bodies = AgentService.get(this.server);
+		for (String pcId : pcs.pcIds(this.server)) {
+			PcRegistry.Reservation r = pcs.reservation(pcId);
+			if (r != null && bodies.agent(r.agentId()) == null) {
+				pcs.release(pcId, r.agentId());
+			}
+		}
 	}
 
 	private void seatEnded(final Handle h, final SeatJob job, final SkillJob.Outcome o) {
@@ -560,6 +634,10 @@ public final class SkillService {
 		AgentPlayer agent = this.agent(req.agentId());
 		Seated s = this.seated.get(agent.agentId());
 		if (s != null && req.seatEpoch() < s.epoch()) {
+			return Map.of("ignored", true);
+		}
+		if (agent.jobs().current() instanceof SeatJob walking && req.seatEpoch() < walking.epoch()) {
+			// A late unseat from before the walk to a (newer) seat began.
 			return Map.of("ignored", true);
 		}
 		if (agent.jobs().current() instanceof SeatJob) {
@@ -666,6 +744,7 @@ public final class SkillService {
 		this.emitter.tick();
 		if (this.server.getTickCount() % 20 == 0) {
 			WorldClock.publish(this.server);
+			this.sweepReservations();
 		}
 	}
 

@@ -89,6 +89,15 @@ class SkillLogicTest {
 		assertEquals("BAD_ARGS", code(() -> SkillFactory.create("hunt", json("{\"entity\":\"minecraft:player\",\"count\":1}"))));
 		assertEquals("UNKNOWN_BLUEPRINT", code(() -> SkillFactory.create("build", json("{\"blueprint\":\"castle\",\"origin\":{\"x\":0,\"y\":0,\"z\":0}}"))));
 
+		// Far-apart int coordinates must not overflow past the size limits (a 65536x65536 dig was "0 blocks").
+		assertEquals("BAD_ARGS", code(() -> SkillFactory.create("dig", json("{\"from\":{\"x\":0,\"y\":0,\"z\":0},\"to\":{\"x\":65535,\"y\":0,\"z\":65535}}"))));
+		assertEquals(65536L * 65536L, dev.minevibe.agent.job.GatherJobs.Dig.volume(BlockPos.ZERO, new BlockPos(65535, 0, 65535)));
+		assertEquals("BAD_ARGS", code(() -> SkillFactory.create("farm", json(
+			"{\"from\":{\"x\":2147483647,\"y\":0,\"z\":0},\"to\":{\"x\":-2147483648,\"y\":0,\"z\":3}}"))));
+		assertEquals("BAD_ARGS", code(() -> SkillFactory.create("farm", json(
+			"{\"from\":{\"x\":0,\"y\":0,\"z\":0},\"to\":{\"x\":3,\"y\":0,\"z\":3},\"crop\":\"minecraft:dirt\"}"))));
+		assertInstanceOf(dev.minevibe.agent.job.FarmJob.class, SkillFactory.create("farm", json(
+			"{\"from\":{\"x\":0,\"y\":0,\"z\":0},\"to\":{\"x\":3,\"y\":0,\"z\":3},\"crop\":\"carrot\"}")));
 		assertInstanceOf(GotoSkillJob.class, SkillFactory.create("goto", json("{\"pos\":{\"x\":1,\"y\":2,\"z\":3},\"range\":2}")));
 		assertInstanceOf(GotoSkillJob.class, SkillFactory.create("goto", json("{\"entity\":\"player\"}")));
 		assertInstanceOf(MenuJobs.MenuClick.class, SkillFactory.create("menu_click", json("{\"slot\":-3,\"button\":0,\"type\":\"pickup\"}")));

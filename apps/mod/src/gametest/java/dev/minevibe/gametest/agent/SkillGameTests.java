@@ -66,6 +66,12 @@ public final class SkillGameTests {
 	private static final String ARENA = "minevibe-gametest:arena";
 	private static final String NIGHT = "minevibe-gametest:night";
 	private static final String DAY = "minevibe-gametest:day";
+	/**
+	 * Seat tests each run in a batch of their own (an empty environment per test): the seat cap and the PC registry are
+	 * shared by the whole server, so concurrent seat tests would count each other's agents.
+	 */
+	private static final String SEAT_RESERVE = "minevibe-gametest:seat_reserve";
+	private static final String SEAT_FIGHT = "minevibe-gametest:seat_fight";
 
 	private static int count(final AgentPlayer agent, final net.minecraft.world.item.Item item) {
 		return Inv.count(agent, item);
@@ -631,7 +637,7 @@ public final class SkillGameTests {
 
 	// ------------------------------------------------------------------ seats
 
-	@GameTest(maxTicks = 500)
+	@GameTest(environment = SEAT_RESERVE, maxTicks = 500)
 	public void seatAtPcReserveSitUnseat(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
 		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();
@@ -647,9 +653,14 @@ public final class SkillGameTests {
 		String job = jobId("sit");
 		expectError(helper, "PC_UNKNOWN", () -> service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), jobId("x"), 1,
 			dev.minevibe.bridge.msg.Seats.SeatTarget.pc("no-such-pc"), null)));
+		String first = jobId("sit");
+		service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), first, 7, dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), "fix the tests"));
+		// Node repeats the request (a new job for the same chair): the chair stays reserved for the new walk.
 		Map<String, Object> reply = service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), job, 7, dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), "fix the tests"));
 		helper.assertValueEqual(reply.get("status"), "running", "agent.seat answers running");
-		helper.assertTrue(pcs.reservation(pcId) != null && "coming".equals(pcs.reservation(pcId).kind()), "reserved: coming");
+		helper.assertValueEqual(recorder(helper).results(first).getFirst().status(), "cancelled", "the first seat job was replaced");
+		helper.assertTrue(pcs.reservation(pcId) != null && "coming".equals(pcs.reservation(pcId).kind())
+			&& agent.agentId().equals(pcs.reservation(pcId).agentId()), "reserved: coming (" + pcs.reservation(pcId) + ")");
 		expectError(helper, "RESERVED", () -> service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(other.agentId(), jobId("x"), 1,
 			dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), null)));
 		helper.startSequence()
@@ -681,11 +692,15 @@ public final class SkillGameTests {
 				service.unseat(new dev.minevibe.bridge.msg.Seats.AgentUnseat(agent.agentId(), 7, "reservation_expired", false));
 				helper.assertTrue(pcs.reservation(pcId) == null, "reservation released");
 				assertValid(helper, agent);
+				// An agent that leaves for good while "away" does not keep the chair forever.
+				pcs.reserve(pcId, other.agentId(), PcRegistry.Reservation.AWAY);
+				service.despawn(new Bodies.AgentDespawn(other.agentId(), "dismissed", false));
 			})
+			.thenWaitUntil(() -> helper.assertTrue(pcs.reservation(pcId) == null, "a dismissed agent's reservation is swept: " + pcs.reservation(pcId)))
 			.thenSucceed();
 	}
 
-	@GameTest(maxTicks = 600)
+	@GameTest(environment = SEAT_FIGHT, maxTicks = 600)
 	public void seatedAgentUnseatsToFight(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
 		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();

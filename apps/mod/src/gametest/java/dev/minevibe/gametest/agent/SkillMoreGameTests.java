@@ -22,6 +22,7 @@ import dev.minevibe.agent.skill.seat.SimplePcRegistry;
 import dev.minevibe.bridge.BridgeException;
 import dev.minevibe.bridge.msg.Org;
 import dev.minevibe.bridge.msg.Seats.AgentSeat;
+import dev.minevibe.bridge.msg.Seats.AgentUnseat;
 import dev.minevibe.bridge.msg.Seats.SeatTarget;
 import dev.minevibe.bridge.msg.Skills;
 import dev.minevibe.bridge.msg.Types;
@@ -49,6 +50,10 @@ public final class SkillMoreGameTests {
 	private static final String ARENA = "minevibe-gametest:arena";
 	private static final String DAY = "minevibe-gametest:day";
 	private static final String DUSK = "minevibe-gametest:dusk";
+	/** Batches of their own: seat tests share the seat cap, and the reconnect test detaches every waiting reply. */
+	private static final String SEAT_SURVIVE = "minevibe-gametest:seat_survive";
+	private static final String SEAT_FEED = "minevibe-gametest:seat_feed";
+	private static final String RECONNECT = "minevibe-gametest:reconnect";
 
 	private static void assertDone(final GameTestHelper helper, final CompletableFuture<Map<String, Object>> reply, final String what) {
 		String s = status(reply);
@@ -148,7 +153,7 @@ public final class SkillMoreGameTests {
 		});
 	}
 
-	@GameTest(maxTicks = 300)
+	@GameTest(environment = SEAT_SURVIVE, maxTicks = 300)
 	public void seatedAgentUnseatsToSurvive(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
 		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();
@@ -169,6 +174,111 @@ public final class SkillMoreGameTests {
 				helper.assertFalse(agent.isPassenger(), "standing");
 			})
 			.thenSucceed();
+	}
+
+	/** Feeding the player (55) or a teammate (50) never pulls an agent off its PC chair; only survival (47) or a fight (45) do. */
+	@GameTest(environment = SEAT_FEED, maxTicks = 300)
+	public void seatedAgentDoesNotStandUpToFeedOthers(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();
+		String pcId = pcId();
+		helper.setBlock(new BlockPos(3, 0, 3), MvWorldContent.OFFICE_CHAIR.defaultBlockState());
+		pcs.register(pcId, level.dimension(), helper.absolutePos(new BlockPos(3, 0, 3)));
+		AgentTestSupport.onTestEnd(helper, () -> pcs.unregister(pcId));
+		AgentPlayer agent = spawnAgent(helper, "Busy", AgentRole.ENGINEER, 3, 0, 1);
+		agent.getInventory().setItem(0, new ItemStack(Items.BREAD, 8));
+		ServerPlayer human = spawnHumanStandIn(helper, 6, 0, 6);
+		agent.brain().setFollowTarget(human.getUUID());
+		AgentPlayer hungry = spawnAgent(helper, "Starved", AgentRole.MINER, 1, 0, 6);
+		SkillService service = service(helper);
+		service.seat(new AgentSeat(agent.agentId(), jobId("sit"), 1, SeatTarget.pc(pcId), null));
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(agent.agentId()) != null, "seated"))
+			.thenExecute(() -> {
+				human.getFoodData().setFoodLevel(6);
+				hungry.getFoodData().setFoodLevel(3);
+				hungry.getFoodData().setSaturation(0.0F);
+			})
+			.thenIdle(80)
+			.thenExecute(() -> {
+				helper.assertTrue(agent.isPassenger() && service.seated(agent.agentId()) != null, "still seated: " + agent.brain().activeName());
+				helper.assertTrue(recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, u -> u.pcId().equals(pcId)).isEmpty(), "no pc.unseat");
+				helper.assertValueEqual(Inv.count(agent, Items.BREAD), 8, "no bread tossed from the chair");
+			})
+			.thenSucceed();
+	}
+
+	/**
+	 * A bridge reconnect while {@code skill.run} waits: the reply can no longer reach Node, so the outcome follows as
+	 * {@code skill.result}; a job that ends while Node is away is reported on the next handshake.
+	 */
+	@GameTest(environment = RECONNECT, maxTicks = 300)
+	public void jobOutcomesSurviveABridgeReconnect(final GameTestHelper helper) {
+		AgentPlayer agent = spawnAgent(helper, "Patient", AgentRole.ENGINEER, 2, 0, 2);
+		SkillService service = service(helper);
+		SkillTestSupport.Recorder recorder = recorder(helper);
+		AgentTestSupport.onTestEnd(helper, () -> recorder.setConnected(true));
+		String first = jobId("wave");
+		CompletableFuture<Map<String, Object>> r1 = run(helper, agent, first, "emote", "{\"kind\":\"wave\"}", 60_000);
+		java.util.concurrent.atomic.AtomicReference<String> second = new java.util.concurrent.atomic.AtomicReference<>();
+		helper.assertTrue(status(r1) == null, "waiting for the emote");
+		service.connectionLost();
+		helper.assertValueEqual(status(r1), "running", "a waiting reply is released when the connection drops");
+		helper.startSequence()
+			.thenWaitUntil(() -> {
+				List<Skills.SkillResult> done = recorder.results(first);
+				helper.assertTrue(!done.isEmpty(), "skill.result for the first job");
+				helper.assertValueEqual(done.getFirst().status(), "done", "first job");
+			})
+			.thenExecute(() -> {
+				// Node is away while the next job ends.
+				recorder.setConnected(false);
+				second.set(jobId("nod"));
+				run(helper, agent, second.get(), "emote", "{\"kind\":\"nod\"}", 0);
+			})
+			.thenWaitUntil(() -> helper.assertFalse(agent.jobs().hasJob(), "the nod is over"))
+			.thenExecute(() -> {
+				helper.assertTrue(recorder.results(second.get()).isEmpty(), "nothing sent while disconnected");
+				recorder.setConnected(true);
+				service.connectionRestored();
+				List<Skills.SkillResult> done = recorder.results(second.get());
+				helper.assertTrue(done.size() == 1 && "done".equals(done.getFirst().status()), "reported on the handshake: " + done);
+			})
+			.thenSucceed();
+	}
+
+	/** {@code BlockScan.nearest} (nearest sections first, early stop) finds what a brute-force search finds. */
+	@GameTest(maxTicks = 40)
+	public void blockScanMatchesABruteForceSearch(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		java.util.Random random = new java.util.Random(42);
+		for (int i = 0; i < 60; i++) {
+			helper.setBlock(new BlockPos(random.nextInt(8), random.nextInt(4), random.nextInt(8)), Blocks.COBBLESTONE);
+		}
+		BlockPos center = helper.absolutePos(new BlockPos(3, 1, 4));
+		java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> cobble = st -> st.is(Blocks.COBBLESTONE);
+		java.util.function.Predicate<BlockPos> evenX = q -> (q.getX() & 1) == 0;
+		for (int radius : new int[] {2, 5, 9}) {
+			for (int limit : new int[] {1, 4, 24}) {
+				for (java.util.function.Predicate<BlockPos> extra : List.<java.util.function.Predicate<BlockPos>>of(q -> true, evenX)) {
+					List<Long> brute = new java.util.ArrayList<>();
+					for (BlockPos q : BlockPos.betweenClosed(center.offset(-radius, -radius, -radius), center.offset(radius, radius, radius))) {
+						long d = (long)q.distSqr(center);
+						if (d <= (long)radius * radius && cobble.test(level.getBlockState(q)) && extra.test(q)) {
+							brute.add(d);
+						}
+					}
+					java.util.Collections.sort(brute);
+					List<Long> scan = new java.util.ArrayList<>();
+					for (BlockPos q : dev.minevibe.agent.job.BlockScan.nearest(level, center, radius, cobble, extra, limit)) {
+						helper.assertTrue(cobble.test(level.getBlockState(q)) && extra.test(q), "a match: " + q);
+						scan.add((long)q.distSqr(center));
+					}
+					helper.assertValueEqual(scan, brute.subList(0, Math.min(limit, brute.size())), "radius " + radius + " limit " + limit);
+				}
+			}
+		}
+		helper.succeed();
 	}
 
 	/** Its own (daytime) batch: no other test seats agents while this one counts seats. */
@@ -206,7 +316,13 @@ public final class SkillMoreGameTests {
 				helper.assertValueEqual(seats.size(), 2, "pc.seat for both");
 				var obs = (com.google.gson.JsonObject)service.obs(new Skills.ObsQuery(c.agentId(), "list_pcs", new com.google.gson.JsonObject())).get("result");
 				helper.assertTrue(obs.toString().contains(ids[3]) && obs.toString().contains("\"occupant\":\"player\""), "list_pcs: " + obs);
+				// An agent away from its chair (asking the player) still holds it: the cap still counts it ...
+				service.unseat(new AgentUnseat(a.agentId(), 1, "away", true));
+				expect(helper, "SEAT_CAP", () -> service.seat(new AgentSeat(c.agentId(), jobId("x"), 2, SeatTarget.pc(ids[2]), null)));
+				// ... and it can always come back to it.
+				service.seat(new AgentSeat(a.agentId(), jobId("back"), 2, SeatTarget.pc(ids[0]), null));
 			})
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(a.agentId()) != null, "back in its chair"))
 			.thenSucceed();
 	}
 

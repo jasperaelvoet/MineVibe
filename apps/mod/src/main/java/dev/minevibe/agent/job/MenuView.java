@@ -200,6 +200,12 @@ public final class MenuView {
 		final AgentPlayer agent, final AbstractContainerMenu menu, final List<Integer> from, final List<Integer> to, final Predicate<ItemStack> match, final int count
 	) {
 		int moved = 0;
+		if (!menu.getCarried().isEmpty()) {
+			// Left on the cursor by an earlier menu_click: put it away first, or the first click below would swap it in.
+			ItemStack held = menu.getCarried();
+			menu.setCarried(ItemStack.EMPTY);
+			agent.getInventory().placeItemBackInInventory(held, net.minecraft.util.Prediction.SERVER_ONLY);
+		}
 		for (int src : from) {
 			if (moved >= count) {
 				break;

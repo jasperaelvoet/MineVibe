@@ -22,6 +22,11 @@ public interface SkillOutbox {
 	/** A request that must arrive: re-sent until Node answers {@code ok} ({@code agent.died}). */
 	<P> void sendUntilAcked(MessageType<P> type, P payload);
 
+	/** True while {@link #send} reaches Node (the bridge is handshaken); job outcomes wait for the next connection otherwise. */
+	default boolean connected() {
+		return true;
+	}
+
 	SkillOutbox BRIDGE = new SkillOutbox() {
 		@Override
 		public <P> void send(final MessageType<P> type, final P payload) {
@@ -34,6 +39,12 @@ public interface SkillOutbox {
 			} catch (ProtocolException e) {
 				LOG.error("Dropping an invalid {}: {}", type, e.getMessage());
 			}
+		}
+
+		@Override
+		public boolean connected() {
+			BridgeClient bridge = MineVibeBridge.get();
+			return bridge != null && bridge.isHandshaken();
 		}
 
 		@Override

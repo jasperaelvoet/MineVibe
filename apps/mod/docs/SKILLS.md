@@ -12,15 +12,15 @@ All run on the integrated server thread (`err NO_SERVER` without one).
 
 | Message | Handling |
 |---|---|
-| `skill.run` | Starts the job, then answers when it ends or when `waitMs` passes, whichever comes first. `waitMs` is capped at 120 000 (the tools' `wait_s` ≤ 120). A job still going is answered `running`; its end follows as `skill.result`. Errors: `UNKNOWN_AGENT`, `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job runs and `replace` is false), `UNKNOWN_BLUEPRINT`. Repeating a known `jobId` answers that job's state. |
+| `skill.run` | Starts the job, then answers when it ends or when `waitMs` passes, whichever comes first. `waitMs` is capped at 120 000 (the tools' `wait_s` ≤ 120). A job still going is answered `running`; its end follows as `skill.result`. Errors: `UNKNOWN_AGENT`, `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job runs and `replace` is false), `UNKNOWN_BLUEPRINT`. Repeating a known `jobId` answers that job's state. If the bridge reconnects while a reply waits, the reply is dropped (it belongs to the old connection) and the outcome follows as `skill.result`; outcomes of jobs that end while Node is away go out on the next handshake. |
 | `skill.progress` | Sent while a job runs, at most once a second per job, when its text changes ("12/20 oak_log"). |
 | `skill.cancel` | Cancels the agent's current job (or only `jobId`); each cancelled job also gets `skill.result{cancelled}` unless its `skill.run` was still waiting, which then answers `cancelled`. |
 | `obs.query` | `status`, `look_around`, `inventory`, `find{what, radius?, limit?}`, `recipe{item}`, `recent_events{limit?}`, `crew`, `list_pcs`, `job_status{jobId?}`, `menu_state`. |
 | `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears near the player (Node sends the office door as `at`). Bodies follow the local player. `at` also becomes the agent's home (shelter at dusk). Errors: `BAD_ARGS` (ids are `[a-z][a-z0-9_]{0,15}` in the mod), `AGENT_DEAD`, `SPAWN_FAILED`. |
 | `agent.despawn` | `dismissed` removes the agent for good; `world_end` / `shutdown` save it. A seat is left first (`pc.unseat`). |
 | `agent.mode` | Idle mode `follow` / `stay` / `guard` / `wander`, around `anchor` (default: where it stands). |
-| `agent.seat` | Pre-checks (`PC_UNKNOWN`, `PC_DOWN`, `SEAT_CAP` with 2 agents at PCs, `OCCUPIED_BY_PLAYER`, `RESERVED`, `NO_SEAT` for meetings), reserves the chair (`coming`), answers `running`, walks and sits. The end is `skill.result{jobId}` (failures: `UNREACHABLE`, `OCCUPIED_BY_PLAYER`, `RESERVED`, `PC_DOWN`, `NO_SEAT`) and, for a PC, `pc.seat{seatEpoch}`. |
-| `agent.unseat` | Stands up (an older `seatEpoch` is ignored: `ok{ignored: true}`), sends `pc.unseat{reason, reserved}`; `keepReservation` keeps the chair (`away`). Not seated: releases the agent's reservations unless `keepReservation`. |
+| `agent.seat` | Pre-checks (`PC_UNKNOWN`, `PC_DOWN`, `SEAT_CAP` when 2 other agents sit at, walk to (`coming`) or keep (`away`) a PC, `OCCUPIED_BY_PLAYER`, `RESERVED`, `NO_SEAT` for meetings), reserves the chair (`coming`), answers `running`, walks and sits. A new `agent.seat` replaces the agent's current job. Reservations of agents that died or left are dropped within a second. The end is `skill.result{jobId}` (failures: `UNREACHABLE`, `OCCUPIED_BY_PLAYER`, `RESERVED`, `PC_DOWN`, `NO_SEAT`) and, for a PC, `pc.seat{seatEpoch}`. |
+| `agent.unseat` | Stands up (an epoch older than the seat's, or than a walk to a seat, is ignored: `ok{ignored: true}`), sends `pc.unseat{reason, reserved}`; `keepReservation` keeps the chair (`away`). Not seated: releases the agent's reservations unless `keepReservation`. |
 | `agent.approach` | Observed (other modules may observe it too): `present` / `queue` drive the Approach reflex, `ping` / `release` stop it. |
 | `calendar.fired` | Observed: each agent in `walk` goes to `target` (Attend reflex). |
 | `debug.kill_agent`, `debug.set_clock` | Only with `-Dminevibe.e2e=true`. |
@@ -45,7 +45,8 @@ Every skill result and observation ends with `footer`, a ~25-token status line:
   "Ahead" is south (+Z) at rotation 0; rotations turn clockwise. Walls take any plain full block
   (dirt, cobblestone, planks...); the job checks the material first (`NO_MATERIAL`).
 - **`farm`** repeats passes over the box until nothing is left: harvest ripe crops, till dirt and grass
-  (with a hoe, when there are seeds), plant empty farmland, bone-meal growing crops.
+  (with a hoe, when there are seeds), plant empty farmland, bone-meal growing crops. `crop` must be a
+  seed item (or a tag); anything else is `BAD_ARGS`.
 
 ## Job failure codes
 
@@ -77,8 +78,8 @@ Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, Protect 80, SelfDefense
 ≤ 6 with nothing to eat), **UnseatToSurvive 47** (seated, food ≤ 6, no food), **UnseatToFight 45**
 (seated, hit by a hostile, HP < 50%), **Approach 40**, **Attend 38**, Job 35, **Shelter 30** (dusk, a home
 set, not following the player), **Pickup 25** (loose items within 6 blocks in sight), idle 10.
-A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect or
-SelfDefense: it stands up to fight at 45. Approach reports `agent.event approach_blocked{why}` (`combat`,
+A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect,
+SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47) or to fight (45). Approach reports `agent.event approach_blocked{why}` (`combat`,
 `night`, `far`, `dimension`, `pc_screen`) once and stays put, so Node can fall back to a ping.
 
 ## Body messages

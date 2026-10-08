@@ -42,6 +42,12 @@ abstract class TossFoodReflex implements Reflex {
 		return true;
 	}
 
+	/** Feeding others never pulls an agent out of its chair: only its own survival (47) or a fight (45) does. */
+	@Override
+	public boolean allowedWhileSeated() {
+		return false;
+	}
+
 	@Override
 	public void start(final AgentPlayer agent, final ReflexBrain brain) {
 		this.startedAt = agent.tickCount;

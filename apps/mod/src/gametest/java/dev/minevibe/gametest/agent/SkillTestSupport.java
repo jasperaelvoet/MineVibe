@@ -33,9 +33,23 @@ final class SkillTestSupport {
 	/** Records everything instead of sending it; shared by all tests (they filter by agent or job id). */
 	static final class Recorder implements SkillOutbox {
 		private final List<Sent> sent = new ArrayList<>();
+		private volatile boolean connected = true;
+
+		/** While false, {@link #send} drops messages like a bridge without Node (only the reconnect test's own batch). */
+		void setConnected(final boolean connected) {
+			this.connected = connected;
+		}
+
+		@Override
+		public boolean connected() {
+			return this.connected;
+		}
 
 		@Override
 		public <P> void send(final MessageType<P> type, final P payload) {
+			if (!this.connected) {
+				return;
+			}
 			String json = null;
 			String error = null;
 			try {

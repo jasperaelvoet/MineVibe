@@ -25,7 +25,7 @@ import org.jspecify.annotations.Nullable;
  * Pickup 25, idle mode 10 (follow, stay, guard, wander).
  *
  * <p>While the agent sits (a PC or meeting chair, or any vehicle) only reflexes at 45 and above may run, and the ones
- * that would only protect others or fight back at good health ({@link Reflex#allowedWhileSeated}) wait: a seated agent
+ * that would only protect or feed others or fight back at good health ({@link Reflex#allowedWhileSeated}) wait: a seated agent
  * stands up to fight at priority 45, once its HP is below half.
  */
 public final class ReflexBrain {

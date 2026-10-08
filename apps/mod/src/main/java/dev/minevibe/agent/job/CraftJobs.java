@@ -241,17 +241,30 @@ public final class CraftJobs {
 		}
 	}
 
-	/** Shift-clicks whatever is left in a crafting grid back into the inventory. */
+	/**
+	 * Shift-clicks whatever is left in a crafting grid back into the inventory. The agent's own 2x2 grid is never closed
+	 * (and never saved), so what does not fit there is dropped at its feet rather than lost; a table's grid goes back
+	 * when its menu closes.
+	 */
 	static void clearGrid(final AgentPlayer agent, final AbstractCraftingMenu menu) {
 		for (var slot : menu.getInputGridSlots()) {
 			if (slot.hasItem()) {
 				menu.clicked(menu.slots.indexOf(slot), 0, ContainerInput.QUICK_MOVE, agent);
 			}
 		}
-		if (menu instanceof InventoryMenu && !menu.getCarried().isEmpty()) {
-			ItemStack rest = menu.getCarried();
-			menu.setCarried(ItemStack.EMPTY);
-			agent.getInventory().placeItemBackInInventory(rest, net.minecraft.util.Prediction.SERVER_ONLY);
+		if (menu instanceof InventoryMenu) {
+			for (var slot : menu.getInputGridSlots()) {
+				if (slot.hasItem()) {
+					ItemStack rest = slot.getItem();
+					slot.set(ItemStack.EMPTY);
+					agent.getInventory().placeItemBackInInventory(rest, net.minecraft.util.Prediction.SERVER_ONLY);
+				}
+			}
+			if (!menu.getCarried().isEmpty()) {
+				ItemStack rest = menu.getCarried();
+				menu.setCarried(ItemStack.EMPTY);
+				agent.getInventory().placeItemBackInInventory(rest, net.minecraft.util.Prediction.SERVER_ONLY);
+			}
 		}
 	}
 
@@ -510,24 +523,30 @@ public final class CraftJobs {
 				agent.closeContainer();
 				return this.fail("FURNACE_BUSY", "the furnace is smelting " + Refs.itemId(inSlot) + " already");
 			}
+			// Fuel first: without enough of it, nothing is loaded (the input would otherwise sit in an unlit furnace).
+			int batch = inSlot.isEmpty() ? this.toSmelt : Math.min(inSlot.getCount() + this.toSmelt, proto.getMaxStackSize());
+			ItemStack fuelThere = menu.getSlot(AbstractFurnaceMenu.FUEL_SLOT).getItem();
+			java.util.function.Predicate<ItemStack> isFuel = s -> (this.fuel == null ? Recipes.burnTicks(s) > 0 && !ItemStack.isSameItemSameComponents(s, proto) : this.fuel.test(s))
+				&& (fuelThere.isEmpty() || ItemStack.isSameItemSameComponents(s, fuelThere));
+			int burnLeft = menu.isLit() ? 200 : 0;
+			burnLeft += Recipes.burnTicks(fuelThere) * fuelThere.getCount();
+			int needTicks = batch * 200 - burnLeft;
+			if (needTicks > 0 && Inv.find(agent, isFuel) < 0) {
+				agent.closeContainer();
+				return this.fail("NO_FUEL", this.fuel == null ? "no fuel (coal, charcoal, logs, planks...) in the inventory" : "no " + this.fuel.ref() + " in the inventory");
+			}
 			int loaded = MenuView.transfer(agent, menu, mine, List.of(AbstractFurnaceMenu.INGREDIENT_SLOT), s -> ItemStack.isSameItemSameComponents(s, proto), this.toSmelt);
 			if (loaded <= 0 && inSlot.isEmpty()) {
 				agent.closeContainer();
 				return this.fail("NO_ITEM", "could not put " + Refs.itemId(proto) + " in the furnace");
 			}
 			this.toSmelt = loaded > 0 ? loaded : inSlot.getCount();
-			// Fuel: enough for the whole batch.
-			ItemStack fuelThere = menu.getSlot(AbstractFurnaceMenu.FUEL_SLOT).getItem();
-			int fuelSlot = Inv.find(agent, s -> (this.fuel == null ? Recipes.burnTicks(s) > 0 && !ItemStack.isSameItemSameComponents(s, proto) : this.fuel.test(s))
-				&& (fuelThere.isEmpty() || ItemStack.isSameItemSameComponents(s, fuelThere)));
-			int burnLeft = menu.isLit() ? 200 : 0;
-			burnLeft += Recipes.burnTicks(fuelThere) * fuelThere.getCount();
-			int needTicks = this.toSmelt * 200 - burnLeft;
-			if (needTicks > 0) {
-				if (fuelSlot < 0) {
-					agent.closeContainer();
-					return this.fail("NO_FUEL", this.fuel == null ? "no fuel (coal, charcoal, logs, planks...) in the inventory" : "no " + this.fuel.ref() + " in the inventory");
-				}
+			// Fuel: enough for the whole batch (looked up again: loading may have used the stack it found).
+			needTicks = this.toSmelt * 200 - burnLeft;
+			int fuelSlot = Inv.find(agent, isFuel);
+			if (needTicks > 0 && fuelSlot < 0) {
+				this.outOfFuel = true;
+			} else if (needTicks > 0) {
 				ItemStack fuelProto = agent.getInventory().getItem(fuelSlot).copyWithCount(1);
 				int per = Math.max(1, Recipes.burnTicks(fuelProto));
 				int fuelCount = (needTicks + per - 1) / per;

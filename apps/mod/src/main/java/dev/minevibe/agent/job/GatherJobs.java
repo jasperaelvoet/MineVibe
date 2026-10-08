@@ -340,13 +340,14 @@ public final class GatherJobs {
 			this.max = new BlockPos(Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()));
 		}
 
-		public static int volume(final BlockPos a, final BlockPos b) {
-			return (Math.abs(a.getX() - b.getX()) + 1) * (Math.abs(a.getY() - b.getY()) + 1) * (Math.abs(a.getZ() - b.getZ()) + 1);
+		/** Blocks in the box, in longs: int coordinates far apart would overflow an int product (and pass a size check). */
+		public static long volume(final BlockPos a, final BlockPos b) {
+			return (Math.abs((long)a.getX() - b.getX()) + 1) * (Math.abs((long)a.getY() - b.getY()) + 1) * (Math.abs((long)a.getZ() - b.getZ()) + 1);
 		}
 
 		@Override
 		protected int timeoutTicks() {
-			return Math.min(40 * MINUTE, MINUTE + volume(this.min, this.max) * 5 * SECOND);
+			return (int)Math.min(40L * MINUTE, MINUTE + volume(this.min, this.max) * 5L * SECOND);
 		}
 
 		@Override
@@ -390,7 +391,7 @@ public final class GatherJobs {
 				}
 			}
 			BlockPos t = this.target;
-			int total = volume(this.min, this.max);
+			long total = volume(this.min, this.max);
 			this.progress((double)this.dug / total, this.dug + " blocks dug");
 			Walk.State s = this.walk.toBlock(agent, t);
 			if (s == Walk.State.MOVING) {
