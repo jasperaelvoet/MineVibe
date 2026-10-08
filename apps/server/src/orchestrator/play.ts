@@ -169,6 +169,8 @@ export async function play(options: PlayOptions): Promise<number> {
       port: 0,
       token: generateToken(),
       playerName: settings.playerName,
+      // The launched game keeps its saves in the launcher's game dir, so dead worlds are buried there.
+      savesDir: join(paths.game, 'saves'),
     });
     mark('bridge', t);
 

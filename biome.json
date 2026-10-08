@@ -9,7 +9,8 @@
       "apps/docs/src/**/*.ts",
       "!**/dist",
       "!**/node_modules",
-      "!**/.astro"
+      "!**/.astro",
+      "!!**/.claude"
     ]
   },
   "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
