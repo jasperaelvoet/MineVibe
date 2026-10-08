@@ -136,6 +136,24 @@ export const SUPERVISOR_BACKOFF_MS = Object.freeze({ base: 1_000, max: 60_000 })
 export const DEFAULT_WAIT_S = 20;
 export const MAX_WAIT_S = 120;
 
+/**
+ * v2 `mc` tools (docs/design/tools-v2-mc.md §7): every world tool answers within this many seconds (`running` with
+ * the job's progress when it is still going); there is no `wait_s` argument. `sit_at_pc` waits {@link SIT_WAIT_S}.
+ */
+export const ACTION_WAIT_S = 20;
+export const SIT_WAIT_S = 60;
+/** `job{wait}` without `seconds`. */
+export const JOB_WAIT_DEFAULT_S = 30;
+
+/** Which `mc` tool set agents get: `MINEVIBE_MC_TOOLS=v1|v2` (the v1/v2 A/B; tools-v2-mc.md §14). */
+export type McToolsVersion = 'v1' | 'v2';
+export const DEFAULT_MC_TOOLS: McToolsVersion = 'v1';
+
+export function mcToolsVersion(env: Readonly<Record<string, string | undefined>> = process.env): McToolsVersion {
+  const v = env.MINEVIBE_MC_TOOLS?.trim().toLowerCase();
+  return v === 'v1' || v === 'v2' ? v : DEFAULT_MC_TOOLS;
+}
+
 /** `memory.md` cap (PLAN §6.5). */
 export const MEMORY_MAX_BYTES = 8 * 1024;
 /** Chronicle cap (≈1.5k tokens). */

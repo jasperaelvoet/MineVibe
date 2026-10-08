@@ -265,7 +265,13 @@ function posTarget(a: Record<string, unknown>, action: keyof typeof USE_EXAMPLES
   return requirePos(a.target, 'target');
 }
 
-function entityTarget(a: Record<string, unknown>, host: TranslateHost, action: keyof typeof USE_EXAMPLES): Target {
+type EntityTarget = Exclude<Target, { kind: 'pos' }>;
+
+function entityTarget(
+  a: Record<string, unknown>,
+  host: TranslateHost,
+  action: keyof typeof USE_EXAMPLES,
+): EntityTarget {
   const raw = str(a.target);
   if (!raw) throw badArgs(`${action} needs target`, USE_EXAMPLES[action]);
   const t = requireTarget(raw, host);

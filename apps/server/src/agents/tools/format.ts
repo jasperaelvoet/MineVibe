@@ -958,3 +958,127 @@ export function renderJobStatus(r: Record<string, unknown>): string | null {
   const elapsed = num(r.elapsedS);
   return `${status} ${[id, skill].filter(Boolean).join(' ')}${text}${elapsed !== null ? ` (${dur(elapsed * 1000)})` : ''}`;
 }
+
+/** A tree the agent saw (feeds W2's scene line). */
+export interface TreeSeen {
+  readonly pos: BlockPos;
+  readonly reachable: boolean | null;
+}
+
+/**
+ * `find` (§5.2): `find oak_log (natural, ≤48m): 2 found` and one ranked record per line. Reads the mod's provenance
+ * marks (`provenance`: natural / player-built / base / agent-built, `reachable`: reachable / unreachable / far, `tree`:
+ * the trunk a log belongs to) and, from a mod without them, the older boolean flags; Node's Base box marks the rest.
+ */
+export function renderFind(
+  r: Record<string, unknown>,
+  ctx: RenderContext & { readonly inBase?: ((pos: BlockPos) => boolean) | undefined },
+  query: { readonly target: string; readonly source: string; readonly radius: number },
+  detail: Detail = 'brief',
+): { text: string; trees: TreeSeen | null } {
+  const kind = typeof r.kind === 'string' ? r.kind : 'block';
+  const what = short(query.target);
+  const matches = arr(r.matches)
+    .map(obj)
+    .filter((m): m is Record<string, unknown> => m !== null);
+  const scope = kind === 'block' ? `${query.source}, ≤${query.radius}m` : `≤${query.radius}m`;
+  const lines: string[] = [];
+  let trees: TreeSeen | null = null;
+  const seenTrunks = new Set<string>();
+  let rank = 0;
+  for (const m of matches) {
+    const pos = asPos(m.pos);
+    if (!pos) continue;
+    if (kind === 'block') {
+      const tree = obj(m.tree);
+      const trunk = asPos(tree?.trunk);
+      if (trunk) {
+        const key = posText(trunk);
+        if (seenTrunks.has(key)) continue;
+        seenTrunks.add(key);
+      }
+      const prov = typeof m.provenance === 'string' ? m.provenance : null;
+      const legacyProtected = m.protected === true || m.natural === false;
+      const base = ctx.inBase?.(pos) === true;
+      const marks: string[] = [];
+      let isProtected = false;
+      if (prov === 'natural' || (prov === null && m.natural === true && !base)) marks.push('natural');
+      else if (prov === 'agent-built') marks.push(`built by ${gameText(m.owner, 24) ?? 'an agent'}`);
+      else if (prov !== null || legacyProtected || base) {
+        isProtected = true;
+        const owner = gameText(m.owner, 24) ?? ctx.playerName;
+        marks.push(prov === 'base' || (prov === null && base) ? 'Base, protected' : `${owner}'s (player-built), protected`);
+      }
+      const reach =
+        typeof m.reachable === 'string'
+          ? m.reachable
+          : m.reachable === true
+            ? 'reachable'
+            : m.reachable === false
+              ? 'unreachable'
+              : null;
+      if (!isProtected && reach && reach !== 'far') {
+        marks.push(reach === 'unreachable' ? 'unreachable (no path)' : singleLine(reach, 20));
+      }
+      if (m.exposed === false) marks.push('buried');
+      const note = typeof m.note === 'string' ? m.note : '';
+      if (/not a tree/.test(note)) marks.push('not a tree');
+      const block = idText(m.block) ?? what;
+      const label = trunk ? `${idText(tree?.species) ?? ''} tree, trunk ×${num(tree?.logs) ?? '?'}`.trim() : block;
+      const where = trunk ?? pos;
+      rank++;
+      lines.push(`${rank}. ${label} at ${at(where, ctx.here)}${marks.length > 0 ? `, ${marks.join(', ')}` : ''}`);
+      if (!trees && !isProtected && (trunk || /_log$|_stem$/.test(block))) {
+        trees = { pos: where, reachable: reach === 'unreachable' ? false : reach === 'reachable' ? true : null };
+      }
+    } else if (kind === 'entity') {
+      const name =
+        m.type === 'player' || m.type === 'agent'
+          ? (gameText(m.name, 24) ?? String(m.type))
+          : (gameText(m.name, 24) ?? idText(m.type) ?? 'entity');
+      const hp = num(m.hp);
+      rank++;
+      lines.push(
+        `${rank}. ${name} at ${at(pos, ctx.here)}${hp !== null ? `, HP ${Math.ceil(hp)}` : ''}${m.hostile === true ? ', hostile' : ''}`,
+      );
+    } else {
+      rank++;
+      lines.push(`${rank}. ${idText(m.item) ?? what} ×${num(m.count) ?? 1} at ${at(pos, ctx.here)}`);
+    }
+  }
+  const head = `find ${what} (${scope}): ${rank === 0 ? 'none' : `${rank} found`}`;
+  const inInv = num(r.inInventory);
+  const have = inInv ? ` | you have ${inInv}` : '';
+  if (rank === 0) {
+    const hint =
+      query.radius < 64
+        ? `${call('find', { target: query.target, radius: 64 })}, or ask ${ctx.playerName} where to look`
+        : `goto another area, or ask ${ctx.playerName} where to look`;
+    return {
+      text: `${head}${kind === 'block' ? ' (loaded chunks only)' : ''}${have}\n${nextLine(hint)}`,
+      trees,
+    };
+  }
+  const text =
+    rank === 1 ? `${head}${have}: ${(lines[0] ?? '').replace(/^1\. /, '')}` : [`${head}${have}`, ...lines].join('\n');
+  return { text: capText(text, detail === 'full' ? 1500 : 700), trees };
+}
+
+/**
+ * The `scene` section (§5.1): the mod's own scene text when it sends one (W1 renders `look_around` as lines), else
+ * `fallback` (Node's perception of the older JSON), prefixed with the radius.
+ */
+export function renderScene(
+  r: Record<string, unknown>,
+  radius: number,
+  detail: Detail,
+  fallback: (r: Record<string, unknown>) => string,
+): string {
+  const raw = typeof r.scene === 'string' && r.scene.trim().length > 0 ? r.scene : fallback(r);
+  const text = raw
+    .split('\n')
+    .map((l) => escapeShared(l).replace(/minecraft:/g, '').trimEnd())
+    .filter((l) => l.length > 0)
+    .join('\n ');
+  return capSection('scene', `scene (${radius}m): ${text}`, detail);
+}

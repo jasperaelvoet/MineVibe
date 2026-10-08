@@ -23,8 +23,9 @@ import type { PlanCapture } from './PlanCapture.js';
 import type { SeatSnapshot } from './SeatFSM.js';
 import type { HookCallback, HookJSONOutput, PermissionMode, PreToolUseHookInput } from './sdk.js';
 import {
-  MC_TOOLS,
+  categoryOf,
   type McToolName,
+  type McToolsVersion,
   mcToolName,
   PC_PLAN_DENIED_GUI,
   PC_PLAN_FILE_MUTATORS,
@@ -74,6 +75,8 @@ export interface GateContext {
   readonly playerName: string;
   /** Why this brain must not act at all (failed startup assertions), or null. Every tool is denied. */
   readonly halted?: string | null | undefined;
+  /** The session's `mc` tool set (default v1): names of the other set are denied as unknown. */
+  readonly mcTools?: McToolsVersion | undefined;
 }
 
 export interface WebTargetCheck {
@@ -122,9 +125,21 @@ function assigneesOf(input: Record<string, unknown>): unknown {
   return input.assignees;
 }
 
+/** Whether a calendar call schedules for others (only the CEO may): v1 `calendar_add` / `calendar_update`, v2 actions. */
+function schedulesOthersCheck(tool: McToolName, input: Record<string, unknown>): 'add' | 'update' | null {
+  if (tool === 'calendar_add') return 'add';
+  if (tool === 'calendar_update') return 'update';
+  if (tool === 'calendar' && (input.action === 'add' || input.action === 'update')) return input.action;
+  return null;
+}
+
 function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateContext): GateDecision {
   const seat = ctx.seat;
-  const category = MC_TOOLS[tool];
+  const version = ctx.mcTools ?? 'v1';
+  const category = categoryOf(tool, input, version);
+  if (category === null) {
+    return deny('unknown_tool', `mcp__mc__${tool} is not one of your tools.`);
+  }
   if (seat.state === 'seated_pending_swap') return deny('pending_swap', pendingSwapText(seat));
 
   switch (category) {
@@ -141,9 +156,11 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
         ? deny('not_seated', 'You are not seated.')
         : allow('stand');
     case 'calendar': {
-      if (ctx.ceo || (tool !== 'calendar_add' && tool !== 'calendar_update')) return allow('calendar');
+      const scheduling = schedulesOthersCheck(tool, input);
+      if (ctx.ceo || scheduling === null) return allow('calendar');
       const assignees = assigneesOf(input);
-      if (assignees === undefined && tool === 'calendar_update') return allow('calendar self');
+      // v2 `calendar{add}` without assignees schedules for the caller (tools-v2-mc.md §4.5).
+      if (assignees === undefined && (scheduling === 'update' || tool === 'calendar')) return allow('calendar self');
       const selfOnly = Array.isArray(assignees) && assignees.length === 1 && assignees[0] === ctx.agentId;
       return selfOnly
         ? allow('calendar self')

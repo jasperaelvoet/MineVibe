@@ -1,7 +1,10 @@
 /**
  * The tool catalog (PLAN §6.2, §7.4): every `mcp__mc__*` and `mcp__pc__*` tool name with the gate category it falls
- * in. The tool servers and the ToolGate both read this list, and a test checks that they agree.
+ * in, for both `mc` tool sets (v1 and v2, docs/design/tools-v2-mc.md §9). The tool servers and the ToolGate both read
+ * this list, and a test checks that they agree.
  */
+
+import type { McToolsVersion } from '../constants.js';
 
 /** ToolGate categories for `mc` tools (the rows of PLAN §6.2's table). */
 export type McCategory =
@@ -22,7 +25,8 @@ export type McCategory =
   /** `calendar_*` and `report_task`: self only, scheduling others is CEO only. */
   | 'calendar';
 
-export const MC_TOOLS = {
+/** The v1 tool set (54 tools; mcServerV1.ts). */
+export const MC_TOOLS_V1 = {
   // Observe
   status: 'always',
   look_around: 'always',
@@ -91,7 +95,63 @@ export const MC_TOOLS = {
   report_task: 'calendar',
 } as const satisfies Record<string, McCategory>;
 
-export type McToolName = keyof typeof MC_TOOLS;
+export type McV1ToolName = keyof typeof MC_TOOLS_V1;
+
+/** The v1 catalog under its historical name. */
+export const MC_TOOLS = MC_TOOLS_V1;
+
+/** A category, fixed or decided by the call's input (v2 action enums mix gates: tools-v2-mc.md §9). */
+export type McCategoryRule = McCategory | ((input: Readonly<Record<string, unknown>>) => McCategory);
+
+/** The v2 tool set (20 tools; mcToolsV2.ts) with its gate rules (tools-v2-mc.md §9). */
+export const MC_TOOLS_V2 = {
+  observe: 'always',
+  find: 'always',
+  goto: 'world',
+  gather: 'world',
+  /** `plan:true` only reads. */
+  craft: (input) => (input.plan === true ? 'always' : 'world'),
+  build: 'world',
+  use: 'world',
+  /** equip and eat work seated, like v1's equip and eat. */
+  items: (input) => (input.action === 'equip' || input.action === 'eat' ? 'always' : 'world'),
+  /** state only reads. */
+  menu: (input) => (input.action === 'state' ? 'always' : 'world'),
+  do: 'world',
+  job: 'always',
+  set_mode: 'always',
+  say: 'always',
+  tell: 'always',
+  remember: 'always',
+  sit_at_pc: 'sit',
+  stand_up: 'stand',
+  request_hire: 'hire',
+  codex: (input) =>
+    input.action === 'search' || input.action === 'list' || input.action === 'read' ? 'codex_read' : 'codex_write',
+  calendar: 'calendar',
+} as const satisfies Record<string, McCategoryRule>;
+
+export type McV2ToolName = keyof typeof MC_TOOLS_V2;
+/** A tool name of either set. */
+export type McToolName = McV1ToolName | McV2ToolName;
+export type { McToolsVersion };
+
+/** The catalog of one tool set. */
+export function mcToolsOf(version: McToolsVersion): Readonly<Record<string, McCategoryRule>> {
+  return version === 'v2' ? MC_TOOLS_V2 : MC_TOOLS_V1;
+}
+
+/** The gate category of a call, or null when the tool is not in that set. */
+export function categoryOf(
+  tool: string,
+  input: Readonly<Record<string, unknown>>,
+  version: McToolsVersion,
+): McCategory | null {
+  const tools = mcToolsOf(version);
+  if (!Object.hasOwn(tools, tool)) return null;
+  const rule = tools[tool] as McCategoryRule;
+  return typeof rule === 'function' ? rule(input) : rule;
+}
 
 /** `pc` tools (PLAN §6.2). */
 export const PC_TOOLS = [
@@ -134,10 +194,11 @@ export const PC_PLAN_FILE_MUTATORS: ReadonlySet<PcToolName> = new Set(['write', 
 export const MC_PREFIX = 'mcp__mc__';
 export const PC_PREFIX = 'mcp__pc__';
 
+/** The `mc` tool a full name refers to, in either set (the gate then checks it against the session's set). */
 export function mcToolName(name: string): McToolName | null {
   if (!name.startsWith(MC_PREFIX)) return null;
   const short = name.slice(MC_PREFIX.length);
-  return Object.hasOwn(MC_TOOLS, short) ? (short as McToolName) : null;
+  return Object.hasOwn(MC_TOOLS_V1, short) || Object.hasOwn(MC_TOOLS_V2, short) ? (short as McToolName) : null;
 }
 
 export function pcToolName(name: string): PcToolName | null {

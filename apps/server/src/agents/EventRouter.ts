@@ -175,8 +175,29 @@ export class EventRouter {
     }));
   }
 
-  /** A job that returned `running` ended (P3, coalesced per job). */
-  jobEnded(agent: RouterAgent, end: PayloadOf<'skill.result'>, label: string): RoutedFor {
+  /**
+   * A job that returned `running` ended (P3, coalesced per job). `rendered` is the v2 tools' own wake text
+   * (tools/format.ts `wakeText`: line 1 of the result plus `next:` for failures, ≤ 400 characters, no footer).
+   */
+  jobEnded(
+    agent: RouterAgent,
+    end: PayloadOf<'skill.result'>,
+    label: string,
+    rendered?: { readonly ok: boolean; readonly text: string },
+  ): RoutedFor {
+    if (rendered) {
+      const k: ControlKind = rendered.ok ? 'JOB DONE' : 'JOB FAILED';
+      return {
+        agentId: agent.agentId,
+        item: {
+          mode: 'wake',
+          priority: 3,
+          kind: k,
+          text: control(agent.nonce, k, singleLine(rendered.text, 400)),
+          key: `job:${end.jobId}`,
+        },
+      };
+    }
     const kind: ControlKind = end.status === 'done' ? 'JOB DONE' : 'JOB FAILED';
     const detail =
       end.status === 'done'
