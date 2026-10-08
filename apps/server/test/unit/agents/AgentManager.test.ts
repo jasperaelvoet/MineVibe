@@ -334,6 +334,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
       'You are Bram (@bram), the Miner',
     );
     await w.until(() => w.texts(bq).some((t) => t.includes('WELCOME')), 'bram welcome');
+    bq.init();
     expect(w.texts(bq).find((t) => t.includes('WELCOME'))).toContain(
       'First task (approved by Jasper): mine 10 iron ore',
     );
@@ -353,6 +354,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
     const bram = w.manager.listAgents()[1]?.agentId ?? '';
     const bq = w.queryOf(bram);
     await w.until(() => w.texts(bq).some((t) => t.includes('WELCOME')), 'welcome');
+    bq.init();
     await w.until(() => w.texts(w.query(0)).some((t) => t.includes('HIRE APPROVED')), 'ceo wake');
     w.query(0).result();
     const out = await bq.callTool('mcp__mc__tell', {
@@ -391,6 +393,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
     const bram = w.manager.listAgents()[1]?.agentId ?? '';
     const bq = w.queryOf(bram);
     await w.until(() => w.texts(bq).some((t) => t.includes('WELCOME')), 'welcome');
+    bq.init();
     bq.result();
     await w.until(() => w.manager.brain(bram)?.status === 'idle', 'bram idle');
     // A second hire request is pending when the CEO dies.

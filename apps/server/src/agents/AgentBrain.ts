@@ -31,6 +31,7 @@ import type { ResolvedClaude } from './claudeBinary.js';
 import {
   BUBBLE_MAX_CHARS,
   CONTEXT_GUARD_RATIO,
+  CONTEXT_GUARD_TIMEOUT_MS,
   HAIKU_CONTEXT_TOKENS,
   MAX_SEATED,
   SEATED_PROFILE,
@@ -46,7 +47,13 @@ import { BARKS, type BarkKey } from './prompts/barks.js';
 import { kickoffMessage } from './prompts/kickoff.js';
 import { personaPrompt } from './prompts/persona.js';
 import { Mutex, type SeatEndReason, SeatFSM, type SeatSnapshot } from './SeatFSM.js';
-import type { PermissionMode, QueryFactory, SDKResultMessage, SDKSystemMessage } from './sdk.js';
+import type {
+  HookCallback,
+  PermissionMode,
+  QueryFactory,
+  SDKResultMessage,
+  SDKSystemMessage,
+} from './sdk.js';
 import { buildSessionOptions } from './sessionOptions.js';
 import { createToolGateHook, type GateContext, type GateObservation } from './ToolGate.js';
 import type { TranscriptStore } from './TranscriptStore.js';
@@ -127,6 +134,8 @@ export interface BrainEnv {
   authMode(): 'subscription' | 'api_key';
   /** Re-sit debounce override (tests, the live smoke); default 60 s. */
   readonly swapDebounceMs?: number | undefined;
+  /** The record changed in a way that must reach `crew.json` now (e.g. the session was created). */
+  recordChanged?(brain: AgentBrain): void;
 }
 
 interface QueuedWake {
@@ -141,6 +150,42 @@ interface QueuedWake {
 /** Strikes before a turn that keeps calling tools after "end your turn" is interrupted. */
 const PENDING_SWAP_STRIKES = 2;
 const TURN_CAP_STRIKES = 3;
+
+/** Seat ends after which the brain stops anyway: no model swap, no compaction. */
+const TERMINAL_ENDS: ReadonlySet<SeatEndReason> = new Set(['death', 'world_end', 'dismiss']);
+
+/** How long a tool call waits for the session's startup assertions before it is denied. */
+const STARTUP_GATE_WAIT_MS = 15_000;
+
+/** Whether `p` settles within `ms`. */
+function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+    void p.then(
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+    );
+  });
+}
+
+/**
+ * Whether an error result means the subscription's usage ran out (the crew sleeps). Context-length errors ("prompt is
+ * too long", "context limit") mention limits too but are not usage.
+ */
+export function isUsageLimitText(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  if (/context|too long|max_tokens|prompt/i.test(text)) return false;
+  return /(usage|rate)[ _-]?limit|hit your (usage )?limit|limit (reached|exceeded)|out of (extra )?usage|quota/i.test(
+    text,
+  );
+}
 
 /** First 1-2 sentences of `text`, at most {@link BUBBLE_MAX_CHARS}. */
 export function bubbleText(text: string): string {
@@ -227,6 +272,14 @@ export class AgentBrain {
   #status: BrainStatus = 'idle';
   #offline = false;
   #assertionsFailed: readonly string[] | null = null;
+  /**
+   * Settles once the current session's `system/init` arrived and its startup assertions ran; null afterwards. The
+   * gate waits for it, so no tool runs before the assertions passed (a hook can reach Node before the init message).
+   */
+  #startupCheck: Promise<void> | null = null;
+  #startupChecked: (() => void) | null = null;
+  /** >0 while a turn boundary is queued or running: no new turn starts until its swap is applied. */
+  #boundaryHold = 0;
   #activity: string | null = null;
   #turn = { calls: 0, startedAt: 0, pausedAt: 0 as number, pausedMs: 0, pendingStrikes: 0, capStrikes: 0 };
   #waitingCards = new Set<string>();
@@ -318,7 +371,35 @@ export class AgentBrain {
     if (this.#stopped) throw new Error('brain stopped');
     if (this.#session?.started) return;
     this.#offline = false;
+    // A (re)start re-runs the startup assertions (e.g. Retry after logging in again).
+    this.#assertionsFailed = null;
+    this.#startupChecked?.();
+    const startup = new Promise<void>((resolve) => {
+      this.#startupChecked = resolve;
+    });
+    this.#startupCheck = startup;
+    void startup.then(() => {
+      if (this.#startupCheck === startup) this.#startupCheck = null;
+    });
     const env = this.#env;
+    const gateHook = createToolGateHook(
+      () => this.gateContext(),
+      (o) => this.#observeGate(o),
+    );
+    // Fail closed: no tool runs before the startup assertions of this session have passed.
+    const gate: HookCallback = async (input, toolUseId, opts) => {
+      const pending = this.#startupCheck;
+      if (pending && !(await settlesWithin(pending, STARTUP_GATE_WAIT_MS))) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'MineVibe is still checking this session; try again in a moment.',
+          },
+        };
+      }
+      return gateHook(input, toolUseId, opts);
+    };
     const persona = personaPrompt({
       name: this.record.name,
       handle: this.record.handle,
@@ -343,10 +424,7 @@ export class AgentBrain {
           profile: WANDERING_PROFILE,
           stderr: (d) => this.#log.debug({ stderr: d.slice(0, 500) }, 'claude stderr'),
         }),
-        gate: createToolGateHook(
-          () => this.gateContext(),
-          (o) => this.#observeGate(o),
-        ),
+        gate,
         canUseTool: createInteractionBroker({
           agentId: this.agentId,
           store: env.pending,
@@ -538,6 +616,7 @@ export class AgentBrain {
         activeMs: t.startedAt > 0 ? Math.max(0, now - t.startedAt - t.pausedMs - paused) : 0,
       },
       playerName: this.#env.playerName(),
+      halted: this.#assertionsFailed ? (this.#assertionsFailed[0] ?? 'startup check failed') : null,
     };
   }
 
@@ -581,7 +660,16 @@ export class AgentBrain {
 
   #pump(): void {
     const session = this.#session;
-    if (this.#stopped || this.#offline || !session?.started || session.inTurn || this.#grant) return;
+    if (
+      this.#stopped ||
+      this.#offline ||
+      this.#assertionsFailed ||
+      !session?.started ||
+      session.inTurn ||
+      this.#grant ||
+      this.#boundaryHold > 0
+    )
+      return;
     if (this.#queue.length === 0) {
       this.#setStatus();
       return;
@@ -599,8 +687,13 @@ export class AgentBrain {
     this.#env.scheduler.acquire(this.agentId, best).then(
       (grant) => {
         this.#acquiring = null;
+        // The scheduler hands an agent's held grant back, so never release the one a running turn owns.
+        const drop = () => {
+          if (this.#grant !== grant) grant.release();
+          this.#setStatus();
+        };
         if (this.#stopped || !this.#session?.started) {
-          grant.release();
+          drop();
           return;
         }
         if (this.#session.inTurn) {
@@ -610,9 +703,9 @@ export class AgentBrain {
           this.#setStatus();
           return;
         }
-        if (this.#queue.length === 0) {
-          grant.release();
-          this.#setStatus();
+        if (this.#queue.length === 0 || this.#boundaryHold > 0 || this.#assertionsFailed) {
+          // A turn boundary is swapping the model: it pumps again when done.
+          drop();
           return;
         }
         this.#grant = grant;
@@ -661,7 +754,7 @@ export class AgentBrain {
   #onTurnEnd(result: SDKResultMessage): void {
     this.#env.turnEnded(this, result);
     for (const w of this.#turnEndWaiters.splice(0)) w(result);
-    if (result.is_error && result.subtype === 'success' && /usage|limit/i.test(result.result)) {
+    if (result.is_error && result.subtype === 'success' && isUsageLimitText(result.result)) {
       this.#env.governor.onRejected();
     }
     const more = (result.queued_turn_count ?? 0) > 0;
@@ -680,12 +773,22 @@ export class AgentBrain {
     };
     if (!more) this.#activity = null;
     this.#setStatus();
-    if (!more) {
-      void this.#seatMutex
-        .run(() => this.#boundary())
-        .catch((err: unknown) => this.#log.error({ err }, 'turn boundary failed'))
-        .finally(() => this.#pump());
-    }
+    if (!more) void this.#runBoundary();
+  }
+
+  /**
+   * Queues the turn boundary on the seat mutex. From now until it ran, no new turn starts (#pump is held), so a wake
+   * that arrives meanwhile can never start a turn before the swap, the plan mode and the kickoff are in place.
+   */
+  #runBoundary(): Promise<void> {
+    this.#boundaryHold++;
+    return this.#seatMutex
+      .run(() => this.#boundary())
+      .catch((err: unknown) => this.#log.error({ err }, 'turn boundary failed'))
+      .finally(() => {
+        this.#boundaryHold--;
+        this.#pump();
+      });
   }
 
   #onCardWait(card: Card): void {
@@ -706,7 +809,17 @@ export class AgentBrain {
     }
     this.#setStatus();
     // An answered card resumes at P0 on the interactive lane.
-    this.#grant = await this.#env.scheduler.acquire(this.agentId, 0);
+    const session = this.#session;
+    const grant = await this.#env.scheduler.acquire(this.agentId, 0);
+    if (this.#stopped || this.#session !== session || !session?.inTurn) {
+      // The turn ended while the slot was coming (interrupt, kick, crash, stop): nothing runs on it.
+      if (this.#grant !== grant) grant.release();
+      this.#setStatus();
+      this.#pump();
+      return;
+    }
+    if (this.#grant && this.#grant !== grant) grant.release();
+    else this.#grant = grant;
     this.#setStatus();
   }
 
@@ -721,16 +834,40 @@ export class AgentBrain {
 
   #onInit(init: SDKSystemMessage, first: boolean): void {
     if (!first || !this.#session) return;
-    // From now on a restart resumes this session.
-    this.record.sessionStarted = true;
+    // From now on a restart resumes this session (persisted at once: a crash must not re-create it).
+    if (!this.record.sessionStarted) {
+      this.record.sessionStarted = true;
+      this.#env.recordChanged?.(this);
+    }
     const session = this.#session;
-    void session.checkStartup(init, this.#env.authMode()).then((problems) => {
-      if (problems.length === 0) return;
-      this.#assertionsFailed = problems;
-      this.#log.error({ problems }, 'startup assertions failed');
-      this.#env.assertionsFailed(this, problems);
-      this.#setStatus();
-    });
+    const checked = this.#startupChecked;
+    void session
+      .checkStartup(init, this.#env.authMode())
+      .then(
+        (problems) => {
+          if (problems.length > 0) this.#halt(session, problems);
+        },
+        (err: unknown) =>
+          this.#halt(session, [`startup check failed (${err instanceof Error ? err.message : String(err)})`]),
+      )
+      .finally(() => checked?.());
+  }
+
+  /**
+   * Startup assertions failed (PLAN §6.1): the brain stays asleep. The running turn is interrupted, the claude process
+   * closed (no more spending), every tool call is denied and nothing new starts until Retry starts a fresh session.
+   */
+  #halt(session: AgentSession, problems: readonly string[]): void {
+    this.#assertionsFailed = problems;
+    this.#log.error({ problems }, 'startup assertions failed');
+    this.#env.assertionsFailed(this, problems);
+    this.#setStatus();
+    if (this.#session !== session) return;
+    void session
+      .interrupt()
+      .then(() => (this.#session === session ? this.closeSession() : undefined))
+      .catch((err: unknown) => this.#log.warn({ err }, 'closing the halted session failed'))
+      .finally(() => this.#setStatus());
   }
 
   #onText(text: string): void {
@@ -832,28 +969,38 @@ export class AgentBrain {
     const session = this.#session;
     if (!session?.started || this.#stopped) return;
     if (session.inTurn) return;
-    const now = this.#env.now();
-    const target = this.fsm.wantsOpus(now) ? SEATED_PROFILE : WANDERING_PROFILE;
-    if (tierOf(session.model) !== target.tier) {
-      if (target.tier === 'haiku') await this.#contextGuard();
-      try {
-        this.#lastSwap = await session.applyProfile(target);
-        this.#log.info({ swap: this.#lastSwap }, 'brain swapped');
-      } catch (err) {
-        this.#log.error({ err }, 'applyFlagSettings failed');
+    this.#boundaryHold++;
+    try {
+      const s = this.fsm.snapshot;
+      // A dying, dismissed or ending brain is about to stop: no swap, and never a compaction.
+      const ending = s.lastEnd !== null && TERMINAL_ENDS.has(s.lastEnd) && !this.fsm.holdsPcSeat;
+      const target = this.fsm.wantsOpus(this.#env.now()) ? SEATED_PROFILE : WANDERING_PROFILE;
+      if (!ending && tierOf(session.model) !== target.tier) {
+        if (target.tier === 'haiku') await this.#contextGuard();
+        if (this.#session !== session || !session.started || session.inTurn) return;
+        try {
+          this.#lastSwap = await session.applyProfile(target);
+          this.#log.info({ swap: this.#lastSwap }, 'brain swapped');
+        } catch (err) {
+          this.#log.error({ err }, 'applyFlagSettings failed');
+        }
+        this.#env.brainChanged(this);
       }
-      if (target.tier === 'opus' && this.record.planFirst && this.fsm.state === 'seated_pending_swap') {
-        await this.#setMode('plan');
+      // Sat at a PC: plan mode and the bark also apply to a quick re-sit that needed no swap (debounce).
+      if (this.fsm.state === 'seated_pending_swap' && this.fsm.snapshot.kind === 'pc') {
+        if (this.record.planFirst && this.#trackedMode !== 'plan') await this.#setMode('plan');
+        this.bark(BARKS.satAtPc);
       }
-      if (target.tier === 'opus' && this.fsm.state === 'seated_pending_swap') this.bark(BARKS.satAtPc);
-      this.#env.brainChanged(this);
+      if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== 'default')
+        await this.#setMode('default');
+      const t = this.fsm.boundary();
+      if (t?.to === 'seated') await this.#queueKickoff(t.snapshot);
+      if (t?.to === 'wandering') this.plans.clear();
+      this.#scheduleDebounce();
+    } finally {
+      this.#boundaryHold--;
+      if (this.#boundaryHold === 0) queueMicrotask(() => this.#pump());
     }
-    if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== 'default')
-      await this.#setMode('default');
-    const t = this.fsm.boundary();
-    if (t?.to === 'seated') await this.#queueKickoff(t.snapshot);
-    if (t?.to === 'wandering') this.plans.clear();
-    this.#scheduleDebounce();
   }
 
   async #setMode(mode: PermissionMode): Promise<void> {
@@ -865,14 +1012,27 @@ export class AgentBrain {
     }
   }
 
-  /** Before Opus→Haiku: compact when the context exceeds ~70% of Haiku's window [U S3]. */
+  /**
+   * Before Opus→Haiku: compact when the context exceeds ~70% of Haiku's window [U S3]. The `/compact` result always
+   * ends its turn (a command), and the wait is capped so the seat mutex can never wedge on it.
+   */
   async #contextGuard(): Promise<void> {
     const session = this.#session;
     const used = session?.lastUsage?.contextTokens ?? 0;
     if (!session || used <= CONTEXT_GUARD_RATIO * HAIKU_CONTEXT_TOKENS) return;
     this.#log.info({ used }, 'compacting before the downswap');
-    const ended = new Promise<SDKResultMessage>((resolve) => this.#turnEndWaiters.push(resolve));
-    session.send('/compact');
+    const ended = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.#log.warn('compaction did not finish in time; the swap waits for its turn to end');
+        resolve();
+      }, CONTEXT_GUARD_TIMEOUT_MS);
+      timer.unref?.();
+      this.#turnEndWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    session.send('/compact', { command: true });
     await ended;
   }
 
@@ -886,7 +1046,7 @@ export class AgentBrain {
       () => {
         this.#debounceTimer = null;
         if (this.#session?.inTurn) return; // the turn's own boundary swaps
-        void this.#seatMutex.run(() => this.#boundary()).finally(() => this.#pump());
+        void this.#runBoundary();
       },
       s.debounceUntil - now + 5,
     );
@@ -1043,6 +1203,15 @@ export class AgentBrain {
   async seatedByMod(pcId: string, epoch: number | undefined): Promise<void> {
     await this.#seatMutex.run(async () => {
       const s = this.fsm.snapshot;
+      if (epoch !== undefined && epoch < s.epoch) {
+        // A late pc.seat for a sit this agent already gave up (stood up, cancelled the walk, kicked): the seat is
+        // over for Node, so stand the body up instead of re-seating a brain that thinks it wanders.
+        this.#log.info({ pcId, epoch, current: s.epoch }, 'stale pc.seat: standing the body up');
+        await this.#env.skills
+          .unseat({ agentId: this.agentId, seatEpoch: epoch, reason: 'stand', keepReservation: false })
+          .catch((err: unknown) => this.#log.warn({ err }, 'unseat (stale seat) failed'));
+        return;
+      }
       if (s.state === 'walking_to_seat' && s.pcId === pcId && (epoch === undefined || epoch === s.epoch)) {
         this.fsm.arrived();
         if (!this.#session?.inTurn) await this.#boundary();
@@ -1089,11 +1258,24 @@ export class AgentBrain {
    * the chair, reservation expired, death, world end, dismissal). PLAN §6.3: interrupt, kill the agent's tagged guest
    * processes, purge the stale kickoff, deny the pending plan card, swap to Haiku and wake with a critical notice.
    */
-  async seatLost(reason: SeatEndReason): Promise<void> {
+  async seatLost(reason: SeatEndReason, options: { releaseReservation?: boolean } = {}): Promise<void> {
     await this.#seatMutex.run(async () => {
       const before = this.fsm.snapshot;
       if (before.state === 'wandering' || before.state === 'standing_pending_swap') return;
       if (before.state === 'away_from_seat' && reason === 'away') return;
+      // The away timer fired but the agent sat back down meanwhile.
+      if (reason === 'reservation_expired' && before.state !== 'away_from_seat') return;
+      if (options.releaseReservation) {
+        // Node's own 3-minute expiry: the mod still holds the chair ("BRB") until told otherwise.
+        await this.#env.skills
+          .unseat({
+            agentId: this.agentId,
+            seatEpoch: before.epoch,
+            reason: 'reservation_expired',
+            keepReservation: false,
+          })
+          .catch((err: unknown) => this.#log.warn({ err }, 'unseat (release reservation) failed'));
+      }
       this.fsm.stand(reason);
       if (this.#awayTimer) clearTimeout(this.#awayTimer);
       this.#awayTimer = null;
@@ -1139,7 +1321,7 @@ export class AgentBrain {
       this.#awayTimer = setTimeout(
         () => {
           this.#awayTimer = null;
-          void this.seatLost('reservation_expired');
+          void this.seatLost('reservation_expired', { releaseReservation: true });
         },
         Math.max(0, ms),
       );

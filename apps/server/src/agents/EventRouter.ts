@@ -13,7 +13,7 @@
 import type { AgentRole, Autonomy, PayloadOf } from '@minevibe/protocol';
 import type { WakePriority } from './BrainScheduler.js';
 import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE_MS } from './constants.js';
-import { type ControlKind, control, wrapNote } from './envelope.js';
+import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
 import type { UsageMode } from './UsageGovernor.js';
 
 /** One queued item for an agent. */
@@ -60,8 +60,12 @@ const DIGEST_LINE_MAX = 120;
 export class Digest {
   #lines: string[] = [];
 
+  /**
+   * Adds a line. Lines carry game and crew text (mob and item names, other agents' report notes) and end up inside
+   * a nonce-tagged notice, so look-alike tags and envelope delimiters are made inert here.
+   */
   push(line: string): void {
-    const flat = line.replace(/\s+/g, ' ').trim();
+    const flat = escapeShared(line).replace(/\s+/g, ' ').trim();
     if (flat.length === 0) return;
     const clipped = flat.length > DIGEST_LINE_MAX ? `${flat.slice(0, DIGEST_LINE_MAX - 1)}…` : flat;
     if (this.#lines.at(-1) === clipped) return;
@@ -127,7 +131,7 @@ export class EventRouter {
           mode: 'wake',
           priority: 2,
           kind: 'CRITICAL',
-          text: control(self.nonce, 'CRITICAL', event.text),
+          text: control(self.nonce, 'CRITICAL', singleLine(event.text, 300)),
           key: `critical:${event.kind}`,
         },
       },
@@ -180,7 +184,7 @@ export class EventRouter {
         mode: 'wake',
         priority: 3,
         kind,
-        text: control(agent.nonce, kind, `${end.jobId} ${label}: ${detail}`),
+        text: control(agent.nonce, kind, singleLine(`${end.jobId} ${label}: ${detail}`, 400)),
         key: `job:${end.jobId}`,
       },
     };
@@ -220,7 +224,7 @@ export class EventRouter {
     return crew
       .filter((a) => a.alive && a.agentId !== dead.agentId)
       .map((a) => {
-        const text = control(a.nonce, 'TEAMMATE DIED', `${dead.name} died: ${cause}.`);
+        const text = control(a.nonce, 'TEAMMATE DIED', `${dead.name} died: ${singleLine(cause, 200)}.`);
         return a.ceo
           ? {
               agentId: a.agentId,
@@ -252,7 +256,9 @@ export class EventRouter {
     report: { eventId: string; status: 'done' | 'failed' | 'blocked'; note?: string | undefined },
   ): RoutedFor[] {
     if (!ceo || ceo.agentId === reporter.agentId) return [];
-    const line = `${reporter.name} reported ${report.eventId} ${report.status}${report.note ? `: ${report.note}` : ''}`;
+    // The event id and the note are the reporter's own words: quoted, never part of the notice itself.
+    const eventId = singleLine(report.eventId, 64);
+    const line = `${reporter.name} reported ${eventId} ${report.status}${report.note ? ` (their note: "${report.note}")` : ''}`;
     if (report.status === 'done') return [{ agentId: ceo.agentId, item: { mode: 'digest', line } }];
     return [
       {
@@ -261,7 +267,7 @@ export class EventRouter {
           mode: 'wake',
           priority: 3,
           kind: 'TASK REPORT',
-          text: `${control(ceo.nonce, 'TASK REPORT', `@${reporter.handle} reported ${report.eventId} ${report.status}:`)}\n${wrapNote({ author: `${reporter.name} (agent)`, kind: 'tell', text: report.note ?? '(no note)' })}`,
+          text: `${control(ceo.nonce, 'TASK REPORT', `@${reporter.handle} reported ${eventId} ${report.status}:`)}\n${wrapNote({ author: `${reporter.name} (agent)`, kind: 'tell', text: report.note ?? '(no note)' })}`,
         },
       },
     ];

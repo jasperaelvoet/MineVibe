@@ -49,6 +49,7 @@ export type GateDenyCode =
   | 'web_wandering'
   | 'web_private'
   | 'turn_cap'
+  | 'halted'
   | 'error';
 
 /** What the gate knows about the agent when a call arrives. */
@@ -64,6 +65,8 @@ export interface GateContext {
   /** Tool calls and active (non card-wait) time of the current turn, this call excluded. */
   readonly turn: { readonly calls: number; readonly activeMs: number };
   readonly playerName: string;
+  /** Why this brain must not act at all (failed startup assertions), or null. Every tool is denied. */
+  readonly halted?: string | null | undefined;
 }
 
 export interface WebTargetCheck {
@@ -328,6 +331,7 @@ export async function decideTool(
   const mode = (extra.permissionMode as PermissionMode | undefined) ?? ctx.trackedMode;
   const c: GateContext =
     mode === ctx.trackedMode ? ctx : { ...ctx, trackedMode: mode, occupant: ctx.occupant };
+  if (ctx.halted) return deny('halted', `MineVibe stopped this brain: ${ctx.halted}. End your turn now.`);
 
   switch (toolName) {
     case 'AskUserQuestion':

@@ -147,17 +147,21 @@ export class UsageGovernor extends TypedEmitter<UsageEvents> {
   }
 
   #sleep(reason: 'rate_limit' | 'auth', resetsAt: number | null, utilization: number | null): void {
-    this.#set({ mode: 'asleep', utilization, resetsAt, reason });
+    // A reset time already in the past (e.g. a stale window carried over from an earlier event) is no reset time:
+    // waking at once would retry, get rejected and loop.
+    const now = this.#now();
+    const reset = resetsAt !== null && resetsAt > now ? resetsAt : null;
+    this.#set({ mode: 'asleep', utilization, resetsAt: reset, reason });
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
     if (reason === 'auth') return;
-    const wakeAt = resetsAt !== null ? resetsAt + this.#graceMs : this.#now() + UNKNOWN_RESET_SLEEP_MS;
+    const wakeAt = reset !== null ? reset + this.#graceMs : now + UNKNOWN_RESET_SLEEP_MS;
     this.#timer = setTimeout(
       () => {
         this.#timer = null;
         this.#set({ mode: 'normal', utilization: null, resetsAt: null, reason: null });
       },
-      Math.max(0, wakeAt - this.#now()),
+      Math.max(0, wakeAt - now),
     );
     this.#timer.unref?.();
   }

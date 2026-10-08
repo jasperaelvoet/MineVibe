@@ -100,6 +100,8 @@ export const AWAY_RESERVATION_MS = 3 * 60_000;
 export const CONTEXT_GUARD_RATIO = 0.7;
 /** Haiku 5.5 context window used by the context guard. */
 export const HAIKU_CONTEXT_TOKENS = 200_000;
+/** The context guard's `/compact` never holds the seat mutex longer than this. */
+export const CONTEXT_GUARD_TIMEOUT_MS = 180_000;
 /** How long to wait for the PostModelSwitch acknowledgement after `applyFlagSettings`. */
 export const SWAP_ACK_TIMEOUT_MS = 5_000;
 

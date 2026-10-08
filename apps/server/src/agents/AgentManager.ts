@@ -54,7 +54,7 @@ import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
 import { CREW_CAP, LAST_WORDS_MS } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
-import { control, newNonce, singleLine, wrapNote } from './envelope.js';
+import { control, escapeShared, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
 import { type Card, newCardId, PendingStore } from './PendingStore.js';
 import { BARKS } from './prompts/barks.js';
@@ -373,6 +373,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       cardRaised: (_brain, card) => this.emit('card', card),
       authMode: () => o.authMode ?? 'subscription',
       swapDebounceMs: o.swapDebounceMs,
+      recordChanged: () => void this.#persist(),
     };
   }
 
@@ -852,9 +853,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       } catch {
         continue;
       }
+      // Binding, but still shared text: look-alike control tags and envelope delimiters are made inert.
+      const title = singleLine(page.title, 80).replace(/"/g, "'");
+      const rules = escapeShared(body.slice(0, 4_000));
       for (const b of this.#brains.values()) {
         b.context(
-          `${control(b.record.nonce, 'HOUSE RULES', `${this.#o.playerName()} set house rules "${page.title}" (binding):`)}\n${body.slice(0, 4_000)}`,
+          `${control(b.record.nonce, 'HOUSE RULES', `${this.#o.playerName()} set house rules "${title}" (binding):`)}\n${rules}`,
         );
       }
     }
@@ -1020,6 +1024,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     note: string | null,
   ): Promise<string> {
     const ceo = this.#records.find((r) => r.agentId === card.agentId);
+    const cap = this.#o.crewCap ?? CREW_CAP;
+    if (approve && this.#records.filter((r) => r.status === 'alive').length >= cap) {
+      // The card stays up (the player can still decline it) instead of vanishing with nobody told.
+      throw new ApiError('CREW_CAP', 'The crew is already full.');
+    }
     this.pending.resolve(card.id, approve ? { kind: 'approved' } : { kind: 'declined', note });
     const ceoBrain = ceo ? this.#brains.get(ceo.agentId) : undefined;
     if (!approve) {
@@ -1034,10 +1043,6 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         ),
       });
       return `hire declined`;
-    }
-    const cap = this.#o.crewCap ?? CREW_CAP;
-    if (this.#records.filter((r) => r.status === 'alive').length >= cap) {
-      throw new ApiError('CREW_CAP', 'The crew is already full.');
     }
     const record = this.#newRecord({ name: card.name, handle: card.handle, role: card.role, ceo: false });
     try {
@@ -1363,7 +1368,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         if (this.pending.isStale(card.id)) {
           this.pending.resolve(card.id, { kind: 'answered', answers: interp.answers });
           const qa = Object.entries(interp.answers)
-            .map(([q, a]) => `"${q}" → ${a}`)
+            .map(([q, a]) => `"${singleLine(q, 200)}" → ${singleLine(a, 500)}`)
             .join('; ');
           this.#brains.get(card.agentId)?.enqueue({
             mode: 'wake',

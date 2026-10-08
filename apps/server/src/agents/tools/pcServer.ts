@@ -126,8 +126,14 @@ export function pcToolDefinitions(host: PcHost): Def[] {
     const i = await info(pcId);
     return i.mounts.find((m) => m.mode === 'rw')?.hostPath ?? i.mounts[0]?.hostPath ?? i.home;
   };
-  const absolute = async (pcId: string, path: string): Promise<string> =>
-    path.startsWith('/') ? path : `${(await cwdOf(pcId)).replace(/\/+$/, '')}/${path.replace(/^~\//, '')}`;
+  /** An absolute guest path: `~` is the PC user's home, anything else relative is under the working directory. */
+  const absolute = async (pcId: string, path: string): Promise<string> => {
+    if (path.startsWith('/')) return path;
+    if (path === '~' || path.startsWith('~/')) {
+      return `${(await info(pcId)).home.replace(/\/+$/, '')}${path.slice(1)}`;
+    }
+    return `${(await cwdOf(pcId)).replace(/\/+$/, '')}/${path}`;
+  };
 
   /** Runs a handler with the seat checked; plan paths never reach it. */
   const seated =

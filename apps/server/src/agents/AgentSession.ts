@@ -74,6 +74,11 @@ export interface SendOptions {
   readonly priority?: 'now' | 'next' | 'later' | undefined;
   /** false: context only, no API call (S2). */
   readonly shouldQuery?: boolean | undefined;
+  /**
+   * A slash command (`/compact`): its result ends a turn even when it reports `num_turns: 0`, so the turn is never left
+   * open (and nobody waiting for its end hangs).
+   */
+  readonly command?: boolean | undefined;
 }
 
 export interface SessionCallbacks {
@@ -144,6 +149,7 @@ export class AgentSession {
   #model: string | null = null;
   #inTurn = false;
   #interruptPending = false;
+  #commandPending = false;
   #lastUsage: TurnUsage | null = null;
   #swapWaiter: ((input: PostModelSwitchHookInput) => void) | null = null;
   #lastSwitch: PostModelSwitchHookInput | null = null;
@@ -221,6 +227,7 @@ export class AgentSession {
       ...(options.shouldQuery === false ? { shouldQuery: false } : {}),
     };
     if (options.shouldQuery !== false) this.#inTurn = true;
+    if (options.command === true) this.#commandPending = true;
     this.#inbox.push(message);
     return uuid;
   }
@@ -380,9 +387,14 @@ export class AgentSession {
       case 'result': {
         const r = m as SDKResultMessage;
         const contextOnly =
-          r.num_turns === 0 && r.subtype === 'success' && !r.is_error && !this.#interruptPending;
+          r.num_turns === 0 &&
+          r.subtype === 'success' &&
+          !r.is_error &&
+          !this.#interruptPending &&
+          !this.#commandPending;
         if (contextOnly) return;
         this.#interruptPending = false;
+        this.#commandPending = false;
         this.#lastUsage = usageOf(r);
         this.#inTurn = (r.queued_turn_count ?? 0) > 0;
         this.#cb.onTurnEnd?.(r);
