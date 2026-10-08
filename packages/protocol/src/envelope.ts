@@ -73,6 +73,8 @@ export const ERROR_CODES = {
   DISCONNECTED: 'DISCONNECTED',
   /** No integrated server is running (mod side). */
   NO_SERVER: 'NO_SERVER',
+  /** The request cannot be done in the current state (e.g. `debug.click_begin` while Begin is disabled). */
+  NOT_READY: 'NOT_READY',
   /** chat.send: a leading @mention matches nobody. */
   CHAT_UNKNOWN: 'CHAT_UNKNOWN',
   /** chat.send: a leading @mention matches several agents. */

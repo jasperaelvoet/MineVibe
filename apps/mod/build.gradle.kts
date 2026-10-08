@@ -30,6 +30,26 @@ repositories {
 	// Loom adds Mojang, Fabric and Maven Central itself. Only add repositories for mod dependencies.
 }
 
+/**
+ * Launch settings for `./gradlew runClient` (PLAN §9.4, README "Running the client against Node"). Each one is a
+ * Gradle property or, failing that, an environment variable; they become `-D` system properties of the game JVM:
+ *
+ * | Gradle property       | Environment variable   | Game JVM                 | Default                                   |
+ * |-----------------------|------------------------|--------------------------|-------------------------------------------|
+ * | `minevibe.bridgeFile` | `MINEVIBE_BRIDGE_FILE` | `-Dminevibe.bridgeFile`  | `<repo>/.minevibe-dev/run/bridge.json`    |
+ * | `minevibe.e2e`        | `MINEVIBE_E2E`         | `-Dminevibe.e2e`         | unset (debug.* handlers off)              |
+ * | `minevibe.dev`        | `MINEVIBE_DEV`         | `-Dminevibe.dev`         | `true` (new worlds allow commands)        |
+ * | `minevibe.parentPid`  | `MINEVIBE_PARENT_PID`  | `-Dminevibe.parentPid`   | unset (no parent watchdog)                |
+ * | `minevibe.runTag`     | `MINEVIBE_RUN_TAG`     | `-Dminevibe.runTag`      | unset (a marker for finding the process)  |
+ * | `minevibe.runDir`     | `MINEVIBE_RUN_DIR`     | game directory           | `run` (relative to apps/mod)              |
+ *
+ * They are read when Gradle configures the build (so a change invalidates the configuration cache, as it should).
+ */
+fun launchSetting(property: String, env: String): String? =
+	providers.gradleProperty(property).orElse(providers.environmentVariable(env)).orNull?.trim()?.takeIf { it.isNotEmpty() }
+
+val devBridgeFile: String = layout.projectDirectory.file("../../.minevibe-dev/run/bridge.json").asFile.normalize().absolutePath
+
 loom {
 	splitEnvironmentSourceSets()
 
@@ -37,6 +57,17 @@ loom {
 		register("minevibe") {
 			sourceSet(sourceSets.main.get())
 			sourceSet(sourceSets.getByName("client"))
+		}
+	}
+
+	runs {
+		named("client") {
+			property("minevibe.bridgeFile", launchSetting("minevibe.bridgeFile", "MINEVIBE_BRIDGE_FILE") ?: devBridgeFile)
+			property("minevibe.dev", launchSetting("minevibe.dev", "MINEVIBE_DEV") ?: "true")
+			launchSetting("minevibe.e2e", "MINEVIBE_E2E")?.let { property("minevibe.e2e", it) }
+			launchSetting("minevibe.parentPid", "MINEVIBE_PARENT_PID")?.let { property("minevibe.parentPid", it) }
+			launchSetting("minevibe.runTag", "MINEVIBE_RUN_TAG")?.let { property("minevibe.runTag", it) }
+			launchSetting("minevibe.runDir", "MINEVIBE_RUN_DIR")?.let { runDir(it) }
 		}
 	}
 }
@@ -61,6 +92,8 @@ dependencies {
 
 	// JUnit 5 with Fabric Loader's Knot classloader, so unit tests can touch Minecraft classes.
 	testImplementation("net.fabricmc:fabric-loader-junit:$loaderVersion")
+	// A local WebSocket server for BridgeClient tests (fragmented 4 MB binary receive). Tests only, never shipped.
+	testImplementation("org.java-websocket:Java-WebSocket:1.6.0")
 }
 
 val gameTestTasks = listOf("runGameTest", "runClientGameTest")
@@ -102,6 +135,11 @@ tasks.test {
 	doFirst {
 		testRunDir.get().asFile.mkdirs()
 	}
+
+	// The protocol fixtures shared with the TypeScript tests (packages/protocol/fixtures).
+	val fixtures = layout.projectDirectory.dir("../../packages/protocol/fixtures")
+	inputs.dir(fixtures).withPropertyName("protocolFixtures").withPathSensitivity(PathSensitivity.RELATIVE)
+	systemProperty("minevibe.protocolFixtures", fixtures.asFile.normalize().absolutePath)
 }
 
 tasks.jar {

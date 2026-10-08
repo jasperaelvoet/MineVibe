@@ -1,17 +1,65 @@
 package dev.minevibe.client;
 
 import dev.minevibe.MineVibeMod;
+import dev.minevibe.bridge.BridgeClient;
+import dev.minevibe.bridge.BridgeConfig;
+import dev.minevibe.bridge.MineVibeBridge;
+import dev.minevibe.client.e2e.DebugHandlers;
+import dev.minevibe.hardcore.HardcoreHooks;
+import java.nio.file.Path;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
 
 /**
- * Client entrypoint.
+ * Client entrypoint (PLAN §5, §7.9, §9.2).
  *
- * <p>Later milestones start {@code BridgeClient} and {@code ParentWatchdog} and register screens,
- * renderers, {@code MonitorTextures} and the HUD here (PLAN 7, full design 6.1).
+ * <ul>
+ *   <li>Starts the {@link BridgeClient} when {@code -Dminevibe.bridgeFile} is set, with world/UI messages routed to
+ *       the client thread and server-world messages to the integrated server.</li>
+ *   <li>Registers the hardcore hooks (the integrated server's player-death marker; singleplayer only, so this is
+ *       the one place they need to be registered), the world ticker and, with {@code -Dminevibe.e2e=true}, the
+ *       E2E debug handlers.</li>
+ *   <li>Starts the parent watchdog when {@code -Dminevibe.parentPid} is set.</li>
+ * </ul>
+ * The screen redirects (BootScreen, GameOverScreen, MineVibeMenuScreen) live in {@code GuiSetScreenMixin}.
  */
 public final class MineVibeClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
-		MineVibeMod.LOGGER.info("MineVibe loaded (client)");
+		ClientConfig config = ClientConfig.get();
+		MineVibeMod.LOGGER.info(
+				"MineVibe loaded (client): bridge={}, e2e={}, dev={}, screens={}",
+				config.bridgeFile() != null && !config.gameTest() ? "configured" : "off",
+				config.e2e(),
+				config.dev(),
+				config.redirectScreens() ? "MineVibe" : "vanilla (client GameTest)");
+
+		HardcoreHooks.register();
+		ClientTickEvents.END_CLIENT_TICK.register(WorldTicker::onEndTick);
+
+		// Client GameTests inherit runClient's -D properties, but drive their own worlds: no bridge there (a dev
+		// server that happens to be running must not open or close their worlds).
+		Path bridgeFile = config.gameTest() ? null : config.bridgeFile();
+		if (bridgeFile != null) {
+			BridgeClient bridge = BridgeClient.builder()
+					.config(() -> BridgeConfig.load(bridgeFile))
+					.clientExecutor(task -> Minecraft.getInstance().execute(task))
+					.serverExecutor(() -> Minecraft.getInstance().getSingleplayerServer())
+					.hello(ClientBridge::hello)
+					.build();
+			MineVibeBridge.install(bridge);
+			ClientBridge.register(bridge);
+			if (config.e2e()) DebugHandlers.register(bridge);
+			ClientLifecycleEvents.CLIENT_STARTED.register(mc -> {
+				// The game never pauses on focus loss (PLAN §7.9); the launcher also seeds this in options.txt.
+				mc.options.pauseOnLostFocus = false;
+			});
+			ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> bridge.close("quit"));
+			bridge.start();
+		}
+
+		config.parentPid().ifPresent(ParentWatchdog::start);
 	}
 }

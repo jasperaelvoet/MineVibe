@@ -10,6 +10,11 @@ export interface WorldLifecycleOptions {
   readonly serverVersion: string;
   /** Offline profile name; a name reported in `hello` takes precedence. */
   readonly playerName: string;
+  /**
+   * Called once a dead world was closed by the mod and Node moved on to the next one, before the next
+   * world's `world.open` is sent (the dev server buries the old save here). Errors are logged, not fatal.
+   */
+  readonly onWorldEnded?: (dead: CurrentWorldRecord, next: CurrentWorldRecord) => void | Promise<void>;
 }
 
 /**
@@ -22,6 +27,7 @@ export class WorldLifecycle {
   readonly #store: CurrentWorldStore;
   readonly #log: Logger;
   readonly #serverVersion: string;
+  readonly #onWorldEnded: WorldLifecycleOptions['onWorldEnded'];
   #playerName: string;
   #lastPhase: string | null = null;
   readonly #unsubscribe: Array<() => void> = [];
@@ -32,6 +38,7 @@ export class WorldLifecycle {
     this.#log = options.logger;
     this.#serverVersion = options.serverVersion;
     this.#playerName = options.playerName;
+    this.#onWorldEnded = options.onWorldEnded;
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
@@ -51,18 +58,17 @@ export class WorldLifecycle {
     for (const off of this.#unsubscribe.splice(0)) off();
   }
 
-  async #onHello(msg: MessageOf<'hello'>): Promise<void> {
+  #onHello(msg: MessageOf<'hello'>): void {
     if (msg.playerName) this.#playerName = msg.playerName;
     this.#log.info({ mod: msg.mod, mc: msg.mc, phase: msg.phase, worldId: msg.worldId }, 'mod hello');
 
-    let rec = this.#store.current;
-    if (rec.status === 'dead' && msg.phase === 'boot') {
-      // The game restarted after a death (e.g. quit on Game Over): continue with the allocated next world.
-      rec = (await this.#store.advanceFrom(rec.worldId)) ?? this.#store.current;
-    }
+    const rec = this.#store.current;
     this.#bridge.send('hello.ok', this.#helloOk(rec), msg.id !== undefined ? { re: msg.id } : {});
 
     if (rec.status === 'dead') {
+      // Either the mod is still in the dead world (Game Over), or the game restarted on Game Over (crash
+      // recovery, PLAN §7.9). Both show Game Over with this summary; the mod's world.state{closed} for the
+      // dead world then moves Node to the allocated next world.
       this.#sendWorldNext(rec);
       return;
     }
@@ -82,8 +88,16 @@ export class WorldLifecycle {
     if (msg.phase === 'ready') {
       await this.#store.markCreated(msg.worldId);
     } else if (msg.phase === 'closed') {
+      const before = this.#store.current;
       const next = await this.#store.advanceFrom(msg.worldId);
       if (next) {
+        if (this.#onWorldEnded) {
+          try {
+            await this.#onWorldEnded(before, next);
+          } catch (err) {
+            this.#log.error({ err, worldId: before.worldId }, 'world-ended hook failed');
+          }
+        }
         this.#log.info({ worldId: next.worldId, gen: next.gen }, 'opening next world');
         this.#sendWorldOpen(next);
       }

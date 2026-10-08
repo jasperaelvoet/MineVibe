@@ -124,6 +124,7 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `NOT_HANDLED` | both | Known type, but nothing handles it right now |
 | `INTERNAL` | both | The handler failed unexpectedly |
 | `NO_SERVER` | mod | No integrated server is running |
+| `NOT_READY` | mod | The request cannot be done in the current state (e.g. `debug.click_begin` while Begin is disabled) |
 | `CHAT_UNKNOWN` | Node | `chat.send`: a mention matches nobody (or there is no CEO for `@ceo`) |
 | `CHAT_AMBIGUOUS` | Node | `chat.send`: a mention matches several names, or is a 1-letter prefix |
 | `CHAT_UNAVAILABLE` | Node | `chat.send`: the addressed agent is dead or dismissed |
@@ -238,8 +239,22 @@ M player.died{id:m-9, world-1} → N ok{re:m-9}, world.next{world-2, summary}
 M world.state{world-1, closed} → N world.open{world-2, fresh}
 ```
 
-If the game restarts while the world is dead (quit on Game Over), the next `hello{phase:boot}` moves Node to
-the allocated next world and it sends `world.open` for it.
+If the game restarts while the world is dead (quit or crash on Game Over), the next `hello{phase:boot}` gets
+`hello.ok` and then `world.next` again (not `world.open`): the mod goes straight to the Game Over screen, and its
+`world.state{closed}` for the dead world moves Node to the allocated next world, exactly as above. Node keeps the
+dead world current until that `closed` arrives.
+
+```
+M hello{phase:boot}            → N hello.ok{world: world-1}, world.next{world-2, summary}
+M world.state{world-1, closed} → N world.open{world-2, fresh}
+```
+
+When Node never heard of the death (the game died before `player.died` was acknowledged), Node sends
+`world.open` for the dead world; the mod finds the world's dead marker (`<save>/data/minevibe/hardcore.dat`),
+shows Game Over without loading the world, and re-sends `player.died` until it is acknowledged.
+
+Once Node has advanced past a closed dead world, it moves that world's save to `saves/_graveyard/` (the newest 5
+are kept).
 
 ### 6.7 `client.stopping` (M→N)
 
@@ -294,7 +309,27 @@ Fixtures: `chat.send.json`, `chat.send--explicit.json`.
 
 ### 6.12 `ok` / `err`
 
-See section 5. Fixtures: `ok.json`, `err.json`.
+See section 5. Fixtures: `ok.json`, `err.json`, `ok--debug-state.json`.
+
+### 6.13 Debug (N→M requests, E2E only)
+
+The mod handles these only when the game runs with `-Dminevibe.e2e=true`; otherwise it answers
+`err NOT_HANDLED`. None has a payload. Type names follow the dotted-lowercase rule of section 4.
+
+| Type | Runs on | `ok` reply |
+|---|---|---|
+| `debug.state` | client thread | `DebugStateResult` (below) |
+| `debug.kill_player` | integrated server (`err NO_SERVER` without one) | `{}`; `err NOT_READY` if the player is absent or already dead |
+| `debug.open_menu` | client thread | `{ screen }` after opening the menu the way Esc does; `err NOT_READY` outside a world |
+| `debug.click_begin` | client thread | `{}` once Begin was pressed on the Game Over screen; `err NOT_READY` if it is not shown or not enabled yet |
+
+`DebugStateResult` (every key present, `null` when not applicable): `screen` (simple class name of the open
+screen, null in game), `worldId`, `gen`, `inWorld`, `hardcore`, `difficulty`
+(`peaceful|easy|normal|hard`), `gameMode` (`survival|creative|adventure|spectator`), `allowCommands`,
+`paused` (`Minecraft#isPaused`), `serverTicks` (integrated server tick count), `serverPaused`, `hp`, `dead`,
+`pid` (the game JVM).
+
+Fixtures: `debug.state.json`, `debug.kill_player.json`, `debug.open_menu.json`, `debug.click_begin.json`.
 
 ## 7. Later milestones
 
@@ -341,6 +376,10 @@ per frame.
 - Routing: server-world messages go through `server.execute(…)` (reply `err NO_SERVER` without a server), UI
   messages and `world.open` / `world.next` through `Minecraft.getInstance().execute(…)`, frames to the decoder.
 - Sending: one `mv-bridge-send` thread drains a queue; `java.net.http.WebSocket` allows only one send in flight.
+- An oversize message from Node (text over 256 KiB, binary over 32 bytes + 64 MiB) makes the mod close with
+  `1008`: `java.net.http` does not let a client send `1009`.
+- Implementation: `dev.minevibe.bridge.BridgeClient` (`apps/mod/src/main/java`), with the Gson records and the
+  zod-equivalent validator in `dev.minevibe.bridge.protocol`.
 
 ## 10. Fixtures
 

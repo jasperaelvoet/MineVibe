@@ -1,0 +1,13 @@
+{
+  "t": "hello.ok",
+  "v": 1,
+  "re": "m-1",
+  "server": { "version": "0.0.0", "protocol": 1 },
+  "player": { "name": "Jasper" },
+  "settings": {},
+  "pcs": [],
+  "budget": null,
+  "crew": [],
+  "brains": { "inFlight": 0, "queued": 0, "max": 2, "mode": "normal", "utilization": null, "resetsAt": null },
+  "pending": []
+}

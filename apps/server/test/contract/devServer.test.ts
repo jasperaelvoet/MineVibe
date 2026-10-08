@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -119,6 +119,118 @@ describe('dev server', () => {
 
     const state = JSON.parse(readFileSync(join(server.paths.state, 'current-world.json'), 'utf8'));
     expect(state).toMatchObject({ worldId: 'world-2', gen: 2, status: 'alive' });
+  });
+
+  it('after a restart on Game Over, re-sends world.next (not world.open) until the dead world is closed', async () => {
+    const { server, token } = await start();
+    const mod = await connect(server.port, token);
+    mod.send(hello);
+    await mod.next('world.open');
+    mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready', fresh: true });
+    mod.send({
+      t: 'player.died',
+      v: 1,
+      id: 'd-1',
+      worldId: 'world-1',
+      cause: 'fell',
+      day: 1,
+      ticksAlive: 10,
+    });
+    await mod.next('ok');
+    await mod.next('world.next');
+
+    // The game is killed on Game Over and starts again: BootScreen says hello{boot}.
+    mod.ws.terminate();
+    const again = await connect(server.port, token);
+    again.send({ ...hello, id: 'm-2' });
+    expect(await again.next('hello.ok')).toMatchObject({ re: 'm-2', world: { id: 'world-1', gen: 1 } });
+    expect(await again.next('world.next')).toMatchObject({
+      worldId: 'world-2',
+      gen: 2,
+      summary: { worldId: 'world-1', cause: 'fell', day: 1 },
+    });
+    expect(again.messages.some((m) => m.t === 'world.open')).toBe(false);
+    expect(server.store.current).toMatchObject({ worldId: 'world-1', status: 'dead' });
+
+    again.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'closed' });
+    expect(await again.next('world.open')).toMatchObject({ worldId: 'world-2', gen: 2, fresh: true });
+  });
+
+  it('buries the dead save in saves/_graveyard once the world is closed', async () => {
+    const { server, token, repo } = await start();
+    const saves = join(repo, 'apps', 'mod', 'run', 'saves');
+    expect(server.savesDir).toBe(saves);
+    mkdirSync(join(saves, 'world-1'), { recursive: true });
+    writeFileSync(join(saves, 'world-1', 'level.dat'), 'x');
+
+    const mod = await connect(server.port, token);
+    mod.send(hello);
+    await mod.next('world.open');
+    mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready', fresh: true });
+    mod.send({
+      t: 'player.died',
+      v: 1,
+      id: 'd-1',
+      worldId: 'world-1',
+      cause: 'fell',
+      day: 1,
+      ticksAlive: 10,
+    });
+    await mod.next('world.next');
+    expect(existsSync(join(saves, 'world-1', 'level.dat'))).toBe(true); // still there until closed
+
+    mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'closed' });
+    await mod.next('world.open');
+    expect(existsSync(join(saves, 'world-1'))).toBe(false);
+    expect(readFileSync(join(saves, '_graveyard', 'world-1', 'level.dat'), 'utf8')).toBe('x');
+  });
+
+  it('drives the mod debug handlers in E2E mode only', async () => {
+    const plain = await start();
+    expect(plain.server.debug).toBeNull();
+
+    const repo = mkdtempSync(join(tmpdir(), 'mv-dev-'));
+    dirs.push(repo);
+    const server = await startDevServer({
+      repoRoot: repo,
+      logger: silentLogger(),
+      port: 0,
+      env: { MINEVIBE_E2E: '1' },
+      heartbeatMs: 0,
+    });
+    servers.push(server);
+    const debug = server.debug;
+    if (!debug) throw new Error('expected E2E debug helpers');
+    const mod = await connect(server.port, readFileSync(join(repo, '.dev-token'), 'utf8').trim());
+    await new Promise((r) => setTimeout(r, 10));
+
+    const pending = debug.state();
+    const req = await mod.next('debug.state');
+    mod.send({
+      t: 'ok',
+      v: 1,
+      re: req.id,
+      screen: null,
+      worldId: 'world-1',
+      gen: 1,
+      inWorld: true,
+      hardcore: true,
+      difficulty: 'hard',
+      gameMode: 'survival',
+      allowCommands: false,
+      paused: false,
+      serverTicks: 42,
+      serverPaused: false,
+      hp: 20,
+      dead: false,
+      pid: 123,
+    });
+    expect(await pending).toMatchObject({ worldId: 'world-1', hardcore: true, serverTicks: 42 });
+
+    const begin = debug.clickBegin();
+    const click = await mod.next('debug.click_begin');
+    mod.send({ t: 'err', v: 1, re: click.id, code: 'NOT_READY', msg: 'Begin is not enabled yet' });
+    await expect(begin).rejects.toMatchObject({ code: 'NOT_READY' });
   });
 
   it('remembers that a world was created, and reopens a stale in-world mod', async () => {

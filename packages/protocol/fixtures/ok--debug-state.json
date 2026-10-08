@@ -1,0 +1,19 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "n-4",
+  "screen": "MineVibeMenuScreen",
+  "worldId": "world-1",
+  "gen": 1,
+  "inWorld": true,
+  "hardcore": true,
+  "difficulty": "hard",
+  "gameMode": "survival",
+  "allowCommands": false,
+  "paused": false,
+  "serverTicks": 1234,
+  "serverPaused": false,
+  "hp": 20,
+  "dead": false,
+  "pid": 4242
+}
