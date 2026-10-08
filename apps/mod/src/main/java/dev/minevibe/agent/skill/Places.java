@@ -4,6 +4,7 @@ import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.job.BlockScan;
 import dev.minevibe.agent.skill.seat.PcRegistry;
 import dev.minevibe.agent.skill.seat.Seats;
+import dev.minevibe.org.codex.Codexes;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Predicate;
@@ -18,7 +19,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * Named places {@code goto{entity}} understands besides entities: {@code office} / {@code home} (where the agent
  * shelters: the office door it was spawned at, or the bed it last slept in), {@code spawn}, the nearest {@code bed},
- * {@code chest}, {@code crafting_table} or {@code furnace}, and {@code pc:<id>} (that PC's chair).
+ * {@code chest}, {@code crafting_table} or {@code furnace}, {@code codex} (the spot in front of the nearest Codex
+ * block: the "file it" walk after a Codex write, PLAN §6.6) and {@code pc:<id>} (that PC's chair).
  */
 public final class Places {
 	private static final int SEARCH_RADIUS = 48;
@@ -29,7 +31,7 @@ public final class Places {
 	/** True when {@code ref} names a place rather than an entity. */
 	public static boolean isPlace(final String ref) {
 		String r = ref.toLowerCase(Locale.ROOT);
-		return r.startsWith("pc:") || List.of("office", "home", "spawn", "bed", "chest", "crafting_table", "furnace").contains(r);
+		return r.startsWith("pc:") || List.of("office", "home", "spawn", "bed", "chest", "crafting_table", "furnace", "codex").contains(r);
 	}
 
 	/** The block position of a named place for this agent, or null when there is none (in this dimension). */
@@ -47,6 +49,7 @@ public final class Places {
 			case "chest" -> nearest(agent, s -> s.is(Blocks.CHEST) || s.is(Blocks.BARREL) || s.is(Blocks.TRAPPED_CHEST));
 			case "crafting_table" -> nearest(agent, s -> s.is(Blocks.CRAFTING_TABLE));
 			case "furnace" -> nearest(agent, s -> s.is(Blocks.FURNACE) || s.is(Blocks.SMOKER) || s.is(Blocks.BLAST_FURNACE));
+			case "codex" -> Codexes.filingSpot(level, agent.blockPosition(), SEARCH_RADIUS);
 			default -> null;
 		};
 	}

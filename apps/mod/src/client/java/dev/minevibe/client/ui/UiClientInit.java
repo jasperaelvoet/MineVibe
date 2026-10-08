@@ -20,6 +20,7 @@ import dev.minevibe.client.ui.mixin.ChatScreenAccessor;
 import dev.minevibe.client.ui.render.BubbleRenderer;
 import java.util.function.Consumer;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -52,6 +53,7 @@ public final class UiClientInit implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		UiKeys.register();
+		ClientLifecycleEvents.CLIENT_STARTED.register(UiKeys::resolveQuickActionsConflict);
 		ClientTickEvents.END_CLIENT_TICK.register(mc -> {
 			UiActions.drainClientTasks();
 			AgentEntities.tick(mc);

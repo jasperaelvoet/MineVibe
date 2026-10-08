@@ -19,14 +19,14 @@ class ClientSessionTest {
 	}
 
 	@Test
-	void aFailedLoadIsNotInProgress() {
+	void aLoadThatEndedAtBootScreenIsNotInProgress() {
 		ClientSession s = new ClientSession();
 		s.beginLoading("world-2", 2, true, 0);
 		assertTrue(s.loading());
-		// No integrated server: vanilla gave up before starting one (datapack failure, unreadable level).
-		assertFalse(s.isLoadInProgress("world-2", false, SECOND));
-		assertTrue(s.clearStaleLoad(false, SECOND), "a load with no server is cleared");
+		// BootScreen shows with no world and no server: vanilla gave up (datapack failure, unreadable level).
+		assertTrue(s.clearStaleLoad(false, SECOND), "BootScreen without a server ends the load");
 		assertFalse(s.loading());
+		assertFalse(s.isLoadInProgress("world-2", SECOND));
 		assertFalse(s.clearStaleLoad(false, 2 * SECOND), "nothing left to clear");
 	}
 
@@ -34,13 +34,53 @@ class ClientSessionTest {
 	void aRunningLoadIsInProgressUntilItTimesOut() {
 		ClientSession s = new ClientSession();
 		s.beginLoading("world-2", 2, true, 0);
-		assertTrue(s.isLoadInProgress("world-2", true, 5 * SECOND));
-		assertFalse(s.isLoadInProgress("world-3", true, 5 * SECOND), "another world is not this load");
+		assertTrue(s.isLoadInProgress("world-2", 5 * SECOND));
+		assertFalse(s.isLoadInProgress("world-3", 5 * SECOND), "another world is not this load");
 		assertFalse(s.clearStaleLoad(true, 5 * SECOND));
+		assertFalse(s.expireLoad(5 * SECOND));
 		long late = ClientSession.LOAD_TIMEOUT_NANOS + SECOND;
-		assertFalse(s.isLoadInProgress("world-2", true, late), "a load past its timeout no longer blocks world.open");
-		assertTrue(s.clearStaleLoad(true, late));
+		assertFalse(s.isLoadInProgress("world-2", late), "a load past its timeout no longer blocks world.open");
+		assertTrue(s.expireLoad(late));
 		assertFalse(s.loading());
+	}
+
+	/**
+	 * DEBT M1 N1, the S7 gap: reopening an existing live world. {@code WorldOpenFlows#openWorld} resumes on a background
+	 * executor, so for a while there is neither a level nor an integrated server. The client tick must not end the load
+	 * then, a duplicate {@code world.open} (Node re-sends it after every hello) must not count as a new request, and one
+	 * that was parked anyway must not outlive the world becoming ready.
+	 */
+	@Test
+	void reopeningAnExistingWorldSurvivesTheAsyncOpenAndDuplicates() {
+		ClientSession s = new ClientSession();
+		Messages.WorldOpen open = new Messages.WorldOpen("world-3", 3, false, true, "hard", null);
+		s.offerOpen(open);
+		assertTrue(s.claimPendingOpen(open), "BootScreen takes it");
+		s.beginLoading("world-3", 3, false, 0);
+		// Ticks while openWorld runs on the background executor: no level, no server. Only the timeout ends it.
+		for (long t = 0; t < 30; t++) {
+			assertFalse(s.expireLoad(t * SECOND), "tick " + t + " must not end the load");
+		}
+		assertTrue(s.loading());
+		// A duplicate world.open (a reconnect's hello) arrives mid-open: still the same load, not a new request.
+		assertTrue(s.isLoadInProgress("world-3", 31 * SECOND), "a duplicate is ignored as already loading");
+		// Even if one was parked (an older client path, or a switch request), the world becoming ready drops it.
+		s.offerOpen(new Messages.WorldOpen("world-3", 3, false, true, "hard", null));
+		Messages.WorldOpen other = new Messages.WorldOpen("world-9", 9, true, true, "hard", null);
+		assertTrue(s.markReady("world-3"));
+		assertNull(s.peekPendingOpen(), "no stale world.open of the world that is open now");
+		assertFalse(s.loading());
+		assertTrue(s.isReady("world-3"));
+		assertFalse(s.fresh(), "reopened, not created");
+		// A request for another world is kept for BootScreen, and closing the world drops only its own.
+		s.offerOpen(other);
+		assertFalse(s.markReady("world-3"));
+		assertSame(other, s.peekPendingOpen());
+		s.markClosed("world-9");
+		assertNull(s.peekPendingOpen(), "closing a world drops a pending open of it");
+		s.offerOpen(other);
+		s.markClosed("world-3");
+		assertSame(other, s.peekPendingOpen(), "closing world-3 keeps world-9's open");
 	}
 
 	@Test

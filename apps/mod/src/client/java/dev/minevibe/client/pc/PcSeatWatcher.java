@@ -35,7 +35,8 @@ public final class PcSeatWatcher {
 			standGrace--;
 		}
 		String pcId = null;
-		if (mc.player != null && mc.player.getVehicle() instanceof SeatEntity seat) {
+		// A meeting seat never opens PcControlScreen (PLAN 6.3), even on a chair some desk also points at.
+		if (mc.player != null && mc.player.getVehicle() instanceof SeatEntity seat && seat.isPcSeat()) {
 			pcId = PcClientMonitors.pcForChair(seat.blockPosition());
 		}
 		seatedPc = pcId;

@@ -4,6 +4,7 @@ import dev.minevibe.world.seat.OfficeChairBlock;
 import dev.minevibe.world.seat.SeatEntity;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.state.BlockState;
@@ -61,10 +62,19 @@ public final class MeetingSeats {
 	 * {@link #SEARCH_RADIUS} is full (the mod answers {@code agent.seat} with {@code NO_SEAT} then).
 	 */
 	public static @Nullable BlockPos findFreeChair(final ServerLevel level, final BlockPos near) {
+		return findFreeChair(level, near, pos -> false);
+	}
+
+	/**
+	 * Like {@link #findFreeChair(ServerLevel, BlockPos)}, also skipping chairs {@code taken} says are spoken for (an
+	 * attendee is already walking to them).
+	 */
+	public static @Nullable BlockPos findFreeChair(final ServerLevel level, final BlockPos near, final Predicate<BlockPos> taken) {
 		for (BlockPos table : MeetingTables.tablesNear(level, near, SEARCH_RADIUS)) {
-			List<BlockPos> free = freeChairs(level, table);
-			if (!free.isEmpty()) {
-				return free.getFirst();
+			for (BlockPos chair : freeChairs(level, table)) {
+				if (!taken.test(chair)) {
+					return chair;
+				}
 			}
 		}
 		return null;

@@ -23,7 +23,8 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>Opens its AgentScreen and returns {@code FAIL}, which cancels vanilla and sends nothing to the server
  *       (API_MAP 4.3).</li>
- *   <li>Sneak-right-clicking a seated agent opens a kick confirmation; it never kicks at once.</li>
+ *   <li>Sneak-right-clicking an agent seated at a PC opens a kick confirmation; it never kicks at once. (An agent
+ *       on a meeting chair just opens its screen: there is no PC to take.)</li>
  *   <li>With food in the main hand the click passes through ({@code PASS}): feeding a hungry agent is the server's
  *       business (the client does not know an agent's hunger).</li>
  * </ul>
@@ -37,7 +38,7 @@ public final class AgentInteraction {
 		if (agentId == null) return InteractionResult.PASS;
 		if (player.getMainHandItem().has(DataComponents.FOOD)) return InteractionResult.PASS;
 		Minecraft mc = Minecraft.getInstance();
-		if (player.isShiftKeyDown() && AgentEntities.onSeat(entity)) {
+		if (player.isShiftKeyDown() && AgentEntities.onPcSeat(entity)) {
 			confirmKick(mc, agentId);
 			return InteractionResult.FAIL;
 		}

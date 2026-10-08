@@ -42,6 +42,8 @@ public final class UiState {
 	private final List<ToastEntry> toasts = new ArrayList<>();
 	private Messages.@Nullable Brains brains;
 	private long revision;
+	/** A {@code crew.state} arrived since the last {@link #reset}: an empty crew is then really empty. */
+	private boolean crewKnown;
 
 	UiState(LongSupplier clock) {
 		this.clock = clock;
@@ -88,7 +90,13 @@ public final class UiState {
 		bubbles.keySet().retainAll(agents.keySet());
 		// The crew list keeps dead and dismissed members; anyone missing from it belongs to an earlier world.
 		transcripts.keySet().retainAll(agents.keySet());
+		crewKnown = true;
 		changed();
+	}
+
+	/** True once Node's crew list arrived (the crew may still be empty: a new world before its CEO). */
+	public boolean crewKnown() {
+		return crewKnown;
 	}
 
 	/** {@code agent.brain}. Ignored for agents not in the crew list yet (Node sends {@code crew.state} first). */
@@ -157,6 +165,7 @@ public final class UiState {
 		transcripts.clear();
 		toasts.clear();
 		brains = null;
+		crewKnown = false;
 		changed();
 	}
 

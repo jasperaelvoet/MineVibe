@@ -154,7 +154,7 @@ public final class AgentScreen extends Screen {
 		Transcript t = UiState.get().transcript(agentId);
 		Player body = minecraft != null && minecraft.level != null && a != null ? AgentEntities.body(minecraft.level, a) : null;
 		return (a == null ? "?" : a.name() + "|" + a.planFirst())
-				+ "|" + (body != null && AgentEntities.onSeat(body))
+				+ "|" + (body != null && AgentEntities.onPcSeat(body))
 				+ "|" + (card == null ? "-" : card.id() + "#" + FrontCards.questionIndex(card) + "#" + card.parked())
 				+ "|" + orderedCards().size()
 				+ "|" + (t.moreOlder() && t.historyLoaded())
@@ -176,7 +176,7 @@ public final class AgentScreen extends Screen {
 		x = commandButton(x, y, "Stay", "stay");
 		x = commandButton(x, y, "Stop", "stop");
 		Player body = minecraft.level != null && a != null ? AgentEntities.body(minecraft.level, a) : null;
-		if (body != null && AgentEntities.onSeat(body)) {
+		if (body != null && AgentEntities.onPcSeat(body)) {
 			x = button(x, y, 34, "Kick", b -> confirmKick());
 		}
 		boolean planFirst = a != null && a.planFirst();

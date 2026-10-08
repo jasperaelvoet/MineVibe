@@ -515,7 +515,8 @@ records flatten every variant into one record with `@Nullable` fields.
   ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Idempotent: a living body is returned as it is. Node
   sends new agents (the first CEO, hires, the dawn newcomer) with `at` = the office's `door` slot (section 6.4) from
   `world.state.office`; `at` also becomes the agent's home (where Shelter takes it at dusk). Without `at` the mod puts
-  the body next to the player (or at world spawn without one). With `restore` the mod loads the agent's saved
+  the body at the office's `door` slot, which also becomes its home (next to the player, or at world spawn, in a
+  world without an office). With `restore` the mod loads the agent's saved
   playerdata if there is one (app restart, world reload). A hire spawns with `bark: "reporting_for_duty"`. Errors:
   `BAD_ARGS` (the mod also needs `agentId` to be `[a-z][a-z0-9_]{0,15}`, because it names the fake player),
   `AGENT_DEAD` (the agent died in this world), `SPAWN_FAILED`.
@@ -605,7 +606,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 
 - **Places in `goto`.** `entity` may name a place instead of an entity: `office` or `home` (the agent's home: its
   spawn point or the bed it last slept in, else world spawn), `spawn` (world spawn), the nearest `bed`, `chest`,
-  `crafting_table` or `furnace` within 48 blocks, or `pc:<pcId>` (that PC's chair). An unknown place fails with
+  `crafting_table` or `furnace` within 48 blocks, `codex` (the spot in front of the nearest Codex block within 48
+  blocks: the "file it" walk after a Codex write, PLAN 6.6), or `pc:<pcId>` (that PC's chair). An unknown place fails with
   `NOT_FOUND`.
 - **Menu buttons.** `menu_click.slot` keeps vanilla slot numbers (`-999` = outside the window). A `slot` of `-2` or
   less presses menu button `-slot - 2`: a merchant's trade offer (then take the result from slot 2), an enchanting

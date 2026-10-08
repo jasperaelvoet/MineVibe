@@ -51,7 +51,7 @@ public final class ClientSession {
 	// --- Node's instructions --------------------------------------------------------------------
 
 	/** A {@code world.open} to act on (BootScreen takes it). */
-	public void offerOpen(Messages.WorldOpen open) {
+	public synchronized void offerOpen(Messages.WorldOpen open) {
 		pendingOpen = open;
 		if (open.gen() > 0 && open.worldId().equals(worldId)) gen = open.gen();
 	}
@@ -126,17 +126,31 @@ public final class ClientSession {
 	}
 
 	/**
-	 * A load of {@code id} is really under way: it was started, the integrated server exists (world loads run
-	 * inside one client task, so outside it a load in progress always has a server), and it is not older than
-	 * {@link #LOAD_TIMEOUT_NANOS}.
+	 * A load of {@code id} is under way: it was started, has not failed, and is not older than
+	 * {@link #LOAD_TIMEOUT_NANOS}. There need not be an integrated server yet: opening an existing world
+	 * ({@code WorldOpenFlows#openWorld}) reads and fixes the level data on a background executor first, with only
+	 * the "Reading world data" screen up (DEBT M1 N1).
 	 */
-	public boolean isLoadInProgress(String id, boolean serverExists, long nowNanos) {
-		return loading && id.equals(worldId) && serverExists && nowNanos - loadStartedNanos < LOAD_TIMEOUT_NANOS;
+	public boolean isLoadInProgress(String id, long nowNanos) {
+		return loading && id.equals(worldId) && nowNanos - loadStartedNanos < LOAD_TIMEOUT_NANOS;
 	}
 
 	/**
-	 * Clears the loading flag when no load is really under way (no integrated server, or the timeout passed).
-	 * Returns true if it cleared one, so the caller can log it.
+	 * Clears the loading flag of a load older than {@link #LOAD_TIMEOUT_NANOS} (it never produced a world). Returns
+	 * true if it cleared one, so the caller can log it. The client tick and {@code world.open} use this: neither can
+	 * tell a failed load from one still on the background executor.
+	 */
+	public boolean expireLoad(long nowNanos) {
+		if (!loading || nowNanos - loadStartedNanos < LOAD_TIMEOUT_NANOS) return false;
+		loading = false;
+		readyWorldId = null;
+		return true;
+	}
+
+	/**
+	 * Clears the loading flag when BootScreen shows up with no world: vanilla falls back to a screen like it when
+	 * opening or creating fails, so the load is over unless an integrated server runs (and is not past the timeout).
+	 * Returns true if it cleared one.
 	 */
 	public boolean clearStaleLoad(boolean serverExists, long nowNanos) {
 		if (!loading) return false;
@@ -146,8 +160,12 @@ public final class ClientSession {
 		return true;
 	}
 
-	/** The world is loaded and reported {@code ready}. Returns false if it already was. */
+	/**
+	 * The world is loaded and reported {@code ready}. Returns false if it already was. A {@code world.open} of this
+	 * world still waiting for BootScreen (a duplicate Node sent while it loaded) is done with.
+	 */
 	public boolean markReady(String id) {
+		dropPendingOpenFor(id);
 		if (id.equals(readyWorldId)) return false;
 		if (!id.equals(worldId)) {
 			// Opened by something other than BootScreen (e.g. a test): adopt it.
@@ -182,6 +200,13 @@ public final class ClientSession {
 		closedWorldId = id;
 		closeUnacknowledged = true;
 		if (id.equals(gameOverWorldId)) gameOverWorldId = null;
+		dropPendingOpenFor(id);
+	}
+
+	/** Forgets a pending {@code world.open} of {@code id} (that world is open now, or closed for good). */
+	private synchronized void dropPendingOpenFor(String id) {
+		Messages.WorldOpen open = pendingOpen;
+		if (open != null && open.worldId().equals(id)) pendingOpen = null;
 	}
 
 	/** Node acknowledged {@code world.state{closed}} for {@code id}. */

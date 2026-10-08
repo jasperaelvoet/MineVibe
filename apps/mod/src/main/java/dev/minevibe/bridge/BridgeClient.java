@@ -251,6 +251,14 @@ public final class BridgeClient {
 		observers.computeIfAbsent(type.name(), k -> new CopyOnWriteArrayList<>()).add(new Observer<>(route, Objects.requireNonNull(observer)));
 	}
 
+	/**
+	 * The message types that have a handler (one per type). Pushes other modules need too are read from the owner's
+	 * state ({@code UiState}, {@code PcStates}, {@code OrgClientState}) or {@link #observe}d, never registered twice.
+	 */
+	public java.util.Set<String> handledTypes() {
+		return java.util.Set.copyOf(handlers.keySet());
+	}
+
 	/** Registers a handler for a message that needs no result. */
 	public <P> void on(MessageType<P> type, Route route, Consumer<P> consumer) {
 		handle(type, route, payload -> {

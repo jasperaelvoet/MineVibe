@@ -41,6 +41,8 @@ public final class BootScreen extends Screen {
 	private int resyncs;
 	private boolean acting;
 	private long actingSince;
+	/** The world the current attempt opens (null for Game Over). */
+	private @Nullable String actingWorldId;
 	private Messages.@Nullable WorldOpen opening;
 	private int openDelay;
 	private String loggedState = "";
@@ -91,6 +93,9 @@ public final class BootScreen extends Screen {
 				LOG.warn("Opening the world did not start; asking MineVibe again");
 				acting = false;
 				lastResyncAt = 0;
+				// That attempt is over: the world.open the resync brings back must not count as "already loading".
+				if (actingWorldId != null) ClientSession.get().loadFailed(actingWorldId);
+				actingWorldId = null;
 			}
 			return;
 		}
@@ -103,6 +108,7 @@ public final class BootScreen extends Screen {
 				if (session.claimPendingOpen(open)) {
 					acting = true;
 					actingSince = now;
+					actingWorldId = open.worldId();
 					LOG.info("Waking up World #{} ({})", open.gen(), open.worldId());
 					minecraft.schedule(() -> launch(open));
 				}

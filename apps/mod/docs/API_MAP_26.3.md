@@ -206,6 +206,11 @@ screen is replaced.
   `public static InputConstants.Key getKey(KeyEvent)`, `getKey(String name)`,
   `grabMouse(Window, double, double)` / `releaseMouse(...)` (SDL relative mouse mode).
 - Screen keyPressed navigation uses SDL keycodes: Tab = 9, arrows 1073741903..1073741906, PageUp/Down 1073741899/1073741902.
+- **G is taken twice.** `Options#keyQuickActions` (`key.quickActions`, default `KEY_G = 10`, category MISC; opens the
+  server's quick-actions dialog) shares G with MineVibe's front-card key, and `KeyMapping` lets both fire. MineVibe
+  (`UiKeys.resolveQuickActionsConflict`, at `CLIENT_STARTED`) unbinds Quick Actions once when both are still on the
+  same key and Quick Actions is on its default, saves `options.txt`, and writes `config/minevibe/quick-actions-unbound`
+  so a player who binds it again is never overridden. Rebind either in Controls.
 
 ## 2. World lifecycle (client)
 
@@ -229,6 +234,12 @@ public void openWorld(String levelId, Runnable onCancel);                       
   `WorldPresets::createNormalWorldDimensions`.
 - `openWorld` may show `RecoverWorldDataScreen`, `AlertScreen` (incompatible), backup prompts; those
   must be handled by BootScreen (they call `onCancel` or set screens themselves).
+- **`openWorld` is asynchronous** (DEBT M1 N1): it shows `GenericMessageScreen("selectWorld.data_read")`, then
+  `upgradeAndOpenWorld` (:387) runs the file fixer on `Util.backgroundExecutor()` and comes back through
+  `Minecraft#execute` to `openWorldLoadLevelStem` and `doWorldLoad`. For that while there is no level and no
+  integrated server, so "no server" does not mean "the load failed": `ClientSession` keeps `loading` until the world
+  is ready, the attempt fails (`onCancel`, BootScreen shown without a world) or `LOAD_TIMEOUT_NANOS` passes, and a
+  duplicate `world.open` meanwhile is ignored as "already loading".
 - **`levelExists` is NOT on WorldOpenFlows.** It is
   `[common] net/minecraft/world/level/storage/LevelStorageSource.java :363 public boolean levelExists(String levelId)`
   (`Files.isDirectory(getLevelPath(levelId))`). Get the source with `Minecraft#getLevelSource()` (:1109).
@@ -667,8 +678,10 @@ are from the same decompiled jars as above.
   pause screens. Wrap the `isPauseScreen()` call in `Gui#isPausing` to change it for subclasses too.
 - **`Minecraft#disconnect(...)` :2219 calls `dropAllTasks()`**: everything queued with `Minecraft#execute` before a
   disconnect is silently discarded. Work that must survive leaving a world needs its own queue.
-- **World loads block the client thread.** `Minecraft#doWorldLoad` :2114 loops (`renderFrame` + `runAllTasks`) until
-  the integrated server is ready; no client tick runs meanwhile. `WorldOpenFlows#createFreshLevel` on a datapack
+- **World loads block the client thread once they reach `Minecraft#doWorldLoad`** :2114, which loops (`renderFrame`
+  + `runAllTasks`) until the integrated server is ready; no client tick runs meanwhile. Opening an *existing* world
+  does not start there: `WorldOpenFlows#openWorld` first reads and fixes the level data on a background executor
+  (2.1), and client ticks run during that part, with no level and no server. `WorldOpenFlows#createFreshLevel` on a datapack
   failure calls `gui.setScreen(parentScreen)` without starting a server, and `createWorldAccess` failure calls
   `gui.setScreen(null)`.
 - **`MinecraftServer#execute` runs the task inline once the server is stopped**: `BlockableEventLoop#execute` :98

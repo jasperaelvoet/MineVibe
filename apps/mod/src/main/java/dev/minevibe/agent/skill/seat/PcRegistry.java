@@ -13,8 +13,9 @@ import org.jspecify.annotations.Nullable;
  * PC runs, who sits there, and the "Bram is coming" / "BRB" reservations. It is the authoritative double check of who
  * sits where; {@code pc.seat} / {@code pc.unseat} report its changes to Node.
  *
- * <p>The PC blocks (track T2: {@code pc_desk}, {@code PcBlockEntity}) implement this and install it with
- * {@link Seats#installPcRegistry}. Until then {@link SimplePcRegistry} serves: PCs registered by hand (dev commands,
+ * <p>The PC blocks implement this ({@code dev.minevibe.pc.PcSeatRegistry}: desk chairs, statuses from {@code pc.state},
+ * the kick) and install it with {@link Seats#installPcRegistry} from {@code PcModInit}. It extends
+ * {@link SimplePcRegistry}, which serves alone when no PC blocks are installed: PCs registered by hand (dev commands,
  * GameTests), statuses from {@link #setStatus}.
  *
  * <p>All methods run on the server thread.
@@ -60,6 +61,21 @@ public interface PcRegistry {
 	 */
 	void onUnseated(String pcId, Types.Occupant occupant, String reason, boolean reserved);
 
-	/** Every PC id with a workstation in this world. */
+	/** Every PC id with a workstation in this world (and any PC a reservation still names). */
 	List<String> pcIds(MinecraftServer server);
+
+	/**
+	 * Seconds before {@code agentId} may sit at {@code pcId} again after it was kicked off it (PLAN 7.7: a 30 s re-sit
+	 * cooldown); 0 when it may sit now. {@code agent.seat} answers {@code RESERVED} meanwhile.
+	 */
+	default int resitCooldownSeconds(final String agentId, final String pcId) {
+		return 0;
+	}
+
+	/**
+	 * The integrated server stopped: forget what belonged to that world (chairs bound by hand, reservations, kick
+	 * cooldowns). Statuses Node pushed stay valid across worlds.
+	 */
+	default void onServerStopped() {
+	}
 }

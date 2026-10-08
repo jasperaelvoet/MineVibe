@@ -73,13 +73,18 @@ public final class ClientBridge {
 		ClientSession session = ClientSession.get();
 		String id = open.worldId();
 		long now = System.nanoTime();
-		boolean serverExists = mc.getSingleplayerServer() != null;
-		if (mc.level == null && session.clearStaleLoad(serverExists, now)) {
-			LOG.warn("Loading {} is no longer in progress (it failed or timed out)", session.worldId());
+		if (mc.level == null && session.expireLoad(now)) {
+			LOG.warn("Loading {} is no longer in progress (it timed out)", session.worldId());
 		}
 		boolean same = id.equals(session.worldId());
-		if (same && (mc.level != null || session.isLoadInProgress(id, serverExists, now))) {
+		if (same && mc.level != null) {
 			LOG.debug("world.open {}: already there", id);
+			return;
+		}
+		if (same && session.isLoadInProgress(id, now)) {
+			// A duplicate (Node re-sends world.open after every hello) while the world is still opening, possibly with
+			// no integrated server yet (openWorld resumes on a background executor): never open it twice.
+			LOG.info("world.open {}: already loading", id);
 			return;
 		}
 		if (mc.level != null) {

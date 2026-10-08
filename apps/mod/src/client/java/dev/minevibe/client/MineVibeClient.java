@@ -63,10 +63,13 @@ public final class MineVibeClient implements ClientModInitializer {
 					.build();
 			MineVibeBridge.install(bridge);
 			ClientBridge.register(bridge);
+			WorldTicker.attach(bridge);
 			// Before start(): Node pushes the UI state right after hello.ok, before later entrypoints would run.
 			dev.minevibe.client.ui.UiClientInit.attach(bridge);
 			// Before start(): Node pushes the Codex, calendar and meeting right after hello.ok, before later entrypoints run.
 			dev.minevibe.client.org.OrgClientInit.attach(bridge);
+			// Before start(): frames and the hello.ok PC snapshot can arrive before the PC entrypoint runs.
+			dev.minevibe.client.pc.PcClientInit.attach(bridge);
 			if (config.e2e()) DebugHandlers.register(bridge);
 			ClientLifecycleEvents.CLIENT_STARTED.register(mc -> {
 				// The game never pauses on focus loss (PLAN §7.9); the launcher also seeds this in options.txt.

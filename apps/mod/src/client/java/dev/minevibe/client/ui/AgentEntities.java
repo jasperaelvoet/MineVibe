@@ -45,9 +45,14 @@ public final class AgentEntities {
 		return body.getVehicle() instanceof SeatEntity;
 	}
 
-	/** Seated at a PC: on a seat and on Opus (meeting seats keep Haiku; the seat kind is not synced to clients). */
+	/** The body sits on a PC chair's seat (the seat kind is synced, so a meeting chair never counts). */
+	public static boolean onPcSeat(Entity body) {
+		return body.getVehicle() instanceof SeatEntity seat && seat.isPcSeat();
+	}
+
+	/** Seated at a PC (the head icon, CrewHud): on a PC seat, whatever model the brain is on right now. */
 	public static boolean atPc(Entity body, AgentView agent) {
-		return onSeat(body) && "opus".equals(agent.model());
+		return onPcSeat(body);
 	}
 
 	private static long lastHurtAtMs;

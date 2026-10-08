@@ -20,10 +20,10 @@ All run on the integrated server thread (`err NO_SERVER` without one).
 | `skill.progress` | Sent while a job runs, at most once a second per job, when its text changes ("12/20 oak_log"). |
 | `skill.cancel` | Cancels the agent's current job (or only `jobId`); each cancelled job also gets `skill.result{cancelled}` unless its `skill.run` was still waiting, which then answers `cancelled`. |
 | `obs.query` | `status`, `look_around`, `inventory`, `find`, `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`. |
-| `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears next to the player; `at` also becomes the agent's home. Bodies follow the local player. |
+| `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears at the office door (the `door` slot of the world's starter office; next to the player in a world without one). Bodies follow the local player. `at`, or the door it appeared at, also becomes the agent's home. |
 | `agent.despawn` | `dismissed` removes the agent for good; `world_end` / `shutdown` save it. A seat is left first (`pc.unseat`). |
 | `agent.mode` | Idle mode `follow` / `stay` / `guard` / `wander`, around `anchor` (default: where it stands). |
-| `agent.seat` | Pre-checks, reserves the chair (`coming`), answers `running`, walks and sits (protocol §7.5). The end is `skill.result{jobId}` and, for a PC, `pc.seat{seatEpoch}`. |
+| `agent.seat` | Pre-checks, reserves the chair (`coming`), answers `running`, walks and sits (protocol §7.5). `RESERVED` also answers for 30 s after a kick off that PC. A PC's chair is the chair of its desk; a meeting seat is a free chair of the office's meeting table (else the table nearest the agent), one per walker, and never counts toward `SEAT_CAP`. The end is `skill.result{jobId}` and, for a PC, `pc.seat{seatEpoch}`. |
 | `agent.unseat` | Stands up and sends `pc.unseat{reason, reserved}`; stale epochs are ignored (protocol §7.5). |
 | `agent.approach` | Observed (other modules may observe it too): `present` / `queue` drive the Approach reflex, `ping` / `release` stop it. |
 | `calendar.fired` | Observed: each agent in `walk` goes to `target` (Attend reflex). |
@@ -58,10 +58,28 @@ SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47
 
 - **PC chairs**: `PcRegistry` (`agent.skill.seat`) is what seats need from the PC blocks: chair per PC,
   status from `pc.state`, occupant, reservations, `onSeated` / `onUnseated` (which send `pc.seat` /
-  `pc.unseat`). The PC blocks install theirs with `Seats.installPcRegistry(...)`; until then
-  `SimplePcRegistry` serves (`/mv pcbind <pcId> <chair pos>`). A kick should call
-  `agent.brain().noteStand("kick")` before dismounting so the unseat reports `kick`.
-- **Meeting chairs**: `Seats.installMeetingSeats((server, meetingId, agentId) -> chair)`.
+  `pc.unseat`). `PcModInit` installs `dev.minevibe.pc.PcSeatRegistry` with `Seats.installPcRegistry(...)`:
+  - chairs come from the desks (`pc.PcRegistry.chairOf`); `/mv pcbind <pcId> <chair pos>` still binds a
+    chair by hand (it extends `SimplePcRegistry`), and a desk wins over a hand-bound chair;
+  - statuses come from `pc.state` through a `PcStates` listener (`PcBridge` owns the handler), falling back
+    to what `PcStates` holds;
+  - `kick(server, pcId)` calls `agent.brain().noteStand("kick")` before dismounting, so the seat bookkeeping
+    sends `pc.unseat{kick}` and a `kicked` event (urgency 2); it steps the agent aside and blocks a re-sit at
+    that PC for 30 s. Node's own `agent.unseat{kick}` (the Kick buttons) steps the agent aside and starts the
+    same cooldown. "Kick Bram and sit?" (right-clicking an occupied PC chair) runs `kickAndSit`. A meeting seat
+    is never kicked;
+  - the player sitting down on a chair kept for an agent ends that reservation. For an agent away asking the
+    player (`away`) that is `pc.unseat{player_took}`, sent before the player's `pc.seat` (Node's SeatFSM leaves
+    `away_from_seat` on it); an agent walking there (`coming`) gets `OCCUPIED_BY_PLAYER` from its seat job;
+  - a desk whose chunk unloads is remembered for the session (`pc.PcRegistry.chairOf`), so `agent.seat` far
+    from the office walks there instead of answering `PC_UNKNOWN`; removing the desk forgets it;
+  - `pcIds` also lists PCs that only a reservation names, so the once-a-second sweep still sees them.
+  An agent seated at a PC and sent to a meeting chair (`agent.seat{meeting}`) leaves the PC with
+  `pc.unseat{meeting}`.
+  Meeting seats are never PC seats: `pc.PcRegistry.pcSeatedAt`, PcControlScreen and the head icon check the
+  seat entity's kind, which is synced to clients and follows the chair.
+- **Meeting chairs**: `OrgModInit` installs `org.meeting.MeetingSeatProvider` with
+  `Seats.installMeetingSeats(...)` (`MeetingSeats.findFreeChair` with the chairs other walkers claimed left out).
 - **Bridge**: `BridgeClient#handleAsync` (reply when a future completes) and `BridgeClient#observe`
   (several listeners for one push) were added for this layer.
 

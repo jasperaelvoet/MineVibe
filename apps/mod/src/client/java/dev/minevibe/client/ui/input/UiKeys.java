@@ -9,23 +9,39 @@ import dev.minevibe.client.ui.UiState;
 import dev.minevibe.client.ui.hud.CrewHud;
 import dev.minevibe.client.ui.screen.AgentScreen;
 import dev.minevibe.client.ui.screen.CrewLogScreen;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Keys (PLAN §7.8): G opens the presenter's front card, H toggles the CrewHud, J opens the Crew log (all rebindable),
  * and Alt+1-4 answers the presenter's front card while the crosshair is on it and the player is not in combat.
  * Alt+1-4 is observed, never consumed: the hotbar still switches.
+ *
+ * <p><b>G and vanilla's Quick Actions.</b> Minecraft 26.3 binds Quick Actions ({@code key.quickActions}, a server
+ * dialog list) to G as well, and both mappings would fire. The first time MineVibe starts with both still on the same
+ * key and Quick Actions on its default, it unbinds Quick Actions (saved in {@code options.txt}) and leaves a marker
+ * ({@code config/minevibe/quick-actions-unbound}), so a player who binds it again later is never overridden. See
+ * {@code apps/mod/docs/API_MAP_26.3.md} §6.
  */
 public final class UiKeys {
 	private UiKeys() {}
+
+	private static final Logger LOG = LoggerFactory.getLogger("MineVibe/UI");
+	/** Written once Quick Actions was unbound; its presence means "never touch the player's bindings again". */
+	static final String QUICK_ACTIONS_MARKER = "quick-actions-unbound";
 
 	/** Own category id ({@code minevibe:crew}): other MineVibe features register their own. */
 	public static final KeyMapping.Category CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("minevibe", "crew"));
@@ -42,6 +58,33 @@ public final class UiKeys {
 
 	public static @Nullable KeyMapping frontCardKey() {
 		return frontCard;
+	}
+
+	/** Client started (options loaded): unbinds vanilla Quick Actions once if it still shares G with the card key. */
+	public static void resolveQuickActionsConflict(Minecraft mc) {
+		KeyMapping ours = frontCard;
+		if (ours == null) return;
+		KeyMapping quick = mc.options.keyQuickActions;
+		Path marker = FabricLoader.getInstance().getConfigDir().resolve("minevibe").resolve(QUICK_ACTIONS_MARKER);
+		if (!shouldUnbindQuickActions(ours.saveString(), quick.saveString(), quick.isDefault(), Files.exists(marker))) return;
+		quick.setKey(InputConstants.UNKNOWN);
+		KeyMapping.resetMapping();
+		mc.options.save();
+		try {
+			Files.createDirectories(marker.getParent());
+			Files.writeString(marker, "MineVibe unbound vanilla Quick Actions (" + ours.saveString() + " opens the front card). Delete to redo.\n");
+		} catch (IOException e) {
+			LOG.warn("Could not write {}", marker, e);
+		}
+		LOG.info("Unbound vanilla Quick Actions: {} opens the presenter's card in MineVibe (rebind it in Controls)", ours.saveString());
+	}
+
+	/**
+	 * Unbind Quick Actions when it sits on the same key as the card key, is still on its default (the player never
+	 * chose it), MineVibe has not done this before, and the key is a real one.
+	 */
+	public static boolean shouldUnbindQuickActions(String ourKey, String quickKey, boolean quickIsDefault, boolean alreadyDone) {
+		return !alreadyDone && quickIsDefault && ourKey.equals(quickKey) && !"key.keyboard.unknown".equals(quickKey);
 	}
 
 	/** End of every client tick. */

@@ -2,6 +2,7 @@ package dev.minevibe.client.chat;
 
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.client.ui.AgentView;
+import dev.minevibe.client.ui.UiState;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -15,16 +16,23 @@ import net.minecraft.server.level.ServerPlayer;
  * {@code @name} Tab completion in the chat box (PLAN §6.5): whenever the crew changes, the integrated server sends the
  * local player a {@code ClientboundCustomChatCompletionsPacket(SET, ["@ada","@bram","@ceo","@all","@everyone"])},
  * and again when the player joins a world. The list mirrors Node's {@code chatCompletions} (living handles, the CEO
- * alias, the broadcast words).
+ * alias, the broadcast words, and {@code @meeting} while a meeting runs: {@code @meeting end} ends it).
  */
 public final class ChatCompletions {
 	private ChatCompletions() {}
 
 	/** Read on the server thread (join), written on the client thread. */
 	private static volatile List<String> entries = List.of();
+	/** A meeting runs ({@code meeting.state}, client thread). */
+	private static boolean meeting;
 
 	/** The completion entries for a crew. */
 	public static List<String> entriesFor(Collection<AgentView> crew) {
+		return entriesFor(crew, meeting);
+	}
+
+	/** The completion entries for a crew, with {@code @meeting} while one runs. */
+	public static List<String> entriesFor(Collection<AgentView> crew, boolean meetingActive) {
 		List<String> out = new ArrayList<>();
 		boolean ceo = false;
 		for (AgentView a : crew) {
@@ -35,7 +43,15 @@ public final class ChatCompletions {
 		if (ceo) out.add("@ceo");
 		out.add("@all");
 		out.add("@everyone");
+		if (meetingActive) out.add("@meeting");
 		return List.copyOf(out);
+	}
+
+	/** Client thread: a meeting started or ended ({@code meeting.state}); {@code @meeting} comes and goes with it. */
+	public static void meetingActive(boolean active) {
+		if (meeting == active) return;
+		meeting = active;
+		update(UiState.get().agents());
 	}
 
 	public static List<String> entries() {
