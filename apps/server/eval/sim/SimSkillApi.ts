@@ -30,6 +30,7 @@ import { TypedEmitter } from '../../src/util/TypedEmitter.js';
 import { buildJobLogic } from './jobs.js';
 import { observe } from './observe.js';
 import { type SimJob, type SimWorld, TPS } from './world.js';
+import { SIM_V2_CAPS } from './v2.js';
 
 /** Game ticks per real millisecond of waiting (20 tps). */
 function msToTicks(ms: number): number {
@@ -52,10 +53,16 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   readonly calls: SimCall[] = [];
   readonly #ended = new Map<string, JobEnd>();
 
-  constructor(world: SimWorld) {
+  constructor(world: SimWorld, options: { readonly mod?: 'v1' | 'v2' } = {}) {
     super();
     this.world = world;
+    if (options.mod) world.mod = options.mod;
     world.onJobEnd = (job) => this.#ended_(job);
+  }
+
+  /** The simulated mod's `hello.caps`: none for the v1 mod, every v2 cap for the v2 one. */
+  caps(): ReadonlySet<string> {
+    return new Set(this.world.mod === 'v2' ? SIM_V2_CAPS : []);
   }
 
   #check(agentId: string): void {

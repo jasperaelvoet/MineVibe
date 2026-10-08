@@ -405,6 +405,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
     const jobId = newJobId();
     host.jobs?.started(jobId, meta);
     const started = Date.now();
+    const elapsed = () => host.jobs?.elapsed(jobId) ?? Date.now() - started;
     let res: Awaited<ReturnType<typeof host.skills.runSkill>>;
     try {
       res = await host.skills.runSkill({
@@ -430,7 +431,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       const rendered = renderRunning(
         meta,
         res.jobId,
-        Date.now() - started,
+        elapsed(),
         running?.progress ? progressFor(meta, running.progress) : null,
       );
       return { text: compose(withNote(rendered, replaced), null), footer: nodeFooter() };
@@ -442,7 +443,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
         status: res.status,
         result,
         error: res.error,
-        durationMs: Date.now() - started,
+        durationMs: elapsed(),
       },
       ctx(),
     );

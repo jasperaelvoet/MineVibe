@@ -92,6 +92,12 @@ export class JobRegistry {
     return this.#current;
   }
 
+  /** Milliseconds since a job started, on this registry's clock (game time in the eval world). */
+  elapsed(jobId: string): number | null {
+    const job = this.#known.get(jobId);
+    return job ? this.#now() - job.startedAt : null;
+  }
+
   /** The job (running, or ended recently) with this id. */
   get(jobId: string): RunningJob | null {
     return this.#known.get(jobId) ?? null;

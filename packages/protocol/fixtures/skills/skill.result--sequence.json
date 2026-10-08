@@ -1,0 +1,28 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "jobId": "job-40",
+  "agentId": "ada",
+  "status": "failed",
+  "result": {
+    "completed": 0,
+    "steps": [
+      {
+        "skill": "collect",
+        "status": "failed",
+        "code": "NO_NATURAL_SOURCE",
+        "msg": "no reachable natural oak_log within 48 blocks",
+        "result": {
+          "item": "minecraft:oak_log",
+          "got": 0,
+          "have": 0
+        }
+      }
+    ]
+  },
+  "error": {
+    "code": "NO_NATURAL_SOURCE",
+    "msg": "step 1/2 collect: no reachable natural oak_log within 48 blocks"
+  },
+  "durationMs": 4200
+}

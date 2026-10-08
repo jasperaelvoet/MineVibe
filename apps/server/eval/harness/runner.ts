@@ -21,7 +21,7 @@ import type { CardQuestion } from '@minevibe/protocol';
 import { AgentSession } from '../../src/agents/AgentSession.js';
 import { agentEnv } from '../../src/agents/agentEnv.js';
 import type { ResolvedClaude } from '../../src/agents/claudeBinary.js';
-import { type BrainProfile, MCP_TOOL_TIMEOUT_MS } from '../../src/agents/constants.js';
+import { type BrainProfile, MCP_TOOL_TIMEOUT_MS, type McToolsVersion } from '../../src/agents/constants.js';
 import { summarizeResult } from '../../src/agents/EventRouter.js';
 import { control, newNonce, singleLine } from '../../src/agents/envelope.js';
 import { createInteractionBroker } from '../../src/agents/InteractionBroker.js';
@@ -40,7 +40,10 @@ import type {
 } from '../../src/agents/sdk.js';
 import { buildSessionOptions } from '../../src/agents/sessionOptions.js';
 import { createToolGateHook, type GateContext } from '../../src/agents/ToolGate.js';
-import { type McHost, mcToolDefinitions } from '../../src/agents/tools/mcServer.js';
+import { renderOutcome, wakeText } from '../../src/agents/tools/format.js';
+import { JobRegistry } from '../../src/agents/tools/jobs.js';
+import { type McHost, mcServerOptions, mcToolDefinitions, splitFooter } from '../../src/agents/tools/mcServer.js';
+import { withSequenceFallback } from '../../src/contracts/SequenceFallback.js';
 import { type PcHost, pcToolDefinitions } from '../../src/agents/tools/pcServer.js';
 import type { CallToolResult } from '../../src/agents/tools/results.js';
 import { agentActor } from '../../src/contracts/common.js';
@@ -109,6 +112,10 @@ export interface RunOptions {
   readonly turnTimeoutMs: number;
   /** Abort the eval when the session's startup assertions fail (live: an API key, no subscription). */
   readonly requireSubscription: boolean;
+  /** The `mc` tool set (default v1). */
+  readonly tools?: McToolsVersion | undefined;
+  /** The simulated mod: v1 (no provenance) or v2 (W1 + the v2 skills). Default: the tool set's. */
+  readonly mod?: 'v1' | 'v2' | undefined;
   readonly log?: ((line: string) => void) | undefined;
 }
 
@@ -135,6 +142,34 @@ export function jobEndedText(nonce: string, end: JobEnd, label: string): string 
         ? 'cancelled'
         : `${end.error?.code ?? 'FAILED'}: ${end.error?.msg ?? 'failed'}`;
   return control(nonce, kind, singleLine(`${end.jobId} ${label}: ${detail}`, 400));
+}
+
+/**
+ * The v2 wake of a tracked job (AgentBrain.toolJobEnded + EventRouter.jobEnded): the result line in the v2 format, or
+ * null for a job the agent itself stopped or replaced (its tool result already said so).
+ */
+export function jobEndedTextV2(
+  nonce: string,
+  end: JobEnd,
+  jobs: JobRegistry,
+  player: string,
+  world: SimWorld,
+): string | null {
+  const meta = jobs.meta(end.jobId);
+  if (!meta) return null;
+  const cancelledBy = jobs.get(end.jobId)?.cancelledBy ?? null;
+  const rendered = renderOutcome(
+    meta,
+    { status: end.status, result: splitFooter(end.result).result, error: end.error, durationMs: end.durationMs },
+    { here: world.agent.pos, playerName: player },
+  );
+  jobs.ended(end.jobId, end.status, rendered);
+  if (end.status === 'cancelled' && cancelledBy) return null;
+  return control(
+    nonce,
+    end.status === 'done' ? 'JOB DONE' : 'JOB FAILED',
+    wakeText(end.jobId, rendered, meta.skill === 'sequence'),
+  );
 }
 
 const WANDERING: SeatSnapshot = {
@@ -164,7 +199,11 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
   const nonce = newNonce();
   const seated = scenario.suite === 'pc';
   const world: SimWorld = scenario.suite === 'mc' ? scenario.world() : buildWorld();
-  const skills = new SimSkillApi(world);
+  const tools: McToolsVersion = opts.tools ?? 'v1';
+  const skills = new SimSkillApi(world, { mod: opts.mod ?? tools });
+  // What production gives the tools: Node's `sequence` fallback when the mod lacks the cap.
+  const toolSkills = withSequenceFallback(skills);
+  const jobs = new JobRegistry(() => Math.round((world.clock * 1000) / TPS));
   const pc = new ScriptedPc();
   const metrics = new StreamMetrics();
   const calls: ToolCallRecord[] = [];
@@ -192,7 +231,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
   });
   const mcHost: McHost = {
     agentId: AGENT_ID,
-    skills,
+    skills: toolSkills,
     org,
     actor: () => agentActor(AGENT_ID, true),
     playerName: () => PLAYER,
@@ -213,7 +252,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     wait: async (ms, jobId) => {
       if (jobId) {
         try {
-          const end = await skills.awaitJob(jobId, ms);
+          const end = await toolSkills.awaitJob(jobId, ms);
           delivered.add(jobId);
           return `Job ${jobId} ${end.status}.`;
         } catch {
@@ -224,6 +263,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       return `Waited ${Math.round(ms / 1000)} s.`;
     },
     taskReported: () => {},
+    jobs,
+    body: () => null,
   };
   const plans = new PlanCapture([home, HOME]);
   const pcHost: PcHost = {
@@ -264,11 +305,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       },
     }));
   const mcServer = createSdkMcpServer({
-    name: 'mc',
-    version: '1.0.0',
-    alwaysLoad: true,
-    timeout: MCP_TOOL_TIMEOUT_MS,
-    tools: instrument('mc', mcToolDefinitions(mcHost)),
+    ...mcServerOptions(tools),
+    tools: instrument('mc', mcToolDefinitions(mcHost, tools)),
   });
   const pcServer = createSdkMcpServer({
     name: 'pc',
@@ -295,6 +333,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     turn: { calls: turnState.calls, activeMs: Date.now() - turnState.startedAt },
     playerName: PLAYER,
     halted,
+    mcTools: tools,
   });
   const gateHook = createToolGateHook(context, (o) => {
     turnState.calls++;
@@ -371,6 +410,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     ceo: true,
     playerName: PLAYER,
     nonce,
+    mcTools: tools,
   });
   const options = buildSessionOptions({
     claude: opts.claude,
@@ -484,22 +524,25 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       if (result.subtype !== 'success') metrics.transcript.push(`  ! ${result.subtype}`);
       if (timedOut) break;
       // Jobs that answered `running` finish in game time; their ends wake the agent like the EventRouter does.
+      const endOf = new Map<string, JobEnd>();
       for (const jobId of tracked.keys()) {
-        if (delivered.has(jobId) || skills.ended(jobId)) continue;
+        if (delivered.has(jobId)) continue;
         try {
-          await skills.awaitJob(jobId, 10 * 60_000);
+          endOf.set(jobId, skills.ended(jobId) ?? (await toolSkills.awaitJob(jobId, 10 * 60_000)));
         } catch {
           // still running after 10 minutes: no wake
         }
       }
-      const ended = [...tracked].filter(([id]) => !delivered.has(id) && skills.ended(id) !== undefined);
-      if (ended.length === 0) break;
-      text = ended
+      const ended = [...tracked].filter(([id]) => !delivered.has(id) && endOf.has(id));
+      const wakes = ended
         .map(([id, label]) => {
           delivered.add(id);
-          return jobEndedText(nonce, skills.ended(id) as JobEnd, label);
+          const end = endOf.get(id) as JobEnd;
+          return tools === 'v2' ? jobEndedTextV2(nonce, end, jobs, PLAYER, world) : jobEndedText(nonce, end, label);
         })
-        .join('\n\n');
+        .filter((t): t is string => t !== null);
+      if (wakes.length === 0) break;
+      text = wakes.join('\n\n');
     }
   } catch (err) {
     if (err instanceof FatalEvalError) {
@@ -531,6 +574,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     suite: scenario.suite,
     mode: opts.mode,
     run: opts.run,
+    tools,
     model: metrics.model ?? opts.profile.model,
     effort: effort ?? opts.profile.effort,
     success,

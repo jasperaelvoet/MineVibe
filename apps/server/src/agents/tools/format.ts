@@ -389,6 +389,10 @@ export function describeResult(
       break;
     }
     case 'container': {
+      const moved = num(r.moved);
+      if (moved !== null) facts.push(`moved ${moved}`);
+      const at = asPos(r.pos);
+      if (at) facts.push(`container at ${posText(at)}`);
       const contents = obj(r.contents);
       if (contents) {
         const items = itemList(obj(contents.items), 8);
@@ -638,10 +642,14 @@ export function renderFailed(meta: JobMeta, outcome: JobOutcome, ctx: RenderCont
       isError: true,
     };
   }
+  // Facts only when the job got somewhere (what it kept); a failure from the start is its code and message.
   const { facts } = describeResult(meta, r, ctx);
-  const head = [`failed: ${meta.what}${progress ? ` ${progress}` : ''}`, `${code}: ${msg}`, ...facts.slice(0, 2)].join(
-    ' | ',
-  );
+  const partial = progress !== null && !progress.startsWith('0/');
+  const head = [
+    `failed: ${meta.what}${progress ? ` ${progress}` : ''}`,
+    `${code}: ${msg}`,
+    ...(partial ? facts.slice(0, 2) : []),
+  ].join(' | ');
   return { head, details: failureDetails(code, r, ctx), next: hintFor(code, meta, ctx), isError: true };
 }
 
@@ -720,10 +728,12 @@ export function renderSequence(meta: JobMeta, outcome: JobOutcome, ctx: RenderCo
 }
 
 /** The `[JOB DONE]` / `[JOB FAILED]` text (§6.5): line 1 of the result, plus `next:` for failures; ≤ 400 chars. */
-export function wakeText(jobId: string, rendered: Rendered): string {
+export function wakeText(jobId: string, rendered: Rendered, steps = false): string {
   const head = rendered.head.replace(/^(done|failed|cancelled): /, '');
+  // A `do` wake keeps its step lines (`| gather oak_log 10/10 … | craft crafting_table 1/1 …`).
+  const lines = steps ? rendered.details.map((d) => ` | ${d.replace(/^\d+ /, '')}`).join('') : '';
   const next = rendered.next ? ` | next: ${rendered.next}` : '';
-  return singleLine(`${jobId} ${head}${next}`, 400);
+  return singleLine(`${jobId} ${head}${lines}${next}`, 400);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

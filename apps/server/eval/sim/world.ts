@@ -209,6 +209,11 @@ export class SimWorld {
   readonly #scheduled: Scheduled[] = [];
   readonly jobs = new Map<string, SimJob>();
   current: SimJob | null = null;
+  /**
+   * Which mod this world simulates: `v1` (the mod the v1 tools were measured on: no provenance, tags take building
+   * variants) or `v2` (W1 world awareness plus the v2 skill additions: eval/sim/v2.ts).
+   */
+  mod: 'v1' | 'v2' = 'v1';
   /** Called when a job ends (SimSkillApi turns it into a `result` event). */
   onJobEnd: ((job: SimJob) => void) | null = null;
   #mobSeq = 0;

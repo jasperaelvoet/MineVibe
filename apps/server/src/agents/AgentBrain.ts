@@ -812,7 +812,7 @@ export class AgentBrain {
     );
     this.toolJobs.ended(end.jobId, end.status, rendered);
     if (end.status === 'cancelled' && running?.cancelledBy) return null;
-    return { ok: end.status === 'done', text: wakeText(end.jobId, rendered) };
+    return { ok: end.status === 'done', text: wakeText(end.jobId, rendered, meta.skill === 'sequence') };
   }
 
   // ---------------------------------------------------------------------------------------------------------------
