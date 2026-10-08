@@ -21,7 +21,7 @@ public final class JobRunner {
 
 	/** Replaces any current job (cancelling it) with {@code job}. It starts on its first controlled tick. */
 	public void start(final Job job) {
-		this.cancel();
+		this.cancel("replaced by " + job.name());
 		this.current = job;
 		this.started = false;
 		this.preempted = false;
@@ -32,13 +32,20 @@ public final class JobRunner {
 	}
 
 	public void cancel() {
-		if (this.current != null) {
+		this.cancel("cancelled");
+	}
+
+	/** Cancels the current job (if any); its {@link Job#onEnd} hears {@code reason}. */
+	public void cancel(final String reason) {
+		Job job = this.current;
+		if (job != null) {
 			if (this.started) {
-				this.current.cancel(this.agent);
+				job.cancel(this.agent);
 			}
-			AgentEvents.emit(this.agent, "job.cancelled", Map.of("job", this.current.name()));
+			AgentEvents.emit(this.agent, "job.cancelled", Map.of("job", job.name(), "reason", reason));
 			this.current = null;
 			this.lastStatus = null;
+			job.onEnd(this.agent, null, reason);
 		}
 	}
 
@@ -72,6 +79,11 @@ public final class JobRunner {
 		}
 	}
 
+	/** True while the current job was preempted by a reflex and has not had control back yet. */
+	public boolean isPreempted() {
+		return this.current != null && this.preempted;
+	}
+
 	/** Called by the brain when the job is the highest-priority behaviour this tick. */
 	public void tick() {
 		Job job = this.current;
@@ -97,6 +109,7 @@ public final class JobRunner {
 			} else {
 				AgentEvents.emit(this.agent, "job.failed", Map.of("job", job.name(), "reason", job.failureReason()));
 			}
+			job.onEnd(this.agent, status, status == Job.Status.DONE ? "done" : job.failureReason());
 		}
 	}
 }

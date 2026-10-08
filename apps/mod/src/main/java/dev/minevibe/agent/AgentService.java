@@ -356,7 +356,7 @@ public final class AgentService {
 		if (agent.hasDisconnected()) {
 			return;
 		}
-		agent.jobs().cancel();
+		agent.jobs().cancel("despawned");
 		agent.navigator().stop();
 		agent.controls().releaseAll();
 		// Quiet version of ServerGamePacketListenerImpl.removePlayerFromWorld (no "left the game" line).

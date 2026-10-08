@@ -194,7 +194,7 @@ public class AgentPlayer extends ServerPlayer {
 			return;
 		}
 		this.agentDead = true;
-		this.jobs.cancel();
+		this.jobs.cancel("died");
 		this.navigator.stop();
 		this.controls.releaseAll();
 		if (this.isPassenger()) {

@@ -104,7 +104,23 @@ public final class BridgeClient {
 		BridgeConfig load() throws IOException;
 	}
 
-	private record Registration<P>(MessageType<P> type, Route route, Handler<P> handler) {}
+	/**
+	 * Like {@link Handler}, but the {@code ok} reply is sent when the returned stage completes (on whichever thread
+	 * completes it). A stage that fails with a {@link BridgeException} replies {@code err} with its code.
+	 */
+	@FunctionalInterface
+	public interface AsyncHandler<P> {
+		CompletionStage<? extends @Nullable Map<String, ?>> handle(P payload) throws Exception;
+	}
+
+	/** {@code async} is set for {@link #handleAsync} registrations ({@code handler} is then unused). */
+	private record Registration<P>(MessageType<P> type, Route route, Handler<P> handler, @Nullable AsyncHandler<P> async) {
+		Registration(MessageType<P> type, Route route, Handler<P> handler) {
+			this(type, route, handler, null);
+		}
+	}
+
+	private record Observer<P>(Route route, Consumer<P> consumer) {}
 
 	private record Pending(String type, CompletableFuture<JsonObject> future) {}
 
@@ -122,6 +138,7 @@ public final class BridgeClient {
 	private final BufferPool pool = new BufferPool();
 
 	private final Map<String, Registration<?>> handlers = new ConcurrentHashMap<>();
+	private final Map<String, List<Observer<?>>> observers = new ConcurrentHashMap<>();
 	private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 	private final List<ConnectionListener> listeners = new CopyOnWriteArrayList<>();
 	private final AtomicLong requestSeq = new AtomicLong();
@@ -206,6 +223,32 @@ public final class BridgeClient {
 		if (handlers.putIfAbsent(type.name(), new Registration<>(type, route, handler)) != null) {
 			throw new IllegalStateException("handler for " + type + " already registered");
 		}
+	}
+
+	/**
+	 * Registers the handler for {@code type} (one per type, shared with {@link #handle}) whose {@code ok} reply is sent
+	 * when the returned stage completes, so a server-thread handler can answer later (e.g. {@code skill.run} waits for
+	 * its job up to {@code waitMs}) without blocking any thread.
+	 */
+	public <P> void handleAsync(MessageType<P> type, Route route, AsyncHandler<P> handler) {
+		if (!type.direction().nodeSends()) throw new IllegalArgumentException(type + " is never sent by Node");
+		Objects.requireNonNull(handler, "handler");
+		Handler<P> unused = payload -> {
+			throw new IllegalStateException("async handler");
+		};
+		if (handlers.putIfAbsent(type.name(), new Registration<>(type, route, unused, handler)) != null) {
+			throw new IllegalStateException("handler for " + type + " already registered");
+		}
+	}
+
+	/**
+	 * Adds an observer of {@code type}: it runs on {@code route} for every such message, besides the type's handler (if
+	 * any), and never replies. Several modules can observe the same push (for example {@code agent.approach}: the body
+	 * walks on the server, the client shows the card).
+	 */
+	public <P> void observe(MessageType<P> type, Route route, Consumer<P> observer) {
+		if (!type.direction().nodeSends()) throw new IllegalArgumentException(type + " is never sent by Node");
+		observers.computeIfAbsent(type.name(), k -> new CopyOnWriteArrayList<>()).add(new Observer<>(route, Objects.requireNonNull(observer)));
 	}
 
 	/** Registers a handler for a message that needs no result. */
@@ -597,8 +640,15 @@ public final class BridgeClient {
 				}
 			}
 		}
+		List<Observer<?>> watching = observers.get(type.name());
+		if (watching != null) {
+			for (Observer<?> o : watching) notify(o, msg);
+		}
 		Registration<?> reg = handlers.get(type.name());
 		if (reg == null) {
+			if (watching != null && msg.id() == null) {
+				return;
+			}
 			if (msg.id() != null) {
 				reply(conn, ProtocolCodec.encodeErr(msg.id(), Codes.NOT_HANDLED, "no handler for " + type));
 			} else if (type != Messages.HELLO_OK) {
@@ -647,8 +697,43 @@ public final class BridgeClient {
 		}
 	}
 
+	/** Runs one observer on its route; failures are logged, never replied (observers do not answer). */
+	@SuppressWarnings("unchecked")
+	private <P> void notify(Observer<P> o, ProtocolCodec.Valid msg) {
+		Runnable task = () -> {
+			try {
+				o.consumer().accept((P) msg.payload());
+			} catch (RuntimeException e) {
+				LOG.error("Bridge observer of {} failed", msg.type(), e);
+			}
+		};
+		try {
+			switch (o.route()) {
+				case CLIENT -> clientExecutor.execute(task);
+				case SERVER -> {
+					Executor server = serverExecutor.get();
+					if (server == null) {
+						LOG.debug("Dropping {} for an observer: no integrated server", msg.type());
+					} else {
+						Thread listener = Thread.currentThread();
+						server.execute(() -> {
+							if (Thread.currentThread() != listener) task.run();
+						});
+					}
+				}
+				case BRIDGE -> task.run();
+			}
+		} catch (RejectedExecutionException e) {
+			LOG.debug("Dropping {} for an observer: executor is shutting down", msg.type());
+		}
+	}
+
 	@SuppressWarnings("unchecked")
 	private <P> void run(Conn conn, Registration<P> reg, ProtocolCodec.Valid msg) {
+		if (reg.async() != null) {
+			runAsync(conn, reg, reg.async(), msg);
+			return;
+		}
 		Map<String, ?> result;
 		try {
 			result = reg.handler().handle((P) msg.payload());
@@ -671,6 +756,40 @@ public final class BridgeClient {
 				reply(conn, ProtocolCodec.encodeErr(msg.id(), Codes.INTERNAL, "reply encoding failed"));
 			}
 		}
+	}
+
+	@SuppressWarnings("unchecked")
+	private <P> void runAsync(Conn conn, Registration<P> reg, AsyncHandler<P> handler, ProtocolCodec.Valid msg) {
+		CompletionStage<? extends @Nullable Map<String, ?>> stage;
+		try {
+			stage = Objects.requireNonNull(handler.handle((P) msg.payload()), "async handler returned null");
+		} catch (Exception e) {
+			stage = CompletableFuture.failedFuture(e);
+		}
+		stage.whenComplete((result, err) -> {
+			if (msg.id() == null) {
+				if (err != null) LOG.error("Bridge handler for {} failed", reg.type(), err);
+				return;
+			}
+			if (err != null) {
+				BridgeException be = unwrap(err);
+				if (be != null) {
+					reply(conn, ProtocolCodec.encodeErr(msg.id(), be.code(), String.valueOf(be.getMessage())));
+				} else {
+					Throwable cause = err instanceof CompletionException && err.getCause() != null ? err.getCause() : err;
+					LOG.error("Bridge handler for {} failed", reg.type(), cause);
+					String m = cause.getMessage();
+					reply(conn, ProtocolCodec.encodeErr(msg.id(), Codes.INTERNAL, m != null ? m : cause.getClass().getSimpleName()));
+				}
+				return;
+			}
+			try {
+				reply(conn, ProtocolCodec.encodeOk(msg.id(), result));
+			} catch (ProtocolException e) {
+				LOG.error("Reply to {} could not be encoded", reg.type(), e);
+				reply(conn, ProtocolCodec.encodeErr(msg.id(), Codes.INTERNAL, "reply encoding failed"));
+			}
+		});
 	}
 
 	private void settle(ProtocolCodec.Valid msg) {

@@ -20,6 +20,11 @@ final class SelfDefenseReflex implements Reflex {
 	}
 
 	@Override
+	public boolean allowedWhileSeated() {
+		return false;
+	}
+
+	@Override
 	public String name() {
 		return "self_defense";
 	}

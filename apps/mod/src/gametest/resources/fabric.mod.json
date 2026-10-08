@@ -13,7 +13,8 @@
 		"fabric-gametest": [
 			"dev.minevibe.gametest.MineVibeServerGameTests",
 			"dev.minevibe.gametest.agent.AgentGameTests",
-			"dev.minevibe.gametest.agent.AgentLifecycleGameTests"
+			"dev.minevibe.gametest.agent.AgentLifecycleGameTests",
+			"dev.minevibe.gametest.agent.SkillGameTests"
 		],
 		"fabric-client-gametest": [
 			"dev.minevibe.gametest.client.MineVibeClientGameTests",

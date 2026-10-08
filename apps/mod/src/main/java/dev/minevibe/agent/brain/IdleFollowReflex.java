@@ -25,6 +25,10 @@ final class IdleFollowReflex implements Reflex {
 
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
+		if (brain.mode() != IdleMode.FOLLOW) {
+			this.following = false;
+			return false;
+		}
 		ServerPlayer player = brain.followTarget();
 		if (player == null || player.isSpectator()) {
 			this.following = false;

@@ -227,6 +227,42 @@ class BridgeClientTest {
 	}
 
 	@Test
+	void asyncHandlersReplyWhenTheirStageCompletesAndObserversSeeEveryPush() throws Exception {
+		WebSocket conn = connect(builder(server.getPort()));
+		CompletableFuture<Map<String, ?>> later = new CompletableFuture<>();
+		client.handleAsync(dev.minevibe.bridge.msg.Skills.SKILL_RUN, Route.BRIDGE, req -> later);
+		client.handleAsync(dev.minevibe.bridge.msg.Skills.OBS_QUERY, Route.BRIDGE, req -> CompletableFuture.failedFuture(new BridgeException("UNKNOWN_AGENT", "no " + req.agentId())));
+		BlockingQueue<String> seenA = new LinkedBlockingQueue<>();
+		BlockingQueue<String> seenB = new LinkedBlockingQueue<>();
+		client.observe(dev.minevibe.bridge.msg.Ui.AGENT_APPROACH, Route.BRIDGE, a -> seenA.add(a.agentId() + ":" + a.role()));
+		client.observe(dev.minevibe.bridge.msg.Ui.AGENT_APPROACH, Route.CLIENT, a -> seenB.add(a.role()));
+		AtomicInteger serverRuns = new AtomicInteger();
+		client.observe(dev.minevibe.bridge.msg.Ui.AGENT_APPROACH, Route.SERVER, a -> serverRuns.incrementAndGet());
+		server.next("hello");
+
+		conn.send("{\"t\":\"skill.run\",\"v\":1,\"id\":\"n-1\",\"jobId\":\"j1\",\"agentId\":\"ada\",\"skill\":\"goto\",\"args\":{},\"waitMs\":20000,\"replace\":false}");
+		Thread.sleep(200);
+		assertTrue(server.received.stream().noneMatch(m -> "ok".equals(m.get("t").getAsString())), "no reply before the stage completes");
+		later.complete(Map.of("jobId", "j1", "status", "running"));
+		JsonObject ok = server.next("ok");
+		assertEquals("n-1", ok.get("re").getAsString());
+		assertEquals("running", ok.get("status").getAsString());
+
+		conn.send("{\"t\":\"obs.query\",\"v\":1,\"id\":\"n-2\",\"agentId\":\"bob\",\"query\":\"status\",\"args\":{}}");
+		JsonObject err = server.next("err");
+		assertEquals("n-2", err.get("re").getAsString());
+		assertEquals("UNKNOWN_AGENT", err.get("code").getAsString());
+
+		// Observers run for a push that has no handler, and nothing is replied.
+		conn.send("{\"t\":\"agent.approach\",\"v\":1,\"agentId\":\"ada\",\"pendingId\":\"p1\",\"role\":\"present\"}");
+		assertEquals("ada:present", seenA.poll(5, TimeUnit.SECONDS));
+		assertEquals("present", seenB.poll(5, TimeUnit.SECONDS), "every observer of the type runs");
+		assertEquals(0, serverRuns.get(), "SERVER observers are dropped while no integrated server runs");
+		Thread.sleep(200);
+		assertTrue(server.received.stream().noneMatch(m -> "err".equals(m.get("t").getAsString())), "a push is never answered");
+	}
+
+	@Test
 	void requestsCompleteWithTheReplyAndRetryUntilAcked() throws Exception {
 		WebSocket conn = connect(builder(server.getPort()));
 		server.next("hello");

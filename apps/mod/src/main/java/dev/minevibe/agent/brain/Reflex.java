@@ -29,4 +29,17 @@ public interface Reflex {
 	default boolean needsToStand() {
 		return true;
 	}
+
+	/**
+	 * False for reflexes that never pull a sitting agent out of its chair (protecting others, self-defence while HP is
+	 * still fine: a seated agent waits for {@code UnseatToFight} at priority 45).
+	 */
+	default boolean allowedWhileSeated() {
+		return true;
+	}
+
+	/** The {@code UnseatReason} reported when this reflex stands a sitting agent up. */
+	default String unseatReason() {
+		return "survival";
+	}
 }

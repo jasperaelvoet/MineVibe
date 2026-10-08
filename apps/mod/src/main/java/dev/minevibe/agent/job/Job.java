@@ -1,6 +1,7 @@
 package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A long-running unit of work issued by the brain (LLM) through the skill API (PLAN 7.4), e.g.
@@ -42,5 +43,18 @@ public interface Job {
 	/** Why the job failed, for the {@code job.failed} event. */
 	default String failureReason() {
 		return "failed";
+	}
+
+	/**
+	 * Called exactly once when the job leaves the {@link JobRunner}: with {@link Status#DONE} or {@link Status#FAILED}
+	 * when it finished, or with a null status when it was cancelled (replaced, stopped, the agent died or left) before it
+	 * did; {@code reason} says why. Called after {@link #cancel}, whether or not the job had started.
+	 */
+	default void onEnd(final AgentPlayer agent, final @Nullable Status status, final String reason) {
+	}
+
+	/** True if the job may run while the agent sits (eat, equip, emote); others fail while seated or riding. */
+	default boolean worksSeated() {
+		return false;
 	}
 }
