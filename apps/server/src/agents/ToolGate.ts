@@ -13,13 +13,18 @@
  * - USER DECISION 2026-10-08: EnterPlanMode is always denied (agents never put themselves into plan mode), and
  *   ExitPlanMode is denied outside plan mode (only the player's Plan-first toggle starts one).
  * - Plan mode uses `input.permission_mode ?? nodeTrackedMode`.
+ * - Mode profiles (agents/modes.ts): after the seat rules, a tool outside the mode of the current seat (Minecraft, PC
+ *   or Meeting mode) is denied with teaching text (`mode`). Every tool stays in the model's list in every mode (spike
+ *   S3b: the list is pinned to the conversation's first request), so this gate is what makes it unavailable.
  * - Any exception while deciding is a deny.
  */
 
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { TURN_CAPS } from './constants.js';
+import { modeForSeat, toolInMode } from './modes.js';
 import type { PlanCapture } from './PlanCapture.js';
+import { outsideModeText } from './prompts/modes.js';
 import type { SeatSnapshot } from './SeatFSM.js';
 import type { HookCallback, HookJSONOutput, PermissionMode, PreToolUseHookInput } from './sdk.js';
 import {
@@ -57,6 +62,8 @@ export type GateDenyCode =
   | 'web_private'
   | 'turn_cap'
   | 'halted'
+  /** A tool outside the agent's current mode (agents/modes.ts). */
+  | 'mode'
   | 'error';
 
 /** What the gate knows about the agent when a call arrives. */
@@ -167,8 +174,11 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
           return deny('away', `You are away from your seat to ask ${ctx.playerName}; wait for the answer.`);
         default:
           return seat.kind === 'meeting'
-            ? deny('meeting', 'You are in a meeting; wait for it to end.')
-            : deny('seated', 'You are seated at a PC: stand up first (mcp__mc__stand_up).');
+            ? deny('meeting', 'You are in Meeting mode at the meeting table; wait for it to end.')
+            : deny(
+                'seated',
+                'You are in PC mode, seated at a PC: stand up first (mcp__mc__stand_up) to move or work in the world.',
+              );
       }
     }
   }
@@ -368,7 +378,7 @@ export async function decideTool(
         const check = await checkWebTarget(input.url, extra.web);
         if (!check.ok) return deny('web_private', `WebFetch refused: ${check.reason}.`);
       }
-      return allow('web seated');
+      return inMode(allow('web seated'), toolName, c);
     }
   }
 
@@ -385,7 +395,19 @@ export async function decideTool(
   }
   const cap = capDecision(c);
   if (cap) return cap;
-  return mc !== null ? decideMc(mc, input, c) : decidePc(pc as PcToolName, input, c);
+  return inMode(mc !== null ? decideMc(mc, input, c) : decidePc(pc as PcToolName, input, c), toolName, c);
+}
+
+/**
+ * The mode profile on top of the seat rules (agents/modes.ts): a call the seat rules allow is still denied, with
+ * teaching text, when the tool is outside the mode of the seat the agent is in right now (e.g. `inventory` in PC mode,
+ * `status` at the meeting table). The model is offered every tool in every mode (the list is pinned to the first
+ * request), so this is what makes a tool "unavailable" in a mode.
+ */
+function inMode(decision: GateDecision, toolName: string, ctx: GateContext): GateDecision {
+  if (decision.behavior !== 'allow') return decision;
+  const mode = modeForSeat(ctx.seat);
+  return toolInMode(mode, toolName) ? decision : deny('mode', outsideModeText(mode, toolName));
 }
 
 /** What the gate hook reports for every decision (activity, caps, effort). */

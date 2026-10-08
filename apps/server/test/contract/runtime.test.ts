@@ -111,7 +111,8 @@ function recordingModules(): Recorded {
 const defaultScript: TurnScript = (text) => {
   if (/LAST WORDS/.test(text)) return [{ say: 'Goodbye, Jasper.' }];
   if (/MEETING/.test(text)) return [{ say: 'Mined logs today. Next I build a hut. Then more.' }];
-  if (/mine/i.test(text))
+  // A whole word: every first turn opens with the "Minecraft mode" banner (agents/modes.ts).
+  if (/\bmine\b/i.test(text))
     return [
       { tool: { name: 'mcp__mc__mine', input: { block: 'oak_log', count: 3 } } },
       { say: 'Got 3 oak logs.' },

@@ -53,6 +53,8 @@ export type ControlKind =
   | 'TURN CAP'
   | 'WELCOME'
   | 'MEETING'
+  /** The mode banner at the start of the first turn after a mode switch (agents/modes.ts). */
+  | 'MODE'
   | 'PLAYER';
 
 /** `[MV:<nonce> <KIND>] text`. */

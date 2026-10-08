@@ -151,3 +151,60 @@ export function pcToolName(name: string): PcToolName | null {
  * EnterPlanMode; ExitPlanMode only in plan-first sessions.
  */
 export const BROKER_TOOLS = ['AskUserQuestion', 'ExitPlanMode'] as const;
+
+// -------------------------------------------------------------------------------------------------------------------
+// Modes (PLAN §6.2 "Tools per mode", agents/modes.ts)
+// -------------------------------------------------------------------------------------------------------------------
+
+/** The three brain modes: walking the world, seated at an office PC, seated at the meeting table. */
+export type BrainMode = 'wander' | 'seated' | 'meeting';
+export const BRAIN_MODES: readonly BrainMode[] = ['wander', 'seated', 'meeting'];
+
+const EVERY_MODE: readonly BrainMode[] = BRAIN_MODES;
+/** Keeps an eye on the body and the scene while seated (danger awareness). */
+const WANDER_SEATED: readonly BrainMode[] = ['wander', 'seated'];
+const WANDER_MEETING: readonly BrainMode[] = ['wander', 'meeting'];
+
+/**
+ * The modes each `mc` tool belongs to. **An untagged mc tool is wander-only** (the conservative default): a new world
+ * tool never shows up in PC mode or at the meeting table by accident. Seated agents keep a minimal set (their body and
+ * the scene around it, stand up, talk, memory, Codex, calendar); meetings keep talk, notes, calendar and stand_up.
+ */
+export const MC_TOOL_MODES: Readonly<Partial<Record<McToolName, readonly BrainMode[]>>> = {
+  status: WANDER_SEATED,
+  look_around: WANDER_SEATED,
+  stand_up: EVERY_MODE,
+  say: EVERY_MODE,
+  tell: EVERY_MODE,
+  emote: WANDER_MEETING,
+  remember: EVERY_MODE,
+  codex_search: EVERY_MODE,
+  codex_read: EVERY_MODE,
+  codex_write: EVERY_MODE,
+  codex_list: EVERY_MODE,
+  calendar_list: EVERY_MODE,
+  calendar_add: EVERY_MODE,
+  calendar_update: EVERY_MODE,
+  calendar_cancel: EVERY_MODE,
+  report_task: EVERY_MODE,
+};
+
+/** The modes each `pc` tool belongs to. **An untagged pc tool is seated-only**: no tool reaches a PC you don't sit at. */
+export const PC_TOOL_MODES: Readonly<Partial<Record<PcToolName, readonly BrainMode[]>>> = {};
+
+/** Built-in tools (`options.tools`) per mode. A built-in that is not listed belongs to no mode. */
+export const BUILTIN_TOOL_MODES: Readonly<Record<string, readonly BrainMode[]>> = {
+  AskUserQuestion: EVERY_MODE,
+  /** Plan-first PC sessions only (ToolGate denies it outside plan mode). */
+  ExitPlanMode: ['seated'],
+  WebSearch: ['seated'],
+  WebFetch: ['seated'],
+};
+
+export function mcToolModes(tool: McToolName): readonly BrainMode[] {
+  return MC_TOOL_MODES[tool] ?? ['wander'];
+}
+
+export function pcToolModes(tool: PcToolName): readonly BrainMode[] {
+  return PC_TOOL_MODES[tool] ?? ['seated'];
+}

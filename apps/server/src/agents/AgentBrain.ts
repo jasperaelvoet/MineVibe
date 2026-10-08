@@ -5,6 +5,8 @@
  * - Gets brain slots from the BrainScheduler for each turn and releases them at `result` and while a card waits.
  * - Applies model/effort swaps only at turn boundaries (sit → Opus/medium, stand → Haiku/xhigh after the 60 s re-sit
  *   debounce, kick/damage/PC down → Haiku at once), with the context guard before a downswap.
+ * - Switches the mode (Minecraft / PC / Meeting, agents/modes.ts) at the same boundary: the first turn after it opens
+ *   with the new mode's MODE banner, on the swapped model. ToolGate holds every call to the seat's mode.
  * - Builds the ToolGate context, the broker hooks and the `mc` / `pc` tool hosts.
  *
  * The AgentManager creates brains and provides crew-level services through {@link BrainEnv}.
@@ -45,10 +47,12 @@ import { Digest, type Routed } from './EventRouter.js';
 import { type ControlKind, control, escapeShared, singleLine } from './envelope.js';
 import { createInteractionBroker } from './InteractionBroker.js';
 import type { HandoffNotes, MemoryStore } from './memory.js';
+import { type BrainMode, modeForSeat } from './modes.js';
 import type { Card, PendingStore } from './PendingStore.js';
 import { PlanCapture } from './PlanCapture.js';
 import { BARKS, type BarkKey } from './prompts/barks.js';
 import { kickoffMessage } from './prompts/kickoff.js';
+import { modeBanner } from './prompts/modes.js';
 import { personaPrompt } from './prompts/persona.js';
 import { Mutex, type SeatEndReason, SeatFSM, type SeatSnapshot } from './SeatFSM.js';
 import type {
@@ -348,6 +352,11 @@ export class AgentBrain {
   #resuming = false;
   /** The PC an agent pulled into a meeting returns to afterwards. */
   #meetingReturn: { pcId: string; purpose: string | null } | null = null;
+  /**
+   * The mode the model was last told about (the MODE banner), or null when it must be told again: a new or resumed
+   * session, or a compaction that may have summarized the last banner away.
+   */
+  #announcedMode: BrainMode | null = null;
 
   constructor(record: AgentRecord, env: BrainEnv) {
     this.record = record;
@@ -395,6 +404,16 @@ export class AgentBrain {
 
   get lastSwap(): SwapResult | null {
     return this.#lastSwap;
+  }
+
+  /** The mode of the agent's seat right now (what ToolGate enforces). */
+  get mode(): BrainMode {
+    return modeForSeat(this.fsm.snapshot);
+  }
+
+  /** The mode the model was last told about, null until the next turn re-announces it. */
+  get announcedMode(): BrainMode | null {
+    return this.#announcedMode;
   }
 
   get queuedWakes(): readonly { priority: WakePriority; kind: string; text: string }[] {
@@ -542,11 +561,17 @@ export class AgentBrain {
             { from: input.from_model, to: input.to_model, cacheUsd: input.estimated_cache_write_usd },
             'model switched',
           ),
+        // The summary may have dropped the last MODE banner: the next turn announces the mode again.
+        onCompacted: () => {
+          if (this.#session === session) this.#announcedMode = null;
+        },
         onExit: (error) => this.#onExit(error),
       },
     );
     this.#session = session;
     this.#trackedMode = AGENT_PERMISSION_MODE;
+    // A new or resumed session hears its mode again with its first turn.
+    this.#announcedMode = null;
     session.start();
     for (const text of options.contexts ?? []) this.context(text);
     for (const item of this.#contexts.splice(0)) session.send(item, { shouldQuery: false });
@@ -889,6 +914,8 @@ export class AgentBrain {
       return;
     }
     const parts: string[] = [];
+    const banner = this.#modeBanner();
+    if (banner) parts.push(banner);
     const digest = meeting.length > 0 ? null : this.digest.take(this.record.nonce);
     if (digest) parts.push(digest);
     for (const item of items) {
@@ -909,6 +936,20 @@ export class AgentBrain {
     session.send(parts.join('\n\n'));
     this.bark(BARKS.wake);
     this.#setStatus();
+  }
+
+  /**
+   * The MODE banner when the mode changed since the model last heard it (agents/modes.ts), else null. Turns start only
+   * after the turn boundary (and its swap) ran, so the banner of a sit or stand rides on the first turn of the swapped
+   * model; a kickoff follows it in the same message.
+   */
+  #modeBanner(): string | null {
+    const mode = modeForSeat(this.fsm.snapshot);
+    if (mode === this.#announcedMode) return null;
+    const from = this.#announcedMode;
+    this.#announcedMode = mode;
+    this.#log.info({ from, to: mode, model: this.#session?.model ?? null }, 'mode switched');
+    return modeBanner(mode, { nonce: this.record.nonce, playerName: this.#env.playerName() });
   }
 
   #onTurnEnd(result: SDKResultMessage): void {
@@ -1479,8 +1520,8 @@ export class AgentBrain {
       this.fsm.stand('stand');
       if (!this.#session?.inTurn) await this.#boundary();
       return s.kind === 'pc'
-        ? `Stood up from ${s.pcId}. Your PC tools stop now; tell ${this.#env.playerName()} the result if you haven't.`
-        : 'You left the meeting chair.';
+        ? `Stood up from ${s.pcId}: Minecraft mode, your PC tools stop now. Tell ${this.#env.playerName()} the result if you haven't.`
+        : 'You left the meeting chair: Minecraft mode.';
     });
   }
 
