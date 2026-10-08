@@ -343,7 +343,7 @@ The mod handles these only when the game runs with `-Dminevibe.e2e=true`; otherw
 | Type | Runs on | `ok` reply |
 |---|---|---|
 | `debug.state` | client thread | `DebugStateResult` (below) |
-| `debug.kill_player` | integrated server (`err NO_SERVER` without one) | `{}`; `err NOT_READY` if the player is absent or already dead |
+| `debug.kill_player` | integrated server (`err NO_SERVER` without one) | `{}`; `err NOT_READY` if the player is absent, already dead, or still loading (vanilla keeps a player who just joined invulnerable until its client reports "loaded") |
 | `debug.open_menu` | client thread | `{ screen }` after opening the menu the way Esc does; `err NOT_READY` outside a world |
 | `debug.click_begin` | client thread | `{}` once Begin was pressed on the Game Over screen; `err NOT_READY` if it is not shown or not enabled yet |
 

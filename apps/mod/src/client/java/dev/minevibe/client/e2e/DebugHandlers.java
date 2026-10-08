@@ -62,15 +62,23 @@ public final class DebugHandlers {
 		return m;
 	}
 
-	/** Server thread: kills the local player as {@code /kill} would. */
+	/**
+	 * Server thread: kills the local player as {@code /kill} would. A player who joined moments ago is invulnerable
+	 * until its client reports "loaded" (vanilla, {@code ServerPlayer#isInvulnerableTo}; not even {@code /kill}'s
+	 * damage gets through), so that answers NOT_READY instead of silently doing nothing.
+	 */
 	private static Map<String, Object> killPlayer() {
 		IntegratedServer server = Minecraft.getInstance().getSingleplayerServer();
 		if (server == null) throw new BridgeException(Codes.NO_SERVER, "no integrated server is running");
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
 			if (server.isSingleplayerOwner(player.nameAndId())) {
 				if (player.isDeadOrDying()) throw new BridgeException(Codes.NOT_READY, "the player is already dead");
+				if (!player.connection.hasClientLoaded()) {
+					throw new BridgeException(Codes.NOT_READY, "the player is still loading (invulnerable until then)");
+				}
 				LOG.info("Killing the player (debug.kill_player)");
 				player.kill(player.level());
+				if (!player.isDeadOrDying()) throw new BridgeException(Codes.NOT_READY, "the player survived the kill");
 				return Map.of();
 			}
 		}
