@@ -29,5 +29,10 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
+  },
+  "overrides": {
+    "@xmcl/installer": {
+      "undici": "7.30.0"
+    }
   }
 }

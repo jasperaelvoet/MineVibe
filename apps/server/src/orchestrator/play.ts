@@ -1,0 +1,324 @@
+import type { ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { createInterface } from 'node:readline';
+import { MinecraftFolder } from '@xmcl/core';
+import type { Logger } from 'pino';
+import { generateToken } from '../bridge/bridgeFile.js';
+import { devHome, ensureBaseDirs, HOME_ENV, type MineVibePaths, resolvePaths } from '../config/paths.js';
+import { formatBytes } from '../launcher/download.js';
+import { installFabricLoader } from '../launcher/installFabric.js';
+import { installMinecraft } from '../launcher/installMinecraft.js';
+import { JAVA_FOR_26_3, type JavaRequirement, resolveJava } from '../launcher/javaRuntime.js';
+import { buildLaunchCommand, spawnGame } from '../launcher/launchGame.js';
+import { extraJarFor, findDevModJar, installMods, loadModsLock } from '../launcher/mods.js';
+import { readDataVersion, seedOptionsTxt } from '../launcher/optionsTxt.js';
+import { seedConfigs } from '../launcher/seedConfigs.js';
+import { loadLauncherSettings } from '../launcher/settings.js';
+import { type DevServer, startDevServer } from './devServer.js';
+import { acquireRunLock } from './runLock.js';
+
+/** Directory holding `mods.lock.json` and `seed-configs/` (dev: `<repo>/packaging`; app: `Resources/mod`). */
+export const RESOURCES_ENV = 'MINEVIBE_RESOURCES';
+/** Use this MineVibe mod jar instead of `apps/mod/build/libs/minevibe-*.jar`. */
+export const MOD_JAR_ENV = 'MINEVIBE_MOD_JAR';
+
+/** Grace period between SIGTERM and SIGKILL for the JVM (it saves the world in a shutdown hook). */
+export const GAME_STOP_GRACE_MS = 30_000;
+
+export interface PlayControl {
+  /** Set by {@link play}; called by the signal handlers in `main`. */
+  onStopRequest: ((reason: string) => void) | null;
+}
+
+export interface PlayOptions {
+  readonly repoRoot: string | null;
+  readonly logger: Logger;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly control?: PlayControl;
+}
+
+export interface PlayTimings {
+  [phase: string]: number;
+}
+
+function resolveResources(
+  repoRoot: string | null,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const dir = env[RESOURCES_ENV]?.trim() || (repoRoot ? join(repoRoot, 'packaging') : null);
+  if (!dir || !existsSync(join(dir, 'mods.lock.json'))) {
+    throw new Error(`cannot find mods.lock.json (set ${RESOURCES_ENV} or run inside a MineVibe checkout)`);
+  }
+  return dir;
+}
+
+async function newestMtime(dir: string): Promise<number> {
+  let newest = 0;
+  let entries: Array<import('node:fs').Dirent>;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    newest = Math.max(newest, e.isDirectory() ? await newestMtime(p) : (await stat(p)).mtimeMs);
+  }
+  return newest;
+}
+
+async function resolveModJar(
+  repoRoot: string | null,
+  env: Readonly<Record<string, string | undefined>>,
+  log: Logger,
+): Promise<string> {
+  const override = env[MOD_JAR_ENV]?.trim();
+  if (override) {
+    if (!existsSync(override)) throw new Error(`${MOD_JAR_ENV} does not exist: ${override}`);
+    return override;
+  }
+  const jar = repoRoot ? await findDevModJar(repoRoot) : null;
+  if (!jar || !repoRoot) {
+    throw new Error('MineVibe mod jar not found: build it first with `cd apps/mod && ./gradlew build`');
+  }
+  const [jarTime, srcTime] = await Promise.all([
+    stat(jar).then((s) => s.mtimeMs),
+    newestMtime(join(repoRoot, 'apps', 'mod', 'src')),
+  ]);
+  if (srcTime > jarTime)
+    log.warn({ jar }, 'apps/mod/src is newer than the mod jar; rebuild with ./gradlew build');
+  return jar;
+}
+
+/**
+ * `npm run play` (PLAN §9.3/§9.4, M1): one MineVibe session from the terminal.
+ * 1. Data under the dev home (`<repo>/.minevibe-dev`, or `MINEVIBE_HOME`), single-instance lock.
+ * 2. Bridge on a random loopback port with a fresh token + the dev world loop; `run/bridge.json` for the mod.
+ * 3. Java 25, Minecraft, Fabric and the locked mods, installed or verified in parallel (fast when present).
+ * 4. options.txt and mod configs merged, the dev mod jar copied into `game/mods`.
+ * 5. The game runs with cwd = game dir; when the JVM exits everything is torn down and the exit code returned.
+ * A stop request (SIGINT/SIGTERM) aborts installs, or asks the JVM to quit (SIGTERM, then SIGKILL after a grace).
+ */
+export async function play(options: PlayOptions): Promise<number> {
+  const env = options.env ?? process.env;
+  const log = options.logger;
+  const repoRoot = options.repoRoot;
+  const started = performance.now();
+  const timings: PlayTimings = {};
+  const mark = (phase: string, since: number) => {
+    timings[phase] = Math.round(performance.now() - since);
+  };
+
+  const home = env[HOME_ENV]?.trim() || (repoRoot ? devHome(repoRoot) : '');
+  const paths: MineVibePaths = resolvePaths({
+    env: { ...env, [HOME_ENV]: home },
+    cwd: repoRoot ?? process.cwd(),
+  });
+  await ensureBaseDirs(paths);
+  const runLock = await acquireRunLock(paths.lockFile);
+
+  const abort = new AbortController();
+  let child: ChildProcess | null = null;
+  let stopReason: string | null = null;
+  let killTimer: NodeJS.Timeout | null = null;
+  let lastRequest = 0;
+  const control = options.control ?? { onStopRequest: null };
+  control.onStopRequest = (reason) => {
+    const now = Date.now();
+    // A terminal Ctrl+C can arrive twice (process group + tsx relay); only a later repeat escalates.
+    if (stopReason !== null && now - lastRequest < 2000) return;
+    lastRequest = now;
+    if (child && child.exitCode === null && child.signalCode === null) {
+      if (stopReason === null) {
+        log.info({ reason }, 'stopping the game (SIGTERM; it saves the world)');
+        child.kill('SIGTERM');
+        killTimer = setTimeout(() => child?.kill('SIGKILL'), GAME_STOP_GRACE_MS);
+        killTimer.unref();
+      } else {
+        log.warn('stop requested again: killing the game');
+        child.kill('SIGKILL');
+      }
+    } else if (stopReason === null) {
+      log.info({ reason }, 'stopping');
+      abort.abort(new Error(`stopped (${reason})`));
+    }
+    stopReason ??= reason;
+  };
+  // Last resort against orphans: whatever happens to Node, the JVM does not outlive it.
+  const killOnExit = () => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  };
+  process.once('exit', killOnExit);
+
+  let server: DevServer | null = null;
+  try {
+    const settings = await loadLauncherSettings(paths.state, env, (msg) => log.warn(msg));
+    const resources = resolveResources(repoRoot, env);
+    const lock = await loadModsLock(join(resources, 'mods.lock.json'));
+    const modJar = await resolveModJar(repoRoot, env, log);
+    log.info({ home: paths.appSupport, player: settings.playerName }, 'MineVibe play');
+
+    let t = performance.now();
+    server = await startDevServer({
+      repoRoot: repoRoot ?? paths.appSupport,
+      paths,
+      logger: log,
+      port: 0,
+      token: generateToken(),
+      playerName: settings.playerName,
+    });
+    mark('bridge', t);
+
+    // Installs run in parallel; the first failure aborts the rest.
+    t = performance.now();
+    const gameDir = paths.game;
+    const runtimeRoot = join(paths.appSupport, 'runtime');
+    const signal = abort.signal;
+    const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      const s = performance.now();
+      try {
+        return await fn();
+      } catch (err) {
+        if (!abort.signal.aborted) abort.abort(err);
+        throw err;
+      } finally {
+        mark(name, s);
+      }
+    };
+    const javaFor = (requirement: JavaRequirement) =>
+      resolveJava({ runtimeRoot, requirement, env, log: log.child({ component: 'java' }), signal });
+    const [java, game, mods] = await Promise.all([
+      step('java', () => javaFor(JAVA_FOR_26_3)),
+      step('minecraft+fabric', async () => {
+        const mc = await installMinecraft({ gameDir, version: lock.minecraft, log, signal });
+        const fabric = await installFabricLoader({
+          gameDir,
+          minecraftVersion: lock.minecraft,
+          loaderVersion: lock.loader,
+          log,
+          signal,
+        });
+        return { mc, fabric };
+      }),
+      step('mods', () =>
+        installMods({
+          lock,
+          enabledOptional: settings.optionalMods,
+          cacheDir: join(paths.caches, 'mods'),
+          modsDir: join(gameDir, 'mods'),
+          extraJars: [extraJarFor(modJar, 'minevibe')],
+          log: log.child({ component: 'mods' }),
+          signal,
+        }),
+      ),
+    ]);
+    signal.throwIfAborted();
+    let javaResolved = java;
+    const required = game.mc.javaRequirement;
+    if (
+      required &&
+      (required.component !== JAVA_FOR_26_3.component || required.majorVersion !== JAVA_FOR_26_3.majorVersion)
+    ) {
+      log.warn({ required }, 'version JSON asks for a different Java; resolving again');
+      javaResolved = await javaFor(required);
+    }
+    mark('install', t);
+
+    t = performance.now();
+    const clientJar = MinecraftFolder.from(gameDir).getVersionJar(lock.minecraft);
+    const optionsResult = await seedOptionsTxt(gameDir, { dataVersion: () => readDataVersion(clientJar) });
+    const configs = await seedConfigs(gameDir, join(resources, 'seed-configs'));
+    mark('seed', t);
+
+    log.info(
+      {
+        java: {
+          source: javaResolved.source,
+          version: javaResolved.version,
+          downloaded: formatBytes(javaResolved.downloadedBytes),
+        },
+        minecraft: {
+          version: lock.minecraft,
+          installed: game.mc.installed,
+          downloaded: formatBytes(game.mc.bytes),
+        },
+        fabric: { version: game.fabric.versionId, installed: game.fabric.installed },
+        mods: {
+          count: mods.mods.length + 1,
+          downloaded: mods.downloaded,
+          bytes: formatBytes(mods.downloadedBytes),
+          apiCalls: mods.apiCalls,
+        },
+        options: optionsResult.changed,
+        configs: configs.map((c) => `${c.file}:${c.action}`),
+        timingsMs: timings,
+      },
+      'game ready',
+    );
+
+    const command = await buildLaunchCommand({
+      javaPath: javaResolved.path,
+      gameDir,
+      versionId: game.fabric.versionId,
+      resolved: game.fabric.resolved,
+      playerName: settings.playerName,
+      bridgeFile: paths.bridgeFile,
+      parentPid: process.pid,
+      maxMemoryMb: settings.maxMemoryMb,
+    });
+    signal.throwIfAborted();
+    if (process.platform === 'darwin' && !command.includes('-XstartOnFirstThread')) {
+      throw new Error('launch command lacks -XstartOnFirstThread (the version JSON rule did not apply)');
+    }
+    const consoleLog = join(paths.logs, 'minecraft-console.log');
+    const spawned = await spawnGame({ command, gameDir, consoleLog });
+    child = spawned;
+    if (stopReason !== null) {
+      // A stop arrived while the JVM was being spawned: it gets the same graceful quit.
+      spawned.kill('SIGTERM');
+      killTimer = setTimeout(() => spawned.kill('SIGKILL'), GAME_STOP_GRACE_MS);
+      killTimer.unref();
+    }
+    timings.launch = Math.round(performance.now() - started);
+    log.info(
+      { pid: spawned.pid, consoleLog, latestLog: join(gameDir, 'logs', 'latest.log') },
+      'game launched',
+    );
+
+    if (spawned.stdout) {
+      const lines = createInterface({ input: spawned.stdout });
+      lines.on('line', (line) => {
+        const m = /Loading (\d+) mods/.exec(line);
+        if (m) log.info({ mods: Number(m[1]) }, 'Fabric is loading mods');
+      });
+    }
+
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+      spawned.once('exit', (code, sig) => resolveExit({ code, signal: sig }));
+      spawned.once('error', (err) => {
+        log.error({ err }, 'game process error');
+        resolveExit({ code: 1, signal: null });
+      });
+    });
+    if (killTimer) clearTimeout(killTimer);
+    log.info({ code: exit.code, signal: exit.signal }, 'game exited');
+    if (stopReason !== null) return 130;
+    return exit.code ?? 1;
+  } catch (err) {
+    if (abort.signal.aborted && stopReason !== null) {
+      log.info('stopped before the game started');
+      return 130;
+    }
+    throw err;
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    process.removeListener('exit', killOnExit);
+    control.onStopRequest = null;
+    if (server) await server.stop('quit').catch((err: unknown) => log.warn({ err }, 'bridge stop failed'));
+    await runLock.release();
+    log.info({ totalMs: Math.round(performance.now() - started) }, 'MineVibe play finished');
+  }
+}
