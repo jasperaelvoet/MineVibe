@@ -147,4 +147,17 @@ class OfficePlanTest {
 		assertEquals(List.of(), Messages.WORLD_STATE.schema().validate(message));
 		assertFalse(layout.toWorldState().has("spawn"), "world.state.office has only origin and slots");
 	}
+
+	@Test
+	void coversTheBuiltOfficeOnly() {
+		OfficeLayout office = new OfficeLayout(new BlockPos(-6, 65, -6), new BlockPos(0, 66, 0), 0f, List.of());
+		assertTrue(office.covers(new BlockPos(-6, 66, -6)), "the north-west corner post");
+		assertTrue(office.covers(new BlockPos(6, 69, 2)), "the south-east corner post, under the roof");
+		assertTrue(office.covers(new BlockPos(0, 70, -2)), "the roof");
+		assertTrue(office.covers(new BlockPos(0, 66, 3)), "the porch row");
+		assertFalse(office.covers(new BlockPos(7, 66, 0)), "east of the walls");
+		assertFalse(office.covers(new BlockPos(0, 66, 4)), "south of the porch");
+		assertFalse(office.covers(new BlockPos(0, 71, 0)), "above the roof");
+		assertFalse(office.covers(new BlockPos(9, 67, -12)), "the oak tree of the acceptance run");
+	}
 }

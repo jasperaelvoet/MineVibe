@@ -1,6 +1,7 @@
 package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.org.office.OfficeService;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -102,7 +103,7 @@ public final class Miner {
 		if (this.target == null) {
 			BlockPos from = this.center != null ? this.center : agent.blockPosition();
 			List<BlockPos> found = BlockScan.nearest(level, from, this.radius, this.match,
-				p -> !this.skip.contains(p) && BlockScan.exposed(level, p) && !BlockOps.unbreakable(level, p), 24);
+				p -> !this.skip.contains(p) && BlockScan.exposed(level, p) && !BlockOps.unbreakable(level, p) && !OfficeService.protects(level, p), 24);
 			if (found.isEmpty()) {
 				return Tick.NONE_LEFT;
 			}

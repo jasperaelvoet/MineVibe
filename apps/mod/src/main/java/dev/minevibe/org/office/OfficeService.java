@@ -97,6 +97,15 @@ public final class OfficeService {
 		return stateOf(server).layout;
 	}
 
+	/** Whether {@code pos} in {@code level} belongs to the starter office ({@link OfficeLayout#covers}): agents leave it be. */
+	public static boolean protects(final net.minecraft.server.level.ServerLevel level, final net.minecraft.core.BlockPos pos) {
+		if (level.dimension() != net.minecraft.world.level.Level.OVERWORLD) {
+			return false;
+		}
+		OfficeLayout layout = layout(level.getServer());
+		return layout != null && layout.covers(pos);
+	}
+
 	/**
 	 * GameTests: makes {@code layout} this running world's office (null: none again) without building, saving or moving
 	 * the world spawn, so code that asks where the office is (the door agents spawn at, the meeting table) can be

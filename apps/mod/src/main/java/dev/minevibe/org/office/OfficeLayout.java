@@ -47,6 +47,18 @@ public record OfficeLayout(BlockPos origin, BlockPos spawn, float spawnYaw, List
 		return null;
 	}
 
+	/**
+	 * Whether {@code pos} is part of the built office: its footprint and porch row, from the floor up to the roof. Agents
+	 * never pick such blocks when they look for something to mine (the corner posts are stripped spruce logs, and
+	 * {@code mine #minecraft:logs} took them apart in the acceptance run).
+	 */
+	public boolean covers(final BlockPos pos) {
+		int x = pos.getX() - this.origin.getX();
+		int y = pos.getY() - this.origin.getY();
+		int z = pos.getZ() - this.origin.getZ();
+		return x >= 0 && x < OfficePlan.WIDTH && z >= 0 && z <= OfficePlan.PORCH_Z && y >= 0 && y <= OfficePlan.ROOF;
+	}
+
 	/** The {@code world.state.office} object: {@code { origin, slots: [{ kind, pos, pcId? }] }}. */
 	public JsonObject toWorldState() {
 		JsonObject office = new JsonObject();
