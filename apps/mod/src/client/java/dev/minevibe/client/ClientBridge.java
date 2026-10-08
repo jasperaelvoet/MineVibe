@@ -11,9 +11,7 @@ import dev.minevibe.client.boot.WorldLauncher;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.SharedConstants;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,13 +64,7 @@ public final class ClientBridge {
 				ok.world() == null ? "not decided" : ok.world().id() + " (#" + ok.world().gen() + (ok.world().fresh() ? ", new" : "") + ")"));
 		bridge.on(Messages.WORLD_OPEN, Route.CLIENT, ClientBridge::onWorldOpen);
 		bridge.on(Messages.WORLD_NEXT, Route.CLIENT, ClientBridge::onWorldNext);
-		bridge.on(Messages.UI_TOAST, Route.CLIENT, toast -> SystemToast.add(
-				Minecraft.getInstance().gui.toastManager(),
-				SystemToast.SystemToastId.PERIODIC_NOTIFICATION,
-				Component.literal("MineVibe"),
-				Component.literal(toast.text())));
-		// Bubbles arrive in M2; until then agent speech is only logged.
-		bridge.on(Messages.AGENT_SAY, Route.BRIDGE, say -> LOG.debug("{} says {}", say.agentId(), say.text() != null ? say.text() : say.bark()));
+		// ui.toast, agent.say and the rest of the UI group: dev.minevibe.client.ui.UiClientInit (one handler per type).
 		bridge.on(Messages.SERVER_SHUTDOWN, Route.BRIDGE, s -> LOG.info("MineVibe is shutting down ({})", s.reason()));
 	}
 

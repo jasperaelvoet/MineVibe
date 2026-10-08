@@ -17,7 +17,8 @@
 		],
 		"fabric-client-gametest": [
 			"dev.minevibe.gametest.client.MineVibeClientGameTests",
-			"dev.minevibe.gametest.agent.AgentClientGameTests"
+			"dev.minevibe.gametest.agent.AgentClientGameTests",
+			"dev.minevibe.gametest.ui.UiClientGameTests"
 		]
 	},
 	"depends": {
