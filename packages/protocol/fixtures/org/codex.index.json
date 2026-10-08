@@ -1,0 +1,38 @@
+{
+  "t": "codex.index",
+  "v": 1,
+  "pages": [
+    {
+      "id": "house-rules",
+      "title": "House rules",
+      "category": "rules",
+      "scope": "lasting",
+      "tags": [],
+      "author": {
+        "kind": "player",
+        "name": "Jasper"
+      },
+      "created": 1791484800000,
+      "updated": 1791484800000,
+      "rev": "a1b2c3d4",
+      "pinned": true
+    },
+    {
+      "id": "iron-cave",
+      "title": "Iron cave at (120, 40, -80)",
+      "category": "places",
+      "scope": "world",
+      "tags": ["iron", "mining"],
+      "author": {
+        "kind": "agent",
+        "name": "Cleo",
+        "agentId": "cleo"
+      },
+      "created": 1791484810000,
+      "updated": 1791484820000,
+      "rev": "3f2a9c1",
+      "pinned": false
+    }
+  ],
+  "truncated": false
+}

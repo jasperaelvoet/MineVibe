@@ -1,0 +1,11 @@
+{
+  "t": "codex.put",
+  "v": 1,
+  "id": "m-102",
+  "mode": "create",
+  "title": "Nether portal",
+  "body": "Portal at spawn, lit.",
+  "tags": ["nether"],
+  "category": "places",
+  "scope": "world"
+}

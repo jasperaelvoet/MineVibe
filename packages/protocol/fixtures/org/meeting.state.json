@@ -1,0 +1,30 @@
+{
+  "t": "meeting.state",
+  "v": 1,
+  "meetingId": "mtg-2",
+  "title": "Standup",
+  "phase": "updates",
+  "chair": "ada",
+  "speaker": "bram",
+  "attendees": [
+    {
+      "agentId": "ada",
+      "status": "seated",
+      "etaS": null
+    },
+    {
+      "agentId": "bram",
+      "status": "seated",
+      "etaS": null
+    },
+    {
+      "agentId": "cleo",
+      "status": "dialed_in",
+      "etaS": null
+    }
+  ],
+  "eventId": "ev-3",
+  "startedAt": 1791513600000,
+  "endsBy": 1791514200000,
+  "quick": false
+}

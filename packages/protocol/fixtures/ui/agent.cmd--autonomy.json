@@ -1,0 +1,8 @@
+{
+  "t": "agent.cmd",
+  "v": 1,
+  "id": "m-79",
+  "agentId": "ada",
+  "cmd": "autonomy",
+  "level": "proactive"
+}

@@ -1,0 +1,8 @@
+{
+  "t": "host.pick_folder",
+  "v": 1,
+  "id": "m-94",
+  "purpose": "vault",
+  "pcId": "linux-1",
+  "prompt": "Choose a folder for linux-1"
+}

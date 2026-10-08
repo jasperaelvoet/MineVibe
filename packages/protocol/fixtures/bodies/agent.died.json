@@ -1,0 +1,21 @@
+{
+  "t": "agent.died",
+  "v": 1,
+  "id": "m-50",
+  "agentId": "cleo",
+  "worldId": "world-7",
+  "cause": "Cleo was slain by Zombie",
+  "killer": "minecraft:zombie",
+  "day": 4,
+  "pos": {
+    "x": 141,
+    "y": 38,
+    "z": -81
+  },
+  "dim": "minecraft:overworld",
+  "grave": {
+    "x": 141,
+    "y": 38,
+    "z": -81
+  }
+}

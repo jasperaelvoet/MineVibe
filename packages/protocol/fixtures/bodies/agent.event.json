@@ -1,0 +1,12 @@
+{
+  "t": "agent.event",
+  "v": 1,
+  "agentId": "cleo",
+  "kind": "reflex",
+  "urgency": 1,
+  "text": "Fought off a zombie while mining",
+  "data": {
+    "reflex": "self_defense",
+    "priority": 70
+  }
+}

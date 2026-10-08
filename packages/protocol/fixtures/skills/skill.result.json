@@ -1,0 +1,18 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "jobId": "job-31",
+  "agentId": "cleo",
+  "status": "done",
+  "result": {
+    "mined": {
+      "minecraft:raw_iron": 12
+    },
+    "pos": {
+      "x": 140,
+      "y": 38,
+      "z": -80
+    }
+  },
+  "durationMs": 184000
+}
