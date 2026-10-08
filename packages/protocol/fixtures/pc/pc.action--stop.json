@@ -1,0 +1,7 @@
+{
+  "t": "pc.action",
+  "v": 1,
+  "id": "m-92",
+  "action": "stop",
+  "pcId": "linux-1"
+}

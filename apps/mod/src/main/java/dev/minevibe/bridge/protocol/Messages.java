@@ -15,6 +15,15 @@ import static dev.minevibe.bridge.protocol.Schema.union;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import dev.minevibe.bridge.msg.Bodies;
+import dev.minevibe.bridge.msg.Debug;
+import dev.minevibe.bridge.msg.Org;
+import dev.minevibe.bridge.msg.Pc;
+import dev.minevibe.bridge.msg.Seats;
+import dev.minevibe.bridge.msg.Skills;
+import dev.minevibe.bridge.msg.Types;
+import dev.minevibe.bridge.msg.Ui;
+import dev.minevibe.bridge.msg.World;
 import dev.minevibe.bridge.protocol.MessageType.Direction;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -23,8 +32,10 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The M1 message catalog as Gson records, mirroring {@code packages/protocol/src/messages.ts} and
- * {@code registry.ts}. Records hold the payload only; the envelope keys ({@code t v id re}) travel beside them.
+ * The message catalog. The M1 records (session, world, toast, bubble, chat line, debug) live here; every later group's
+ * records and types live in {@code dev.minevibe.bridge.msg} ({@link Bodies}, {@link Skills}, {@link Seats}, {@link Ui},
+ * {@link Pc}, {@link Org}, {@link Debug}) and are registered below, mirroring {@code packages/protocol/src/messages/*.ts}
+ * and {@code registry.ts}. Records hold the payload only; the envelope keys ({@code t v id re}) travel beside them.
  * Optional and nullable fields are {@code @Nullable} references.
  */
 public final class Messages {
@@ -40,23 +51,24 @@ public final class Messages {
 	// Shared value types (regexes are full-match, without ^ and $)
 	// -----------------------------------------------------------------------------------------
 
-	public static final String WORLD_ID_REGEX = "[a-z0-9][a-z0-9-]{0,63}";
-	public static final String PLAYER_NAME_REGEX = "[A-Za-z0-9_]{1,16}";
-	public static final String MESSAGE_ID_REGEX = "[\\x21-\\x7e]+";
-	public static final String TYPE_NAME_REGEX = "[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*)*";
-	public static final String ERROR_CODE_REGEX = "[A-Z][A-Z0-9_]{1,63}";
+	public static final String WORLD_ID_REGEX = Types.WORLD_ID_REGEX;
+	public static final String PLAYER_NAME_REGEX = Types.PLAYER_NAME_REGEX;
+	public static final String MESSAGE_ID_REGEX = Types.MESSAGE_ID_REGEX;
+	public static final String TYPE_NAME_REGEX = Types.TYPE_NAME_REGEX;
+	public static final String ERROR_CODE_REGEX = Types.ERROR_CODE_REGEX;
 
-	static final Schema.Node AGENT_ID = string(1, 64, "[A-Za-z0-9][A-Za-z0-9_-]{0,63}", "agent id");
-	static final Schema.Node WORLD_ID = string(1, 64, WORLD_ID_REGEX, "world id: 1-64 of [a-z0-9-]");
-	static final Schema.Node HANDLE = string(2, 12, "[a-z][a-z0-9]{1,11}", "handle");
-	static final Schema.Node PLAYER_NAME = string(1, 16, PLAYER_NAME_REGEX, "Minecraft player name");
-	static final Schema.Node MESSAGE_ID = string(1, 64, MESSAGE_ID_REGEX, "printable ASCII without spaces");
-	static final Schema.Node TYPE_NAME = string(1, 64, TYPE_NAME_REGEX, "dotted lowercase type name");
-	static final Schema.Node ERROR_CODE = string(2, 64, ERROR_CODE_REGEX, "SCREAMING_SNAKE_CASE");
-	static final Schema.Node INT32 = integer(Integer.MIN_VALUE, Integer.MAX_VALUE);
-	static final Schema.Node NON_NEG_INT = integer(0, MAX_SAFE_INTEGER);
-	static final Schema.Node POS_INT = integer(1, MAX_SAFE_INTEGER);
-	static final Schema.Obj BLOCK_POS = object().req("x", INT32).req("y", INT32).req("z", INT32);
+	// The shared value schemas live in Types (no dependencies, so group classes can use them without init cycles).
+	static final Schema.Node AGENT_ID = Types.AGENT_ID;
+	static final Schema.Node WORLD_ID = Types.WORLD_ID;
+	static final Schema.Node HANDLE = Types.HANDLE;
+	static final Schema.Node PLAYER_NAME = Types.PLAYER_NAME;
+	static final Schema.Node MESSAGE_ID = Types.MESSAGE_ID;
+	static final Schema.Node TYPE_NAME = Types.TYPE_NAME;
+	static final Schema.Node ERROR_CODE = Types.ERROR_CODE;
+	static final Schema.Node INT32 = Types.INT32;
+	static final Schema.Node NON_NEG_INT = Types.NON_NEG_INT;
+	static final Schema.Node POS_INT = Types.POS_INT;
+	static final Schema.Obj BLOCK_POS = Types.BLOCK_POS;
 
 	public static boolean isWorldId(@Nullable String s) {
 		return s != null && s.matches(WORLD_ID_REGEX);
@@ -78,18 +90,17 @@ public final class Messages {
 		public static final String PHASE_IN_WORLD = "in_world";
 	}
 
-	/** N→M. Handshake reply with a state snapshot. */
+	/** N→M. Handshake reply with a state snapshot ({@code budget} is null until known). */
 	public record HelloOk(
 			HelloOk.Server server,
 			HelloOk.@Nullable World world,
 			HelloOk.Player player,
 			JsonObject settings,
-			List<JsonObject> pcs,
-			/** An object, or {@code JsonNull} until known (M4). */
-			JsonElement budget,
+			List<Pc.PcInfo> pcs,
+			Pc.@Nullable Budget budget,
 			List<CrewMember> crew,
 			Brains brains,
-			List<JsonObject> pending) {
+			List<Ui.PendingCard> pending) {
 		public record Server(String version, int protocol) {}
 
 		public record World(String id, int gen, boolean fresh) {}
@@ -104,21 +115,33 @@ public final class Messages {
 	/** N→M. Open (or create) this world. */
 	public record WorldOpen(String worldId, int gen, boolean fresh, boolean hardcore, String difficulty, @Nullable String seed) {}
 
-	/** M→N. World lifecycle updates; pushed at 1 Hz while ready. */
+	/** M→N. World lifecycle updates; pushed at 1 Hz while ready (with {@code clockTime} and {@code player}). */
 	public record WorldState(
 			String worldId,
 			String phase,
 			@Nullable Boolean fresh,
 			@Nullable BlockPos spawn,
 			@Nullable JsonObject office,
-			@Nullable Long clockTime) {
+			@Nullable Long clockTime,
+			World.@Nullable PlayerState player) {
 		public static final String LOADING = "loading";
 		public static final String READY = "ready";
 		public static final String CLOSING = "closing";
 		public static final String CLOSED = "closed";
 
+		/** Without the player snapshot (the M1 shape). */
+		public WorldState(
+				String worldId,
+				String phase,
+				@Nullable Boolean fresh,
+				@Nullable BlockPos spawn,
+				@Nullable JsonObject office,
+				@Nullable Long clockTime) {
+			this(worldId, phase, fresh, spawn, office, clockTime, null);
+		}
+
 		public static WorldState phase(String worldId, String phase) {
-			return new WorldState(worldId, phase, null, null, null, null);
+			return new WorldState(worldId, phase, null, null, null, null, null);
 		}
 	}
 
@@ -149,8 +172,15 @@ public final class Messages {
 
 	public record AgentSay(String agentId, @Nullable String text, @Nullable String bark, String style, int ttlMs) {}
 
-	/** M→N request. {@code to} is {@code "all"} or an array of agent ids. */
-	public record ChatSend(JsonElement to, String text) {}
+	/**
+	 * M→N request. {@code to} is {@code "all"} or an array of agent ids; {@code mode} (AgentScreen) is chat, reply, task or
+	 * interrupt.
+	 */
+	public record ChatSend(JsonElement to, String text, @Nullable String mode) {
+		public ChatSend(JsonElement to, String text) {
+			this(to, text, null);
+		}
+	}
 
 	/** A success reply; {@code result} holds every key except the envelope keys. */
 	public record Ok(JsonObject result) {}
@@ -175,23 +205,16 @@ public final class Messages {
 
 	private static final Map<String, MessageType<?>> CATALOG = new LinkedHashMap<>();
 
-	private static Schema.Obj envelope(String t) {
-		return object().req("t", literal(t)).req("v", literal(PROTOCOL_VERSION)).opt("id", MESSAGE_ID).opt("re", MESSAGE_ID);
-	}
-
-	private static <P> MessageType<P> register(String name, Direction direction, Class<P> payload, Schema.Obj schema) {
-		MessageType<P> type = new MessageType<>(name, direction, envelope(name).extend(schema), payload);
-		if (CATALOG.putIfAbsent(name, type) != null) throw new IllegalStateException("duplicate message type " + name);
+	private static <P> MessageType<P> register(MessageType<P> type) {
+		if (CATALOG.putIfAbsent(type.name(), type) != null) throw new IllegalStateException("duplicate message type " + type.name());
 		return type;
 	}
 
-	private static final Schema.Obj CREW_MEMBER = object()
-			.req("agentId", AGENT_ID)
-			.req("handle", HANDLE)
-			.req("name", string(1, 32))
-			.req("role", string(1, 32))
-			.req("ceo", bool())
-			.req("status", oneOf("alive", "dead", "dismissed"));
+	private static <P> MessageType<P> register(String name, Direction direction, Class<P> payload, Schema.Obj schema) {
+		return register(Types.type(name, direction, payload, schema));
+	}
+
+	private static final Schema.Obj CREW_MEMBER = Types.CREW_MEMBER;
 
 	public static final MessageType<Hello> HELLO = register("hello", Direction.MOD_TO_NODE, Hello.class, object()
 			.req("mod", string(1, 64))
@@ -205,20 +228,11 @@ public final class Messages {
 			.req("world", nullable(object().req("id", WORLD_ID).req("gen", POS_INT).req("fresh", bool())))
 			.req("player", object().req("name", PLAYER_NAME))
 			.req("settings", anyObject())
-			.req("pcs", array(object().req("pcId", string(1, 64)), 0, Integer.MAX_VALUE))
-			.req("budget", nullable(anyObject()))
+			.req("pcs", array(Pc.PC_INFO, 0, 64))
+			.req("budget", nullable(Pc.BUDGET))
 			.req("crew", array(CREW_MEMBER, 0, Integer.MAX_VALUE))
-			.req("brains", object()
-					.req("inFlight", NON_NEG_INT)
-					.req("queued", NON_NEG_INT)
-					.req("max", NON_NEG_INT)
-					.req("mode", oneOf("normal", "tired", "asleep"))
-					.req("utilization", nullable(decimal(0, 1)))
-					.req("resetsAt", nullable(NON_NEG_INT)))
-			.req("pending", array(
-					object().req("id", string(1, 64)).req("agentId", AGENT_ID).req("kind", oneOf("question", "plan", "hire")),
-					0,
-					Integer.MAX_VALUE)));
+			.req("brains", Types.BRAINS)
+			.req("pending", array(Ui.PENDING_CARD, 0, 256)));
 
 	public static final MessageType<WorldOpen> WORLD_OPEN = register("world.open", Direction.NODE_TO_MOD, WorldOpen.class, object()
 			.req("worldId", WORLD_ID)
@@ -239,7 +253,8 @@ public final class Messages {
 							object().req("kind", string(1, 32)).req("pos", BLOCK_POS).opt("pcId", string(1, 64)),
 							0,
 							Integer.MAX_VALUE)))
-			.opt("clockTime", NON_NEG_INT));
+			.opt("clockTime", NON_NEG_INT)
+			.opt("player", World.PLAYER_STATE));
 
 	public static final MessageType<PlayerDied> PLAYER_DIED = register("player.died", Direction.MOD_TO_NODE, PlayerDied.class, object()
 			.req("worldId", WORLD_ID)
@@ -291,7 +306,8 @@ public final class Messages {
 
 	public static final MessageType<ChatSend> CHAT_SEND = register("chat.send", Direction.MOD_TO_NODE, ChatSend.class, object()
 			.req("to", union(literal("all"), array(AGENT_ID, 1, 16)))
-			.req("text", string(1, CHAT_MAX_LENGTH)));
+			.req("text", string(1, CHAT_MAX_LENGTH))
+			.opt("mode", oneOf("chat", "reply", "task", "interrupt")));
 
 	public static final MessageType<DebugState> DEBUG_STATE =
 			register("debug.state", Direction.NODE_TO_MOD, DebugState.class, object());
@@ -311,6 +327,12 @@ public final class Messages {
 			.req("re", MESSAGE_ID)
 			.req("code", ERROR_CODE)
 			.req("msg", string(0, 2000)));
+
+	static {
+		for (List<MessageType<?>> group : List.of(Bodies.TYPES, Skills.TYPES, Seats.TYPES, Ui.TYPES, Pc.TYPES, Org.TYPES, Debug.TYPES)) {
+			for (MessageType<?> type : group) register(type);
+		}
+	}
 
 	/** Envelope-only schema, for messages whose type is unknown. */
 	static final Schema.Obj ENVELOPE = object()
@@ -342,5 +364,47 @@ public final class Messages {
 		public static final String DISCONNECTED = "DISCONNECTED";
 		public static final String NO_SERVER = "NO_SERVER";
 		public static final String NOT_READY = "NOT_READY";
+		public static final String CHAT_UNKNOWN = "CHAT_UNKNOWN";
+		public static final String CHAT_AMBIGUOUS = "CHAT_AMBIGUOUS";
+		public static final String CHAT_UNAVAILABLE = "CHAT_UNAVAILABLE";
+		public static final String CHAT_INVALID_ANSWER = "CHAT_INVALID_ANSWER";
+		public static final String CHAT_REJECTED = "CHAT_REJECTED";
+		// Bodies and skills
+		public static final String UNKNOWN_AGENT = "UNKNOWN_AGENT";
+		public static final String UNKNOWN_SKILL = "UNKNOWN_SKILL";
+		public static final String BAD_ARGS = "BAD_ARGS";
+		public static final String BUSY = "BUSY";
+		public static final String UNKNOWN_JOB = "UNKNOWN_JOB";
+		// Seats
+		public static final String PC_DOWN = "PC_DOWN";
+		public static final String SEAT_CAP = "SEAT_CAP";
+		public static final String RESERVED = "RESERVED";
+		public static final String OCCUPIED_BY_PLAYER = "OCCUPIED_BY_PLAYER";
+		public static final String UNREACHABLE = "UNREACHABLE";
+		public static final String NO_SEAT = "NO_SEAT";
+		// Cards and rights
+		public static final String CARD_GONE = "CARD_GONE";
+		public static final String FORBIDDEN = "FORBIDDEN";
+		// PCs
+		public static final String PC_UNKNOWN = "PC_UNKNOWN";
+		public static final String OVER_BUDGET = "OVER_BUDGET";
+		public static final String NO_CAPACITY = "NO_CAPACITY";
+		public static final String MACOS_SLOTS_FULL = "MACOS_SLOTS_FULL";
+		public static final String BAD_MOUNT = "BAD_MOUNT";
+		public static final String ENGINE_DOWN = "ENGINE_DOWN";
+		// Codex, calendar, meetings
+		public static final String CODEX_NOT_FOUND = "CODEX_NOT_FOUND";
+		public static final String CODEX_CONFLICT = "CODEX_CONFLICT";
+		public static final String CODEX_SIMILAR = "CODEX_SIMILAR";
+		public static final String CODEX_TOO_LARGE = "CODEX_TOO_LARGE";
+		public static final String CODEX_SECRET = "CODEX_SECRET";
+		public static final String CODEX_INVALID = "CODEX_INVALID";
+		public static final String CODEX_BUDGET = "CODEX_BUDGET";
+		public static final String CALENDAR_NOT_FOUND = "CALENDAR_NOT_FOUND";
+		public static final String CALENDAR_INVALID = "CALENDAR_INVALID";
+		public static final String CALENDAR_LIMIT = "CALENDAR_LIMIT";
+		public static final String MEETING_BUSY = "MEETING_BUSY";
+		public static final String MEETING_NOT_FOUND = "MEETING_NOT_FOUND";
+		public static final String NO_QUORUM = "NO_QUORUM";
 	}
 }

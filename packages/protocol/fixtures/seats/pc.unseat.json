@@ -1,0 +1,11 @@
+{
+  "t": "pc.unseat",
+  "v": 1,
+  "pcId": "linux-1",
+  "occupant": {
+    "kind": "agent",
+    "agentId": "bram"
+  },
+  "reason": "kick",
+  "reserved": false
+}

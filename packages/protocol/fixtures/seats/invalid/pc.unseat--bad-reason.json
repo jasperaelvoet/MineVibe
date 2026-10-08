@@ -1,0 +1,10 @@
+{
+  "t": "pc.unseat",
+  "v": 1,
+  "pcId": "linux-1",
+  "occupant": {
+    "kind": "player"
+  },
+  "reason": "bored",
+  "reserved": false
+}

@@ -1,0 +1,22 @@
+{
+  "t": "world.state",
+  "v": 1,
+  "worldId": "world-7",
+  "phase": "ready",
+  "clockTime": 25000,
+  "player": {
+    "pos": {
+      "x": 10.5,
+      "y": 64.0,
+      "z": -38.25
+    },
+    "dim": "minecraft:overworld",
+    "hp": 18.5,
+    "maxHp": 20,
+    "food": 17,
+    "inCombat": false,
+    "idleMs": 1200,
+    "screen": "PcControlScreen",
+    "seatedPc": "linux-1"
+  }
+}

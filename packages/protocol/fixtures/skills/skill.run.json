@@ -1,0 +1,15 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-30",
+  "jobId": "job-31",
+  "agentId": "cleo",
+  "skill": "mine",
+  "args": {
+    "block": "#minecraft:iron_ores",
+    "count": 12,
+    "radius": 32
+  },
+  "waitMs": 20000,
+  "replace": false
+}

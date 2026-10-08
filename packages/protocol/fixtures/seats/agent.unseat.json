@@ -1,0 +1,9 @@
+{
+  "t": "agent.unseat",
+  "v": 1,
+  "id": "n-42",
+  "agentId": "bram",
+  "seatEpoch": 3,
+  "reason": "away",
+  "keepReservation": true
+}

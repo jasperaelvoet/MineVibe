@@ -1,0 +1,11 @@
+{
+  "t": "agent.brain",
+  "v": 1,
+  "agentId": "bram",
+  "model": "opus",
+  "status": "thinking",
+  "activity": "Running npm test",
+  "autonomy": "listen",
+  "planFirst": true,
+  "pingInstead": false
+}

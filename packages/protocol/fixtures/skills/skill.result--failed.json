@@ -1,0 +1,13 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "id": "m-60",
+  "jobId": "job-33",
+  "agentId": "bram",
+  "status": "failed",
+  "error": {
+    "code": "UNREACHABLE",
+    "msg": "No path to (300, 70, 12) within 4000 nodes"
+  },
+  "durationMs": 5200
+}

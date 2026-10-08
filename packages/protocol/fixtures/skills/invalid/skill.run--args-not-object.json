@@ -1,0 +1,11 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-30",
+  "jobId": "job-1",
+  "agentId": "ada",
+  "skill": "eat",
+  "args": [],
+  "waitMs": 0,
+  "replace": false
+}

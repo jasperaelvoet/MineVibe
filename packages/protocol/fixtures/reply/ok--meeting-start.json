@@ -1,0 +1,18 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "m-120",
+  "meetingId": null,
+  "etas": [
+    {
+      "agentId": "ada",
+      "etaS": 12,
+      "dialIn": false
+    },
+    {
+      "agentId": "cleo",
+      "etaS": null,
+      "dialIn": true
+    }
+  ]
+}

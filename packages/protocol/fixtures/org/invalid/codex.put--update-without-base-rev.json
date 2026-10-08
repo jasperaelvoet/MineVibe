@@ -1,0 +1,12 @@
+{
+  "t": "codex.put",
+  "v": 1,
+  "id": "m-1",
+  "mode": "update",
+  "pageId": "house-rules",
+  "title": "House rules",
+  "body": "x",
+  "tags": [],
+  "category": "rules",
+  "scope": "lasting"
+}

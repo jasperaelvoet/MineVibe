@@ -1,0 +1,16 @@
+{
+  "t": "calendar.put",
+  "v": 1,
+  "id": "m-1",
+  "title": "Water crops",
+  "kind": "task",
+  "assignees": ["bram"],
+  "clock": "game",
+  "at": 0,
+  "recurrence": {
+    "kind": "every_n_days"
+  },
+  "durationMin": 10,
+  "catchUp": "skip",
+  "runWhileAway": false
+}
