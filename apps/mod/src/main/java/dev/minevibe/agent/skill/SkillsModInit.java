@@ -3,6 +3,7 @@ package dev.minevibe.agent.skill;
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.skill.seat.Seats;
+import dev.minevibe.bridge.MineVibeBridge;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
@@ -19,6 +20,8 @@ public final class SkillsModInit implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		SkillCommands.register();
+		// Before the bridge connects (the client entrypoint installs it after every common one has run).
+		MineVibeBridge.onInstall(SkillBridge::attach);
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			SkillService.get(server);
 			BodyEvents.reset();

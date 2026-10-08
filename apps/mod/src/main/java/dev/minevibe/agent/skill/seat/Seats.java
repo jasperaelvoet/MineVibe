@@ -21,19 +21,18 @@ public final class Seats {
 		return meetings;
 	}
 
-	/** Replaces the built-in {@link SimplePcRegistry} with the PC blocks' registry. */
+	/** Replaces the built-in {@link SimplePcRegistry} with the PC blocks' registry ({@code PcModInit} does). */
 	public static void installPcRegistry(final PcRegistry registry) {
 		pcs = registry;
 	}
 
+	/** Installs the meeting tables' chairs ({@code OrgModInit} does); without them meeting seats fail with NO_SEAT. */
 	public static void installMeetingSeats(final @Nullable MeetingSeats seats) {
 		meetings = seats;
 	}
 
-	/** A fresh built-in registry when the server stops, unless a real one was installed. */
+	/** The server stopped: the registry forgets that world's chairs, reservations and cooldowns. */
 	public static void onServerStopped() {
-		if (pcs instanceof SimplePcRegistry) {
-			pcs = new SimplePcRegistry();
-		}
+		pcs.onServerStopped();
 	}
 }

@@ -12,8 +12,12 @@ import dev.minevibe.bridge.protocol.MessageType;
 import dev.minevibe.bridge.protocol.Messages;
 import dev.minevibe.client.org.calendar.CalendarScreen;
 import dev.minevibe.client.org.codex.CodexScreen;
+import dev.minevibe.client.chat.ChatCompletions;
 import dev.minevibe.client.org.meeting.MeetingHud;
+import dev.minevibe.client.org.meeting.MeetingHudModel;
 import dev.minevibe.client.org.render.CodexBookRenderer;
+import dev.minevibe.client.ui.AgentView;
+import dev.minevibe.client.ui.UiState;
 import dev.minevibe.org.OrgContent;
 import dev.minevibe.org.OrgScreens;
 import java.util.ArrayList;
@@ -36,7 +40,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Client entrypoint for the org tools (PLAN §6.6, §7.5, §7.8): opens CodexScreen and CalendarScreen from the blocks
  * and the calendar item, renders the codex's open book and the meeting HUD, keeps {@link OrgClientState} fed from the
- * bridge ({@code codex.index}, {@code calendar.state}, {@code meeting.state}), and reports the office to Node.
+ * bridge ({@code codex.index}, {@code calendar.state}, {@code meeting.state}), and its crew list from the UI's state.
  * {@code -Dminevibe.org.fake=true} answers the screens from an in-memory {@link FakeOrgBackend} instead of Node.
  */
 public final class OrgClientInit implements ClientModInitializer {
@@ -44,11 +48,11 @@ public final class OrgClientInit implements ClientModInitializer {
 	/** How often the crew list is refreshed from the integrated server's bodies, in client ticks. */
 	private static final int CREW_REFRESH_TICKS = 40;
 
-	/** Shared with {@link #attach}, which may run before this entrypoint (from MineVibeClient). */
-	private static final OfficeReporter OFFICE = new OfficeReporter();
 	private static @Nullable BridgeClient attachedTo;
 
 	private int ticks;
+	/** {@link UiState#revision()} when the crew was last copied from it. */
+	private long crewRevision = -1;
 
 	@Override
 	public void onInitializeClient() {
@@ -77,7 +81,10 @@ public final class OrgClientInit implements ClientModInitializer {
 		ClientLifecycleEvents.CLIENT_STARTED.register(mc -> attachInstalled());
 		ClientTickEvents.END_CLIENT_TICK.register(this::tick);
 		// A meeting ends with its world; the Codex and calendar are re-sent by Node when they change.
-		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> mc.execute(() -> OrgClientState.get().forgetMeeting()));
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> mc.execute(() -> {
+			OrgClientState.get().forgetMeeting();
+			ChatCompletions.meetingActive(false);
+		}));
 	}
 
 	private static void attachInstalled() {
@@ -89,10 +96,10 @@ public final class OrgClientInit implements ClientModInitializer {
 
 	/**
 	 * Hooks the org tools into {@code bridge}: the {@code codex.index}, {@code calendar.state} and {@code meeting.state}
-	 * pushes into {@link OrgClientState}, and the crew list and office report on every handshake. Node pushes the Codex
-	 * and the calendar right after {@code hello.ok}, and a push with no handler yet is dropped (Node only re-sends on a
-	 * change), so MineVibeClient calls this before {@code bridge.start()}. Idempotent; the entrypoint calls it again as
-	 * a fallback.
+	 * pushes into {@link OrgClientState}, and the crew list on every handshake. Node pushes the Codex and the calendar
+	 * right after {@code hello.ok}, and a push with no handler yet is dropped (Node only re-sends on a change), so
+	 * MineVibeClient calls this before {@code bridge.start()}. Idempotent; the entrypoint calls it again as a fallback.
+	 * (The office reaches Node in {@code world.state}, from {@code WorldTicker}.)
 	 */
 	public static synchronized void attach(final BridgeClient bridge) {
 		if (attachedTo == bridge) {
@@ -102,11 +109,13 @@ public final class OrgClientInit implements ClientModInitializer {
 		OrgClientState state = OrgClientState.get();
 		on(bridge, Org.CODEX_INDEX, state::onCodexIndex);
 		on(bridge, Org.CALENDAR_STATE, state::onCalendarState);
-		on(bridge, Org.MEETING_STATE, state::onMeetingState);
+		on(bridge, Org.MEETING_STATE, meeting -> {
+			state.onMeetingState(meeting);
+			ChatCompletions.meetingActive(MeetingHudModel.isActive(state.meeting()));
+		});
 		bridge.addListener(new BridgeClient.ConnectionListener() {
 			@Override
 			public void onHandshake(final Messages.HelloOk helloOk) {
-				OFFICE.onHandshake();
 				List<Messages.CrewMember> crew = List.copyOf(helloOk.crew());
 				Minecraft.getInstance().execute(() -> state.crew().setNodeCrew(crew));
 			}
@@ -126,10 +135,26 @@ public final class OrgClientInit implements ClientModInitializer {
 	}
 
 	private void tick(final Minecraft mc) {
-		OFFICE.tick(mc);
+		// Node's crew list belongs to the UI's crew.state handler: copy it from UiState when it changes.
+		UiState ui = UiState.get();
+		if (ui.revision() != this.crewRevision) {
+			this.crewRevision = ui.revision();
+			if (!ui.agents().isEmpty()) {
+				OrgClientState.get().crew().setNodeMembers(nodeCrew(ui));
+			}
+		}
 		if (++this.ticks % CREW_REFRESH_TICKS == 0) {
 			refreshCrew(mc);
 		}
+	}
+
+	/** The crew as the UI state knows it (from {@code crew.state}). */
+	static List<CrewDirectory.Member> nodeCrew(final UiState ui) {
+		List<CrewDirectory.Member> members = new ArrayList<>();
+		for (AgentView a : ui.agents()) {
+			members.add(new CrewDirectory.Member(a.agentId(), a.name(), a.handle(), a.role(), a.ceo(), a.status()));
+		}
+		return members;
 	}
 
 	/** Reads the agent bodies on the integrated server thread and hands the list to the client thread. */

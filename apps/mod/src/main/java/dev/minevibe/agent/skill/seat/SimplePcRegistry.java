@@ -8,10 +8,10 @@ import dev.minevibe.bridge.msg.Types;
 import dev.minevibe.world.seat.OfficeChairBlock;
 import dev.minevibe.world.seat.SeatEntity;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -22,14 +22,17 @@ import net.minecraft.world.level.Level;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The built-in {@link PcRegistry}, used until the PC blocks install theirs: PCs are registered by hand (a chair per PC
- * id), statuses come from {@link #setStatus}, the occupant is whoever rides the chair's seat entity, and changes go to
- * Node as {@code pc.seat} / {@code pc.unseat}.
+ * The built-in {@link PcRegistry}: PCs registered by hand (a chair per PC id: {@code /mv pcbind}, GameTests), statuses
+ * from {@link #setStatus}, the occupant is whoever rides the chair's seat entity, and changes go to Node as
+ * {@code pc.seat} / {@code pc.unseat} through the skill service's outbox (which GameTests record). The PC blocks'
+ * registry ({@code dev.minevibe.pc.PcSeatRegistry}) extends it with the desks' chairs, so binding by hand keeps
+ * working once it is installed. Server thread only, except {@link #setStatus} / {@link #status} (any thread).
  */
-public final class SimplePcRegistry implements PcRegistry {
+public class SimplePcRegistry implements PcRegistry {
 	private final Map<String, Chair> chairs = new LinkedHashMap<>();
-	private final Map<String, String> statuses = new HashMap<>();
-	private final Map<String, Reservation> reservations = new HashMap<>();
+	/** Written from bridge threads by the real registry's {@code pc.state} listener. */
+	private final Map<String, String> statuses = new ConcurrentHashMap<>();
+	private final Map<String, Reservation> reservations = new LinkedHashMap<>();
 
 	/** Binds {@code pcId} to the chair at {@code pos}. */
 	public void register(final String pcId, final ResourceKey<Level> dim, final BlockPos chair) {
@@ -40,6 +43,11 @@ public final class SimplePcRegistry implements PcRegistry {
 		this.chairs.remove(pcId);
 		this.statuses.remove(pcId);
 		this.reservations.remove(pcId);
+	}
+
+	/** Forgets one PC's status ({@link #status} then answers null, or what a subclass falls back to). */
+	public void clearStatus(final String pcId) {
+		this.statuses.remove(pcId);
 	}
 
 	@Override
@@ -59,7 +67,8 @@ public final class SimplePcRegistry implements PcRegistry {
 
 	@Override
 	public Types.@Nullable Occupant occupant(final MinecraftServer server, final String pcId) {
-		Chair chair = this.chairs.get(pcId);
+		// Through chair(): a subclass finds chairs of its own (the PC blocks' desks).
+		Chair chair = this.chair(server, pcId);
 		if (chair == null) {
 			return null;
 		}
@@ -123,5 +132,17 @@ public final class SimplePcRegistry implements PcRegistry {
 	@Override
 	public List<String> pcIds(final MinecraftServer server) {
 		return new ArrayList<>(this.chairs.keySet());
+	}
+
+	/** PCs a reservation names (a reservation can outlive its desk's chunk; the sweep must still see it). */
+	protected List<String> reservedPcIds() {
+		return new ArrayList<>(this.reservations.keySet());
+	}
+
+	@Override
+	public void onServerStopped() {
+		this.chairs.clear();
+		this.reservations.clear();
+		this.statuses.clear();
 	}
 }

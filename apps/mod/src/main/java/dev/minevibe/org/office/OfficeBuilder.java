@@ -53,9 +53,12 @@ import org.jspecify.annotations.Nullable;
  *       only the room inside the walls is cleared. Blocks are set without neighbour updates, so nothing outside reacts
  *       (no redstone, no falling sand), but shapes still connect (panes, doors, beds).</li>
  *   <li><b>Workstations.</b> Both slots are marked with polished andesite on the floor and reported as
- *       {@code workstation} slots. The PC track installs a {@link WorkstationPlacer} that puts the first PC's desk
- *       and chair into slot 1 (PLAN §7.5: OfficeBuilder places {@code linux-1}'s workstation); without one the slots
- *       stay empty for whoever places PCs later.</li>
+ *       {@code workstation} slots. The PC blocks install a {@link WorkstationPlacer} ({@code PcModInit}) that puts
+ *       the first PC's desk and chair into slot 1, bound to {@code linux-1} (PLAN §7.5), and that slot then carries
+ *       the {@code pcId}; without a placer the slots stay empty for whoever places PCs later.</li>
+ *   <li><b>Desks in the way.</b> A {@code pc_desk} inside the footprint (rebuilding with {@code /mv office build})
+ *       is removed through the placer first ({@link WorkstationPlacer#removeQuietly}): no item drop, and the PC is
+ *       not unplugged. Overwriting it like any other block would break it with both side effects.</li>
  * </ul>
  */
 public final class OfficeBuilder {
@@ -73,17 +76,27 @@ public final class OfficeBuilder {
 	public static final int TORCHES = 32;
 
 	/**
-	 * Puts a PC workstation into an office slot. The PC track installs one ({@link #installWorkstationPlacer}); the
-	 * desk is a multiblock with its own placement code, so the office never places {@code pc_desk} blocks itself.
+	 * Puts a PC workstation into an office slot and clears desks out of the office's way. The PC blocks install one
+	 * ({@link #installWorkstationPlacer}); the desk is a multiblock with its own placement code, so the office never
+	 * places or removes {@code pc_desk} blocks itself.
 	 */
 	@FunctionalInterface
 	public interface WorkstationPlacer {
 		/**
 		 * Places a workstation whose desk main column stands at {@code origin}, its screen facing {@code facing}, its
 		 * side column at {@code origin.relative(facing.getClockWise())} and its chair at {@code origin.relative(facing)}.
-		 * Those four cells (and the two above the desk) are free when this runs. Returns false when it placed nothing.
+		 * Those four cells (and the two above the desk) are free when this runs. Returns the id of the PC the new desk
+		 * shows (the slot's {@code pcId}), or null when it placed nothing (or a desk bound to no PC yet).
 		 */
-		boolean place(ServerLevel level, BlockPos origin, Direction facing);
+		@Nullable String place(ServerLevel level, BlockPos origin, Direction facing);
+
+		/**
+		 * Removes the desk a block at {@code pos} belongs to, without dropping its item or unplugging its PC. Returns
+		 * false when {@code pos} is not part of a desk. The office calls it for every cell it is about to overwrite.
+		 */
+		default boolean removeQuietly(final ServerLevel level, final BlockPos pos) {
+			return false;
+		}
 	}
 
 	private static volatile @Nullable WorkstationPlacer workstationPlacer;
@@ -94,6 +107,11 @@ public final class OfficeBuilder {
 	/** Installs (or with null removes) the placer for the first workstation slot. */
 	public static void installWorkstationPlacer(final @Nullable WorkstationPlacer placer) {
 		workstationPlacer = placer;
+	}
+
+	/** The installed placer ({@code PcModInit}'s), or null. */
+	public static @Nullable WorkstationPlacer workstationPlacer() {
+		return workstationPlacer;
 	}
 
 	/**
@@ -128,6 +146,16 @@ public final class OfficeBuilder {
 
 	/** Builds the office with its north-west floor corner at {@code origin} and returns where everything ended up. */
 	public static OfficeLayout build(final ServerLevel level, final BlockPos origin) {
+		return build(level, origin, workstationPlacer);
+	}
+
+	/**
+	 * Builds the office with {@code placer} for its workstation slot and desks in the way (null: none) instead of the
+	 * installed one. GameTests that run side by side use it, so no test swaps the global placer under another.
+	 */
+	public static OfficeLayout build(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
+		// 0. Desks in the footprint leave quietly (overwriting a desk part breaks the whole desk with side effects).
+		clearDesks(level, origin, placer);
 		// 1. Foundation, floor, walls, roof. The roof goes on before the room is cleared, so nothing falls in.
 		for (int x = 0; x < OfficePlan.WIDTH; x++) {
 			for (int z = 0; z <= OfficePlan.PORCH_Z; z++) {
@@ -170,7 +198,7 @@ public final class OfficeBuilder {
 			Kind.CHEST, Kind.CODEX, Kind.WORKSTATION, Kind.WALL_CALENDAR, Kind.LANTERN, Kind.OUTDOOR_TORCH)) {
 			int index = 0;
 			for (Piece piece : OfficePlan.piecesOf(pass)) {
-				place(level, origin, piece, index++, slots);
+				place(level, origin, piece, index++, slots, placer);
 			}
 		}
 		Piece firstTable = OfficePlan.piecesOf(Kind.MEETING_TABLE).getFirst();
@@ -183,7 +211,10 @@ public final class OfficeBuilder {
 		return new OfficeLayout(origin, spawn, direction(OfficePlan.SPAWN_FACING).toYRot(), slots);
 	}
 
-	private static void place(final ServerLevel level, final BlockPos origin, final Piece piece, final int index, final List<OfficeLayout.Slot> slots) {
+	private static void place(
+		final ServerLevel level, final BlockPos origin, final Piece piece, final int index, final List<OfficeLayout.Slot> slots,
+		final @Nullable WorkstationPlacer placer
+	) {
 		BlockPos pos = at(origin, piece.x(), piece.y(), piece.z());
 		Direction facing = direction(piece.facing());
 		switch (piece.kind()) {
@@ -227,10 +258,8 @@ public final class OfficeBuilder {
 				for (int[] cell : piece.cells()) {
 					set(level, at(origin, cell[0], 0, cell[2]), SLOT_MARKER);
 				}
-				if (index == 0) {
-					placeWorkstation(level, pos, facing);
-				}
-				slots.add(new OfficeLayout.Slot(OfficeLayout.WORKSTATION, pos, null));
+				String pcId = index == 0 ? placeWorkstation(level, pos, facing, placer) : null;
+				slots.add(new OfficeLayout.Slot(OfficeLayout.WORKSTATION, pos, pcId));
 			}
 			case WALL_CALENDAR -> {
 				set(level, pos, OrgContent.WALL_CALENDAR.defaultBlockState().setValue(WallCalendarBlock.FACING, facing));
@@ -241,18 +270,50 @@ public final class OfficeBuilder {
 		}
 	}
 
-	/** Lets the PC track's placer fill a workstation slot; without one the slot stays marked and empty. */
-	private static void placeWorkstation(final ServerLevel level, final BlockPos pos, final Direction facing) {
-		WorkstationPlacer placer = workstationPlacer;
+	/**
+	 * Lets the PC blocks' placer fill a workstation slot; without one the slot stays marked and empty. Returns the PC
+	 * the slot shows now, or null.
+	 */
+	private static @Nullable String placeWorkstation(final ServerLevel level, final BlockPos pos, final Direction facing, final @Nullable WorkstationPlacer placer) {
+		if (placer == null) {
+			return null;
+		}
+		try {
+			String pcId = placer.place(level, pos, facing);
+			if (pcId == null) {
+				MineVibeMod.LOGGER.info("No PC's workstation placed in the office at {}; leaving the slot marked", pos.toShortString());
+			}
+			return pcId;
+		} catch (RuntimeException e) {
+			MineVibeMod.LOGGER.warn("Could not place a workstation in the office at {}; leaving the slot marked", pos.toShortString(), e);
+			return null;
+		}
+	}
+
+	/** Removes every desk with a block in the office's footprint or porch (any height up to the roof), quietly. */
+	private static void clearDesks(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
 		if (placer == null) {
 			return;
 		}
-		try {
-			if (!placer.place(level, pos, facing)) {
-				MineVibeMod.LOGGER.info("No workstation placed in the office at {}; leaving the slot marked", pos.toShortString());
+		int removed = 0;
+		for (int x = 0; x < OfficePlan.WIDTH; x++) {
+			for (int z = 0; z <= OfficePlan.PORCH_Z; z++) {
+				if (!OfficePlan.inFootprint(x, z) && !OfficePlan.isPorch(x, z)) {
+					continue;
+				}
+				for (int y = 0; y <= OfficePlan.ROOF; y++) {
+					try {
+						if (placer.removeQuietly(level, at(origin, x, y, z))) {
+							removed++;
+						}
+					} catch (RuntimeException e) {
+						MineVibeMod.LOGGER.warn("Could not clear a desk at {}", at(origin, x, y, z).toShortString(), e);
+					}
+				}
 			}
-		} catch (RuntimeException e) {
-			MineVibeMod.LOGGER.warn("Could not place a workstation in the office at {}; leaving the slot marked", pos.toShortString(), e);
+		}
+		if (removed > 0) {
+			MineVibeMod.LOGGER.info("Cleared {} desk(s) out of the office's way at {}", removed, origin.toShortString());
 		}
 	}
 

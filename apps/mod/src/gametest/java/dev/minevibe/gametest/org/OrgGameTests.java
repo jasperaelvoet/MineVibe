@@ -70,7 +70,9 @@ public final class OrgGameTests {
 	public void officeBuildsFully(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
 		BlockPos origin = helper.absolutePos(OFFICE_AT);
-		OfficeLayout layout = OfficeBuilder.build(level, origin);
+		// No PC placer: the shell is under test here (the PC blocks' placer has its own test, in a batch of its own:
+		// every office it builds binds linux-1, and one PC has one desk).
+		OfficeLayout layout = OfficeBuilder.build(level, origin, null);
 
 		// Shell: floor, walls, roof.
 		for (int x = 0; x < OfficePlan.WIDTH; x++) {
@@ -168,7 +170,7 @@ public final class OrgGameTests {
 	public void officeIsDeterministic(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
 		BlockPos origin = helper.absolutePos(OFFICE_AT);
-		OfficeLayout first = OfficeBuilder.build(level, origin);
+		OfficeLayout first = OfficeBuilder.build(level, origin, null);
 		List<BlockState> before = snapshot(helper);
 		// Wipe the site back to its stone floor and build again.
 		for (int x = 0; x < 16; x++) {
@@ -178,7 +180,7 @@ public final class OrgGameTests {
 				}
 			}
 		}
-		OfficeLayout second = OfficeBuilder.build(level, origin);
+		OfficeLayout second = OfficeBuilder.build(level, origin, null);
 		helper.assertValueEqual(second, first, "layout");
 		List<BlockState> after = snapshot(helper);
 		for (int i = 0; i < before.size(); i++) {
@@ -194,7 +196,7 @@ public final class OrgGameTests {
 		ServerLevel level = helper.getLevel();
 		// Floor three blocks above the stone: two layers of foundation must fill the gap under every cell.
 		BlockPos origin = helper.absolutePos(new BlockPos(1, 3, 1));
-		OfficeBuilder.build(level, origin);
+		OfficeBuilder.build(level, origin, null);
 		for (int x = 0; x < OfficePlan.WIDTH; x++) {
 			for (int z = 0; z <= OfficePlan.PORCH_Z; z++) {
 				if (!OfficePlan.inFootprint(x, z) && !OfficePlan.isPorch(x, z)) {
@@ -230,27 +232,25 @@ public final class OrgGameTests {
 		BlockPos origin = helper.absolutePos(OFFICE_AT);
 		List<String> calls = new ArrayList<>();
 		// The PC track's placer gets slot 1 with every cell of a pc_desk workstation free (desk, monitor row, chair).
-		OfficeBuilder.installWorkstationPlacer((placeLevel, at, facing) -> {
+		// Passed to this build only: other tests build offices at the same time.
+		OfficeBuilder.WorkstationPlacer placer = (placeLevel, at, facing) -> {
 			BlockPos side = at.relative(facing.getClockWise());
 			boolean free = placeLevel.getBlockState(at).isAir() && placeLevel.getBlockState(side).isAir() && placeLevel.getBlockState(at.above()).isAir()
 				&& placeLevel.getBlockState(side.above()).isAir() && placeLevel.getBlockState(at.relative(facing)).isAir();
 			calls.add(at.subtract(origin).toShortString() + " " + facing + " " + free);
 			placeLevel.setBlock(at, Blocks.LECTERN.defaultBlockState(), Block.UPDATE_CLIENTS);
-			return true;
-		});
-		OfficeLayout layout;
-		try {
-			layout = OfficeBuilder.build(level, origin);
-		} finally {
-			OfficeBuilder.installWorkstationPlacer(null);
-		}
+			return "gt-lectern";
+		};
+		OfficeLayout layout = OfficeBuilder.build(level, origin, placer);
 		OfficePlan.Piece first = OfficePlan.piecesOf(OfficePlan.Kind.WORKSTATION).getFirst();
 		helper.assertValueEqual(calls, List.of(first.x() + ", " + first.y() + ", " + first.z() + " south true"), "placer calls");
 		BlockPos slot = layout.firstSlot(OfficeLayout.WORKSTATION).pos();
 		helper.assertValueEqual(slot, origin.offset(first.x(), first.y(), first.z()), "the reported slot is the desk's main column");
 		helper.assertTrue(level.getBlockState(slot).is(Blocks.LECTERN), "what the placer put there stays");
+		helper.assertValueEqual(layout.firstSlot(OfficeLayout.WORKSTATION).pcId(), "gt-lectern", "the slot names the PC the placer bound");
+		helper.assertTrue(layout.slotsOf(OfficeLayout.WORKSTATION).get(1).pcId() == null, "the second slot stays free");
 		// Without a placer nothing but the floor markers goes into the slots.
-		OfficeBuilder.build(level, origin);
+		OfficeBuilder.build(level, origin, null);
 		helper.assertTrue(level.getBlockState(slot).isAir(), "no desk without a placer");
 		helper.succeed();
 	}

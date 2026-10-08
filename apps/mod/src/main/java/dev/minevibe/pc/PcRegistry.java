@@ -119,12 +119,20 @@ public final class PcRegistry {
 		return CHAIRS.get(GlobalPos.of(level.dimension(), chairPos));
 	}
 
-	/** The PC whose chair {@code entity} sits on, if any. */
+	/**
+	 * The PC whose chair {@code entity} sits on, if any. A meeting seat is never a PC seat (PLAN 6.3: no PcControlScreen,
+	 * no model swap, no {@code maxSeated} count), even on a chair that is also some desk's chair.
+	 */
 	public static @Nullable String pcSeatedAt(final Entity entity) {
-		if (entity.getVehicle() instanceof SeatEntity seat && seat.chairPos() != null && entity.level() instanceof ServerLevel level) {
+		if (entity.getVehicle() instanceof SeatEntity seat && seat.isPcSeat() && seat.chairPos() != null && entity.level() instanceof ServerLevel level) {
 			return pcAtChair(level, seat.chairPos());
 		}
 		return null;
+	}
+
+	/** Every PC with a loaded desk. */
+	public static java.util.Set<String> pcIds() {
+		return java.util.Set.copyOf(DESKS.keySet());
 	}
 
 	// -----------------------------------------------------------------------------------------
@@ -216,6 +224,8 @@ public final class PcRegistry {
 				SEATED.put(is.getKey(), is.getValue());
 				UNSEAT_REASONS.remove(is.getKey());
 				LOG.info("Player sat down at PC {}", is.getValue());
+				// A chair kept for an agent (away asking the player, or walking over) is the player's now.
+				PcSeatRegistry.INSTANCE.playerSat(is.getValue());
 				sink.seat(is.getValue(), Types.Occupant.player());
 			}
 		}

@@ -20,8 +20,9 @@ import org.jspecify.annotations.Nullable;
  * {@code agent.approach} and {@code calendar.fired} (other modules may observe them too); with {@code -Dminevibe.e2e}
  * also {@code debug.kill_agent} and {@code debug.set_clock}.
  *
- * <p>The bridge is created by the client entrypoint, after the common one, so this registers on the first
- * {@code SERVER_STARTING} (once per bridge instance).
+ * <p>The bridge is created by the client entrypoint, after the common ones: {@link SkillsModInit} hands
+ * {@link #attach} to {@code MineVibeBridge.onInstall}, so the handlers exist before the bridge connects (a request that
+ * arrives with no integrated server running is answered {@code NO_SERVER}, not "no handler"). Once per bridge instance.
  */
 public final class SkillBridge {
 	private static @Nullable BridgeClient registeredOn;
@@ -30,9 +31,16 @@ public final class SkillBridge {
 	}
 
 	/** Registers on the installed bridge, once. Safe to call again. */
-	public static synchronized void ensureRegistered() {
+	public static void ensureRegistered() {
 		BridgeClient bridge = MineVibeBridge.get();
-		if (bridge == null || bridge == registeredOn) {
+		if (bridge != null) {
+			attach(bridge);
+		}
+	}
+
+	/** Registers on {@code bridge}, once ({@code MineVibeBridge.onInstall}: before it starts). */
+	public static synchronized void attach(final BridgeClient bridge) {
+		if (bridge == registeredOn) {
 			return;
 		}
 		registeredOn = bridge;

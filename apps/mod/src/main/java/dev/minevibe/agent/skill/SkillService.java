@@ -22,6 +22,8 @@ import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.bridge.protocol.Messages;
 import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
+import dev.minevibe.org.office.OfficeLayout;
+import dev.minevibe.org.office.OfficeService;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -369,6 +371,7 @@ public final class SkillService {
 		}
 		AgentPlayer agent = service.agent(id);
 		boolean restored = false;
+		BlockPos door = null;
 		if (agent == null) {
 			if (service.isDead(id)) {
 				throw new BridgeException("AGENT_DEAD", id + " is dead; agents never come back");
@@ -385,7 +388,8 @@ public final class SkillService {
 				level = l;
 				pos = Vec3.atBottomCenterOf(Refs.pos(req.at().pos()));
 			} else {
-				pos = this.defaultSpawn(level);
+				door = officeDoor(this.server);
+				pos = door != null ? this.spawnNear(level, door) : this.defaultSpawn(level);
 			}
 			try {
 				agent = service.spawn(id, mcName(req.name(), req.handle()), role, level, pos, 0.0F);
@@ -396,8 +400,13 @@ public final class SkillService {
 			}
 		}
 		this.adopt(agent);
-		if (req.at() != null && agent.brain().home() == null) {
-			agent.brain().setHome(Refs.pos(req.at().pos()));
+		if (agent.brain().home() == null) {
+			// Where it was told to appear (or the office door it appeared at) is home: Shelter at dusk goes there.
+			if (req.at() != null) {
+				agent.brain().setHome(Refs.pos(req.at().pos()));
+			} else if (door != null) {
+				agent.brain().setHome(door);
+			}
 		}
 		IdleMode mode = IdleMode.byId(req.mode());
 		agent.brain().setMode(mode == null ? IdleMode.FOLLOW : mode, null);
@@ -417,7 +426,25 @@ public final class SkillService {
 		return n.length() > 16 ? n.substring(0, 16) : n.isEmpty() ? "Agent" : n;
 	}
 
-	/** Near the player when one is in the overworld (the office door comes from Node as {@code at}), else world spawn. */
+	/**
+	 * The starter office's door (its {@code door} slot: the porch cell in front of it), where agents spawned without
+	 * {@code at} appear (protocol §7.3); null when the world has no office.
+	 */
+	static @Nullable BlockPos officeDoor(final MinecraftServer server) {
+		OfficeLayout office = OfficeService.layout(server);
+		OfficeLayout.Slot door = office == null ? null : office.firstSlot(OfficeLayout.DOOR);
+		return door == null ? null : door.pos();
+	}
+
+	/** On {@code base} when one can stand there (or its chunk is not loaded yet), else the nearest spot around it. */
+	private Vec3 spawnNear(final ServerLevel level, final BlockPos base) {
+		if (!level.isLoaded(base) || AgentNavigator.isStandable(level, base)) {
+			return Vec3.atBottomCenterOf(base);
+		}
+		return this.standableAround(level, base, 1);
+	}
+
+	/** Near the player when one is in the overworld, else world spawn (worlds without an office). */
 	private Vec3 defaultSpawn(final ServerLevel level) {
 		BlockPos base = null;
 		for (ServerPlayer p : this.server.getPlayerList().getPlayers()) {
@@ -429,7 +456,12 @@ public final class SkillService {
 		if (base == null) {
 			base = this.server.getWorldData().overworldData().getRespawnData().pos();
 		}
-		for (int r = 2; r <= 6; r++) {
+		return this.standableAround(level, base, 2);
+	}
+
+	/** The first standable spot {@code minRadius} to 6 blocks out from {@code base} (straight lines), else {@code base}. */
+	private Vec3 standableAround(final ServerLevel level, final BlockPos base, final int minRadius) {
+		for (int r = minRadius; r <= 6; r++) {
 			for (int dy = 2; dy >= -3; dy--) {
 				for (int[] d : new int[][] {{r, 0}, {-r, 0}, {0, r}, {0, -r}}) {
 					BlockPos p = base.offset(d[0], dy, d[1]);
@@ -553,6 +585,10 @@ public final class SkillService {
 			PcRegistry.Reservation r = pcs.reservation(pcId);
 			if (r != null && !agent.agentId().equals(r.agentId())) {
 				throw new BridgeException(Codes.RESERVED, pcId + " is reserved for " + r.agentId());
+			}
+			int cooldown = pcs.resitCooldownSeconds(agent.agentId(), pcId);
+			if (cooldown > 0) {
+				throw new BridgeException(Codes.RESERVED, agent.agentId() + " was kicked off " + pcId + "; it can sit there again in " + cooldown + " s");
 			}
 			// End the current job (an earlier seat job for this chair, say) before reserving: its end releases its own
 			// "coming" reservation, which would otherwise be the one made here.

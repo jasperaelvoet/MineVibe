@@ -12,6 +12,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -44,8 +45,22 @@ public final class Codexes {
 	}
 
 	/**
+	 * Where an agent stands to "file" at the codex nearest to {@code near} within {@code radius} blocks: the cell in
+	 * front of its anchor ({@code anchor.relative(facing)}), or null when there is none. The {@code codex} place of
+	 * {@code goto} (the "file it" walk, PLAN §6.6).
+	 */
+	public static @Nullable BlockPos filingSpot(final ServerLevel level, final BlockPos near, final int radius) {
+		BlockPos anchor = nearest(level, near, radius);
+		if (anchor == null) {
+			return null;
+		}
+		BlockState state = level.getBlockState(anchor);
+		return state.getBlock() instanceof CodexBlock ? anchor.relative(state.getValue(CodexBlock.FACING)) : anchor;
+	}
+
+	/**
 	 * The anchor of the complete codex nearest to {@code near} within {@code radius} blocks, or null. The spot to walk
-	 * to is in front of it: {@code anchor.relative(facing)}.
+	 * to is in front of it: {@code anchor.relative(facing)} ({@link #filingSpot}).
 	 */
 	public static @Nullable BlockPos nearest(final ServerLevel level, final BlockPos near, final int radius) {
 		long max = (long)radius * radius;

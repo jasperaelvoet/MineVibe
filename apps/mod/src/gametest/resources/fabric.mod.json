@@ -17,7 +17,8 @@
 			"dev.minevibe.gametest.org.OrgGameTests",
 			"dev.minevibe.gametest.agent.SkillGameTests",
 			"dev.minevibe.gametest.agent.SkillMoreGameTests",
-			"dev.minevibe.gametest.pc.PcGameTests"
+			"dev.minevibe.gametest.pc.PcGameTests",
+			"dev.minevibe.gametest.agent.SeatWiringGameTests"
 		],
 		"fabric-client-gametest": [
 			"dev.minevibe.gametest.client.MineVibeClientGameTests",
