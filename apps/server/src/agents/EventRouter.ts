@@ -16,6 +16,7 @@ import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE
 import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
 import type { UsageMode } from './UsageGovernor.js';
 import { failureText } from './world/guard.js';
+import { type McToolsVersion, mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 
 /** One queued item for an agent. */
 export type Routed =
@@ -108,10 +109,15 @@ export class EventRouter {
   readonly #tellWakes = new Map<string, number[]>();
   readonly #autonomous = new Map<string, number[]>();
   readonly #playerName: () => string;
+  /** The agents' `mc` tool set: the texts name its tools. */
+  readonly #mcTools: McToolsVersion;
 
-  constructor(options: { now?: () => number; playerName?: () => string } = {}) {
+  constructor(
+    options: { now?: () => number; playerName?: () => string; mcTools?: McToolsVersion | undefined } = {},
+  ) {
     this.#now = options.now ?? Date.now;
     this.#playerName = options.playerName ?? (() => 'the player');
+    this.#mcTools = options.mcTools ?? mcToolsVersion();
   }
 
   /** An `agent.event` from the mod. `kicked` / `unseated` are handled by the seat flow, not here. */
@@ -282,7 +288,7 @@ export class EventRouter {
         mode: 'wake',
         priority: 1,
         kind: 'SCHEDULED',
-        text: `${control(agent.nonce, 'SCHEDULED', `Calendar task ${fired.eventId} (occurrence ${fired.occurrence}). When done, call mcp__mc__report_task{eventId:"${fired.eventId}", status}.`)}\n${wrapNote({ author: 'calendar', kind: 'calendar', attrs: { event: fired.eventId }, text: body })}`,
+        text: `${control(agent.nonce, 'SCHEDULED', `Calendar task ${fired.eventId} (occurrence ${fired.occurrence}). When done, call ${mcRefs(this.#mcTools).reportTaskWith(fired.eventId)}.`)}\n${wrapNote({ author: 'calendar', kind: 'calendar', attrs: { event: fired.eventId }, text: body })}`,
         key: `scheduled:${fired.eventId}:${fired.occurrence}`,
       },
     };

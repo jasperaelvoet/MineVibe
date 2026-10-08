@@ -60,6 +60,7 @@ import {
   type Recurrence,
   RING_SIZE,
 } from './types.js';
+import { mcRefs } from '../../contracts/mcRefs.js';
 
 export interface CalendarLimits {
   /** Lateness that still counts as on time. */
@@ -1133,7 +1134,7 @@ export class CalendarService {
     // The control line carries only Node's own words (the id, the time): the title, the place and the task were
     // written by the player or an agent, so they stay inside the data envelope (PLAN §6.6 "Firing", principle 6).
     // The crew tags this line with the assignee's session nonce, so shared text here would pass for Node's.
-    const headline = `Calendar task [${ev.id}] due ${when}${late ? ' (late)' : ''}; what and where are below. When finished, call mcp__mc__report_task{event_id:"${ev.id}", status}.`;
+    const headline = `Calendar task [${ev.id}] due ${when}${late ? ' (late)' : ''}; what and where are below. When finished, call ${mcRefs().reportTaskWith(ev.id)}.`;
     const lines = [singleLine(ev.title)];
     if (ev.location) lines.push(`Location: ${singleLine(ev.location, 80)}`);
     if (ev.task && ev.task !== ev.title) lines.push(ev.task);

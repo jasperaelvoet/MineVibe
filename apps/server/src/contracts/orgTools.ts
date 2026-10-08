@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { authorLabel, singleLine, wrapNote } from '../agents/envelope.js';
 import { type Actor, ApiError, isApiError } from './common.js';
 import type { CalendarEventInput, OrgAgentTools, OrgApi, OrgToolResult } from './OrgApi.js';
+import { mcRefs } from './mcRefs.js';
 
 /** Day N hh:mm → overworld clock ticks (06:00 = tick 0 of the day; PLAN §6.6). */
 export function gameTimeToTicks(day: number, hour: number, minute: number): number {
@@ -76,7 +77,7 @@ export function parseWhen(
 function formatHits(hits: readonly CodexHit[]): string {
   if (hits.length === 0) return 'No Codex pages match.';
   const body = hits.map((h) => `[${h.id}] ${h.title} (${h.category}, ${h.scope})\n${h.snippet}`).join('\n\n');
-  return `${hits.length} page(s); read one with mcp__mc__codex_read{id}.\n${wrapNote({ author: 'the Codex', kind: 'codex', text: body })}`;
+  return `${hits.length} page(s); read one with ${mcRefs().codexRead}{id}.\n${wrapNote({ author: 'the Codex', kind: 'codex', text: body })}`;
 }
 
 function formatEvent(e: CalendarEvent): string {

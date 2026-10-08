@@ -145,14 +145,8 @@ export const SIT_WAIT_S = 60;
 /** `job{wait}` without `seconds`. */
 export const JOB_WAIT_DEFAULT_S = 30;
 
-/** Which `mc` tool set agents get: `MINEVIBE_MC_TOOLS=v1|v2` (the v1/v2 A/B; tools-v2-mc.md §14). */
-export type McToolsVersion = 'v1' | 'v2';
-export const DEFAULT_MC_TOOLS: McToolsVersion = 'v1';
-
-export function mcToolsVersion(env: Readonly<Record<string, string | undefined>> = process.env): McToolsVersion {
-  const v = env.MINEVIBE_MC_TOOLS?.trim().toLowerCase();
-  return v === 'v1' || v === 'v2' ? v : DEFAULT_MC_TOOLS;
-}
+/** Which `mc` tool set agents get: `MINEVIBE_MC_TOOLS=v1|v2` (contracts/mcRefs.ts). */
+export { DEFAULT_MC_TOOLS, type McToolsVersion, mcToolsVersion } from '../contracts/mcRefs.js';
 
 /** `memory.md` cap (PLAN §6.5). */
 export const MEMORY_MAX_BYTES = 8 * 1024;

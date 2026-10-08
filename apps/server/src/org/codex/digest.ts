@@ -8,6 +8,7 @@
 import { type ControlNonce, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
 import { formatCoords, pageAuthor } from './format.js';
 import type { CodexCategory, CodexPage } from './types.js';
+import { mcRefs } from '../../contracts/mcRefs.js';
 
 export interface DigestStats {
   readonly reads: Readonly<Record<string, number>>;
@@ -62,7 +63,7 @@ export function buildCodexDigest(
   const head = options.nonce.line(
     'CODEX',
     `Codex digest: ${pages.length} page(s) (${lasting} lasting, ${pages.length - lasting} in this world). ` +
-      `Use codex_search and codex_read; check the Codex before asking ${options.playerName}.`,
+      `Use ${mcRefs().codexSearch} and ${mcRefs().codexRead}; check the Codex before asking ${options.playerName}.`,
   );
   if (pages.length === 0) return head;
 
@@ -77,7 +78,7 @@ export function buildCodexDigest(
     for (const page of rules) {
       const body =
         page.body.length > RULE_PAGE_MAX_CHARS
-          ? `${page.body.slice(0, RULE_PAGE_MAX_CHARS)}… (codex_read ${page.id} for the rest)`
+          ? `${page.body.slice(0, RULE_PAGE_MAX_CHARS)}… (${mcRefs().codexReadWith(page.id)} for the rest)`
           : page.body;
       const block = wrapHouseRules({ author: pageAuthor(page), id: page.id, title: page.title }, body);
       parts.push(block);

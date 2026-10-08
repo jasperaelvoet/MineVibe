@@ -74,6 +74,7 @@ import { TranscriptStore } from './TranscriptStore.js';
 import { UsageGovernor } from './UsageGovernor.js';
 import { ConsentLedger, type GrantVerdict, grantScope } from './world/consent.js';
 import { PROTECTED, refusalOf } from './world/guard.js';
+import { mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 
 /** First names for agents (handles derive from them). */
 export const AGENT_NAMES = [
@@ -261,7 +262,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.scheduler = new BrainScheduler({ now: this.#now });
     this.governor = new UsageGovernor({ now: this.#now });
     this.supervisor = new BrainSupervisor({ now: this.#now, ...options.supervisor });
-    this.router = new EventRouter({ now: this.#now, playerName: options.playerName });
+    this.router = new EventRouter({ now: this.#now, playerName: options.playerName, mcTools: options.mcTools });
     this.pending = new PendingStore({
       fileOf: (agentId) => (this.#world ? join(this.#agentDir(agentId), 'pending.json') : null),
       onError: (err) => this.#log.warn({ err }, 'pending store'),
@@ -608,7 +609,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       control(
         nonce,
         'CODEX DIGEST',
-        `The Codex has ${index.pages.length} page(s). Read with mcp__mc__codex_read.`,
+        `The Codex has ${index.pages.length} page(s). Read with ${mcRefs(this.#mcTools()).codexRead}.`,
       ),
     ];
     if (lines.length > 0)
@@ -1190,6 +1191,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     });
     this.#deliver(this.router.tell(this.#routerAgent(from.record), this.#routerAgent(target), text));
     return `Told ${target.name}.`;
+  }
+
+  /** The agents' `mc` tool set (texts that name tools follow it). */
+  #mcTools(): McToolsVersion {
+    return this.#o.mcTools ?? mcToolsVersion();
   }
 
   #ceoRecord(): AgentRecord | undefined {

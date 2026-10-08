@@ -80,6 +80,7 @@ import {
   ReportTaskInput,
 } from './toolInputs.js';
 import { toWireCalendarFired, toWireCalendarState, toWireCodexIndex, toWireMeetingState } from './wire.js';
+import { mcRefs } from '../contracts/mcRefs.js';
 
 export type { OrgToolResult };
 
@@ -480,7 +481,7 @@ export class OrgServices {
       return {
         ok: false,
         code: 'NOT_FOUND',
-        text: `No Codex page "${singleLine(parsed.data.id, 64)}". Try codex_search.`,
+        text: `No Codex page "${singleLine(parsed.data.id, 64)}". Try ${mcRefs().codexSearch}.`,
       };
     }
     return { ok: true, text: formatPageForAgent(page) };

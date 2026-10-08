@@ -6,48 +6,10 @@
  * stays byte-stable and cached.
  */
 
-import type { McToolsVersion } from '../constants.js';
+import type { McToolsVersion } from '../../contracts/mcRefs.js';
 import { control } from '../envelope.js';
 
-export interface McRefs {
-  readonly calendarAdd: string;
-  readonly reportTask: string;
-  readonly codexSearch: string;
-  readonly codexRead: string;
-  readonly codexReadWith: (id: string) => string;
-  readonly reportTaskWith: (eventId: string) => string;
-  readonly look: string;
-  readonly find: string;
-  readonly gatherExact: string;
-}
-
-const V1: McRefs = {
-  calendarAdd: 'mcp__mc__calendar_add',
-  reportTask: 'mcp__mc__report_task',
-  codexSearch: 'mcp__mc__codex_search',
-  codexRead: 'mcp__mc__codex_read',
-  codexReadWith: (id) => `mcp__mc__codex_read{id:"${id}"}`,
-  reportTaskWith: (eventId) => `mcp__mc__report_task{event_id:"${eventId}", status}`,
-  look: 'mcp__mc__look_around',
-  find: 'mcp__mc__find',
-  gatherExact: 'mcp__mc__mine / mcp__mc__collect',
-};
-
-const V2: McRefs = {
-  calendarAdd: 'mcp__mc__calendar{action:"add"}',
-  reportTask: 'mcp__mc__calendar{action:"report"}',
-  codexSearch: 'mcp__mc__codex{action:"search"}',
-  codexRead: 'mcp__mc__codex{action:"read"}',
-  codexReadWith: (id) => `mcp__mc__codex{"action":"read","id":"${id}"}`,
-  reportTaskWith: (eventId) => `mcp__mc__calendar{"action":"report","id":"${eventId}","status":"done"}`,
-  look: 'mcp__mc__observe',
-  find: 'mcp__mc__find',
-  gatherExact: 'mcp__mc__gather',
-};
-
-export function mcRefs(version: McToolsVersion): McRefs {
-  return version === 'v2' ? V2 : V1;
-}
+export { type McRefs, mcRefs } from '../../contracts/mcRefs.js';
 
 /** v1 → v2 renames (N11), for a resumed session whose transcript holds v1 calls. */
 const V1_TO_V2 = [
