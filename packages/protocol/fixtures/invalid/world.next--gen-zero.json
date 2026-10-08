@@ -1,0 +1,14 @@
+{
+  "t": "world.next",
+  "v": 1,
+  "worldId": "world-1",
+  "gen": 0,
+  "summary": {
+    "worldId": "world-0",
+    "gen": 1,
+    "day": 1,
+    "cause": "fell",
+    "crewFates": [],
+    "vaultCommits": []
+  }
+}

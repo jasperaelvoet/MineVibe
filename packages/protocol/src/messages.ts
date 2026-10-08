@@ -267,3 +267,55 @@ export const ChatSendResult = z.object({
     .max(CHAT_MAX_LENGTH + 200),
 });
 export type ChatSendResult = z.infer<typeof ChatSendResult>;
+
+// ---------------------------------------------------------------------------------------------
+// Debug (E2E only). The mod handles these only when the game runs with `-Dminevibe.e2e=true`;
+// otherwise it answers `err NOT_HANDLED`. Type names are dotted lowercase like every other type.
+// ---------------------------------------------------------------------------------------------
+
+/** N→M request. Snapshot of the game client; the `ok` reply carries {@link DebugStateResult}. */
+export const DebugState = message('debug.state', {}).describe(
+  'E2E: snapshot of the client (screen, world, pause state, server ticks, player health).',
+);
+
+/** Keys of the `ok` reply to `debug.state`. */
+export const DebugStateResult = z.object({
+  /** Simple class name of the open screen (`BootScreen`, `GameOverScreen`, …), null when in game. */
+  screen: z.string().min(1).max(128).nullable(),
+  /** The world the mod is in (or loading), null on BootScreen before `world.open`. */
+  worldId: WorldId.nullable(),
+  /** That world's number, when known. */
+  gen: z.number().int().min(1).nullable(),
+  /** A client level and player exist. */
+  inWorld: z.boolean(),
+  hardcore: z.boolean().nullable(),
+  difficulty: z.enum(['peaceful', 'easy', 'normal', 'hard']).nullable(),
+  gameMode: z.enum(['survival', 'creative', 'adventure', 'spectator']).nullable(),
+  /** Commands allowed in this world (only in `-Dminevibe.dev=true` worlds). */
+  allowCommands: z.boolean().nullable(),
+  /** `Minecraft#isPaused()`. */
+  paused: z.boolean(),
+  /** Integrated server tick count, null without a server. */
+  serverTicks: NonNegInt.nullable(),
+  /** `IntegratedServer#isPaused()`, null without a server. */
+  serverPaused: z.boolean().nullable(),
+  /** Local player health, null when not in a world. */
+  hp: z.number().min(0).nullable(),
+  dead: z.boolean().nullable(),
+  /** Game JVM process id (lets the E2E harness kill the client). */
+  pid: NonNegInt,
+});
+export type DebugStateResult = z.infer<typeof DebugStateResult>;
+
+/** N→M request. Kills the local player on the integrated server (as `/kill` would). */
+export const DebugKillPlayer = message('debug.kill_player', {}).describe('E2E: kill the local player.');
+
+/** N→M request. Opens the in-game menu the way Esc does; the `ok` reply has `screen`. */
+export const DebugOpenMenu = message('debug.open_menu', {}).describe(
+  'E2E: open the in-game menu as Esc would.',
+);
+
+/** N→M request. Presses [Begin World #N+1] on the Game Over screen; `err NOT_READY` if it is not enabled. */
+export const DebugClickBegin = message('debug.click_begin', {}).describe(
+  'E2E: press Begin on the Game Over screen.',
+);

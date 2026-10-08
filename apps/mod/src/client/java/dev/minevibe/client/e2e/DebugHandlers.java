@@ -1,0 +1,101 @@
+package dev.minevibe.client.e2e;
+
+import dev.minevibe.bridge.BridgeClient;
+import dev.minevibe.bridge.BridgeClient.Route;
+import dev.minevibe.bridge.BridgeException;
+import dev.minevibe.bridge.protocol.Messages;
+import dev.minevibe.bridge.protocol.Messages.Codes;
+import dev.minevibe.client.ClientSession;
+import dev.minevibe.client.boot.GameOverScreen;
+import dev.minevibe.client.boot.ScreenRouter;
+import dev.minevibe.client.menu.MineVibeMenuScreen;
+import dev.minevibe.hardcore.HardcoreHooks;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.server.level.ServerPlayer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * E2E hooks (PLAN §5 "debug", §13.7), registered only with {@code -Dminevibe.e2e=true}. Without them the mod
+ * answers these requests with {@code err NOT_HANDLED}.
+ */
+public final class DebugHandlers {
+	private static final Logger LOG = LoggerFactory.getLogger("MineVibe/E2E");
+
+	private DebugHandlers() {}
+
+	public static void register(BridgeClient bridge) {
+		LOG.warn("E2E debug handlers are enabled (-Dminevibe.e2e=true)");
+		bridge.handle(Messages.DEBUG_STATE, Route.CLIENT, req -> state(Minecraft.getInstance()));
+		bridge.handle(Messages.DEBUG_KILL_PLAYER, Route.SERVER, req -> killPlayer());
+		bridge.handle(Messages.DEBUG_OPEN_MENU, Route.CLIENT, req -> openMenu(Minecraft.getInstance()));
+		bridge.handle(Messages.DEBUG_CLICK_BEGIN, Route.CLIENT, req -> clickBegin(Minecraft.getInstance()));
+	}
+
+	/** The {@code DebugStateResult} snapshot (every key present; null when not applicable). */
+	static Map<String, Object> state(Minecraft mc) {
+		Map<String, Object> m = new LinkedHashMap<>();
+		Screen screen = mc.gui.screen();
+		IntegratedServer server = mc.getSingleplayerServer();
+		ClientSession session = ClientSession.get();
+		boolean inWorld = mc.level != null && mc.player != null;
+		String worldId = server != null ? HardcoreHooks.levelId(server) : session.worldId();
+		if (screen instanceof GameOverScreen gameOver && !inWorld) worldId = gameOver.worldId();
+		m.put("screen", screen == null ? null : ScreenRouter.name(screen));
+		m.put("worldId", Messages.isWorldId(worldId) ? worldId : null);
+		m.put("gen", session.gen() > 0 && worldId != null && worldId.equals(session.worldId()) ? session.gen() : null);
+		m.put("inWorld", inWorld);
+		m.put("hardcore", mc.level != null ? mc.level.getLevelData().isHardcore() : null);
+		m.put("difficulty", mc.level != null ? mc.level.getLevelData().getDifficulty().getSerializedName() : null);
+		m.put("gameMode", mc.gameMode != null && inWorld ? mc.gameMode.getPlayerMode().getSerializedName() : null);
+		m.put("allowCommands", server != null ? server.getWorldData().isAllowCommands() : null);
+		m.put("paused", mc.isPaused());
+		m.put("serverTicks", server != null ? server.getTickCount() : null);
+		m.put("serverPaused", server != null ? server.isPaused() : null);
+		m.put("hp", mc.player != null ? Math.max(0f, mc.player.getHealth()) : null);
+		m.put("dead", mc.player != null ? mc.player.isDeadOrDying() : null);
+		m.put("pid", ProcessHandle.current().pid());
+		return m;
+	}
+
+	/** Server thread: kills the local player as {@code /kill} would. */
+	private static Map<String, Object> killPlayer() {
+		IntegratedServer server = Minecraft.getInstance().getSingleplayerServer();
+		if (server == null) throw new BridgeException(Codes.NO_SERVER, "no integrated server is running");
+		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+			if (server.isSingleplayerOwner(player.nameAndId())) {
+				if (player.isDeadOrDying()) throw new BridgeException(Codes.NOT_READY, "the player is already dead");
+				LOG.info("Killing the player (debug.kill_player)");
+				player.kill(player.level());
+				return Map.of();
+			}
+		}
+		throw new BridgeException(Codes.NOT_READY, "the local player is not in the world");
+	}
+
+	/** Opens the in-game menu the way Esc does ({@code Minecraft#pauseGame}). */
+	private static Map<String, Object> openMenu(Minecraft mc) {
+		if (mc.level == null || mc.player == null) throw new BridgeException(Codes.NOT_READY, "not in a world");
+		if (!(mc.gui.screen() instanceof MineVibeMenuScreen)) {
+			if (mc.gui.screen() != null) mc.gui.setScreen(null);
+			mc.pauseGame(false);
+		}
+		Screen screen = mc.gui.screen();
+		Map<String, Object> m = new LinkedHashMap<>();
+		m.put("screen", screen == null ? null : ScreenRouter.name(screen));
+		return m;
+	}
+
+	private static Map<String, Object> clickBegin(Minecraft mc) {
+		if (!(mc.gui.screen() instanceof GameOverScreen gameOver)) {
+			throw new BridgeException(Codes.NOT_READY, "not on the Game Over screen (" + ScreenRouter.name(mc.gui.screen()) + ")");
+		}
+		if (!gameOver.requestBegin()) throw new BridgeException(Codes.NOT_READY, "Begin is not enabled yet");
+		LOG.info("Begin pressed (debug.click_begin)");
+		return Map.of();
+	}
+}

@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   CHAT_MAX_LENGTH,
   createMessage,
+  DebugStateResult,
   directionOf,
   encodeMessage,
   exceedsTextFrameLimit,
@@ -123,5 +127,52 @@ describe('catalog helpers', () => {
     expect(isMessageType('world.close')).toBe(false);
     expect(isMessageType(7)).toBe(false);
     expect(isMessageType('__proto__')).toBe(false);
+  });
+});
+
+describe('debug messages (E2E)', () => {
+  const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
+
+  it('are requests from Node to the mod', () => {
+    for (const t of ['debug.state', 'debug.kill_player', 'debug.open_menu', 'debug.click_begin'] as const) {
+      expect(directionOf(t)).toBe('node_to_mod');
+      expect(createMessage(t, {}, { id: 'n-1' })).toEqual({ t, v: 1, id: 'n-1' });
+    }
+  });
+
+  it('DebugStateResult parses the payload of ok--debug-state.json', () => {
+    const {
+      t: _t,
+      v: _v,
+      re: _re,
+      ...payload
+    } = JSON.parse(readFileSync(join(fixturesDir, 'ok--debug-state.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const parsed = DebugStateResult.parse(payload);
+    expect(parsed.screen).toBe('MineVibeMenuScreen');
+    expect(parsed.paused).toBe(false);
+  });
+
+  it('DebugStateResult accepts a BootScreen snapshot with no world', () => {
+    expect(
+      DebugStateResult.safeParse({
+        screen: 'BootScreen',
+        worldId: null,
+        gen: null,
+        inWorld: false,
+        hardcore: null,
+        difficulty: null,
+        gameMode: null,
+        allowCommands: null,
+        paused: false,
+        serverTicks: null,
+        serverPaused: null,
+        hp: null,
+        dead: null,
+        pid: 1,
+      }).success,
+    ).toBe(true);
   });
 });

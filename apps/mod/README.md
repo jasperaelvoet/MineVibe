@@ -37,6 +37,36 @@ currently writes only a Windows URL, because of a foojay API quirk (see
 `docs/API_MAP_26.3.md` lists the verified 26.3 / Fabric API names and signatures that the mod
 relies on. Check there before guessing a name.
 
+## Running the client against Node
+
+The game never shows the title screen: BootScreen waits for Node's `world.open` over the bridge
+(`dev.minevibe.bridge.BridgeClient`). For the dev loop (PLAN §9.4):
+
+```bash
+npm run dev                      # repo root: bridge on 127.0.0.1:47800, writes .minevibe-dev/run/bridge.json
+cd apps/mod && ./gradlew runClient
+```
+
+`runClient` passes these to the game JVM as `-D` system properties. Each comes from a Gradle property
+(`-Pminevibe.e2e=true`) or, failing that, an environment variable:
+
+| Gradle property | Environment variable | Game JVM | Default |
+|---|---|---|---|
+| `minevibe.bridgeFile` | `MINEVIBE_BRIDGE_FILE` | `-Dminevibe.bridgeFile` (Node's `run/bridge.json`; the token never goes on a command line) | `<repo>/.minevibe-dev/run/bridge.json` |
+| `minevibe.e2e` | `MINEVIBE_E2E` | `-Dminevibe.e2e` (enables the `debug.*` bridge requests) | unset |
+| `minevibe.dev` | `MINEVIBE_DEV` | `-Dminevibe.dev` (new worlds allow `/` commands) | `true` |
+| `minevibe.parentPid` | `MINEVIBE_PARENT_PID` | `-Dminevibe.parentPid` (save and quit when that process exits) | unset |
+| `minevibe.runTag` | `MINEVIBE_RUN_TAG` | `-Dminevibe.runTag` (a marker to find the process with `pgrep -f`) | unset |
+| `minevibe.runDir` | `MINEVIBE_RUN_DIR` | game directory, relative to `apps/mod` | `run` |
+
+The dev server moves dead worlds from `apps/mod/run/saves` to `saves/_graveyard` (`MINEVIBE_SAVES_DIR`
+overrides the folder). `spikes/s7-boot/run.mjs` drives the whole boot and hardcore loop this way.
+
+Screens: `GuiSetScreenMixin` (the one `Gui#setScreen` choke point) shows BootScreen instead of TitleScreen
+and DisconnectedScreen, GameOverScreen instead of DeathScreen, and the non-pausing MineVibeMenuScreen
+instead of PauseScreen. Every change is logged as `[screen] <shown> (requested <asked>)`. Under client
+GameTests (`-Dfabric.client.gametest`) the redirects are off, because Fabric's runner expects TitleScreen.
+
 ## GameTests and the Minecraft EULA
 
 Running GameTests starts Minecraft. That is covered by the
