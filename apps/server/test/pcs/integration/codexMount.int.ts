@@ -241,6 +241,13 @@ describe('the Codex in a real PC (PLAN §6.6)', () => {
       expect(r.ok, `${user}: ${cmd}`).toBe(false);
       expect(r.stderr, cmd).toMatch(/Read-only file system|Permission denied/);
     }
+    // Root in the guest (cua has sudo) cannot lift the read-only flag either: it is the host's share, not a mount
+    // option the guest could change.
+    const remount = await sh(
+      'sudo -n mount -o remount,rw /mnt/codex; sudo -n touch /mnt/codex/x && sudo -n sh -c "echo hacked > /mnt/codex/lasting/smelting.md"',
+    );
+    note('remount_rw', { ok: remount.ok, stderr: remount.stderr.slice(0, 300) });
+    expect(remount.ok, 'remount rw + write as root').toBe(false);
     expect(readFileSync(join(codexDir, 'lasting', 'smelting.md'), 'utf8')).toBe(before);
     expect(existsSync(join(codexDir, 'x'))).toBe(false);
     expect((await sh('ls /mnt/codex/world')).stdout).toBe('iron-cave.md');

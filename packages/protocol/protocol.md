@@ -118,7 +118,9 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 - `ok` carries the request-specific result as extra keys (often none). A nullable key is sent as `null` at every
   depth (inside nested objects and arrays too; the mod's `ProtocolCodec.encodeOk` keeps nested nulls since
   2026-10-09), and an optional key is left out, so each side's reply schema can say `.nullable()` or `.optional()`
-  and mean it.
+  and mean it. Free-form JSON objects inside a result (`skill.run`'s `result`, `obs.query`'s `result`,
+  `debug.ui_request`'s `reply`) are written as pushes write them: a key whose value is `null` there is left out, so a
+  job result reads the same in the `skill.run` reply and in `skill.result`.
 - `err.code` is `SCREAMING_SNAKE_CASE`; `err.msg` is for humans (max 2000 characters).
 - A request that fails validation is answered `err BAD_MESSAGE`; a request nobody handles gets `NOT_HANDLED`.
 - Timeouts (sender side): 5 s for world queries, 15 s for configuration, 10 s default; skill calls use their own

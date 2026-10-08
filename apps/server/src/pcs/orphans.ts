@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { INSTANCE_ID_RE } from '../util/hostPaths.js';
@@ -21,7 +21,8 @@ import {
  *
  * An instance is an **orphan** only when its home is known to be gone and nothing can still be using it:
  * - its state dir comes from the instance registry (InstanceRegistry.ts), the export's owner file, or a known home;
- * - that state dir no longer exists (a home on an unmounted volume is "unknown", never gone);
+ * - that state dir no longer exists (a home on an unmounted volume, or in a folder this process may not read, is
+ *   "unknown", never gone);
  * - the process the registry names no longer runs (or it shut down cleanly), and, for an instance without a registry
  *   record, no other MineVibe process holds a lease on the engine.
  * Instances without any record of their home are left alone unless named explicitly (`instances`). Everything else is
@@ -68,7 +69,11 @@ export interface OrphanDeps {
   /** How many other MineVibe processes hold a live lease on the engine (EngineLeases.others). */
   readonly otherEngineUsers: () => Promise<number>;
   readonly probe?: ProcessProbe;
-  readonly exists?: (path: string) => boolean;
+  /**
+   * Whether a path exists; `'unknown'` when that cannot be told (default {@link pathExists}: a folder this process may
+   * not read, like a home in `~/Documents` without the TCC grant, is never taken for gone).
+   */
+  readonly exists?: (path: string) => boolean | 'unknown';
 }
 
 export interface OrphanOptions {
@@ -107,11 +112,34 @@ interface ExportEntry {
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
-/** Whether a state dir is gone: `unknown` when it sat on a volume that is not mounted now. */
-function homeState(stateDir: string, exists: (p: string) => boolean): 'exists' | 'gone' | 'unknown' {
-  if (exists(stateDir)) return 'exists';
+/**
+ * Whether a path exists. Only "no such file" counts as missing: any other error (EPERM from a TCC-protected folder this
+ * process has no grant for, EACCES, EIO, ...) is `'unknown'`, because `existsSync` would call such a home gone and a
+ * clean would then delete PCs that are still in use.
+ */
+export function pathExists(path: string): boolean | 'unknown' {
+  try {
+    statSync(path);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? false : 'unknown';
+  }
+}
+
+/**
+ * Whether a state dir is gone: `unknown` when it sat on a volume that is not mounted now, or when the check itself
+ * failed ({@link pathExists}).
+ */
+function homeState(
+  stateDir: string,
+  exists: (p: string) => boolean | 'unknown',
+): 'exists' | 'gone' | 'unknown' {
+  const here = exists(stateDir);
+  if (here === true) return 'exists';
+  if (here !== false) return 'unknown';
   const m = /^\/Volumes\/[^/]+/.exec(stateDir);
-  if (m && !exists(m[0])) return 'unknown';
+  if (m && exists(m[0]) !== true) return 'unknown';
   return 'gone';
 }
 
@@ -184,7 +212,7 @@ async function verdictOf(
   named: boolean,
   deps: OrphanDeps,
 ): Promise<{ verdict: InstanceVerdict; why: string }> {
-  const exists = deps.exists ?? existsSync;
+  const exists = deps.exists ?? pathExists;
   if (stateDir === null) {
     if (!named)
       return { verdict: 'unregistered', why: 'no record of its home (name it with --instance to remove it)' };
@@ -199,7 +227,10 @@ async function verdictOf(
   const home = homeState(stateDir, exists);
   if (home === 'exists') return { verdict: 'home_exists', why: `${stateDir} exists` };
   if (home === 'unknown')
-    return { verdict: 'unknown', why: `${stateDir} is on a volume that is not mounted` };
+    return {
+      verdict: 'unknown',
+      why: `cannot tell whether ${stateDir} exists (a volume that is not mounted, or a folder this process may not read)`,
+    };
   if (rec) {
     const live = await recordLiveness(rec, deps.probe ?? defaultProbe);
     if (live === 'alive') return { verdict: 'live', why: `pid ${rec.pid} still uses it` };

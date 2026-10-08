@@ -480,7 +480,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     const dir = this.#o.registryDir;
     if (!dir) return;
     try {
-      const rec = await currentRecord(this.instanceId, resolve(this.#o.stateDir), this.#label);
+      // The real path, as the instance id hashes it: a home reached through a symlink is never taken for gone when only
+      // the link went.
+      const rec = await currentRecord(this.instanceId, realpathLoose(this.#o.stateDir), this.#label);
       await writeInstanceRecord(dir, using ? rec : { ...rec, pid: null, started: null });
     } catch (err) {
       this.#log?.warn({ err: errText(err), dir }, 'could not write the PC instance registry');
@@ -1744,13 +1746,13 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   /**
    * `~/codex` → `/mnt/codex` in the guest (PLAN §6.6), made as the guest user once spacesd serves. The home volume
-   * keeps it; a `~/codex` the user replaced with a file or folder of their own is left alone. Best effort: a PC whose
-   * link failed still runs, and the Codex stays at `/mnt/codex`.
+   * keeps it. Anything already at `~/codex` (the link from an earlier boot, or a file, folder or link of the user's
+   * own) is left alone. Best effort: a PC whose link failed still runs, and the Codex stays at `/mnt/codex`.
    */
   async #linkCodex(p: PcRecord): Promise<void> {
     if (!this.codexPathOf(p.id)) return;
     const script = `[ -d ${CODEX_GUEST_PATH} ] || exit 0
-if [ -L "$HOME/codex" ] || [ ! -e "$HOME/codex" ]; then ln -sfn ${CODEX_GUEST_PATH} "$HOME/codex"; fi`;
+[ -e "$HOME/codex" ] || [ -L "$HOME/codex" ] || ln -s ${CODEX_GUEST_PATH} "$HOME/codex"`;
     try {
       const out = await this.pool.call(
         p.id,

@@ -132,10 +132,10 @@ describe('InteractionBroker (canUseTool)', () => {
   it('ExitPlanMode without a plan file: the card shows what the agent last said; a stale file loses to new prose', async () => {
     const { store, plans, said, call } = setup();
     said.text('Looking at the parser.');
-    said.toolUse();
+    said.toolUse('mcp__pc__bash');
     said.text('Plan:\n1. Add a test');
     said.text('2. Fix the tokenizer');
-    said.toolUse(); // the ExitPlanMode call itself
+    said.toolUse('ExitPlanMode'); // the ExitPlanMode call itself, streamed before the card is read
     let pending = call('ExitPlanMode', {});
     await next();
     let [card] = store.list('ada-1');
@@ -159,7 +159,7 @@ describe('InteractionBroker (canUseTool)', () => {
     });
 
     // Revised in prose only: the file was already shown, so the new words are the plan.
-    said.toolUse();
+    said.toolUse('mcp__pc__read');
     said.text('Shorter plan: fix it.');
     pending = call('ExitPlanMode', {});
     await next();
@@ -167,6 +167,58 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(card).toMatchObject({ plan: 'Shorter plan: fix it.' });
     store.resolve(card?.id ?? '', { kind: 'approved' });
     expect(await pending).toMatchObject({ behavior: 'allow' });
+  });
+
+  it('ExitPlanMode right after another tool call: words said before that call are not a plan', async () => {
+    const { store, said, call } = setup();
+    said.text('Let me look at the tokenizer first.');
+    said.toolUse('mcp__pc__bash');
+    said.toolUse('ExitPlanMode');
+    const pending = call('ExitPlanMode', {});
+    await next();
+    const [card] = store.list('ada-1');
+    expect(card).toMatchObject({ kind: 'plan', plan: MISSING_PLAN_TEXT });
+    store.resolve(card?.id ?? '', { kind: 'denied', reason: 'no plan' });
+    expect(await pending).toMatchObject({ behavior: 'deny' });
+  });
+
+  it('a plan file shown before a session restart is not new to the next broker: fresh prose wins', async () => {
+    const first = setup();
+    first.plans.write('/Users/jasper/.claude/plans/p.md', '# Old plan');
+    let pending = first.call('ExitPlanMode', {});
+    await next();
+    let [card] = first.store.list('ada-1');
+    expect(card).toMatchObject({ plan: '# Old plan' });
+    first.store.resolve(card?.id ?? '', { kind: 'revise', feedback: 'smaller steps' });
+    await pending;
+
+    // The session restarts (crash, Retry): a new broker over the same PlanCapture, as AgentBrain makes it.
+    const said = new TurnText(() => 2000);
+    const broker = createInteractionBroker({
+      agentId: 'ada-1',
+      store: first.store,
+      plans: first.plans,
+      turnText: () => said.latest(),
+      seatEpoch: () => 3,
+      playerName: () => 'Jasper',
+      now: () => 2000,
+      hooks: { onWaitStart: async () => {}, onWaitEnd: async () => {}, setPermissionMode: async () => {} },
+    });
+    said.text('Revised plan: 1. one small step');
+    said.toolUse('ExitPlanMode');
+    pending = broker(
+      'ExitPlanMode',
+      {},
+      { signal: new AbortController().signal, toolUseID: 't2', requestId: 'r2' },
+    );
+    await next();
+    [card] = first.store.list('ada-1');
+    expect(card).toMatchObject({ plan: 'Revised plan: 1. one small step' });
+    first.store.resolve(card?.id ?? '', { kind: 'approved' });
+    expect(await pending).toMatchObject({ behavior: 'allow' });
+    // Approval forgets the captured plans, and with them which one was shown.
+    expect(first.plans.latest()).toBeNull();
+    expect(first.plans.isNew(null)).toBe(false);
   });
 
   it('EnterPlanMode is always denied (USER DECISION 2026-10-08: no automatic plan mode); so is anything else', async () => {
@@ -195,7 +247,7 @@ describe('choosePlan and TurnText', () => {
     expect(choosePlan(null, false, null, 42)).toEqual({ plan: MISSING_PLAN_TEXT, source: 'none' });
   });
 
-  it('keeps the text since the latest tool call, until the turn ends', () => {
+  it('keeps the text since the latest tool call (ExitPlanMode aside), until the turn ends', () => {
     let now = 5;
     const t = new TurnText(() => now);
     expect(t.latest()).toBeNull();
@@ -204,11 +256,17 @@ describe('choosePlan and TurnText', () => {
     t.text('one');
     t.text('two');
     expect(t.latest()).toEqual({ text: 'one\n\ntwo', at: 5 });
-    t.toolUse();
+    // ExitPlanMode keeps the words before it; the next text starts anew.
+    t.toolUse('ExitPlanMode');
     expect(t.latest()?.text).toBe('one\n\ntwo');
     now = 9;
     t.text('three');
     expect(t.latest()).toEqual({ text: 'three', at: 9 });
+    // Any other tool call ends them: nothing has been said since.
+    t.toolUse('mcp__mc__look');
+    expect(t.latest()).toBeNull();
+    t.text('four');
+    expect(t.latest()?.text).toBe('four');
     t.reset();
     expect(t.latest()).toBeNull();
     t.text('x'.repeat(TURN_TEXT_MAX_CHARS));

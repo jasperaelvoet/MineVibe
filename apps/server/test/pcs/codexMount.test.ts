@@ -4,7 +4,18 @@
  * guest once spacesd serves, a refused (TCC-protected) export, the recreate of a container from before the mount, and
  * the registry record PcManager keeps.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -74,8 +85,35 @@ describe('the Codex export in every Linux PC (PLAN §6.6)', () => {
     expect(runs[0]).toMatchObject({ program: 'bash', user: 'cua' });
     expect(runs[0]?.env.get('HOME')).toBe('/home/cua');
     const script = runs[0]?.args[1] ?? '';
-    expect(script).toContain('ln -sfn /mnt/codex "$HOME/codex"');
-    expect(script).toContain('[ -L "$HOME/codex" ] || [ ! -e "$HOME/codex" ]');
+    expect(script).toContain('ln -s /mnt/codex "$HOME/codex"');
+    expect(script).toContain('[ -e "$HOME/codex" ] || [ -L "$HOME/codex" ] ||');
+  });
+
+  it("the ~/codex script links an empty spot and never replaces what is there (a link of the user's own included)", async () => {
+    const { m, health } = manager({ codexExport: join(dir, 'codex-export') });
+    await m.init();
+    await m.start('linux-1');
+    // Run the guest script against a stand-in home, with a stand-in for /mnt/codex.
+    const script = (health.runs?.[0]?.args[1] ?? '').replaceAll(CODEX_GUEST_PATH, join(dir, 'mnt-codex'));
+    mkdirSync(join(dir, 'mnt-codex'));
+    const run = (home: string) =>
+      execFileSync('bash', ['-c', script], { env: { HOME: home, PATH: process.env.PATH } });
+    const fresh = join(dir, 'fresh');
+    mkdirSync(fresh);
+    run(fresh);
+    expect(readlinkSync(join(fresh, 'codex'))).toBe(join(dir, 'mnt-codex'));
+    run(fresh); // a second boot: the link stays as it is
+    expect(readlinkSync(join(fresh, 'codex'))).toBe(join(dir, 'mnt-codex'));
+    const own = join(dir, 'own');
+    mkdirSync(own);
+    symlinkSync(join(dir, 'my-notes'), join(own, 'codex')); // dangling, and the user's
+    run(own);
+    expect(readlinkSync(join(own, 'codex'))).toBe(join(dir, 'my-notes'));
+    const folder = join(dir, 'folder');
+    mkdirSync(join(folder, 'codex'), { recursive: true });
+    run(folder);
+    expect(lstatSync(join(folder, 'codex')).isDirectory()).toBe(true);
+    expect(existsSync(join(folder, 'codex', 'mnt-codex'))).toBe(false);
   });
 
   it('reuses a container that has the mount, and recreates one from before it (home volume kept)', async () => {
@@ -170,6 +208,25 @@ describe('the PC instance registry', () => {
     await m.shutdown({ stopEngine: false });
     rec = (await readInstanceRecords(join(dir, 'registry'))).get(id);
     expect(rec).toMatchObject({ instance: id, stateDir: join(dir, 'state'), pid: null, started: null });
+  });
+
+  it('records the real path of a state dir reached through a symlink (the path the instance id hashes)', async () => {
+    mkdirSync(join(dir, 'real'));
+    symlinkSync(join(dir, 'real'), join(dir, 'link'));
+    const m = new PcManager({
+      stateDir: join(dir, 'link', 'state'),
+      driver: new FakeDriver(),
+      pool: fakePool(join(dir, 'caches'), [], { json: serving }),
+      labelValue: 'pc-test',
+      hostFacts: async () => host,
+      home: join(dir, 'home'),
+      registryDir: join(dir, 'registry'),
+    });
+    await m.init({ createDefault: false });
+    expect((await readInstanceRecords(join(dir, 'registry'))).get(m.instanceId)).toMatchObject({
+      stateDir: join(dir, 'real', 'state'),
+    });
+    await m.shutdown({ stopEngine: false });
   });
 
   it('writes nothing without a registry folder', async () => {

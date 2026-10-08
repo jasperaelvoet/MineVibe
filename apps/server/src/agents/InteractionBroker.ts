@@ -20,7 +20,7 @@ import { CardQuestion, CHAT_MAX_LENGTH } from '@minevibe/protocol';
 import { z } from 'zod';
 import { AGENT_PERMISSION_MODE } from './constants.js';
 import { type Card, type CardOutcome, newCardId, type PendingStore } from './PendingStore.js';
-import type { PlanCapture, PlanFile } from './PlanCapture.js';
+import type { PlanCapture } from './PlanCapture.js';
 import type { CanUseTool, PermissionMode, PermissionResult } from './sdk.js';
 import type { SpokenText } from './TurnText.js';
 
@@ -89,8 +89,6 @@ function deny(message: string, interrupt = false): PermissionResult {
 export function createInteractionBroker(options: BrokerOptions): CanUseTool {
   const now = options.now ?? Date.now;
   const { store, hooks } = options;
-  /** The plan file the previous plan card showed (PlanCapture makes a new object on every write). */
-  let shownFile: PlanFile | null = null;
 
   const wait = (card: Card, signal: AbortSignal, epoch: number | null): Promise<CardOutcome> =>
     new Promise<CardOutcome>((resolve) => {
@@ -154,11 +152,11 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
           const file = options.plans.latest();
           const { plan, source } = choosePlan(
             file,
-            file !== null && file !== shownFile,
+            options.plans.isNew(file),
             options.turnText?.() ?? null,
             input.plan,
           );
-          shownFile = file;
+          options.plans.markShown(file);
           const card: Card = {
             id: newCardId('p'),
             agentId: options.agentId,

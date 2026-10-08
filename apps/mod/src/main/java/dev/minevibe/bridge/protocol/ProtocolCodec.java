@@ -29,8 +29,8 @@ public final class ProtocolCodec {
 	public static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
 	/**
-	 * Writes the final JSON tree, and converts {@code ok} results: explicit {@code JsonNull}s and null values (nullable
-	 * keys in {@code ok} results, at any depth) are kept.
+	 * Writes the final JSON tree, and converts the Java values of {@code ok} results: explicit {@code JsonNull}s and null
+	 * values (nullable keys in {@code ok} results, at any depth) are kept.
 	 */
 	private static final Gson WRITER = new GsonBuilder().disableHtmlEscaping().serializeNulls().create();
 
@@ -134,16 +134,23 @@ public final class ProtocolCodec {
 	}
 
 	/**
-	 * An {@code ok} reply carrying {@code result} (any JSON-serialisable values). Nulls are kept at every depth: a null
-	 * map value, a null record component and a {@code JsonNull} inside a {@code JsonObject} all go out as {@code null},
-	 * because Node's reply schemas mark such keys nullable (protocol.md §3: a key that may be absent instead is left out
-	 * of the map). Converting with {@link #GSON} dropped nested nulls, which failed {@code debug.state} replies.
+	 * An {@code ok} reply carrying {@code result} (any JSON-serialisable values). Java nulls are kept at every depth: a
+	 * null map value and a null record component go out as {@code null}, because Node's reply schemas mark such keys
+	 * nullable (protocol.md §3: a key that may be absent instead is left out of the map). Converting with {@link #GSON}
+	 * dropped them, which failed {@code debug.state} replies.
+	 *
+	 * <p>A result value that already is a JSON tree (a job's {@code result} in {@code skill.run}, an observation in
+	 * {@code obs.query}, the forwarded {@code reply} of {@code debug.ui_request}) is free-form JSON, not a typed reply: it
+	 * goes out as a push writes it ({@link #encode}), with the {@code JsonNull} members of its objects left out. So a job
+	 * result reads the same whether it came in the {@code skill.run} reply or later as {@code skill.result}, and a skill
+	 * that {@code put}s a null key keeps meaning "no such key". A {@code JsonNull} value itself is still sent.
 	 */
 	public static String encodeOk(String re, @Nullable Map<String, ?> result) {
 		JsonObject body = new JsonObject();
 		if (result != null) {
 			for (Map.Entry<String, ?> e : result.entrySet()) {
-				body.add(e.getKey(), WRITER.toJsonTree(e.getValue()));
+				Object value = e.getValue();
+				body.add(e.getKey(), value instanceof JsonElement tree ? GSON.toJsonTree(tree) : WRITER.toJsonTree(value));
 			}
 		}
 		return encode(Messages.OK, new Messages.Ok(body), null, re);

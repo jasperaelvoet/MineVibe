@@ -277,18 +277,46 @@ class ProtocolFixturesTest {
 		Map<String, Object> agent = new LinkedHashMap<>();
 		agent.put("bubble", null);
 		agent.put("pos", null);
-		JsonObject tree = new JsonObject();
-		tree.add("hash", JsonNull.INSTANCE);
-		tree.addProperty("seq", -1);
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("agents", List.of(agent));
-		result.put("monitor", tree);
 		result.put("job", new NestedResult("j-1", null));
+		result.put("none", JsonNull.INSTANCE);
 		String text = ProtocolCodec.encodeOk("n-4", result);
 		assertEquals(
 				JsonParser.parseString("{\"t\":\"ok\",\"v\":1,\"re\":\"n-4\",\"agents\":[{\"bubble\":null,\"pos\":null}],"
-						+ "\"monitor\":{\"hash\":null,\"seq\":-1},\"job\":{\"jobId\":\"j-1\",\"note\":null}}"),
+						+ "\"job\":{\"jobId\":\"j-1\",\"note\":null},\"none\":null}"),
 				JsonParser.parseString(text));
+	}
+
+	/**
+	 * A JSON tree in an {@code ok} result (a job's {@code result}, an observation) goes out as a push writes it: the
+	 * {@code JsonNull} members of its objects are left out, so a job result reads the same in the {@code skill.run}
+	 * reply and in a later {@code skill.result}.
+	 */
+	@Test
+	void okReplyJsonTreesReadAsInAPush() {
+		JsonObject job = new JsonObject();
+		job.addProperty("item", "minecraft:oak_log");
+		job.add("place", JsonNull.INSTANCE);
+		JsonObject pos = new JsonObject();
+		pos.addProperty("x", 1);
+		pos.add("dim", JsonNull.INSTANCE);
+		job.add("pos", pos);
+		JsonArray list = new JsonArray();
+		list.add(JsonNull.INSTANCE);
+		job.add("list", list);
+		Map<String, Object> reply = new LinkedHashMap<>();
+		reply.put("jobId", "j-1");
+		reply.put("status", "done");
+		reply.put("result", job);
+		JsonObject ok = JsonParser.parseString(ProtocolCodec.encodeOk("n-5", reply)).getAsJsonObject();
+		JsonObject push = JsonParser.parseString(ProtocolCodec.encode(dev.minevibe.bridge.msg.Skills.SKILL_RESULT,
+				new dev.minevibe.bridge.msg.Skills.SkillResult("j-1", "ada1a2b", "done", job, null, 5L), null, null))
+				.getAsJsonObject();
+		assertEquals(push.get("result"), ok.get("result"));
+		assertEquals(JsonParser.parseString("{\"item\":\"minecraft:oak_log\",\"pos\":{\"x\":1},\"list\":[null]}"), ok.get("result"));
+		// The handler's tree itself is left as it was.
+		assertTrue(job.has("place"));
 	}
 
 	@Test

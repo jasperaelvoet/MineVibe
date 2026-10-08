@@ -1054,7 +1054,7 @@ export class AgentBrain {
   }
 
   #onToolUse(name: string, input: unknown): void {
-    this.turnText.toolUse();
+    this.turnText.toolUse(name);
     const line = describeTool(name, input);
     this.#activity = line;
     this.#env.transcripts.append(this.agentId, { kind: 'activity', text: line });

@@ -29,6 +29,11 @@ export class PlanCapture {
   readonly #files = new Map<string, PlanFile>();
   readonly #now: () => number;
   #latest: string | null = null;
+  /**
+   * The plan file the latest plan card showed. Kept here, with the files, rather than in the broker: a session restart
+   * (crash, Retry, the model-swap fallback) makes a new broker, and a file shown before it is still not new.
+   */
+  #shown: PlanFile | null = null;
 
   /**
    * @param homes The home directories the CLI may use for `~/.claude/plans/` (the agent env's `HOME`; the PC user's
@@ -92,10 +97,24 @@ export class PlanCapture {
     return this.#latest === null ? null : (this.#files.get(this.#latest) ?? null);
   }
 
+  /** Records that a plan card showed `file` (InteractionBroker). */
+  markShown(file: PlanFile | null): void {
+    this.#shown = file;
+  }
+
+  /**
+   * Whether `file` was written since the latest plan card (every write makes a new {@link PlanFile}). A file wins over
+   * the agent's prose only then (PLAN §6.4).
+   */
+  isNew(file: PlanFile | null): file is PlanFile {
+    return file !== null && file !== this.#shown;
+  }
+
   /** Forgets every captured plan (after approval, a stand-up or a kick). */
   clear(): void {
     this.#files.clear();
     this.#latest = null;
+    this.#shown = null;
   }
 
   #key(path: string): string {

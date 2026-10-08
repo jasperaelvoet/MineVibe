@@ -4,7 +4,7 @@
  * process uses are removed. Homes that exist, live processes, unmounted volumes and instances without a record of
  * their home are never touched (unless named).
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,7 +17,13 @@ import {
   writeInstanceRecord,
 } from '../../src/pcs/InstanceRegistry.js';
 import { knownHomes } from '../../src/pcs/orphanCleanup.js';
-import { cleanOrphans, formatOrphanReport, type OrphanDeps, scanOrphans } from '../../src/pcs/orphans.js';
+import {
+  cleanOrphans,
+  formatOrphanReport,
+  type OrphanDeps,
+  pathExists,
+  scanOrphans,
+} from '../../src/pcs/orphans.js';
 import { PcManager } from '../../src/pcs/PcManager.js';
 import { instanceIdFor } from '../../src/util/hostPaths.js';
 import { FakeDriver, fakePool, serving } from './fakes.js';
@@ -130,6 +136,27 @@ describe('orphaned PC instances', () => {
     });
     const f = (await scanOrphans(deps(), { instances: ['bbbb0002'] }))[0];
     expect(f).toMatchObject({ verdict: 'unknown', why: expect.stringMatching(/not mounted/) });
+  });
+
+  it('a home this process may not read is unknown, never gone (TCC denial, permissions)', async () => {
+    // A registered home whose MineVibe quit cleanly, in a folder doctor cannot look into: `existsSync` says false for
+    // EACCES/EPERM, which once made it an orphan and let `--apply` delete PCs that were still in use.
+    const state = await home(join('locked', 'h'), 'dddd0009');
+    chmodSync(join(dir, 'locked'), 0o000);
+    try {
+      const f = (await scanOrphans(deps()))[0];
+      expect(f).toMatchObject({ instance: 'dddd0009', verdict: 'unknown', stateDir: state });
+      expect(f?.why).toMatch(/cannot tell whether/);
+      expect((await cleanOrphans(deps(), { apply: true })).removed).toEqual([]);
+      expect(driver.containers.has('mv-pc-dddd0009-linux-1')).toBe(true);
+    } finally {
+      chmodSync(join(dir, 'locked'), 0o755);
+    }
+    expect(pathExists(state)).toBe(true);
+    expect(pathExists(join(dir, 'no-such-home', 'state'))).toBe(false);
+    expect(pathExists(join(state, 'pcs.json', 'below-a-file'))).toBe(false);
+    // A caller's own check may say "unknown" too.
+    expect((await scanOrphans(deps({ exists: () => 'unknown' })))[0]).toMatchObject({ verdict: 'unknown' });
   });
 
   it('leaves instances without a record of their home alone unless named, and then only when no one else runs', async () => {

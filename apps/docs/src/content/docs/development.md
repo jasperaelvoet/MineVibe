@@ -101,8 +101,9 @@ npm run doctor -- --clean-orphans --apply    # remove the instances whose home i
 npm run doctor -- --clean-orphans --apply --instance 0fa3430b   # one instance only
 ```
 
-Only an instance whose home no longer exists and that no running process uses is removed. Instances from builds
-before the registry show as `unregistered` and are kept unless you name them with `--instance`. When the engine is
+Only an instance whose home no longer exists and that no running process uses is removed. A home the command cannot
+look into (a checkout in `~/Documents` from a terminal without access to it) counts as `unknown` and is kept.
+Instances from builds before the registry show as `unregistered` and are kept unless you name them with `--instance`. When the engine is
 stopped, the command starts it to list it and stops it again afterwards (unless another MineVibe uses it).
 `MINEVIBE_CONTAINER_APP_ROOT` points it at another engine. The acceptance harness removes its own instance when it
 exits.

@@ -43,6 +43,13 @@ booted a real linux-1 from `npm test`; the doubled status footer had already bee
 - **`~/codex` is linked at boot, not by the image.** PcManager makes the link through spacesd once a PC serves
   (`#linkCodex`), because the dev image is only rebuilt when it is missing. The image's boot hook could make it instead
   once images are versioned.
+- **`runLock.test.ts` "never shows a reader an empty or partial lock" can time out under load.** Its 150
+  acquire/release rounds against a busy-reading loop took over the 5 s test timeout once during a full `npm test`
+  while other worktrees' sessions loaded the Mac (D2 review, 2026-10-09); alone it takes under 1 s. Give it its
+  own timeout or fewer rounds.
+- **A Vault folder at `/mnt` would sit over `/mnt/codex`.** Vault mounts are path-identical in the guest, and nothing
+  refuses a host folder that is, contains or lies inside `/mnt/codex`. It cannot happen on macOS (no `/mnt`); a Linux
+  host with the Docker driver could mount one. Refuse such folders in `Vault.ts` when that driver matters.
 - **The first boot after this sweep recreates linux-1.** A container from before the Codex mount no longer matches its
   record (one bind short), so the next start recreates it: `/home/cua` and the Vault are kept, changes elsewhere in the
   root filesystem are reset, as for any recreate (resize, mounts).
