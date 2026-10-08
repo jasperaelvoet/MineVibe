@@ -758,6 +758,23 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 - **Tokens.** `container inspect` shows `CUA_ENV_TOKEN` in plaintext while the container exists. That's acceptable for a local single-user app; tokens are rotated per PC create and deleted with the PC.
 - **cua telemetry.** Set `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` and `CUA_HOME=<MineVibe Caches>/cua` before importing `@trycua/cua`.
 - **Timings.** Cold `system start` takes 32 s (kernel download), image pull 124 s (1.19 GB), warm `run` 0.6 s with spacesd up about 2.9 s later; stop 1.6 s, start 0.7 s, recreate keeps volumes.
+- **PC manager build (M4, 2026-10-08), which corrects the S5 items above:**
+  - **No rootfs cap.** `container` 1.5.0 has no rootfs size flag (`run`/`create` have none and `system property list` has no rootfs key), so the root filesystem stays a 512 GiB sparse image. Only volumes are capped (`volume create -s <N>G`; a 1 G volume shows 1008M in the guest). The budget counts a per-type rootfs *allowance* (Linux 24 GiB), and user data lives on the capped home volume.
+  - **Overlays inside a read-only bind** fail at `run` with EROFS ("failed to create directory 'node_modules'") unless the mountpoint already exists on the host. PcManager creates it first, walking with `lstat` and skipping any symlink.
+  - **Volume mounts use `--mount type=volume,source=…,target=…`**, which works, so the `-v` parser is never used. `inspect` reports a read-only bind as `options: ["ro"]`, and the driver checks this after every `run`.
+  - `system status --format json` prints `{"status":"unregistered"}` and exits 1 when nothing is running.
+  - The cua base already ships git and build-essential, so the image layer adds only tmux and ripgrep. A local `container build` takes 47 s with a fresh builder, because the builder VM pulls the base itself rather than using the local image store; the builder is then stopped and deleted.
+  - **Measured through PcManager** (`npm run test:pcs`):
+
+    | Step | Result |
+    |---|---|
+    | Create to SERVING (volume create + `run` + boot hook) | 3.1 s |
+    | Recreate (resize) to SERVING | 5.8 s |
+    | BGRA via FrameService, 1280×800 | 29.6 fps, 121 MB/s |
+    | JPEG 1280 | p50 8.7–9 ms |
+    | Visible tier | 4 fps at 640×400 |
+    | Input batch round trip | 0.23 s |
+    | Warm `system start` | 0.35 s |
 
 ## 9. MineVibe.app and first run
 
