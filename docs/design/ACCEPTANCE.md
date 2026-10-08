@@ -91,6 +91,12 @@ In [DEBT.md](DEBT.md), "Found in the live acceptance run": visible oak unreachab
 `UNREACHABLE (no_path)`), no `/mnt/codex` in the PCs, the mod's `ok` replies drop nested nulls, plan cards without a
 plan when the agent states its plan in prose, and throwaway homes leaking PC instances into the shared dev engine.
 
+Fixed since, in the D2 sweep (same day): PCs mount the Codex read-only at `/mnt/codex` with `~/codex` (step 5's
+`ls /mnt/codex` would now list the pages); `ok` replies keep nested nulls, so `debug.state`'s per-agent and
+per-monitor keys are plain `nullable` again; a plan stated in prose becomes the plan card; and
+`npm run doctor -- --clean-orphans` removes the PC instances of deleted homes, which the harness now does for its own
+instance on exit (replacing `out/leaked-instances.txt`). The oak item stays open.
+
 ## Limits of this run
 
 - The player never moves (there is no movement hook), so "follows the player" is the CEO walking from the door to

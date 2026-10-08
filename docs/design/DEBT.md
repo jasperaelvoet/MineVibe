@@ -7,7 +7,12 @@ seed" PLAN wording, the `world.state` office slot kind (`pc` vs `workstation`), 
 `approach` tests and the flaky `skill_craft_places_atable_for3x3` GameTest. The live acceptance run of 2026-10-09
 (docs/design/ACCEPTANCE.md) fixed the I4 agent-id blocker (Node now mints `<handle><4 hex>`), the blank head icon
 during a new agent's first turn, speech bubbles that dropped text before a dotted token, agents mining the starter
-office, and a game that never left BootScreen when its window started hidden.
+office, and a game that never left BootScreen when its window started hidden. The D2 sweep of 2026-10-09 fixed the
+missing `/mnt/codex` in PCs, the mod's `ok` replies dropping nested nulls, plan cards without a plan, throwaway homes
+leaking PC instances (`npm run doctor -- --clean-orphans`, and the E2E harness removes its own instance on exit), the
+lint no-op inside worktrees, the monitor stopping strays while `bootAll` runs, and a `devServer` contract test that
+booted a real linux-1 from `npm test`; the doubled status footer had already been fixed (Node splits the mod's
+`footer` off, `mcServer.ts` `splitFooter`).
 
 ## Found in the live acceptance run (2026-10-09)
 - **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to
@@ -19,44 +24,36 @@ office, and a game that never left BootScreen when its window started hidden.
   - **Suspects:** `Miner` picks the nearest *exposed* log, which can be high in the canopy; `AgentNavigator` counts
     segments that do not get closer as fruitless and gives up after 4 (`MAX_FRUITLESS_SEGMENTS`), so a detour fails.
   - **Fix:** prefer trunk logs reachable from the ground (or rank targets by path cost), and let `mine`'s default
-    radius match what `find` reports.
-- **PCs have no `/mnt/codex`.** PLAN §6.6 promises the Codex export read-only at `/mnt/codex` (and `~/codex`), but
-  `PcManager` never mounts `paths.codexExport` and `PcGuestApi.info` returns `codexPath: null`; the CEO's
-  `ls /mnt/codex` failed in the PC flow. The export lives under `MINEVIBE_HOME`, which in development is inside
-  `~/Documents` (TCC-protected, so Apple `container` cannot mount it): the mount source must sit outside, like the
-  container roots.
-- **The mod's `ok` replies drop nested nulls.** `ProtocolCodec.encodeOk` converts each value with `GSON`, which has no
-  `serializeNulls`, so a null inside a nested map or `JsonObject` is left out, although the method's comment says nulls
-  are kept. `debug.state`'s per-agent and per-monitor keys are `nullish` because of it.
-  - **Fix:** convert with the null-keeping `WRITER`, after checking Node's reply schemas for nested keys that are
-    optional but not nullable.
-- **A plan card without a plan.** A seated, plan-first agent that states its plan in prose and calls `ExitPlanMode`
-  without writing `~/.claude/plans/*.md` gets a card reading "(No plan file was captured…)", and the player approves
-  blind (live run 1, kick step). Fix: fall back to the turn's last assistant text.
-- **Throwaway homes leak PC instances into the dev engine.** Every fresh `MINEVIBE_HOME` mints a new PC instance id;
-  its container, network and three volumes stay in `~/Library/Application Support/MineVibe-dev/container` after quit
-  (the VM stops; the network's vmnet helper runs as long as the engine does). The acceptance harness removes its own
-  (`scripts/e2e/out/leaked-instances.txt`); `npm run play` with a scratch home does not.
-  - **Fix:** prune instances whose `pcs.json` no longer exists, or name the instance after something stable.
+    radius match what `find` reports. (Owned by the world-awareness track: natural tree targeting.)
+
+## Found in the D2 sweep (2026-10-09)
+- **PC instances from before the registry stay in the dev engine.** `doctor --clean-orphans` knows an instance's home
+  only from the instance registry (`<appRoot>/minevibe-instances/`, written since this sweep), a relocated Codex
+  export's owner file, or the homes of the checkout it runs in. Instances made by older builds (throwaway homes of
+  earlier E2E and `npm test` runs, and of other worktrees) show as `unregistered` and are kept. When this was written
+  the dev engine held eight, some of them live (another worktree's dev server, a tools-v2 probe) and one the main
+  checkout's play home (`4d19177e`); `0fa3430b` is a leaked E2E run (`scripts/e2e/out/leaked-instances.txt`, which the
+  harness now removes through the same code). Remove one with
+  `npm run doctor -- --clean-orphans --apply --instance <id>` once you know its home is gone; the next `npm run dev` /
+  `play` of a live home registers it.
+- **Other branches still boot a real PC from `npm test`.** `test/contract/devServer.test.ts` ("buries a dead save on
+  the next start") started its second server without `NO_CREW`, so it booted linux-1 in the shared dev engine (and
+  leaked it with the temp home) and took about 13 s. Fixed here; branches cut before this keep doing it until they
+  merge.
+- **`~/codex` is linked at boot, not by the image.** PcManager makes the link through spacesd once a PC serves
+  (`#linkCodex`), because the dev image is only rebuilt when it is missing. The image's boot hook could make it instead
+  once images are versioned.
+- **The first boot after this sweep recreates linux-1.** A container from before the Codex mount no longer matches its
+  record (one bind short), so the next start recreates it: `/home/cua` and the Vault are kept, changes elsewhere in the
+  root filesystem are reset, as for any recreate (resize, mounts).
 
 ## Found in the I4 sweep (2026-10-08)
-- **The status footer is sent twice.** The mod puts `footer` into every job `result` and observation; Node also
-  appends its own footer (from `agent.state`) to every `mcp__mc__*` result. `summarizeResult` and `compactJson`
-  (`apps/server/src/agents/EventRouter.ts:325`, `tools/results.ts`) JSON-encode the mod's result as is, so the
-  agent sees both, and the mod's footer eats into the 200-character job summary.
-  - **Fix:** Node drops the `footer` key before rendering (or the mod stops sending it). protocol.md §7.4 states
-    the current behaviour.
 - **GameTest neighbours.** The default batch places test structures 5 blocks apart (columns) and 6 apart (rows),
   while reflexes and jobs reach further: ShareFood 16 blocks, Pickup 6, block scans 24 (`craft`, `smelt`) and 48
   (`goto` places).
   `skill_craft_places_atable_for3x3` failed once on another test's crafting table 16 blocks away; it now runs in the
   41×41 `wide_yard` structure (agent in the middle). Other tests that rely on "nothing of type X nearby" can still be
   disturbed; give them `wide_yard` or a batch of their own.
-- **Lint is a silent no-op inside `.claude/worktrees`.** biome.json's `"!!**/.claude"` matches the worktree's own
-  path, so `npm run lint` there checks 0 files and passes. The workaround is in the docs (Development, "Linting
-  inside a git worktree").
-  - **Fix (tested in a worktree, not committed):** anchor the pattern to the root, `"!!.claude"`. Inside a worktree
-    `biome check .` then lints its 379 files, and a `.claude/` directory at the root is still never entered.
 
 ## M1 (from the M1 fix verification, 2026-10-08)
 - **N1, `loading` cleared while an existing world is still opening.** `ClientSession.java:128-131`, `WorldTicker.java:31-36`. `WorldOpenFlows#openWorld` resumes asynchronously through `Util.backgroundExecutor()`, so `loading` is cleared mid-open, and a duplicate `world.open` stored as `pendingOpen` is never cleared by `markReady`.
@@ -65,16 +62,11 @@ office, and a game that never left BootScreen when its window started hidden.
   - **Doc:** API_MAP §7.2 says loads happen in one client task, which is wrong for `openWorld`.
 
 ## PC manager (from round-2 verification)
-- **Monitor vs. `bootAll`.** A monitor pass can stop a container that still runs for an inactive PC just before
-  `bootAll` would adopt it; `bootAll` then starts the same container again. Benign but wasteful: one restart, never
-  a recreate, so the rootfs and the volumes are kept. Pinned down by
-  `apps/server/test/pcs/PcManager.monitorBootAll.test.ts`.
-  - **Fix:** the monitor leaves strays alone while a `bootAll` runs (a flag checked in `#checkContainers` before
-    the stop), and the first test of that file then expects no restart.
 - **Engine left running after a slow release.** The engine release on shutdown is capped at 20 s and left running
   on timeout. In unit tests the next start adopts an engine of ours as is (ContainerRuntime "ours: no start") and
   breaks a dead holder's `engine.lock` (EngineLeases). Not yet verified live: force the timeout under
   `npm run test:pcs` and check that the next start neither restarts nor duplicates the engine.
-- **EngineLeases start-time strings.** Leases compare `ps -o lstart=` text read with `TZ=UTC`, which is
-  consistent, but they keep their own copy of the logic the run lock now has (`processStartTime`,
-  `sameStartTime` in `apps/server/src/orchestrator/runLock.ts`). Share one helper when either changes next.
+- **EngineLeases start-time strings.** The run lock's start-time helpers now live in `apps/server/src/util/processes.ts`
+  (`processStartTime`, `sameStartTime`, `pidExists`), shared with the PC instance registry. EngineLeases still keeps
+  its own copy: its lease files hold raw `ps -o lstart=` text read with `TZ=UTC`, which `sameStartTime` would read as
+  local time, so switching it needs a lease format change that old leases of running processes survive.
