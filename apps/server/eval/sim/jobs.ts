@@ -583,7 +583,8 @@ function placeJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
   if (world.isUnreachable(at))
     return oneShot(2 * TPS, () => fail('UNREACHABLE', `cannot get within reach of ${short(at)}`));
   const there = world.block(at);
-  if (there.id !== AIR) return oneShot(2, () => fail('OCCUPIED', `${there.id} is already at ${short(at)}`));
+  if (!world.isReplaceable(at))
+    return oneShot(2, () => fail('OCCUPIED', `${there.id} is already at ${short(at)}`));
   const supported = [
     [1, 0, 0],
     [-1, 0, 0],
@@ -925,7 +926,7 @@ function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
     return oneShot(1, () => fail('FAILED', `the ${name} blueprint is not simulated in the eval world`));
   const cells = bp.cells
     .map((c) => ({ x: origin.x + c.x, y: origin.y + c.y, z: origin.z + c.z }))
-    .filter((p) => world.isAir(p));
+    .filter((p) => world.isReplaceable(p));
   const material = bp.torches ? (id: string) => id === `${NS}torch` : isBuildMaterial;
   const have = world.count(material);
   if (have < cells.length) {
@@ -964,7 +965,7 @@ function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
     return {
       dt: 5,
       effect: () => {
-        if (!world.isAir(c)) return;
+        if (!world.isReplaceable(c)) return;
         const [id] = world.take(material, 1).keys();
         if (!id) return;
         world.placeBlock(c, id);

@@ -207,7 +207,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     remember: async () => 'Remembered.',
     requestHire: async () => `Asked ${PLAYER}; you get a [HIRE DECISION] later.`,
     sitAtPc: async () => 'There is no PC in this world.',
-    standUp: async () => 'You are not seated.',
+    // AgentBrain.standUp's reply while seated (the gate denies stand_up while wandering).
+    standUp: async () =>
+      `Stood up from ${PC_ID}. Your PC tools stop now; tell ${PLAYER} the result if you haven't.`,
     wait: async (ms, jobId) => {
       if (jobId) {
         try {

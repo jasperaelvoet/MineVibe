@@ -51,6 +51,7 @@ export const fixTest: PcScenario = {
           },
         },
         { tool: pc('bash'), input: { command: 'npm test' } },
+        { tool: 'mcp__mc__stand_up', input: {} },
         { text: 'Fixed subtotal() to multiply by quantity; both tests pass now.' },
       ],
     ],

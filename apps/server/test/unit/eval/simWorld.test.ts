@@ -276,6 +276,22 @@ describe('SimWorld jobs', () => {
     expect(notChest.error?.code).toBe('NOT_A_CONTAINER');
   });
 
+  it('places blocks into air or water, never over a block', async () => {
+    const { world, api } = setup({ allTreesUnreachable: true, inventory: [[`${NS}cobblestone`, 2]] });
+    const water = { x: 9, y: 63, z: -17 };
+    expect(world.block(water).id).toBe(`${NS}water`);
+    expect(
+      (await api.runSkill({ agentId: A, skill: 'place', args: { block: 'cobblestone', pos: water } })).status,
+    ).toBe('done');
+    expect(world.block(water)).toMatchObject({ id: `${NS}cobblestone`, placedBy: 'agent' });
+    const wall = await api.runSkill({
+      agentId: A,
+      skill: 'place',
+      args: { block: 'cobblestone', pos: { x: 3, y: 64, z: 3 } },
+    });
+    expect(wall.error?.code).toBe('OCCUPIED');
+  });
+
   it('validates args with the protocol schemas', async () => {
     const { api } = setup();
     await rejectsCode(

@@ -260,6 +260,12 @@ export class SimWorld {
     return this.block(p).id === AIR;
   }
 
+  /** A block can be placed here: air, or a block a placement replaces (water). */
+  isReplaceable(p: Pos): boolean {
+    const id = this.block(p).id;
+    return id === AIR || id === 'minecraft:water';
+  }
+
   /** Any face touches air or a non-solid block (the mod's BlockScan.exposed). */
   exposed(p: Pos): boolean {
     for (const [dx, dy, dz] of FACES) {

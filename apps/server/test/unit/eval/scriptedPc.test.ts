@@ -58,6 +58,20 @@ describe('ScriptedPc shell', () => {
     );
   });
 
+  it('reads basic regular expressions in sed and grep, like GNU sed/grep', async () => {
+    const pc = new ScriptedPc();
+    // `+` is literal in a BRE: this is the edit Opus tried in the baseline.
+    await sh(pc, "sed -i 's/sum + item.price, 0/sum + item.price * item.qty, 0/' src/cart.js", REPO);
+    expect((await sh(pc, 'npm test', REPO)).exitCode).toBe(0);
+    expect((await sh(pc, "grep -c 'sum + item' src/cart.js", REPO)).output).toBe('1');
+    expect((await sh(pc, "grep -E -c 'sum +item' src/cart.js", REPO)).output).toBe('0');
+    expect((await sh(pc, "echo a/b | sed 's/\\//-/'")).output).toBe('a-b');
+    expect((await sh(pc, "echo price=5 | sed 's/\\(price\\)=\\([0-9]\\)/\\2 \\1 &/'")).output).toBe(
+      '5 price price=5',
+    );
+    expect((await sh(pc, "echo aaa | sed -E 's/a+/b/'")).output).toBe('b');
+  });
+
   it('reports disk usage and fails like an offline box', async () => {
     const pc = new ScriptedPc();
     expect((await sh(pc, 'df -h /')).output).toMatch(/overlay\s+50G\s+41G\s+9\.0G\s+82% \/$/);

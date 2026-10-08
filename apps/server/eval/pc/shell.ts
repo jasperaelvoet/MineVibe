@@ -610,9 +610,12 @@ export class Shell {
     if (pattern === null) return { out: '', err: `Usage: ${name} [OPTION]... PATTERNS [FILE]...\n`, code: 2 };
     let re: RegExp;
     try {
+      // grep reads a basic regular expression unless -E (egrep, rg: extended); -F is a fixed string.
       const src = f.has('-F')
         ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        : pattern.replace(/\\\|/g, '|');
+        : rg || name === 'egrep' || f.has('-E')
+          ? pattern
+          : breToJs(pattern);
       re = new RegExp(f.has('-w') ? `\\b(?:${src})\\b` : src, f.has('-i') ? 'i' : '');
     } catch {
       return { out: '', err: `${name}: invalid regular expression\n`, code: 2 };
@@ -648,6 +651,7 @@ export class Shell {
       return paths.some((p) => p.startsWith('/')) || rel.startsWith('..') ? abs : rel;
     };
     const out: string[] = [];
+    let matched = 0;
     for (const file of files) {
       if (include && !include.test(posix.basename(file))) continue;
       const text = fs.read(file) ?? '';
@@ -656,14 +660,19 @@ export class Shell {
       const hits = lines
         .map((l, i) => [l, i + 1] as const)
         .filter(([l]) => re.test(l) !== invert && l.length > 0);
+      matched += hits.length;
+      // grep -c also prints the files without a match (as 0); rg does not.
+      if (countOnly && (hits.length > 0 || !rg)) {
+        out.push(many ? `${show(file)}:${hits.length}` : String(hits.length));
+        continue;
+      }
       if (hits.length === 0) continue;
       if (filesOnly) out.push(show(file));
-      else if (countOnly) out.push(many ? `${show(file)}:${hits.length}` : String(hits.length));
       else
         for (const [l, n] of hits)
           out.push(`${many ? `${show(file)}:` : ''}${lineNumbers ? `${n}:` : ''}${l}`);
     }
-    return { out: out.length > 0 ? `${out.join('\n')}\n` : '', err: '', code: out.length > 0 ? 0 : 1 };
+    return { out: out.length > 0 ? `${out.join('\n')}\n` : '', err: '', code: matched > 0 ? 0 : 1 };
   }
 
   #find(args: string[], cwd: string) {
@@ -721,17 +730,20 @@ export class Shell {
       const b = print[2] === undefined ? a : print[2] === '$' ? lines.length : Number(print[2]);
       return { out: `${lines.slice(a - 1, b).join('\n')}\n`, err: '', code: 0 };
     }
-    const sub = /^s(.)(.*?)\1(.*?)\1(g?)$/.exec(script);
+    const sub = parseSubstitution(script);
     if (!sub) return { out: '', err: `sed: only 'N,Mp' and 's/a/b/[g]' are supported on this PC\n`, code: 1 };
+    const extended = args.includes('-E') || args.includes('-r');
     let re: RegExp;
     try {
-      re = new RegExp(sub[2] as string, sub[4] === 'g' ? 'g' : '');
+      re = new RegExp(extended ? sub.pattern : breToJs(sub.pattern), sub.global ? 'g' : '');
     } catch {
       return { out: '', err: 'sed: -e expression #1: invalid regular expression\n', code: 1 };
     }
     const replaced = text
       .split('\n')
-      .map((l) => l.replace(re, (sub[3] as string).replace(/\\\//g, '/').replace(/&/g, '$&')))
+      .map((l) =>
+        l.replace(re, (match: string, ...rest: unknown[]) => expandReplacement(sub.replacement, match, rest)),
+      )
       .join('\n');
     if (inPlace && file) {
       fs.write(this.#path(cwd, file), replaced);
@@ -927,6 +939,64 @@ const KNOWN = new Set([
   'tail',
   'wc',
 ]);
+
+/**
+ * A POSIX basic regular expression (grep and sed without -E) as a JS regex source: `+ ? ( ) { } |` are literal and
+ * their backslashed forms are the operators.
+ */
+export function breToJs(bre: string): string {
+  let out = '';
+  for (let i = 0; i < bre.length; i++) {
+    const c = bre[i] as string;
+    if (c === '\\' && i + 1 < bre.length) {
+      const n = bre[++i] as string;
+      out += '+?(){}|'.includes(n) ? n : `\\${n}`;
+    } else if ('+?(){}|'.includes(c)) {
+      out += `\\${c}`;
+    } else if (c === '[') {
+      const end = bre.indexOf(']', i + (bre[i + 1] === ']' || bre[i + 1] === '^' ? 2 : 1));
+      if (end < 0) {
+        out += '\\[';
+        continue;
+      }
+      out += bre.slice(i, end + 1);
+      i = end;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+/** `s<d>pattern<d>replacement<d>[g]` with escaped delimiters, or null. */
+function parseSubstitution(script: string): { pattern: string; replacement: string; global: boolean } | null {
+  if (!script.startsWith('s') || script.length < 4) return null;
+  const d = script[1] as string;
+  const parts: string[] = [''];
+  for (let i = 2; i < script.length; i++) {
+    const c = script[i] as string;
+    if (c === '\\' && script[i + 1] === d) {
+      parts[parts.length - 1] += d === '/' ? '\\/' : d;
+      i++;
+    } else if (c === d) parts.push('');
+    else parts[parts.length - 1] += c;
+  }
+  if (parts.length !== 3 || !/^g?$/.test(parts[2] as string)) return null;
+  return { pattern: parts[0] as string, replacement: parts[1] as string, global: parts[2] === 'g' };
+}
+
+/** sed's replacement text: `&` is the match, `\1`..`\9` the groups, `\&` and `\\` literal. */
+function expandReplacement(rep: string, match: string, rest: unknown[]): string {
+  let out = '';
+  for (let i = 0; i < rep.length; i++) {
+    const c = rep[i] as string;
+    if (c === '\\' && i + 1 < rep.length) {
+      const n = rep[++i] as string;
+      out += /[1-9]/.test(n) ? String(rest[Number(n) - 1] ?? '') : n === 'n' ? '\n' : n;
+    } else out += c === '&' ? match : c;
+  }
+  return out;
+}
 
 function numArg(args: string[], dflt: number): number {
   for (let i = 0; i < args.length; i++) {

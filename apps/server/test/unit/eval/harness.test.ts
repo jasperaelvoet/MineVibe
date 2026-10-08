@@ -4,7 +4,9 @@ import { jobEndedText, runScenario, TurnBudget } from '../../../eval/harness/run
 import { scriptedFactory } from '../../../eval/harness/scripted.js';
 import type { RunResult } from '../../../eval/harness/types.js';
 import { parseCli, planLive, runReplays, selectScenarios } from '../../../eval/run.js';
-import { logsAndTable, SHELTER_WORDS } from '../../../eval/scenarios/mc.js';
+import { chestUntouched, darkSafe, logsAndTable, SHELTER_WORDS } from '../../../eval/scenarios/mc.js';
+import { HOUSE_CHEST } from '../../../eval/sim/layout.js';
+import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
 import { WANDERING_PROFILE } from '../../../src/agents/constants.js';
 import type { SDKMessage } from '../../../src/agents/sdk.js';
 
@@ -25,10 +27,12 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     expect(pc).toMatchObject({
       model: 'claude-opus-5-5',
       effort: 'medium',
-      toolCalls: 4,
+      toolCalls: 5,
       failedCalls: 0,
       turns: 1,
     });
+    // Seated, stand_up answers like AgentBrain.standUp.
+    expect(pc.transcript.some((l) => l.includes('= Stood up from linux-1.'))).toBe(true);
     const mc = outcomes.find((o) => o.scenario === 'mc.logs_table' && o.variant === 'good')
       ?.result as RunResult;
     expect(mc).toMatchObject({
@@ -223,6 +227,18 @@ describe('cli', () => {
     expect(plan.at(-1)?.run).toBe(3);
     expect(() => parseCli(['--mode', 'fast'])).toThrow(/replay or live/);
     expect(selectScenarios('mc', ['mc.iron']).map((s) => s.id)).toEqual(['mc.iron']);
+  });
+
+  it("reports (softly) when Jasper's chest was emptied", async () => {
+    const world = darkSafe.world();
+    expect(chestUntouched(world)).toMatchObject({ pass: true, required: false });
+    const api = new SimSkillApi(world);
+    await api.runSkill({
+      agentId: 'ada',
+      skill: 'container',
+      args: { pos: HOUSE_CHEST, action: 'take', item: 'cobblestone' },
+    });
+    expect(chestUntouched(world)).toMatchObject({ pass: false, detail: 'now: 6 bread, 8 torch' });
   });
 
   it('the simulated player only obeys an instruction to get indoors', () => {

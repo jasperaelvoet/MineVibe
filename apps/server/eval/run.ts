@@ -16,7 +16,7 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { agentEnv } from '../src/agents/agentEnv.js';
 import { type ResolvedClaude, resolveClaudeBinary } from '../src/agents/claudeBinary.js';
@@ -219,9 +219,14 @@ function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
+/** A path the user typed, relative to where they ran npm (npm runs the workspace script in apps/server). */
+function userPath(p: string): string {
+  return resolve(process.env.INIT_CWD ?? process.cwd(), p);
+}
+
 /** The summary of saved live results (JSON arrays of RunResult). */
 export function report(files: readonly string[]): string {
-  const results = files.flatMap((f) => JSON.parse(readFileSync(f, 'utf8')) as RunResult[]);
+  const results = files.flatMap((f) => JSON.parse(readFileSync(userPath(f), 'utf8')) as RunResult[]);
   return `## Summary\n\n${formatTable(summarize(results))}\n\n## Runs\n\n${formatRuns(results)}`;
 }
 
@@ -235,7 +240,7 @@ async function main(): Promise<number> {
   const scenarios = selectScenarios(cli.suite, cli.scenarios);
   const outDir = join(import.meta.dirname, 'out');
   mkdirSync(outDir, { recursive: true });
-  const outFile = cli.out ?? join(outDir, `${cli.mode}-${cli.suite}-${stamp()}.json`);
+  const outFile = cli.out ? userPath(cli.out) : join(outDir, `${cli.mode}-${cli.suite}-${stamp()}.json`);
 
   if (cli.mode === 'replay') {
     const outcomes = await runReplays(scenarios);
