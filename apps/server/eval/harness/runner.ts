@@ -304,6 +304,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
   });
   const gate: HookCallback = async (input, toolUseId, options) => {
     if (startupDone) await Promise.race([startupDone, new Promise((r) => setTimeout(r, 15_000).unref?.())]);
+    // A halted live session (startup assertions failed before this turn began) ends the turn at its first tool call.
+    if (halted && opts.requireSubscription) void session?.interrupt();
     const h = input as PreToolUseHookInput;
     if (h.hook_event_name === 'PreToolUse' && (h.tool_name === 'WebSearch' || h.tool_name === 'WebFetch')) {
       const reason = 'This eval PC is offline: there is no web access. Use the PC itself.';
@@ -394,7 +396,11 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         if (!first || !session) return;
         startupDone = session.checkStartup(init, 'subscription').then((problems) => {
           startupProblems = problems;
-          if (problems.length > 0) halted = problems.join('; ');
+          if (problems.length === 0) return;
+          halted = problems.join('; ');
+          // Live: end the turn now. The gate denies every tool while halted, but the model would keep calling them,
+          // one API round trip each (up to maxTurns), on whatever account the session is wrongly using.
+          if (opts.requireSubscription) void session?.interrupt();
         });
       },
       onMessage: (m) => metrics.onMessage(m),

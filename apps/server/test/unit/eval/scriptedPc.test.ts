@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HOME, REPO } from '../../../eval/pc/content.js';
+import { CART_JS, HOME, REPO, subtotalFixed } from '../../../eval/pc/content.js';
 import { PC_ID, ScriptedPc, unwrapBash } from '../../../eval/pc/ScriptedPc.js';
 import { stripPwdMarker, wrapBash } from '../../../src/agents/tools/pcServer.js';
 import { isApiError } from '../../../src/contracts/common.js';
@@ -40,6 +40,19 @@ describe('ScriptedPc shell', () => {
     expect(status.output).toContain('modified:   src/cart.js');
     const diff = await sh(pc, 'git diff', REPO);
     expect(diff.output).toContain('+  return items.reduce((sum, item) => sum + item.price * item.qty, 0);');
+  });
+
+  it('counts a fix only when subtotal adds price times quantity (comments do not count)', () => {
+    const withBody = (body: string) => CART_JS.replace('sum + item.price, 0', body);
+    expect(subtotalFixed(CART_JS)).toBe(false);
+    expect(subtotalFixed(withBody('sum + item.price * item.qty, 0'))).toBe(true);
+    expect(subtotalFixed(withBody('sum + item.qty * item.price, 0'))).toBe(true);
+    expect(subtotalFixed(withBody("sum + Number(item['price']) * Number(item.qty), 0"))).toBe(true);
+    // Gamed or wrong: the words in a comment, or a product of the wrong things.
+    expect(subtotalFixed(withBody('sum + item.price /* TODO: * qty */, 0'))).toBe(false);
+    expect(subtotalFixed(withBody('sum + item.price, 0) // price * qty\n  + 0'))).toBe(false);
+    expect(subtotalFixed(withBody('sum * item.price + item.qty, 0'))).toBe(false);
+    expect(subtotalFixed(withBody('item.price * item.qty, 0'))).toBe(false);
   });
 
   it('pipes, lists, operators, redirects and globs', async () => {

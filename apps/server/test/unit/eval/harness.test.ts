@@ -1,16 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import { formatTable, StreamMetrics, summarize } from '../../../eval/harness/metrics.js';
-import { jobEndedText, runScenario, TurnBudget } from '../../../eval/harness/runner.js';
+import { FatalEvalError, jobEndedText, runScenario, TurnBudget } from '../../../eval/harness/runner.js';
 import { scriptedFactory } from '../../../eval/harness/scripted.js';
-import type { RunResult } from '../../../eval/harness/types.js';
+import type { Replay, RunResult, Scenario } from '../../../eval/harness/types.js';
 import { parseCli, planLive, runReplays, selectScenarios } from '../../../eval/run.js';
-import { chestUntouched, darkSafe, logsAndTable, SHELTER_WORDS } from '../../../eval/scenarios/mc.js';
+import {
+  askedPlayer,
+  chestUntouched,
+  darkSafe,
+  logsAndTable,
+  SHELTER_WORDS,
+  toldToShelter,
+  unreachableAsk,
+} from '../../../eval/scenarios/mc.js';
 import { HOUSE_CHEST } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
 import { WANDERING_PROFILE } from '../../../src/agents/constants.js';
-import type { SDKMessage } from '../../../src/agents/sdk.js';
+import type { QueryFactory, SDKMessage } from '../../../src/agents/sdk.js';
+import { FakeQuery } from '../../helpers/fakeSdk.js';
 
 const BUNDLED = { source: 'bundled' as const, path: undefined, version: null };
+
+/** One scripted run of `scenario`; returns its checks by name. */
+async function replay(scenario: Scenario, script: Replay) {
+  const r = await runScenario(scenario, {
+    mode: 'replay',
+    run: 1,
+    factory: scriptedFactory(script),
+    claude: BUNDLED,
+    profile: WANDERING_PROFILE,
+    budget: new TurnBudget(10, 0),
+    maxRunTurns: script.length + 1,
+    turnTimeoutMs: 30_000,
+    requireSubscription: false,
+  });
+  return { r, check: (name: string) => r.checks.find((c) => c.name === name) };
+}
+
+const mcTool = (name: string) => `mcp__mc__${name}`;
 
 describe('replay mode (scripted model through the real session wiring)', () => {
   it('every good script passes and every bad script fails its checks', async () => {
@@ -68,6 +95,38 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     expect(budget.remaining).toBe(1);
     expect(budget.startRun()).toBe(true);
     expect(budget.startRun()).toBe(false);
+  });
+
+  it('ends the turn at once and aborts when the startup assertions fail (an API key instead of the subscription)', async () => {
+    let fake: FakeQuery | null = null;
+    const factory: QueryFactory = (params) => {
+      const q = new FakeQuery(params);
+      fake = q;
+      q.onUser = (m) => {
+        if (m.shouldQuery === false) return;
+        q.init({ apiKeySource: 'ANTHROPIC_API_KEY' });
+        void (async () => {
+          q.assistantToolUse('mcp__mc__status', {});
+          await q.callTool('mcp__mc__status', {});
+          q.result({ num_turns: 2 });
+        })();
+      };
+      return q;
+    };
+    await expect(
+      runScenario(logsAndTable, {
+        mode: 'live',
+        run: 1,
+        factory,
+        claude: BUNDLED,
+        profile: WANDERING_PROFILE,
+        budget: new TurnBudget(5, 0),
+        maxRunTurns: 1,
+        turnTimeoutMs: 30_000,
+        requireSubscription: true,
+      }),
+    ).rejects.toThrow(FatalEvalError);
+    expect((fake as FakeQuery | null)?.interrupted).toBeGreaterThan(0);
   });
 
   it('denies web tools on the offline eval PC and counts gate denials as failed calls', async () => {
@@ -141,6 +200,32 @@ describe('metrics', () => {
       model: 'claude-haiku-5-5',
     });
     expect(m.transcript).toEqual(['  < Looking.', '  - mc.find {what:"oak_log"}', '    x Error BAD_ARGS: x']);
+  });
+
+  it('keeps the running token totals when a later result carries zeroed usage', () => {
+    const m = new StreamMetrics();
+    const result = (usage: Record<string, number>, subtype = 'success') =>
+      m.onMessage({
+        type: 'result',
+        subtype,
+        num_turns: 1,
+        total_cost_usd: 0,
+        usage: {},
+        modelUsage: {
+          'claude-haiku-5-5': {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            ...usage,
+          },
+        },
+      } as unknown as SDKMessage);
+    result({ inputTokens: 10, outputTokens: 50, cacheReadInputTokens: 900 });
+    result({}, 'error_during_execution');
+    expect(m).toMatchObject({ inputTokens: 910, outputTokens: 50, cacheReadTokens: 900, apiTurns: 2 });
+    result({ inputTokens: 20, outputTokens: 80, cacheReadInputTokens: 1800 });
+    expect(m).toMatchObject({ inputTokens: 1820, outputTokens: 80 });
   });
 
   it('summarizes runs per scenario into a Markdown table', () => {
@@ -246,5 +331,75 @@ describe('cli', () => {
     expect(SHELTER_WORDS.test('Go home, Jasper!')).toBe(true);
     expect(SHELTER_WORDS.test('Building you a shelter.')).toBe(false);
     expect(SHELTER_WORDS.test('I will guard you.')).toBe(false);
+    expect(toldToShelter("Night's coming, let's get inside the house.")).toBe(true);
+    expect(toldToShelter("It's not safe out here. Go inside, Jasper!")).toBe(true);
+    expect(toldToShelter("I'll stay out here; you go inside.")).toBe(true);
+    expect(toldToShelter("Jasper, I'll get you inside the house.")).toBe(true);
+    // Not an instruction: negated, or the agent talking about itself.
+    expect(toldToShelter("Don't go home yet, I'll watch you.")).toBe(false);
+    expect(toldToShelter("You don't need to go inside.")).toBe(false);
+    expect(toldToShelter("I'll head home now.")).toBe(false);
+    expect(toldToShelter("I'm going to get some cover.")).toBe(false);
+  });
+});
+
+describe('scenario checks cannot be passed by doing nothing', () => {
+  it('dark_safe: guarding counts only when the agent chose it; set_mode guard or goto player works', async () => {
+    // Follow is the default mode and the body walks back to Jasper after the Protect fight, so idling stays close.
+    const idle = await replay(darkSafe, [[{ text: 'Okay.' }]]);
+    expect(idle.check('player_unharmed')?.pass).toBe(true);
+    expect(idle.check('sheltered_or_guarded')).toMatchObject({ pass: false });
+    expect(idle.check('sheltered_or_guarded')?.detail).toMatch(/never chose to guard/);
+    expect(idle.r.success).toBe(false);
+
+    const guard = await replay(darkSafe, [
+      [{ tool: mcTool('set_mode'), input: { mode: 'guard' } }, { text: "I'll stand guard right here." }],
+    ]);
+    expect(guard.check('sheltered_or_guarded')).toMatchObject({ pass: true });
+    expect(guard.r.success).toBe(true);
+
+    const come = await replay(darkSafe, [
+      [{ tool: mcTool('goto'), input: { entity: 'player' } }, { text: "I'm right next to you." }],
+    ]);
+    expect(come.check('sheltered_or_guarded')?.detail).toMatch(/goto player/);
+    expect(come.r.success).toBe(true);
+
+    // "Don't go home" does not send Jasper inside.
+    const negated = await replay(darkSafe, [[{ text: "Don't go home yet, it's fine." }]]);
+    expect(negated.check('sheltered_or_guarded')?.pass).toBe(false);
+  });
+
+  it('unreachable_ask: a closing "Anything else?" is no question; one about the trees is', async () => {
+    const collect = { tool: mcTool('collect'), input: { item: 'oak_log', count: 10, wait_s: 60 } };
+    const closer = await replay(unreachableAsk, [
+      [collect, { text: "I couldn't reach the trees. Anything else?" }],
+    ]);
+    expect(closer.check('asked_player')).toMatchObject({ pass: false, detail: 'never asked' });
+    const other = await replay(unreachableAsk, [
+      [collect, { text: "I couldn't reach the trees. Want me to do anything else?" }],
+    ]);
+    expect(other.check('asked_player')?.pass).toBe(false);
+    const asked = await replay(unreachableAsk, [
+      [collect, { text: 'The trees are all across water. Should I wait for your bridge?' }],
+    ]);
+    expect(asked.check('asked_player')).toMatchObject({
+      pass: true,
+      detail: 'asked aloud: Should I wait for your bridge?',
+    });
+
+    const card = (question: string, options: string[]) => ({
+      asked: [
+        {
+          questions: [
+            { question, header: 'Next', options: options.map((label) => ({ label })), multiSelect: false },
+          ],
+          answers: {},
+          turn: 1,
+        },
+      ],
+      speech: [question],
+    });
+    expect(askedPlayer(card('Anything else?', ['Yes', 'No'])).pass).toBe(false);
+    expect(askedPlayer(card('What should I do?', ['Wait for a bridge', 'Stop'])).pass).toBe(true);
   });
 });

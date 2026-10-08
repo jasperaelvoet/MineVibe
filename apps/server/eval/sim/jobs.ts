@@ -33,10 +33,9 @@ import {
   round1,
   type SimWorld,
   TPS,
+  WALK_BPS,
 } from './world.js';
 
-/** Walking speed in blocks per second. */
-const WALK_BPS = 4.3;
 const MAX_SKIPS = 8;
 
 function walkTicks(from: Pos, to: Pos): number {
@@ -139,7 +138,8 @@ class Miner {
     if (w.isUnreachable(target.pos)) {
       this.#skip.add(posKey(target.pos));
       if (this.#skip.size > MAX_SKIPS) {
-        this.failure = { code: 'UNREACHABLE', msg: 'cannot reach any matching block (no path)' };
+        // The mod's Walk.failure(): `no_path` (Miner: "cannot reach any matching block (no_path)").
+        this.failure = { code: 'UNREACHABLE', msg: 'cannot reach any matching block (no_path)' };
         return 'failed';
       }
       return { dt: 2 * TPS };
@@ -768,8 +768,11 @@ function gotoJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
     }
   }
   const goal = target as Pos;
-  if (world.isUnreachable(goal))
-    return oneShot(3 * TPS, () => fail('UNREACHABLE', `no path to ${short(goal)} (no path)`));
+  if (world.isUnreachable(goal)) {
+    // GotoSkillJob: "no path to <block pos | entity ref> (<Walk.failure()>)".
+    const what = place === null && typeof args.entity === 'string' ? args.entity : short(goal);
+    return oneShot(3 * TPS, () => fail('UNREACHABLE', `no path to ${what} (no_path)`));
+  }
   return oneShot(
     walkTicks(world.agent.pos, goal),
     () => {
@@ -859,52 +862,68 @@ function giveJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
   );
 }
 
-/** Plain full blocks a blueprint may be built from (the mod's "any plain full block"). */
+/**
+ * Building blocks for blueprint walls (the mod's BuildJob.isBuildingBlock: full-cube block items that are not block
+ * entities, falling blocks, leaves, crafting tables or blocks with an axis). Logs have an axis, so they never count:
+ * a shelter needs planks, cobblestone, dirt or stone.
+ */
 function isBuildMaterial(id: string): boolean {
   return (
-    id === `${NS}dirt` ||
-    id === `${NS}cobblestone` ||
-    id === `${NS}stone` ||
-    matches('#minecraft:planks', id) ||
-    matches('#minecraft:logs', id)
+    id === `${NS}dirt` || id === `${NS}cobblestone` || id === `${NS}stone` || matches('#minecraft:planks', id)
   );
 }
 
-/** Blueprint block positions relative to the origin (rotation 0), and the interior it shelters. */
-function blueprint(
-  name: string,
-): { cells: Pos[]; interior: { min: Pos; max: Pos } | null; torches?: boolean } | null {
-  const cells: Pos[] = [];
+type StepKind = 'solid' | 'clear' | 'torch';
+
+interface Blueprint {
+  /** Steps in build order (BuildJob.plan at rotation 0; `at` rotates them). */
+  readonly steps: readonly { readonly kind: StepKind; readonly at: Pos }[];
+  /** The space it shelters once every solid step stands (relative to the origin). */
+  readonly interior: { readonly min: Pos; readonly max: Pos } | null;
+}
+
+/** The mod's built-in blueprints (BuildJob.plan) that the eval world simulates. */
+function blueprint(name: string): Blueprint | null {
+  const steps: { kind: StepKind; at: Pos }[] = [];
   if (name === 'shelter') {
-    for (let dy = 0; dy <= 1; dy++)
-      for (let dx = -2; dx <= 2; dx++)
-        for (let dz = -2; dz <= 2; dz++) {
-          const edge = Math.abs(dx) === 2 || Math.abs(dz) === 2;
-          if (edge && !(dx === 0 && dz === -2)) cells.push({ x: dx, y: dy, z: dz });
+    // A 5x5 hut: walls 3 high with a 2-high door gap facing north, the inside cleared first, a roof, a torch.
+    for (let y = 0; y <= 2; y++)
+      for (let x = -2; x <= 2; x++)
+        for (let z = -2; z <= 2; z++) {
+          const wall = Math.abs(x) === 2 || Math.abs(z) === 2;
+          const door = x === 0 && z === -2 && y <= 1;
+          steps.push({ kind: wall && !door ? 'solid' : 'clear', at: { x, y, z } });
         }
-    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) cells.push({ x: dx, y: 2, z: dz });
-    return { cells, interior: { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 1, z: 1 } } };
+    const roof: { kind: StepKind; at: Pos }[] = [];
+    for (let x = -2; x <= 2; x++)
+      for (let z = -2; z <= 2; z++) roof.push({ kind: 'solid', at: { x, y: 3, z } });
+    roof.sort(
+      (a, b) => Math.max(Math.abs(b.at.x), Math.abs(b.at.z)) - Math.max(Math.abs(a.at.x), Math.abs(a.at.z)),
+    );
+    steps.push(...roof, { kind: 'torch', at: { x: 1, y: 0, z: 1 } });
+    steps.sort((a, b) => (a.kind === 'clear' ? 0 : 1) - (b.kind === 'clear' ? 0 : 1));
+    return { steps, interior: { min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 2, z: 1 } } };
   }
   if (name === 'wall_ring') {
-    for (let dy = 0; dy <= 1; dy++)
-      for (let dx = -4; dx <= 4; dx++)
-        for (let dz = -4; dz <= 4; dz++)
-          if (Math.abs(dx) === 4 || Math.abs(dz) === 4) cells.push({ x: dx, y: dy, z: dz });
-    return { cells, interior: { min: { x: -3, y: 0, z: -3 }, max: { x: 3, y: 2, z: 3 } } };
+    for (let y = 0; y <= 1; y++)
+      for (let x = -4; x <= 4; x++)
+        for (let z = -4; z <= 4; z++)
+          if (Math.abs(x) === 4 || Math.abs(z) === 4) steps.push({ kind: 'solid', at: { x, y, z } });
+    return { steps, interior: { min: { x: -3, y: 0, z: -3 }, max: { x: 3, y: 2, z: 3 } } };
   }
   if (name === 'torch_ring') {
-    for (const [dx, dz] of [
+    for (const [x, z] of [
       [5, 0],
-      [-5, 0],
-      [0, 5],
-      [0, -5],
       [4, 4],
-      [-4, -4],
-      [4, -4],
+      [0, 5],
       [-4, 4],
+      [-5, 0],
+      [-4, -4],
+      [0, -5],
+      [4, -4],
     ] as const)
-      cells.push({ x: dx, y: 0, z: dz });
-    return { cells, interior: null, torches: true };
+      steps.push({ kind: 'torch', at: { x, y: 0, z } });
+    return { steps, interior: null };
   }
   return null;
 }
@@ -918,60 +937,120 @@ export const BUILTIN_BLUEPRINTS = [
   'farm_plot',
 ];
 
+/** BuildJob.at: (x, z) turned clockwise around the origin. */
+function rotate(origin: Pos, rotation: number, p: Pos): Pos {
+  switch (rotation) {
+    case 90:
+      return { x: origin.x - p.z, y: origin.y + p.y, z: origin.z + p.x };
+    case 180:
+      return { x: origin.x - p.x, y: origin.y + p.y, z: origin.z - p.z };
+    case 270:
+      return { x: origin.x + p.z, y: origin.y + p.y, z: origin.z - p.x };
+    default:
+      return { x: origin.x + p.x, y: origin.y + p.y, z: origin.z + p.z };
+  }
+}
+
 function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
   const name = String(args.blueprint);
   const origin = args.origin as Pos;
+  const rotation = typeof args.rotation === 'number' ? args.rotation : 0;
   const bp = blueprint(name);
   if (!bp)
     return oneShot(1, () => fail('FAILED', `the ${name} blueprint is not simulated in the eval world`));
-  const cells = bp.cells
-    .map((c) => ({ x: origin.x + c.x, y: origin.y + c.y, z: origin.z + c.z }))
-    .filter((p) => world.isReplaceable(p));
-  const material = bp.torches ? (id: string) => id === `${NS}torch` : isBuildMaterial;
-  const have = world.count(material);
-  if (have < cells.length) {
-    return oneShot(5, () =>
-      fail(
-        'NO_MATERIAL',
-        bp.torches
-          ? `${name} needs ${cells.length} torches; you have ${have}`
-          : `${name} needs ${cells.length} plain blocks (dirt, cobblestone, planks...); you have ${have}`,
-      ),
-    );
-  }
+  const steps = bp.steps.map((s) => ({ kind: s.kind, at: rotate(origin, rotation, s.at) }));
+  const isClear = (p: Pos) => world.isReplaceable(p);
+  const satisfied = (st: { kind: StepKind; at: Pos }) =>
+    st.kind === 'solid'
+      ? !world.isReplaceable(st.at)
+      : st.kind === 'torch'
+        ? world.block(st.at).id === `${NS}torch`
+        : isClear(st.at);
+  const result: Record<string, unknown> = {};
   let placed = 0;
+  let dug = 0;
+  let skipped = 0;
   let i = 0;
+  let checked = false;
+  const shelterIfStanding = () => {
+    if (!bp.interior || !steps.every((st) => st.kind !== 'solid' || satisfied(st))) return;
+    const a = rotate(origin, rotation, bp.interior.min);
+    const b = rotate(origin, rotation, bp.interior.max);
+    world.shelters.push({
+      min: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: Math.min(a.z, b.z) },
+      max: { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), z: Math.max(a.z, b.z) },
+    });
+    if (world.isSheltered(world.player.pos)) world.player.sheltered = true;
+  };
   return sequence(() => {
-    const c = cells[i++];
-    if (!c) {
-      if (bp.interior) {
-        const box = {
-          min: {
-            x: origin.x + bp.interior.min.x,
-            y: origin.y + bp.interior.min.y,
-            z: origin.z + bp.interior.min.z,
-          },
-          max: {
-            x: origin.x + bp.interior.max.x,
-            y: origin.y + bp.interior.max.y,
-            z: origin.z + bp.interior.max.z,
-          },
-        };
-        world.shelters.push(box);
-        if (world.isSheltered(world.player.pos)) world.player.sheltered = true;
+    if (!checked) {
+      // BuildJob.precheck: enough building blocks (and torches for a torch ring) for the steps still to do.
+      checked = true;
+      const solids = steps.filter((st) => st.kind === 'solid' && !satisfied(st)).length;
+      const torches = steps.filter((st) => st.kind === 'torch' && !satisfied(st)).length;
+      const haveBlocks = world.count(isBuildMaterial);
+      const haveTorches = world.count((id) => id === `${NS}torch`);
+      result.needBlocks = solids;
+      if (solids > haveBlocks)
+        return fail(
+          'NO_MATERIAL',
+          `${name} needs ${solids} building blocks (dirt, cobblestone, planks...), have ${haveBlocks}`,
+          result,
+        );
+      if (name === 'torch_ring' && torches > haveTorches)
+        return fail('NO_MATERIAL', `torch_ring needs ${torches} torches, have ${haveTorches}`, result);
+      return {
+        dt: walkTicks(world.agent.pos, origin),
+        effect: () => (world.agent.pos = world.standSpot(origin)),
+      };
+    }
+    while (i < steps.length && satisfied(steps[i] as { kind: StepKind; at: Pos })) i++;
+    const st = steps[i];
+    if (!st) {
+      shelterIfStanding();
+      Object.assign(result, { blueprint: name, origin: pos(origin), placed, dug, skipped });
+      return done(result);
+    }
+    const progress: [number, string] = [i / steps.length, `${name}: step ${i + 1}/${steps.length}`];
+    if (st.kind === 'clear') {
+      const b = world.block(st.at);
+      if (blockSpec(b.id).hardness < 0) {
+        skipped++;
+        i++;
+        return { dt: 1, progress };
       }
-      return done({ blueprint: name, placed, origin: pos(origin) });
+      return {
+        dt: 5,
+        progress,
+        effect: () => {
+          world.breakBlock(st.at, 'build');
+          dug++;
+          const drop = blockSpec(b.id).drop;
+          const tools = [...world.agent.inventory.keys()].filter((id) => toolOf(id) !== null);
+          if (drop && breakTime(b.id, tools).harvest) world.give(drop, 1);
+        },
+      };
+    }
+    const material = st.kind === 'torch' ? (id: string) => id === `${NS}torch` : isBuildMaterial;
+    if (world.count(material) === 0) {
+      // BuildJob.finishShort: what stands stays.
+      shelterIfStanding();
+      Object.assign(result, { blueprint: name, placed, dug });
+      return fail(
+        'NO_MATERIAL',
+        `${st.kind === 'torch' ? 'out of torches' : 'out of building blocks'} after ${placed} blocks`,
+        result,
+      );
     }
     return {
       dt: 5,
+      progress,
       effect: () => {
-        if (!world.isReplaceable(c)) return;
         const [id] = world.take(material, 1).keys();
         if (!id) return;
-        world.placeBlock(c, id);
+        world.placeBlock(st.at, id);
         placed++;
       },
-      progress: [i / cells.length, `${i}/${cells.length} blocks`],
     };
   });
 }

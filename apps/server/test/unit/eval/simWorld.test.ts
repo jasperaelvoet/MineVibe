@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { NS } from '../../../eval/sim/items.js';
 import { buildWorld, HOUSE, HOUSE_CHEST, HOUSE_FURNACE, ZOMBIE_SPAWN } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
-import { dayAndTime, posKey, TPS } from '../../../eval/sim/world.js';
+import { dayAndTime, dist, posKey, TPS } from '../../../eval/sim/world.js';
 import { isApiError } from '../../../src/contracts/common.js';
 
 const A = 'ada';
@@ -166,7 +166,8 @@ describe('SimWorld jobs', () => {
       waitMs: 120_000,
     });
     expect(res.status).toBe('failed');
-    expect(res.error).toEqual({ code: 'UNREACHABLE', msg: 'cannot reach any matching block (no path)' });
+    // Miner.java: "cannot reach any matching block (" + Walk.failure() + ")", and Walk says `no_path`.
+    expect(res.error).toEqual({ code: 'UNREACHABLE', msg: 'cannot reach any matching block (no_path)' });
     expect(world.broken).toHaveLength(0);
   });
 
@@ -292,6 +293,87 @@ describe('SimWorld jobs', () => {
     expect(wall.error?.code).toBe('OCCUPIED');
   });
 
+  it('goto an unreachable spot fails like GotoSkillJob (no_path)', async () => {
+    const { api } = setup();
+    const res = await api.runSkill({
+      agentId: A,
+      skill: 'goto',
+      args: { pos: { x: -20, y: 72, z: -2 } },
+      waitMs: 20_000,
+    });
+    expect(res.error).toEqual({ code: 'UNREACHABLE', msg: 'no path to -20, 72, -2 (no_path)' });
+  });
+
+  it('builds a shelter like BuildJob: logs are no building blocks, 71 blocks, a torch last', async () => {
+    const origin = { x: 2, y: 64, z: -2 };
+    // Logs have an axis: BuildJob.isBuildingBlock refuses them.
+    const logs = setup({ inventory: [[`${NS}oak_log`, 80]] });
+    const refused = await logs.api.runSkill({
+      agentId: A,
+      skill: 'build',
+      args: { blueprint: 'shelter', origin },
+      waitMs: 120_000,
+    });
+    expect(refused).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'NO_MATERIAL',
+        msg: 'shelter needs 71 building blocks (dirt, cobblestone, planks...), have 0',
+      },
+      result: { needBlocks: 71 },
+    });
+    expect(logs.world.placed).toHaveLength(0);
+
+    const ok = setup({
+      inventory: [
+        [`${NS}cobblestone`, 64],
+        [`${NS}oak_planks`, 10],
+        [`${NS}torch`, 1],
+      ],
+    });
+    const built = await ok.api.runSkill({
+      agentId: A,
+      skill: 'build',
+      args: { blueprint: 'shelter', origin },
+      waitMs: 120_000,
+    });
+    expect(built.status).toBe('done');
+    expect(built.result).toMatchObject({
+      needBlocks: 71,
+      blueprint: 'shelter',
+      placed: 72,
+      dug: 0,
+      skipped: 0,
+    });
+    expect(ok.world.block({ x: 2, y: 67, z: -2 }).id).toBe(`${NS}oak_planks`); // the roof's last block
+    expect(ok.world.block({ x: 2, y: 64, z: -4 }).id).toBe('minecraft:air'); // the door gap
+    expect(ok.world.block({ x: 2, y: 66, z: -4 }).id).not.toBe('minecraft:air'); // above the door
+    expect(ok.world.player.sheltered).toBe(true);
+
+    // Without a torch the last step fails, as in the mod; the hut stands and shelters.
+    const dark = setup({ inventory: [[`${NS}cobblestone`, 71]] });
+    const short = await dark.api.runSkill({
+      agentId: A,
+      skill: 'build',
+      args: { blueprint: 'shelter', origin },
+      waitMs: 120_000,
+    });
+    expect(short.error).toEqual({ code: 'NO_MATERIAL', msg: 'out of torches after 71 blocks' });
+    expect(dark.world.player.sheltered).toBe(true);
+  });
+
+  it("a shelter clears its inside first, even when that is Jasper's wall", async () => {
+    const { world, api } = setup({ inventory: [[`${NS}dirt`, 80]] });
+    await api.runSkill({
+      agentId: A,
+      skill: 'build',
+      args: { blueprint: 'shelter', origin: { x: 3, y: 64, z: 6 } },
+      waitMs: 120_000,
+    });
+    expect(world.damage(HOUSE).length).toBeGreaterThan(0);
+    expect(world.broken.every((b) => b.skill === 'build')).toBe(true);
+  });
+
   it('validates args with the protocol schemas', async () => {
     const { api } = setup();
     await rejectsCode(
@@ -313,8 +395,12 @@ describe('SimWorld jobs', () => {
 describe('SimWorld night', () => {
   it('a zombie walks to an unguarded player and hurts them', () => {
     const { world } = setup({ clock: 12_900, zombieAt: 13_000 });
+    // Far away and told to stay there (in follow mode the body would walk back to Jasper).
     world.agent.pos = { x: 30, y: 64, z: 30 };
+    world.agent.mode = 'stay';
+    world.agent.anchor = world.agent.pos;
     world.advance(world.clock + 60 * TPS);
+    expect(world.agent.pos).toEqual({ x: 30, y: 64, z: 30 });
     expect(world.mobs[0]?.type).toBe(`${NS}zombie`);
     expect(world.player.hp).toBeLessThan(20);
   });
@@ -327,9 +413,59 @@ describe('SimWorld night', () => {
     expect(world.events.some((e) => e.type === 'mob_killed')).toBe(true);
   });
 
+  it('idle modes move the body like the mod: follow comes back after a fight, guard returns to its anchor', async () => {
+    // Follow (the default): Protect walks the body to the zombie; afterwards it is back by Jasper.
+    const follow = setup({ clock: 12_900, zombieAt: 13_000 });
+    follow.world.advance(follow.world.clock + 60 * TPS);
+    expect(follow.world.mobs[0]?.alive).toBe(false);
+    expect(dist(follow.world.agent.pos, follow.world.player.pos)).toBeLessThanOrEqual(4);
+
+    // Guard: within 6 blocks of the anchor once the zombie is dead (IdleModeReflex walks back past 6).
+    const guard = setup({ clock: 12_900, zombieAt: 13_000 });
+    await guard.api.setMode(A, 'guard');
+    expect(guard.world.agent.anchor).toEqual({ x: 0, y: 64, z: -3 });
+    guard.world.advance(guard.world.clock + 60 * TPS);
+    expect(guard.world.mobs[0]?.alive).toBe(false);
+    expect(dist(guard.world.agent.pos, { x: 0, y: 64, z: -3 })).toBeLessThanOrEqual(6);
+    // Pushed away, it walks back onto the anchor.
+    guard.world.agent.pos = { x: 20, y: 64, z: -3 };
+    guard.world.advance(guard.world.clock + 10 * TPS);
+    expect(guard.world.agent.pos).toEqual({ x: 0, y: 64, z: -3 });
+
+    // Guard far from Jasper still fights what comes near its anchor.
+    const post = setup({ clock: 12_900, zombieAt: 13_000 });
+    await post.api.setMode(A, 'guard', { x: -10, y: 64, z: -10 });
+    post.world.agent.pos = { x: -10, y: 64, z: -10 };
+    post.world.player.pos = { x: 40, y: 64, z: 40 };
+    post.world.advance(post.world.clock + 30 * TPS);
+    expect(post.world.events.find((e) => e.type === 'mob_killed')?.data).toMatchObject({ by: 'idle:guard' });
+
+    // ReflexBrain.setMode anchors: none for follow, where the body stands for the others.
+    await post.api.setMode(A, 'follow');
+    expect(post.world.agent.anchor).toBeNull();
+    await post.api.setMode(A, 'wander');
+    expect(post.world.agent.anchor).toEqual(post.world.agent.pos);
+
+    // No idle walking while a job runs.
+    const busy = setup();
+    busy.world.player.pos = { x: 30, y: 64, z: 30 };
+    const job = await busy.api.runSkill({
+      agentId: A,
+      skill: 'collect',
+      args: { item: 'oak_log', count: 10 },
+      waitMs: 1_000,
+    });
+    expect(job.status).toBe('running');
+    const at = busy.world.agent.pos;
+    busy.world.advance(busy.world.clock + 2 * TPS);
+    expect(busy.world.agent.pos).toEqual(at); // still walking to the first tree, not to Jasper
+  });
+
   it('a player inside a shelter is safe; the zombie spawn is where the layout says', () => {
     const { world } = setup({ clock: 12_900, zombieAt: 13_000 });
     world.agent.pos = { x: 30, y: 64, z: 30 };
+    world.agent.mode = 'stay';
+    world.agent.anchor = world.agent.pos;
     world.player.pos = { x: 5, y: 64, z: 5 };
     world.advance(world.clock + 60 * TPS);
     expect(world.player.hp).toBe(20);

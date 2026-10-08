@@ -18,6 +18,11 @@ import { blockSpec, maxStack, NS, normId, shortId } from './items.js';
 
 export const TPS = 20;
 export const TICKS_PER_DAY = 24_000;
+/** Walking speed of the body in blocks per second (jobs and idle modes). */
+export const WALK_BPS = 4.3;
+/** The mod's idle modes (ReflexBrain): follow keeps 3 blocks (starts at 4), guard clears 12 around the anchor. */
+const FOLLOW_DISTANCE = 3;
+const GUARD_RADIUS = 12;
 
 export interface Pos {
   readonly x: number;
@@ -207,6 +212,8 @@ export class SimWorld {
   /** Called when a job ends (SimSkillApi turns it into a `result` event). */
   onJobEnd: ((job: SimJob) => void) | null = null;
   #mobSeq = 0;
+  /** The idle mode is walking the body back (inner hysteresis distance applies). */
+  #idleWalking = false;
 
   constructor(init: SimWorldInit = {}) {
     this.clock = init.clock ?? 2_000;
@@ -450,10 +457,11 @@ export class SimWorld {
       if (++guard > 1_000_000) throw new Error('SimWorld.advance: runaway loop');
       const jobAt = this.current?.dueAt ?? Number.POSITIVE_INFINITY;
       const eventAt = this.#scheduled[0]?.at ?? Number.POSITIVE_INFINITY;
-      const mobAt = this.#hasActiveMobs()
-        ? (Math.floor(this.clock / TPS) + 1) * TPS
-        : Number.POSITIVE_INFINITY;
-      const at = Math.min(jobAt, eventAt, mobAt);
+      const secondAt =
+        this.#hasActiveMobs() || this.#idleGoal() !== null
+          ? (Math.floor(this.clock / TPS) + 1) * TPS
+          : Number.POSITIVE_INFINITY;
+      const at = Math.min(jobAt, eventAt, secondAt);
       if (at > toTick) break;
       this.clock = Math.max(this.clock, at);
       if (eventAt <= at) {
@@ -462,7 +470,7 @@ export class SimWorld {
       } else if (jobAt <= at) {
         this.#stepJob(this.current as SimJob);
       } else {
-        this.#mobTick();
+        this.#secondTick();
       }
     }
     this.clock = Math.max(this.clock, toTick);
@@ -536,23 +544,21 @@ export class SimWorld {
     return this.mobs.some((m) => m.alive && m.hostile);
   }
 
-  /** Zombies walk to the player and hurt them; the agent's Protect reflex fights a zombie near the player. */
-  #mobTick(): void {
+  /**
+   * The 1 Hz tick: zombies walk to the player and hurt them; the body's Protect reflex fights a zombie near the
+   * player; with no job and no fight, the idle mode moves the body (follow, stay, guard), like the mod's ReflexBrain.
+   */
+  #secondTick(): void {
+    let fought = false;
     for (const mob of this.mobs) {
       if (!mob.alive || !mob.hostile) continue;
       const target = this.player.pos;
       const d = dist(mob.pos, target);
       const agentNearPlayer = dist(this.agent.pos, this.player.pos) <= 16;
       if (agentNearPlayer && d <= 12) {
-        // Protect (80) preempts the job: the body walks over and fights (4 damage a second, bare-handed).
-        const weapon = this.agent.held?.endsWith('_sword') ? 6 : 4;
-        mob.hp -= weapon;
-        this.agent.pos = this.standSpot(mob.pos);
-        if (mob.hp <= 0) {
-          mob.alive = false;
-          this.log('mob_killed', { type: mob.type, by: 'reflex:protect' });
-          this.agentEvent('killed', { entity: mob.type });
-        }
+        // Protect (80) preempts the job: the body walks over and fights.
+        this.#strike(mob, 'reflex:protect');
+        fought = true;
         continue;
       }
       if (this.player.sheltered || this.isSheltered(this.player.pos)) continue;
@@ -569,6 +575,73 @@ export class SimWorld {
         this.log('player_hurt', { by: mob.type, hp: this.player.hp });
       }
     }
+    if (!fought && !this.current) this.#idleTick();
+  }
+
+  /** One second of fighting `mob` (4 damage bare-handed, 6 with a sword), standing next to it. */
+  #strike(mob: Mob, by: string): void {
+    mob.hp -= this.agent.held?.endsWith('_sword') ? 6 : 4;
+    this.agent.pos = this.standSpot(mob.pos);
+    if (mob.hp <= 0) {
+      mob.alive = false;
+      this.log('mob_killed', { type: mob.type, by });
+      this.agentEvent('killed', { entity: mob.type });
+    }
+  }
+
+  /**
+   * What the idle mode wants (only without a job): follow walks back to the player once more than 4 blocks away
+   * (IdleFollowReflex), stay returns to the anchor past 2 blocks, guard fights hostiles within 12 of its anchor and
+   * returns past 6 (IdleModeReflex). Null: the body stands still.
+   */
+  #idleGoal(): { readonly goal: Pos; readonly stopAt: number } | { readonly mob: Mob } | null {
+    if (this.current) return null;
+    const a = this.agent;
+    const anchor = a.anchor ?? a.pos;
+    // Hysteresis like the mod's reflexes: start past the outer distance, keep walking until within the inner one.
+    const away = (goal: Pos, start: number, keep: number) =>
+      dist(a.pos, goal) > (this.#idleWalking ? keep : start);
+    switch (a.mode) {
+      case 'follow':
+        return away(this.player.pos, FOLLOW_DISTANCE + 1, FOLLOW_DISTANCE)
+          ? { goal: this.player.pos, stopAt: FOLLOW_DISTANCE }
+          : null;
+      case 'stay':
+        return away(anchor, 2, 1) ? { goal: anchor, stopAt: 0 } : null;
+      case 'guard': {
+        const mob = this.mobs.find(
+          (m) => m.alive && m.hostile && m.type !== `${NS}creeper` && dist(m.pos, anchor) <= GUARD_RADIUS,
+        );
+        if (mob) return { mob };
+        return away(anchor, 6, 2) ? { goal: anchor, stopAt: 0 } : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  #idleTick(): void {
+    const want = this.#idleGoal();
+    this.#idleWalking = want !== null && 'goal' in want;
+    if (!want) return;
+    if ('mob' in want) {
+      this.#strike(want.mob, 'idle:guard');
+      return;
+    }
+    // One second of walking; the last step lands next to the player (follow) or on the anchor.
+    const from = this.agent.pos;
+    const d = dist(from, want.goal);
+    if (d - want.stopAt <= WALK_BPS) {
+      this.agent.pos = want.stopAt > 0 ? this.standSpot(want.goal) : want.goal;
+      this.#idleWalking = false;
+      return;
+    }
+    const f = WALK_BPS / d;
+    this.agent.pos = {
+      x: Math.round(from.x + (want.goal.x - from.x) * f),
+      y: Math.round(from.y + (want.goal.y - from.y) * f),
+      z: Math.round(from.z + (want.goal.z - from.z) * f),
+    };
   }
 
   /** The mod's status footer line. */

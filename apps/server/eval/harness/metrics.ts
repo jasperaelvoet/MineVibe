@@ -93,17 +93,24 @@ export class StreamMetrics {
         return;
       }
       case 'result': {
-        this.apiTurns += m.num_turns;
+        this.apiTurns += m.num_turns ?? 0;
         this.costUsd = Math.max(this.costUsd, m.total_cost_usd ?? 0);
         const models = Object.values(m.modelUsage ?? {}) as unknown as Record<string, number>[];
         if (models.length > 0) {
           this.#sawModelUsage = true;
           const sum = (k: string) => models.reduce((s, u) => s + (u[k] ?? 0), 0);
-          this.inputTokens =
-            sum('inputTokens') + sum('cacheReadInputTokens') + sum('cacheCreationInputTokens');
-          this.outputTokens = sum('outputTokens');
-          this.cacheReadTokens = sum('cacheReadInputTokens');
-          this.cacheWriteTokens = sum('cacheCreationInputTokens');
+          const read = sum('cacheReadInputTokens');
+          const write = sum('cacheCreationInputTokens');
+          const input = sum('inputTokens') + read + write;
+          const output = sum('outputTokens');
+          // Running totals only grow; a crash or startup-error result may carry zeroed usage (sdk.d.ts), which must
+          // not wipe the totals of the turns before it.
+          if (input + output >= this.inputTokens + this.outputTokens) {
+            this.inputTokens = input;
+            this.outputTokens = output;
+            this.cacheReadTokens = read;
+            this.cacheWriteTokens = write;
+          }
         } else if (!this.#sawModelUsage) {
           const u = m.usage as unknown as Record<string, number | undefined>;
           this.#perTurnUsage.input += u.input_tokens ?? 0;

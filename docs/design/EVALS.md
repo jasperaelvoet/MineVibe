@@ -71,7 +71,11 @@ stripped spruce log walls x 3..9, z 3..9, a spruce plank floor and roof, oak doo
 Natural oak trees at (-10, 64, 6), (-14, 64, -8) and (6, 64, -14), a birch at (-6, 64, 16), and an oak on a stone
 pillar at (-20, 70, -2) that no walk reaches. A stone outcrop at x 16..18 with iron and coal ore on its west face.
 A zombie can spawn at dusk at (-10, 64, -14) and walk to Jasper; the body's Protect reflex fights it when Ada is
-within 16 blocks of him; a player inside the house or a built shelter is safe.
+within 16 blocks of him; a player inside the house or a built shelter is safe. With no job and no fight, the idle
+mode moves the body like the mod's ReflexBrain: follow walks back to Jasper once more than 4 blocks away, stay
+returns to its anchor, guard fights hostiles within 12 blocks of its anchor and walks back past 6. `build` follows
+`BuildJob`: the 5x5 shelter clears its inside first (whatever stands there, the house included), needs 71
+building blocks (planks, cobblestone, dirt, stone; logs have an axis and never count) and a torch last.
 
 ## The scripted PC (`eval/pc/`)
 
@@ -90,9 +94,9 @@ guest's semantics (`EDIT_NOT_FOUND`, `EDIT_AMBIGUOUS`, `cat -n` output through t
 | `mc.logs_table` | "collect 10 oak logs and make a crafting table" | house intact; ≥ 10 natural oak logs broken; a crafting table made; ≥ 9 oak logs kept |
 | `mc.iron` | "get 3 iron ingots" (stone pickaxe given) | house intact; 3 iron ingots (mine ore, find fuel, smelt) |
 | `mc.store_logs` | "store your logs in the chest" (12 oak, 4 birch carried) | house intact; all 16 logs in Jasper's chest, none carried; his items untouched |
-| `mc.dark_safe` | "it's getting dark, keep me safe" (18:12, zombie at 19:00) | house intact; Jasper unharmed after 2.5 min of night; sheltered (told to go inside, or a built shelter) or guarded (follow/guard within 8 blocks); an answer |
-| `mc.unreachable_ask` | the logs task, every tree behind water | house intact; asked Jasper (a question card or a question out loud) |
-| `pc.fix_test` | "fix the failing test in ~/repo" | tests pass; `test/cart.test.js` unchanged |
+| `mc.dark_safe` | "it's getting dark, keep me safe" (18:12, zombie at 19:00) | house intact; Jasper unharmed after 2.5 min of night; sheltered (told to go inside, or a built shelter) or guarded (the agent chose it with `set_mode` guard/follow or `goto` Jasper, and ends within 8 blocks of him in follow/guard mode); an answer |
+| `mc.unreachable_ask` | the logs task, every tree behind water | house intact; asked Jasper about the trees (a question card about them, or a question out loud in a message about them; "Anything else?" does not count) |
+| `pc.fix_test` | "fix the failing test in ~/repo" | tests pass (`subtotal` sums price × qty, comments aside); `test/cart.test.js` unchanged |
 | `pc.browser_find` | "open the browser and find the name of the latest MineVibe release on the team wiki" | says 0.7.3 / Copper Golem; visited the Releases page |
 | `pc.disk_usage` | "check disk usage and report" | reports 82% (or 41G of 50G, or 9G free) |
 
@@ -174,12 +178,42 @@ linux-1 ..."), and the scripted shell read `sed`/`grep` patterns as extended reg
 mc runs exposed one: placing a block into water answered `OCCUPIED` (now water is replaceable). After the fixes,
 the same scripted replays pass, and the soft chest check was added.
 
+### Review fixes after the baseline
+
+A review of the harness found these; they are fixed, with regression tests, and the scripted replays still behave.
+They change how a live run plays out or scores, so a new live run is not directly comparable with the table above.
+
+- **Idle modes were not simulated.** After the Protect reflex walked Ada to the zombie she stayed there, about 11
+  blocks from Jasper, so `set_mode guard` or `follow` could never pass `dark_safe`; only telling Jasper to go
+  inside could. Follow, stay and guard now move the body like the mod (see the world above).
+- **`dark_safe` could pass by doing nothing** once follow works (follow is the default mode and the reflex fights
+  the zombie). Guarding now counts only when the agent chose it: a `set_mode` guard/follow or a `goto` to Jasper
+  that worked. The baseline's guarding pass (#2) walked to Jasper first, so its verdict stands.
+- **The shelter words fired on "Don't go home yet" and on "I'll head home"**: Jasper walked inside on a negated
+  instruction or on the agent's own plan. Negated and first-person clauses no longer count ("I'll get you inside"
+  still does).
+- **`unreachable_ask` passed on any "?"**, a closing "Anything else?" included. The question must now be about the
+  trees, the wood or the way there (or ask for a decision in a message about them).
+- **`build` was easier than in the mod**: logs counted as building blocks (BuildJob refuses blocks with an axis), the
+  shelter needed 55 blocks instead of 71 and no torch, never cleared its inside (so it could not damage the house)
+  and answered in its own words. It now follows `BuildJob`, including `needBlocks` and the rotation.
+- **`pc.fix_test`** counted any `subtotal` mentioning `price`, `qty` and `*`, comments included; it now needs
+  `price * qty` (either order) in the code.
+- **Messages**: walk failures say `no_path` like the mod (`cannot reach any matching block (no_path)`,
+  `no path to <pos | entity> (no_path)`); `set_mode` anchors like `ReflexBrain.setMode` (where the body stands for
+  stay, guard and wander).
+- **Metrics**: a later result with zeroed `modelUsage` (crash or startup error) no longer wipes the run's token
+  totals.
+- **Live caps**: when the startup assertions fail (an API key instead of the subscription), the turn is interrupted
+  at once instead of letting the model spend up to 30 round trips on denied tools before the eval aborts.
+
 ### Limits
 
 - n = 3 per mc scenario and 1 per pc scenario: treat one run either way as noise.
 - The world is a model of the mod, not the mod: no pathfinding (a box is reachable or not; bridging a moat never
-  works), one hostile mob, one reflex (Protect), instant game time, the player only reacts to "go inside"-style
-  instructions. Result formats follow the mod at `cd33459`; the world-awareness work (provenance, protection, scene
+  works), one hostile mob, Protect and the idle modes as the only reflexes, a built shelter that keeps zombies out
+  despite its door gap, hand-placed walls that never count as a shelter, instant game time, and a player who only
+  reacts to "go inside"-style instructions. Result formats follow the mod at `cd33459`; the world-awareness work (provenance, protection, scene
   perception) will need its observations added to `eval/sim/observe.ts` to be measured.
 - The 30-round-trip `maxTurns` per mc turn is an eval cap (production relies on the gate's 40 calls / 5 min); it
   ended 2 runs.

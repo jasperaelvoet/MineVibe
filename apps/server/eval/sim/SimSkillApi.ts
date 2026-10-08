@@ -141,7 +141,8 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
     this.#check(agentId);
     this.calls.push({ kind: 'mode', name: mode, args: anchor ? { anchor } : {}, at: this.world.clock });
     this.world.agent.mode = mode;
-    this.world.agent.anchor = anchor ?? (mode === 'guard' || mode === 'stay' ? this.world.agent.pos : null);
+    // ReflexBrain.setMode: the given anchor, else none for follow and where the body stands for the others.
+    this.world.agent.anchor = anchor ?? (mode === 'follow' ? null : this.world.agent.pos);
   }
 
   async seat(_request: SeatRequest): Promise<AgentSeatResult> {

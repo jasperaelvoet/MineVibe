@@ -149,11 +149,20 @@ function functionText(src: string, name: string): string | null {
   return src.slice(start);
 }
 
-/** Whether `subtotal` multiplies price by quantity (the fix). */
+/** The source without comments (a `// price * qty` note is no fix). */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+/** `price * qty` or `qty * price` in one expression (`item.price * item.qty`, `Number(i.qty) * i['price']`). */
+const PRICE_TIMES_QTY =
+  /\bprice\b[\s)\]'"]*\*[\s\w.$[\]'"(]*\bqty\b|\bqty\b[\s)\]'"]*\*[\s\w.$[\]'"(]*\bprice\b/;
+
+/** Whether `subtotal` adds up price times quantity (the fix), comments aside. */
 export function subtotalFixed(src: string): boolean {
-  const body = functionText(src, 'subtotal');
+  const body = functionText(stripComments(src), 'subtotal');
   if (!body) return false;
-  return /\bqty\b/.test(body) && /\bprice\b/.test(body) && /\*/.test(body);
+  return PRICE_TIMES_QTY.test(body) && /\+/.test(body);
 }
 
 function discountIntact(src: string): boolean {
