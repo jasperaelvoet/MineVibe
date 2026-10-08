@@ -123,8 +123,15 @@ func moveToApplications(_ bundleURL: URL) {
             NSWorkspace.shared.activateFileViewerSelecting([dest, bundleURL])  // never overwrite silently
             return
         }
-        try FileManager.default.moveItem(at: bundleURL, to: dest)
-        StubLog.write("moved to \(dest.path); relaunching")
+        if bundleURL.resolvingSymlinksInPath().path.lowercased().hasPrefix("/volumes/") {
+            // A disk image or another volume: a move would have to delete the original, which fails on a
+            // read-only disk image after the copy. Copy instead; the original stays where it is.
+            try FileManager.default.copyItem(at: bundleURL, to: dest)
+            StubLog.write("copied to \(dest.path); relaunching")
+        } else {
+            try FileManager.default.moveItem(at: bundleURL, to: dest)
+            StubLog.write("moved to \(dest.path); relaunching")
+        }
         let done = DispatchSemaphore(value: 0)
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = true
@@ -317,6 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastError: (message: String, detail: String?)?
     private var pickerOpen = false
     private var sawHello = false
+    /// The game connected: the first-run window is done and never comes back.
+    private var gameReady = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let bundle = Bundle.main.bundleURL
@@ -384,7 +393,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             link?.send(["cmd": "hello", "v": 1, "stub": stubVersion, "pid": Int(getpid())])
         case "progress":
             let work = message["work"] as? Bool ?? false
-            if progress == nil && !work { return }
+            if gameReady || (progress == nil && !work) { return }
             if progress == nil {
                 progress = ProgressWindow(onQuit: { [weak self] in self?.beginShutdown("cancel") })
             }
@@ -397,6 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.progress?.hide() }
             }
         case "ready":
+            gameReady = true
             progress?.hide()
         case "pickFolder":
             pickFolder(message)

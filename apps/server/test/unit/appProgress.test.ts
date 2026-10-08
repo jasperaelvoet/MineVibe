@@ -140,4 +140,19 @@ describe('LaunchProgress', () => {
     expect(sent.filter((m) => m.t === 'ready')).toHaveLength(1);
     expect(sent.at(-1)).toEqual({ t: 'ready' });
   });
+
+  it('sends no progress after ready (a late download must not reopen the window)', () => {
+    vi.useFakeTimers();
+    const { sent, progress } = collect(250);
+    progress.onPlay({ phase: 'install', state: 'start' });
+    progress.onPlay({ phase: 'connected' });
+    const count = sent.length;
+    progress.request('https://cdn.modrinth.com/late.jar');
+    progress.received(1024);
+    progress.onPlay({ phase: 'launched', pid: 1 });
+    vi.advanceTimersByTime(1000);
+    expect(sent.length).toBe(count);
+    expect(sent.at(-1)).toEqual({ t: 'ready' });
+    progress.dispose();
+  });
 });

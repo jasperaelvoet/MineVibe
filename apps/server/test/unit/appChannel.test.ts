@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { LineWriter } from '../../src/app/StubChannel.js';
 import { StubChannel } from '../../src/app/StubChannel.js';
-import { encodeLine, type NodeToStub, parseStubLine } from '../../src/app/stubProtocol.js';
+import { encodeLine, MAX_PICKED_PATH, type NodeToStub, parseStubLine } from '../../src/app/stubProtocol.js';
 
 function harness() {
   const input = new PassThrough();
@@ -54,10 +54,19 @@ describe('stub protocol lines', () => {
     expect(parseStubLine('{"cmd":"hello","v":1,"stub":"x","pid":-1}')).toBeNull();
   });
 
-  it('turns a relative or NUL-carrying picked path into "nothing picked"', () => {
+  it('turns a relative, NUL-carrying or over-long picked path into "nothing picked"', () => {
     expect(parseStubLine('{"cmd":"pickFolder.result","id":"a","path":"Code"}')).toMatchObject({ path: null });
     expect(parseStubLine('{"cmd":"pickFolder.result","id":"a","path":"/a\\u0000b"}')).toMatchObject({
       path: null,
+    });
+    // host.pick_folder's PickFolderResult (T0) caps the path at 1024 characters.
+    const long = `/${'a'.repeat(MAX_PICKED_PATH)}`;
+    expect(parseStubLine(JSON.stringify({ cmd: 'pickFolder.result', id: 'a', path: long }))).toMatchObject({
+      path: null,
+    });
+    const fits = `/${'a'.repeat(MAX_PICKED_PATH - 1)}`;
+    expect(parseStubLine(JSON.stringify({ cmd: 'pickFolder.result', id: 'a', path: fits }))).toMatchObject({
+      path: fits,
     });
   });
 

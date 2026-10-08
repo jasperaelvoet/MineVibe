@@ -293,6 +293,11 @@ describe('server production node_modules', () => {
     expect(productionPackages(ls, root)).toEqual(['@xmcl/core', 'pino-pretty/node_modules/sonic-boom', 'ws']);
   });
 
+  it('refuses a production package that is not under the root node_modules (it would be left out)', () => {
+    const ls = ['/repo', '/repo/node_modules/ws', '/repo/apps/server/node_modules/zod', ''].join('\n');
+    expect(() => productionPackages(ls, '/repo')).toThrow(/apps\/server\/node_modules\/zod/);
+  });
+
   it('copies each package byte for byte without its nested node_modules wholesale', async () => {
     const root = tmp();
     const nm = join(root, 'node_modules');

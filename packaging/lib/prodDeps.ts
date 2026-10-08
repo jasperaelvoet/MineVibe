@@ -11,7 +11,13 @@ export function productionPackages(lsOutput: string, repoRoot: string): string[]
   const out = new Set<string>();
   for (const line of lsOutput.split('\n')) {
     const path = line.trim();
-    if (!path.startsWith(nodeModules)) continue;
+    if (!path.startsWith(nodeModules)) {
+      // A package npm could not hoist (`apps/server/node_modules/x`) would be left out of the bundle, and the app
+      // would fail at runtime with "Cannot find module". Fail the build instead.
+      if (path.includes(`${sep}node_modules${sep}`))
+        throw new Error(`${path}: a production package outside ${nodeModules} (hoist or dedupe it)`);
+      continue; // the repo root and workspace folders
+    }
     const rel = path.slice(nodeModules.length).split(sep).join('/');
     if (rel === '' || rel.startsWith('@minevibe/') || rel.split('/').includes('..')) continue;
     out.add(rel);

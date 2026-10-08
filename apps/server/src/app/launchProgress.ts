@@ -179,6 +179,8 @@ export class LaunchProgress {
 
   #flush(): void {
     this.#clearTimer();
+    // The game is up: a late update (a download after the game connected) must not reopen the stub's window.
+    if (this.#ready) return;
     this.#lastSent = Date.now();
     this.#send({
       t: 'progress',

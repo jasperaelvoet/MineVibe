@@ -33,12 +33,12 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Build MineVibe.app
-        run: npm run build:app # TODO(M10): packaging/build-app.ts (vendor.lock.json, sha256-verified)
+        run: npm run build:app # TODO(M11): Developer ID identity (--identity), Java and the vendor cache as in ci.yml
       - name: Notarize
         if: env.APPLE_TEAM_ID != '' && env.APPLE_NOTARY_KEY_ID != ''
         run: npm run notarize:app # TODO(M11): xcrun notarytool submit --wait, then xcrun stapler staple
       - name: Zip
-        run: ditto -c -k --keepParent out/MineVibe.app "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip"
+        run: ditto -c -k --keepParent dist/MineVibe.app "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

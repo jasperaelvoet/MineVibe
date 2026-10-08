@@ -80,6 +80,9 @@ export type StubCommand = z.infer<typeof StubCommand>;
 /** Lines longer than this are not parsed (a well-behaved stub never sends one). */
 export const MAX_STUB_LINE = 64 * 1024;
 
+/** The longest picked folder path: `PickFolderResult.path` of the `host.pick_folder` wire contract (T0). */
+export const MAX_PICKED_PATH = 1024;
+
 /** Parses one stdin line; null for blank, oversized, malformed or unknown input. */
 export function parseStubLine(line: string): StubCommand | null {
   const text = line.trim();
@@ -93,11 +96,11 @@ export function parseStubLine(line: string): StubCommand | null {
   const parsed = StubCommand.safeParse(raw);
   if (!parsed.success) return null;
   const cmd = parsed.data;
-  // A picked folder is only ever an absolute path; anything else counts as "nothing picked".
+  // A picked folder is only ever an absolute path that fits the wire contract; anything else is "nothing picked".
   if (
     cmd.cmd === 'pickFolder.result' &&
     cmd.path !== null &&
-    (!isAbsolute(cmd.path) || cmd.path.includes('\0'))
+    (!isAbsolute(cmd.path) || cmd.path.includes('\0') || cmd.path.length > MAX_PICKED_PATH)
   ) {
     return { ...cmd, path: null };
   }
