@@ -155,6 +155,46 @@ describe('debug messages (E2E)', () => {
     expect(parsed.paused).toBe(false);
   });
 
+  it('DebugStateResult takes the optional crew and monitor snapshot, nested nulls dropped or kept', () => {
+    const base = {
+      screen: null,
+      worldId: 'world-1',
+      gen: 1,
+      inWorld: true,
+      hardcore: true,
+      difficulty: 'hard',
+      gameMode: 'survival',
+      allowCommands: false,
+      paused: false,
+      serverTicks: 10,
+      serverPaused: false,
+      hp: 20,
+      dead: false,
+      pid: 1,
+      player: { x: 1.5, y: 64, z: -3 },
+    };
+    const agent = {
+      agentId: 'ada1f3c',
+      handle: 'ada',
+      status: 'alive',
+      brain: 'idle',
+      headIcon: 'NONE',
+      cards: 0,
+    };
+    const parsed = DebugStateResult.parse({
+      ...base,
+      // The mod's reply encoder drops nested nulls: bubble, pos, ageMs and hash may be absent.
+      agents: [
+        agent,
+        { ...agent, agentId: 'bram2b4d', bubble: 'hi', pos: { x: 0, y: 64, z: 0 }, atPc: true },
+      ].map((a) => ({ atPc: false, ...a })),
+      monitors: [{ pcId: 'linux-1', w: 0, h: 0, seq: -1, patches: 0 }],
+    });
+    expect(parsed.agents?.[0]?.bubble ?? null).toBeNull();
+    expect(parsed.agents?.[1]).toMatchObject({ bubble: 'hi', atPc: true });
+    expect(parsed.monitors?.[0]?.hash ?? null).toBeNull();
+  });
+
   it('DebugStateResult accepts a BootScreen snapshot with no world', () => {
     expect(
       DebugStateResult.safeParse({
