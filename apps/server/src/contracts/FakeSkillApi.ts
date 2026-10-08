@@ -24,7 +24,13 @@ import {
 /** What a scripted skill does: finish at once, or keep running until {@link FakeSkillApi.finish}. */
 export type FakeSkillOutcome =
   | { readonly status: 'done'; readonly result?: Record<string, unknown> }
-  | { readonly status: 'failed'; readonly code: string; readonly msg: string }
+  | {
+      readonly status: 'failed';
+      readonly code: string;
+      readonly msg: string;
+      /** Details a failure carries (partial counts, `PROTECTED` blocks: protocol §7.4.1, §7.4.3). */
+      readonly result?: Record<string, unknown>;
+    }
   | { readonly status: 'running' };
 
 /**
@@ -165,6 +171,7 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
             status: 'failed',
             durationMs: 0,
             error: { code: outcome.code, msg: outcome.msg },
+            ...(outcome.result ? { result: outcome.result } : {}),
           };
     this.#emitEnd(end);
     return end;

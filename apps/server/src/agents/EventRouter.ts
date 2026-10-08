@@ -15,6 +15,7 @@ import type { WakePriority } from './BrainScheduler.js';
 import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE_MS } from './constants.js';
 import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
 import type { UsageMode } from './UsageGovernor.js';
+import { failureText } from './world/guard.js';
 
 /** One queued item for an agent. */
 export type Routed =
@@ -77,10 +78,15 @@ export class Digest {
     return this.#lines.length;
   }
 
-  /** The block for the next turn (and clears it), or null when empty. */
-  take(nonce: string): string | null {
-    if (this.#lines.length === 0) return null;
-    const block = control(nonce, 'DIGEST', `Since your last turn: ${this.#lines.join('; ')}.`);
+  /**
+   * The block for the next turn (and clears it), or null when empty. `scene` is the agent's one-line scene
+   * (world/scene.ts); with it the block is never empty, so every turn starts knowing where the agent is.
+   */
+  take(nonce: string, scene?: string | null): string | null {
+    const where = scene ? `Scene: ${singleLine(scene, 240)}.` : null;
+    if (this.#lines.length === 0) return where ? control(nonce, 'DIGEST', where) : null;
+    const since = `Since your last turn: ${this.#lines.join('; ')}.`;
+    const block = control(nonce, 'DIGEST', where ? `${where} ${since}` : since);
     this.#lines = [];
     return block;
   }
@@ -177,14 +183,26 @@ export class EventRouter {
         ? summarizeResult(end.result)
         : end.status === 'cancelled'
           ? 'cancelled'
-          : `${end.error?.code ?? 'FAILED'}: ${end.error?.msg ?? 'failed'}`;
+          : failureText({
+              label,
+              skill: label.split(' ')[0] ?? '',
+              code: end.error?.code ?? 'FAILED',
+              msg: end.error?.msg ?? 'failed',
+              result: end.result,
+              playerName: this.#playerName(),
+            });
     return {
       agentId: agent.agentId,
       item: {
         mode: 'wake',
         priority: 3,
         kind,
-        text: control(agent.nonce, kind, singleLine(`${end.jobId} ${label}: ${detail}`, 400)),
+        // Failures carry the world guard's teaching line (world/guard.ts), so they get more room than a summary.
+        text: control(
+          agent.nonce,
+          kind,
+          singleLine(`${end.jobId} ${label}: ${detail}`, end.status === 'failed' ? 800 : 400),
+        ),
         key: `job:${end.jobId}`,
       },
     };

@@ -22,6 +22,7 @@ import {
   SkillArgs,
   type SkillArgsOf,
   SkillCancelResult,
+  type SkillConsent,
   type SkillName,
   SkillRunResult,
 } from '@minevibe/protocol';
@@ -40,6 +41,11 @@ export interface SkillRunRequest<S extends SkillName = SkillName> {
   readonly replace?: boolean | undefined;
   /** Default: a fresh id. */
   readonly jobId?: string | undefined;
+  /**
+   * The player's consent to change protected blocks (protocol §7.4.3), minted by Node's ConsentLedger. Never taken
+   * from tool arguments.
+   */
+  readonly consent?: SkillConsent | undefined;
 }
 
 export interface SeatRequest {
@@ -158,19 +164,17 @@ class BridgeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
     const waitMs = request.waitMs ?? DEFAULT_SKILL_WAIT_MS;
     const jobId = request.jobId ?? newJobId();
     const started = Date.now();
+    const payload: PayloadOf<'skill.run'> = {
+      jobId,
+      agentId: request.agentId,
+      skill: request.skill,
+      args,
+      waitMs,
+      replace: request.replace ?? false,
+    };
+    if (request.consent !== undefined) payload.consent = request.consent;
     const result = await call(
-      this.#bridge.request(
-        'skill.run',
-        {
-          jobId,
-          agentId: request.agentId,
-          skill: request.skill,
-          args,
-          waitMs,
-          replace: request.replace ?? false,
-        },
-        { timeoutMs: waitMs + REPLY_SLACK_MS },
-      ),
+      this.#bridge.request('skill.run', payload, { timeoutMs: waitMs + REPLY_SLACK_MS }),
       SkillRunResult,
     );
     if (result.status !== 'running') {

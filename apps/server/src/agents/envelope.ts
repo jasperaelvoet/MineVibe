@@ -53,6 +53,7 @@ export type ControlKind =
   | 'TURN CAP'
   | 'WELCOME'
   | 'MEETING'
+  | 'CONSENT'
   | 'PLAYER';
 
 /** `[MV:<nonce> <KIND>] text`. */

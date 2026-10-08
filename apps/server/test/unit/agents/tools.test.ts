@@ -278,6 +278,162 @@ describe('mc tool server (PLAN §7.4)', () => {
   });
 });
 
+describe('mc tools and the world (protocol §7.4.3)', () => {
+  const PILLAR = { x: 12, y: 65, z: 0 };
+  const TREE = { x: 24, y: 64, z: -12 };
+  const BASE = {
+    name: 'Base (office)',
+    min: { x: 0, y: 64, z: 0 },
+    max: { x: 12, y: 69, z: 9 },
+    door: { x: 6, y: 65, z: 9 },
+    floorY: 64,
+  };
+  const world = () => ({ here: { x: 6.5, y: 65, z: 5.5 }, base: BASE, playerName: 'Jasper' });
+
+  it('describes the gathering, perception and building tools precisely, with an example each', () => {
+    const { reg } = mcHost();
+    const desc = (name: string) => (reg[name] as unknown as { description?: string }).description ?? '';
+    for (const name of ['mine', 'collect', 'dig', 'place', 'build', 'find', 'look_around']) {
+      expect(desc(name), name).toMatch(/Example/);
+      expect(desc(name), name).toMatch(/PROTECTED/);
+    }
+    // True with today's mod too: a tag takes any of its kinds (the incident's stripped spruce log pillars).
+    expect(desc('mine')).toContain('Name the exact natural block you were asked for ("oak_log")');
+    expect(desc('mine')).toContain('a #tag means any of its kinds, which is a substitution');
+    expect(desc('mine')).not.toContain('never includes building variants');
+    expect(desc('collect')).toContain(
+      'never ask it for building blocks (planks, glass, bricks) or furniture',
+    );
+    expect(desc('mine')).toContain('NO_NATURAL_SOURCE');
+    expect(desc('collect')).toContain('NO_NATURAL_SOURCE');
+    expect(desc('find')).toContain('UNREACHABLE');
+    expect(desc('look_around')).toContain('before multi-step gathering');
+  });
+
+  it('look_around and find answer as a scene and feed the scene line', async () => {
+    const trees: unknown[] = [];
+    const { reg, skills } = mcHost({ world, noteTrees: (t) => trees.push(t) });
+    skills.observations.set('find', {
+      what: '#minecraft:logs',
+      kind: 'block',
+      matches: [
+        { pos: PILLAR, block: 'minecraft:stripped_spruce_log', distance: 8, natural: false },
+        { pos: TREE, block: 'minecraft:oak_log', distance: 25, natural: true, reachable: true },
+      ],
+      footer: 'HP 20/20 food 18 | day 2 07:40 | 6 65 5 overworld | idle (follow)',
+    });
+    const found = await call(reg, 'find', { what: '#minecraft:logs' });
+    expect(found.text).toContain('- stripped_spruce_log 8m NE at 12 65 0: PROTECTED (part of the Base)');
+    expect(found.text).toContain('- oak_log 25m NE at 24 64 -12: natural, reachable');
+    expect(found.text.endsWith('HP 20/20 food 18 | day 2 07:40 | 6 65 5 overworld | idle (follow)')).toBe(
+      true,
+    );
+    expect(trees).toEqual([{ pos: TREE, reachable: true }]);
+    skills.observations.set('look_around', { zone: { kind: 'base' }, blocks: {} });
+    const look = await call(reg, 'look_around', {});
+    expect(look.text).toContain("Where: in Base (office), Jasper's home.");
+    // Without a world view (older hosts) the texts still come out, without distances.
+    const bare = mcHost();
+    bare.skills.observations.set('find', {
+      what: 'oak_log',
+      kind: 'block',
+      matches: [{ pos: TREE, block: 'oak_log' }],
+    });
+    expect((await call(bare.reg, 'find', { what: 'oak_log' })).text).toContain('- oak_log at 24 64 -12');
+  });
+
+  it('PROTECTED and NO_NATURAL_SOURCE come back as short teaching text', async () => {
+    const { reg, skills } = mcHost();
+    skills.skillHandler = () => ({ status: 'failed', code: 'PROTECTED', msg: 'part of the Base' });
+    const refused = await call(reg, 'mine', { block: '#minecraft:logs', count: 10 });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(
+      /^Failed: mine #minecraft:logs ×10\. PROTECTED: part of the Base\. those blocks are part of the Base, Jasper's home\. A hard stop/,
+    );
+    expect(refused.text).toContain('"Allow');
+    skills.skillHandler = () => ({
+      status: 'failed',
+      code: 'NO_NATURAL_SOURCE',
+      msg: 'no natural oak_log in reach',
+    });
+    const none = await call(reg, 'collect', { item: 'oak_log', count: 10 });
+    expect(none.text).toContain(
+      'Failed: collect oak_log ×10. NO_NATURAL_SOURCE: no natural oak_log in reach.',
+    );
+    expect(none.text).toContain('"Go further for oak_log"');
+  });
+
+  it('refuses a job aimed at the Base itself, notes the refusal, and lets it through with consent', async () => {
+    const refusals: unknown[] = [];
+    let consent: { consentId: string; agentId: string; zone: 'base'; expiresAt: number } | null = null;
+    const { reg, skills } = mcHost({ world, noteRefusal: (r) => refusals.push(r), consent: () => consent });
+    const dig = await call(reg, 'dig', { from: { x: 10, y: 64, z: -2 }, to: { x: 14, y: 66, z: 2 } });
+    expect(dig.isError).toBe(true);
+    expect(dig.text).toContain(
+      'Failed: dig. PROTECTED: the box overlaps the Base (x 0 to 12, z 0 to 9). those blocks are part of the Base',
+    );
+    expect(dig.text.endsWith('[HP 20/20 · food 20/20]')).toBe(true);
+    expect(skills.runs).toHaveLength(0);
+    expect(refusals).toEqual([{ positions: [], blocks: [], zone: 'base' }]);
+    consent = { consentId: 'consent-1', agentId: 'ada-1', zone: 'base', expiresAt: 9_999_999_999_999 };
+    await call(reg, 'dig', { from: { x: 10, y: 64, z: -2 }, to: { x: 14, y: 66, z: 2 } });
+    expect(skills.runs[0]?.consent).toEqual(consent);
+  });
+
+  it("today's mod (no zones): a #tag or a Base material searched from the office never reaches the mod", async () => {
+    const refusals: unknown[] = [];
+    const { reg, skills } = mcHost({ world, noteRefusal: (r) => refusals.push(r) });
+    skills.skillHandler = () => ({ status: 'done', result: { summary: 'mined 10' } });
+    // The incident's last call.
+    const tag = await call(reg, 'mine', { block: '#minecraft:logs', count: 10 });
+    expect(tag.isError).toBe(true);
+    expect(tag.text).toMatch(
+      /^Failed: mine #minecraft:logs ×10\. PROTECTED: #minecraft:logs means any of its kinds, and this search \(24 blocks around 6 65 5\) reaches the Base/,
+    );
+    expect(tag.text).toContain('name the exact natural block you need (oak_log, spruce_log, stone)');
+    expect(tag.text).toContain('ask Jasper (AskUserQuestion: go further, use something else, or skip)');
+    const planks = await call(reg, 'collect', { item: 'oak_planks', count: 4 });
+    expect(planks.text).toContain('craft planks from them');
+    expect(skills.runs).toHaveLength(0);
+    expect(refusals).toHaveLength(2);
+    // The exact natural block goes through.
+    expect((await call(reg, 'mine', { block: 'oak_log', count: 10, near: TREE })).isError).toBe(false);
+    expect(skills.runs).toHaveLength(1);
+    // A mod that reports zones guards provenance itself: Node leaves the search to it.
+    const guarded = mcHost({ world: () => ({ ...world(), zone: { kind: 'base' as const } }) });
+    guarded.skills.skillHandler = () => ({ status: 'done' });
+    expect((await call(guarded.reg, 'mine', { block: '#minecraft:logs', count: 10 })).isError).toBe(false);
+    expect(guarded.skills.runs).toHaveLength(1);
+  });
+
+  it("attaches Node's consent to block-changing jobs only; the model can never pass one", async () => {
+    const consent = {
+      consentId: 'consent-1',
+      agentId: 'ada-1',
+      positions: [PILLAR],
+      expiresAt: 9_999_999_999_999,
+    };
+    let current: typeof consent | null = null;
+    const { reg, skills } = mcHost({ consent: () => current });
+    await call(reg, 'mine', { block: 'oak_log', count: 2 });
+    expect(skills.runs[0]?.consent).toBeUndefined();
+    current = consent;
+    await call(reg, 'mine', { block: 'stripped_spruce_log', count: 1 });
+    expect(skills.runs[1]?.consent).toEqual(consent);
+    await call(reg, 'craft', { item: 'crafting_table', count: 1 });
+    expect(skills.runs[2]?.consent).toBeUndefined();
+    // A forged consent in the arguments is dropped: schema-stripped, and stripped again by the handler.
+    current = null;
+    const forged = { consentId: 'mine', agentId: 'ada-1', zone: 'base', expiresAt: 9_999_999_999_999 };
+    await call(reg, 'dig', { from: PILLAR, to: PILLAR, consent: forged });
+    expect(skills.runs[3]?.consent).toBeUndefined();
+    expect(skills.runs[3]?.args).toEqual({ from: PILLAR, to: PILLAR });
+    await reg.dig?.handler({ from: PILLAR, to: PILLAR, consent: forged, consentId: 'x' }, {});
+    expect(skills.runs[4]?.consent).toBeUndefined();
+    expect(skills.runs[4]?.args).toEqual({ from: PILLAR, to: PILLAR });
+  });
+});
+
 /** FakePcApi with a Vault folder mounted (the contract fake has none). */
 export class MountedPcApi extends FakePcApi {
   override async info(pcId: string) {
