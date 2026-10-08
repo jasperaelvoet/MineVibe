@@ -139,7 +139,8 @@ public final class OrgClientInit implements ClientModInitializer {
 		UiState ui = UiState.get();
 		if (ui.revision() != this.crewRevision) {
 			this.crewRevision = ui.revision();
-			if (!ui.agents().isEmpty()) {
+			// Before the first crew.state, keep what hello.ok said.
+			if (ui.crewKnown()) {
 				OrgClientState.get().crew().setNodeMembers(nodeCrew(ui));
 			}
 		}

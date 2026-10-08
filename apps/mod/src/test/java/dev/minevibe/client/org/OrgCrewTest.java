@@ -16,6 +16,7 @@ class OrgCrewTest {
 	@Test
 	void theCrewDirectoryMirrorsTheUiCrew() {
 		UiState ui = UiState.create(() -> 0);
+		org.junit.jupiter.api.Assertions.assertFalse(ui.crewKnown(), "no crew.state yet: hello.ok's crew stays");
 		ui.applyCrew(new Bodies.CrewState(List.of(
 			new Messages.CrewMember("bram", "bram", "Bram", "engineer", false, "alive"),
 			new Messages.CrewMember("ada", "ada", "Ada", "ceo", true, "alive"),
@@ -32,5 +33,10 @@ class OrgCrewTest {
 			new Messages.CrewMember("dana", "dana", "Dana", "builder", false, "alive"))));
 		crew.setNodeMembers(OrgClientInit.nodeCrew(ui));
 		assertEquals(List.of("ada", "dana", "dev1"), crew.order());
+		// A new world before its CEO arrives: an empty crew list is really empty.
+		ui.applyCrew(new Bodies.CrewState(List.of()));
+		org.junit.jupiter.api.Assertions.assertTrue(ui.crewKnown());
+		crew.setNodeMembers(OrgClientInit.nodeCrew(ui));
+		assertEquals(List.of("dev1"), crew.order());
 	}
 }

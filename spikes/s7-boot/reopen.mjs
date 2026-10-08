@@ -73,11 +73,22 @@ async function main() {
     say(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`);
   }
 
-  const logger = pino({ level: 'info' }, pino.destination({ dest: join(outDir, 'devserver.log'), sync: true }));
+  const logger = pino(
+    { level: 'info' },
+    pino.destination({ dest: join(outDir, 'devserver.log'), sync: true }),
+  );
   const nodeEvents = [];
-  const server = await startDevServer({ repoRoot: repo, logger, port: 0, env: { MINEVIBE_HOME: home }, savesDir, e2e: true });
+  const server = await startDevServer({
+    repoRoot: repo,
+    logger,
+    port: 0,
+    env: { MINEVIBE_HOME: home },
+    savesDir,
+    e2e: true,
+  });
   server.bridge.on('message', (m) => {
-    if (m.t === 'world.state' && m.phase === 'ready' && m.clockTime !== undefined && m.fresh === undefined) return;
+    if (m.t === 'world.state' && m.phase === 'ready' && m.clockTime !== undefined && m.fresh === undefined)
+      return;
     nodeEvents.push({ at: Date.now(), ...m });
   });
   say(`dev server on 127.0.0.1:${server.port}`);
@@ -153,7 +164,10 @@ async function main() {
     first.lifeline.kill('SIGTERM');
     const deadline = Date.now() + 90_000;
     while (!first.exited && Date.now() < deadline) await sleep(200);
-    check('the game saved and quit', Boolean(first.exited) && existsSync(join(savesDir, 'world-1', 'level.dat')));
+    check(
+      'the game saved and quit',
+      Boolean(first.exited) && existsSync(join(savesDir, 'world-1', 'level.dat')),
+    );
 
     // ---- 3. Relaunch into the existing world, with duplicate world.open during the load --------------
     const second = launchClient('2-reopen');
@@ -162,23 +176,43 @@ async function main() {
     const flood = setInterval(() => {
       if (!flooding && second.lines.some((l) => /Opening World #1 \(world-1\)/.test(l.line))) flooding = true;
       if (flooding) {
-        const sent = server.bridge.send('world.open', { worldId: 'world-1', gen: 1, fresh: false, hardcore: true, difficulty: 'hard' });
+        const sent = server.bridge.send('world.open', {
+          worldId: 'world-1',
+          gen: 1,
+          fresh: false,
+          hardcore: true,
+          difficulty: 'hard',
+        });
         if (sent) duplicates++;
       }
     }, 25);
     const reopened = await waitState('World #1 again', inWorld, 240_000, second);
     clearInterval(flood);
     check('reopened World #1', reopened.worldId === 'world-1', reopened.worldId);
-    const readies = nodeEvents.filter((e) => e.t === 'world.state' && e.phase === 'ready' && e.worldId === 'world-1' && e.fresh !== undefined);
-    check('reported world-1 ready, not fresh, the second time', readies.length >= 2 && readies.at(-1).fresh === false, JSON.stringify(readies.map((r) => r.fresh)));
+    const readies = nodeEvents.filter(
+      (e) => e.t === 'world.state' && e.phase === 'ready' && e.worldId === 'world-1' && e.fresh !== undefined,
+    );
+    check(
+      'reported world-1 ready, not fresh, the second time',
+      readies.length >= 2 && readies.at(-1).fresh === false,
+      JSON.stringify(readies.map((r) => r.fresh)),
+    );
     await sleep(5000);
     const after = await server.debug.state(2000);
     check('still standing in world-1 five seconds later', inWorld(after) && after.worldId === 'world-1');
     check(`sent ${duplicates} duplicate world.open during and after the load`, duplicates > 0);
-    check('world-1 was opened exactly once', count(second, /Opening World #1 \(world-1\)/) === 1, `${count(second, /Opening World #1/)} opens`);
+    check(
+      'world-1 was opened exactly once',
+      count(second, /Opening World #1 \(world-1\)/) === 1,
+      `${count(second, /Opening World #1/)} opens`,
+    );
     check('never created again', count(second, /Creating World #1/) === 0);
     check('never switched away', count(second, /while .* is open; switching/) === 0);
-    check('no second "Node asks for World #1" while loading', count(second, /Node asks for World #1/) <= 1, `${count(second, /Node asks for World #1/)}`);
+    check(
+      'no second "Node asks for World #1" while loading',
+      count(second, /Node asks for World #1/) <= 1,
+      `${count(second, /Node asks for World #1/)}`,
+    );
     say(`duplicates ignored as already loading: ${count(second, /world.open world-1: already loading/)}`);
     exitCode = checks.every((c) => c.ok) ? 0 : 1;
   } catch (err) {
@@ -195,7 +229,9 @@ async function main() {
     }
     spawnSync('pkill', ['-9', '-f', `minevibe.runTag=${runTag}`]);
     await sleep(500);
-    const stragglers = spawnSync('pgrep', ['-f', `minevibe.runTag=${runTag}`], { encoding: 'utf8' }).stdout.trim();
+    const stragglers = spawnSync('pgrep', ['-f', `minevibe.runTag=${runTag}`], {
+      encoding: 'utf8',
+    }).stdout.trim();
     check('no game process left behind', stragglers === '', stragglers);
     await server.stop('quit').catch(() => {});
     const lines = [
@@ -207,7 +243,10 @@ async function main() {
       '',
     ];
     writeFileSync(join(outDir, 'summary.md'), `${lines.join('\n')}\n`);
-    writeFileSync(join(outDir, 'result.json'), `${JSON.stringify({ runTag, checks, nodeEvents }, null, 2)}\n`);
+    writeFileSync(
+      join(outDir, 'result.json'),
+      `${JSON.stringify({ runTag, checks, nodeEvents }, null, 2)}\n`,
+    );
     process.stdout.write(`${lines.join('\n')}\n`);
     process.exit(checks.every((c) => c.ok) ? exitCode : 1);
   }
