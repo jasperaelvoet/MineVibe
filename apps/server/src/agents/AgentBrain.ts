@@ -61,6 +61,7 @@ import type {
 import { buildSessionOptions } from './sessionOptions.js';
 import { createToolGateHook, type GateContext, type GateObservation } from './ToolGate.js';
 import type { TranscriptStore } from './TranscriptStore.js';
+import { TurnText } from './TurnText.js';
 import { type PcToolName, pcToolName } from './tools/catalog.js';
 import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
 import { createPcServer, type PcHost } from './tools/pcServer.js';
@@ -304,6 +305,8 @@ export class AgentBrain {
   readonly record: AgentRecord;
   readonly fsm: SeatFSM;
   readonly plans: PlanCapture;
+  /** What the agent last said in the current turn: the plan card's fallback (InteractionBroker). */
+  readonly turnText: TurnText;
   readonly digest = new Digest();
   readonly #env: BrainEnv;
   readonly #seatMutex = new Mutex();
@@ -362,6 +365,7 @@ export class AgentBrain {
       [home, '/home/cua'].filter((h) => h.length > 0),
       { now: () => env.now() },
     );
+    this.turnText = new TurnText(() => env.now());
   }
 
   get agentId(): string {
@@ -510,6 +514,7 @@ export class AgentBrain {
           agentId: this.agentId,
           store: env.pending,
           plans: this.plans,
+          turnText: () => this.turnText.latest(),
           seatEpoch: () => this.fsm.epoch,
           playerName: () => env.playerName(),
           now: () => env.now(),
@@ -912,6 +917,7 @@ export class AgentBrain {
   }
 
   #onTurnEnd(result: SDKResultMessage): void {
+    this.turnText.reset();
     this.#env.turnEnded(this, result);
     for (const w of this.#turnEndWaiters.splice(0)) w(result);
     this.#finishCollectors([]);
@@ -1035,6 +1041,7 @@ export class AgentBrain {
     const trimmed = text.trim();
     this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed });
     if (/^\(?silent\)?\.?$/i.test(trimmed)) return;
+    this.turnText.text(trimmed);
     for (const c of this.#collectors) c.texts.push(trimmed);
     const bubble = bubbleText(trimmed);
     if (bubble.length === 0) return;
@@ -1047,6 +1054,7 @@ export class AgentBrain {
   }
 
   #onToolUse(name: string, input: unknown): void {
+    this.turnText.toolUse();
     const line = describeTool(name, input);
     this.#activity = line;
     this.#env.transcripts.append(this.agentId, { kind: 'activity', text: line });
@@ -1054,6 +1062,7 @@ export class AgentBrain {
   }
 
   #onExit(error: Error | null): void {
+    this.turnText.reset();
     this.#grant?.release();
     this.#grant = null;
     this.#acquiring = null;
