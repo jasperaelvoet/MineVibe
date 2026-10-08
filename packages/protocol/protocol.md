@@ -487,13 +487,16 @@ records flatten every variant into one record with `@Nullable` fields.
 ### 7.3 bodies
 
 - `agent.spawn` (request, `AgentSpawnResult { pos, dim, restored }`): `{ agentId, handle, name, role: AgentRole,
-  ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Without `at` the body appears at the office door. With
+  ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Node sends new agents (the first CEO, hires, the dawn
+  newcomer) with `at` = the office's `door` slot from `world.state.office`; without `at` the mod places the body near
+  the player. With
   `restore` the mod loads the agent's saved playerdata if there is one (app restart, world reload). A hire spawns
   with `bark: "reporting_for_duty"`.
 - `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
-  playerDistance?, held? }`. Node builds the 25-token status footer and the Digest from it.
+  playerDistance?, held? }`. Node builds the Digest from it, and the status footer of tool results that never reach
+  the mod (section 7.4).
 - `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
   `killed`, `reflex`, `stuck`, `unseated`, `kicked`, `player_low_hp`, `dimension_changed`, `arrived`,
   `approach_blocked` (`data.why`: `combat|night|far|dimension|pc_screen`, so ApproachQueue falls back to a ping),
@@ -517,6 +520,13 @@ records flatten every variant into one record with `@Nullable` fields.
   object. Node-side tools (`say`, `tell`, `remember`, `wait`, `request_hire`, `codex_*`, `calendar_*`,
   `report_task`) never reach the mod; `set_mode` is `agent.mode`, `stop` is `skill.cancel`, `sit_at_pc` /
   `stand_up` are `agent.seat` / `agent.unseat`.
+- **Status footer.** Every `result` of a `skill.run` reply or `skill.result`, and every `obs.query` `result`, ends with
+  `footer`: the agent's ~25-token status line, `HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld |
+  collect 12/20 oak_log | iron_sword` (HP, food, game day and time, block position and dimension, what the body does,
+  the held item). **The mod's footer is the source:** Node takes `footer` out of the result the agent reads and
+  appends it as the tool result's last line, never adding a second one. Only tool results that never reach the mod
+  (Codex, calendar, social and seat tools, a `running` reply without a result) get the same line built by Node from
+  the latest `agent.state`. A job summary (`[JOB DONE]`) never repeats the footer.
 - `skill.progress`: `{ jobId, agentId, progress?, text }`, at most one per job per second.
 - `skill.cancel` (request, `SkillCancelResult { cancelled: JobId[] }`): `{ agentId, jobId?, reason }`; without
   `jobId` every job of the agent.

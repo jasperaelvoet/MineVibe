@@ -5,6 +5,7 @@ import { parseMessage } from '@minevibe/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../../src/log.js';
 import { type DevServer, startDevServer } from '../../src/orchestrator/devServer.js';
+import { createMemoryOrgModule, createNullPcModule } from '../../src/orchestrator/placeholderModules.js';
 import { ModClient, type Received } from '../helpers/modClient.js';
 
 const dirs: string[] = [];
@@ -26,7 +27,8 @@ async function start(scriptedCrew: boolean): Promise<{ server: DevServer; mod: M
     port: 0,
     env: {},
     heartbeatMs: 0,
-    scriptedCrew,
+    crew: scriptedCrew ? 'scripted' : 'none',
+    modules: { pc: createNullPcModule, org: createMemoryOrgModule },
     scriptedReplyDelayMs: 20,
   });
   servers.push(server);
@@ -96,7 +98,7 @@ describe('dev server with --scripted-crew', () => {
     expect((history.entries as Array<{ kind: string }>).map((e) => e.kind)).toContain('player');
   });
 
-  it('keeps the M1 chat handler (empty roster) without the flag', async () => {
+  it('keeps the M1 chat handler (empty roster) with crew: none', async () => {
     const { server, mod } = await start(false);
     expect(server.ui).toBeNull();
     mod.send({ t: 'chat.send', v: 1, id: 'm-1', to: 'all', text: '@ada hi' });

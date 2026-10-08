@@ -4,6 +4,7 @@
  * `~/.claude/projects/<cwd>`.
  */
 
+import { readFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { type ChatEntry, ChatEntry as ChatEntrySchema } from '@minevibe/protocol';
@@ -47,15 +48,43 @@ export class TranscriptStore extends TypedEmitter<TranscriptEvents> {
   async load(agentId: string): Promise<void> {
     const log = this.#log(agentId);
     if (log.loaded) return;
-    log.loaded = true;
     const file = this.#fileOf(agentId);
-    if (!file) return;
-    let raw: string;
+    if (!file) {
+      log.loaded = true;
+      return;
+    }
+    let raw: string | null;
     try {
       raw = await readFile(file, 'utf8');
     } catch {
-      return;
+      raw = null;
     }
+    // An append during the read loaded the file synchronously; that view is the newer one.
+    if (log.loaded) return;
+    this.#merge(log, raw);
+  }
+
+  /**
+   * Loads the file synchronously before the first append, so a line appended before {@link load} can never reuse a
+   * sequence number already on disk (`chat.history` pages by seq).
+   */
+  #ensureLoaded(agentId: string, log: Log): void {
+    if (log.loaded) return;
+    const file = this.#fileOf(agentId);
+    let raw: string | null = null;
+    if (file) {
+      try {
+        raw = readFileSync(file, 'utf8');
+      } catch {
+        raw = null;
+      }
+    }
+    this.#merge(log, raw);
+  }
+
+  #merge(log: Log, raw: string | null): void {
+    log.loaded = true;
+    if (raw === null) return;
     const loaded: ChatEntry[] = [];
     for (const line of raw.split('\n')) {
       if (line.trim().length === 0) continue;
@@ -77,6 +106,7 @@ export class TranscriptStore extends TypedEmitter<TranscriptEvents> {
     const text = input.text.trim();
     if (text.length === 0) return null;
     const log = this.#log(agentId);
+    this.#ensureLoaded(agentId, log);
     const entry: ChatEntry = {
       seq: log.nextSeq++,
       at: input.at ?? this.#now(),

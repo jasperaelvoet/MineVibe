@@ -231,7 +231,10 @@ describe('bridge glue', () => {
         },
       ],
     });
-    expect(h.manager.brain(id)?.footer()).toBe('[HP 18/20 · food 15/20 · Day 1 06:06 · at 1,64,2 · no job]');
+    // The mod's footer format (protocol §7.3), for results that never reach the mod.
+    expect(h.manager.brain(id)?.footer()).toBe(
+      'HP 18/20 food 15 | day 1 06:06 | 1 64 2 overworld | idle (follow)',
+    );
     await h.until(() => bridge.sent.some((s) => s.t === 'agent.say'), 'wake bark forwarded');
     const died = bridge.handlers.get('agent.died');
     expect(

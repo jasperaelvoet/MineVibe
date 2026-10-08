@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../../src/log.js';
 import { type DevServer, startDevServer } from '../../src/orchestrator/devServer.js';
+import { createMemoryOrgModule, createNullPcModule } from '../../src/orchestrator/placeholderModules.js';
 import { ModClient } from '../helpers/modClient.js';
+
+/** The M1 world loop alone: no crew, no PCs, in-memory org services. */
+const NO_CREW = { crew: 'none', modules: { pc: createNullPcModule, org: createMemoryOrgModule } } as const;
 
 const dirs: string[] = [];
 const servers: DevServer[] = [];
@@ -19,6 +23,7 @@ async function start(): Promise<{ server: DevServer; repo: string; token: string
     port: 0,
     env: {},
     heartbeatMs: 0,
+    ...NO_CREW,
   });
   servers.push(server);
   const token = JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token as string;
@@ -61,6 +66,7 @@ describe('dev server', () => {
       port: 0,
       env: {},
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(server);
     expect(existsSync(join(repo, '.dev-token')), 'the old long-lived token file is removed').toBe(false);
@@ -304,6 +310,7 @@ describe('dev server', () => {
       port: 0,
       env: { MINEVIBE_E2E: '1' },
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(server);
     const debug = server.debug;
@@ -399,6 +406,7 @@ describe('dev server', () => {
       port: 0,
       env: {},
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(again);
     const token = JSON.parse(readFileSync(again.paths.bridgeFile, 'utf8')).token;

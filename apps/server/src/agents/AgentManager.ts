@@ -24,6 +24,7 @@ import {
   ERROR_CODES,
   type MessageOf,
   type PayloadOf,
+  type Place,
   type UnseatReason,
 } from '@minevibe/protocol';
 import type { Logger } from 'pino';
@@ -54,7 +55,7 @@ import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
 import { CREW_CAP, LAST_WORDS_MS } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
-import { control, escapeShared, newNonce, singleLine, wrapNote } from './envelope.js';
+import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
 import { type Card, newCardId, PendingStore } from './PendingStore.js';
 import { BARKS } from './prompts/barks.js';
@@ -132,6 +133,25 @@ export interface AgentManagerOptions {
   readonly swapDebounceMs?: number;
   /** Restart policy overrides (tests). */
   readonly supervisor?: Omit<SupervisorOptions, 'now'>;
+  /**
+   * Where new agents (the first CEO, hires, the dawn newcomer) appear: the office door slot of `world.state.office`
+   * (PLAN §6.4 "spawn at the office door"). Null, or no option, lets the mod place the body near the player.
+   */
+  readonly spawnPlace?: () => Promise<Place | null>;
+  /**
+   * Whether `calendarFired` events become task wakes and reminder bubbles here (default true). The composed runtime
+   * turns it off: the org module delivers calendar tasks through CrewHooks.deliver (orchestrator/modules.ts).
+   */
+  readonly calendarWakes?: boolean;
+}
+
+/** A crew member's fate for the Game Over summary (`world.next.summary.crewFates`). */
+export interface CrewFate {
+  readonly agentId: string;
+  readonly name: string;
+  readonly role: string;
+  readonly fate: 'died' | 'dismissed' | 'lost_with_world';
+  readonly detail?: string | undefined;
 }
 
 /** Events beyond the CrewApi ones (forwarded as `brains.state`, `ui.toast`; card and meeting hooks). */
@@ -165,6 +185,8 @@ interface CrewFile {
   readonly worldId: string;
   readonly gen: number;
   readonly records: AgentRecord[];
+  /** Set when the player died: the world's crew data stays here as its archive and is never loaded again. */
+  readonly ended?: { readonly day: number; readonly cause: string; readonly at: number } | undefined;
 }
 
 function clockDay(ticks: number): number {
@@ -200,6 +222,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #persistChain: Promise<void> = Promise.resolve();
   readonly #off: (() => void)[] = [];
   #ending = false;
+  #ended: CrewFile['ended'] = undefined;
   #tokens = new Map<string, number>();
 
   constructor(options: AgentManagerOptions) {
@@ -250,9 +273,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         this.emit('chat', { agentId, entry });
       }),
       options.skills.on('result', (end) => this.#onJobEnd(end)),
-      options.org.on('calendarFired', (fired) => this.#onCalendarFired(fired)),
       options.org.on('codexIndex', (index) => void this.#onCodexIndex(index)),
     );
+    if (options.calendarWakes !== false) {
+      this.#off.push(options.org.on('calendarFired', (fired) => this.#onCalendarFired(fired)));
+    }
     const tick = options.autonomyTickMs ?? 30_000;
     if (tick > 0) {
       this.#autonomyTimer = setInterval(() => this.#autonomyTick(), tick);
@@ -285,7 +310,13 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     if (!this.#world) return Promise.resolve();
     const world = this.#world;
     const file = this.#crewFile();
-    const body: CrewFile = { v: 1, worldId: world.worldId, gen: world.gen, records: this.#records };
+    const body: CrewFile = {
+      v: 1,
+      worldId: world.worldId,
+      gen: world.gen,
+      records: this.#records,
+      ...(this.#ended ? { ended: this.#ended } : {}),
+    };
     const text = `${JSON.stringify(body, null, 2)}\n`;
     this.#persistChain = this.#persistChain
       .then(() => writeFileAtomic(file, text, { mode: 0o600 }))
@@ -410,8 +441,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
    * The world is ready (`world.state{ready}`): restore its crew, or hire the first CEO in a fresh world. Calling it
    * again for the same world (a reconnect) only re-announces the crew.
    */
-  async openWorld(world: WorldInfo): Promise<void> {
+  async openWorld(world: WorldInfo, options: { respawn?: boolean } = {}): Promise<void> {
     if (this.#world?.worldId === world.worldId) {
+      // The game restarted into the same world while Node kept running: the bodies are only in the playerdata now.
+      if (options.respawn) {
+        for (const r of this.#records.filter((x) => x.status === 'alive')) await this.#respawn(r);
+      }
       this.#emitCrew();
       for (const b of this.#brains.values()) this.emit('brain', b.brainPayload());
       return;
@@ -419,6 +454,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     if (this.#world) await this.#closeWorld('world changed');
     this.#world = world;
     this.#ending = false;
+    this.#ended = undefined;
     this.#memory = new MemoryStore((agentId) => join(this.#agentDir(agentId), 'memory.md'));
     await mkdir(this.#worldDir(), { recursive: true });
     this.#records = await this.#loadCrew();
@@ -433,7 +469,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.#emitBrains();
   }
 
-  async #restore(record: AgentRecord): Promise<void> {
+  /** `agent.spawn{restore}` (idempotent in the mod): the body comes back from its playerdata. */
+  async #respawn(record: AgentRecord): Promise<void> {
     try {
       await this.#o.skills.spawn({
         agentId: record.agentId,
@@ -447,6 +484,21 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     } catch (err) {
       this.#log.warn({ err, agentId: record.agentId }, 'restore spawn failed');
     }
+  }
+
+  /** The office door (or null), never failing the spawn it is for. */
+  async #spawnAt(): Promise<{ at: Place } | Record<string, never>> {
+    try {
+      const at = (await this.#o.spawnPlace?.()) ?? null;
+      return at ? { at } : {};
+    } catch (err) {
+      this.#log.warn({ err }, 'no spawn place');
+      return {};
+    }
+  }
+
+  async #restore(record: AgentRecord): Promise<void> {
+    await this.#respawn(record);
     await this.transcripts.load(record.agentId);
     const stale = await this.pending.load(record.agentId);
     for (const card of stale) {
@@ -567,6 +619,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     if (!this.#world) return null;
     const { name, handle } = this.#pickName();
     const record = this.#newRecord({ name, handle, role: 'ceo', ceo: true });
+    const world = this.#world;
+    const at = await this.#spawnAt();
+    if (this.#world !== world || this.#ending) return null;
     try {
       await this.#o.skills.spawn({
         agentId: record.agentId,
@@ -577,6 +632,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         restore: false,
         mode: 'follow',
         bark: BARKS.reportingForDuty,
+        ...at,
       });
     } catch (err) {
       this.#log.error({ err }, 'CEO spawn failed');
@@ -668,6 +724,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         ),
       })
       .catch((err: unknown) => this.#log.warn({ err }, 'chronicle write failed'));
+    this.#ended = { day: death.day, cause: singleLine(death.cause, 256), at: this.#now() };
     await this.#closeWorld('world_end');
   }
 
@@ -772,10 +829,28 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       record.ceo = false;
       this.#succession(record);
     }
+    this.#endCalendarCards(record, `${record.name} died before you decided.`);
     this.transcripts.append(record.agentId, { kind: 'system', text: `Died on Day ${msg.day}: ${msg.cause}` });
     await this.#persist();
     this.#emitCrew();
     return {};
+  }
+
+  /**
+   * A dead or dismissed agent's calendar approval cards (PLAN §6.6) end as declined, and the events waiting on them
+   * are cancelled: nobody is left to own them, and a card for a gone agent would never be answered (its AgentScreen
+   * is closed). Hire cards are not touched here (they move to the next CEO in {@link #succession}).
+   */
+  #endCalendarCards(record: AgentRecord, why: string): void {
+    for (const c of this.pending.list(record.agentId)) {
+      if (c.kind !== 'calendar') continue;
+      this.pending.resolve(c.id, { kind: 'declined', note: why });
+      void this.#o.org.calendar
+        .cancel(PLAYER, c.eventId, 'all')
+        .catch((err: unknown) =>
+          this.#log.warn({ err, eventId: c.eventId }, 'cancel of an orphaned event failed'),
+        );
+    }
   }
 
   #succession(previous: AgentRecord): void {
@@ -1055,6 +1130,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         restore: false,
         mode: 'follow',
         bark: BARKS.reportingForDuty,
+        ...(await this.#spawnAt()),
       });
     } catch (err) {
       ceoBrain?.enqueue({
@@ -1436,6 +1512,79 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     return card;
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // Crew hooks (orchestrator/modules.ts CrewHooks: what the org services ask of minds and seats)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  #livingBrain(agentId: string): AgentBrain {
+    const record = this.#records.find((r) => r.agentId === agentId);
+    const brain = this.#brains.get(agentId);
+    if (record?.status !== 'alive' || !brain)
+      throw new ApiError(ERROR_CODES.UNKNOWN_AGENT, `No living agent ${agentId}.`);
+    return brain;
+  }
+
+  /** A seated agent walks over to present a card (`seated → away_from_seat`). No-op when it is not seated. */
+  async goAway(agentId: string, pendingId: string): Promise<void> {
+    const brain = this.#livingBrain(agentId);
+    const went = await brain.goAway();
+    this.#log.info({ agentId, pendingId, went }, 'away from the seat to present a card');
+  }
+
+  /** The presented card was answered: back to the reserved chair. No-op when the agent is not away. */
+  async comeBack(agentId: string): Promise<void> {
+    await this.#livingBrain(agentId).comeBack();
+  }
+
+  async pullIntoMeeting(agentId: string, meetingId: string): Promise<void> {
+    await this.#livingBrain(agentId).pullIntoMeeting(meetingId);
+  }
+
+  async releaseFromMeeting(agentId: string): Promise<void> {
+    await this.#livingBrain(agentId).releaseFromMeeting();
+  }
+
+  /**
+   * Node-made text from the org services, under the agent's own nonce: `scheduled` and `meeting` wake at P1 after the
+   * current turn, `context` adds no turn. Control-tag look-alikes in `text` are neutralized; its data envelopes stay.
+   */
+  async deliverTo(agentId: string, text: string, kind: 'scheduled' | 'meeting' | 'context'): Promise<void> {
+    const brain = this.#livingBrain(agentId);
+    const body = neutralizeControlTags(text).trim();
+    const nonce = brain.record.nonce;
+    if (kind === 'context') {
+      brain.context(control(nonce, 'CONTEXT', body));
+      return;
+    }
+    const controlKind = kind === 'scheduled' ? 'SCHEDULED' : 'MEETING';
+    brain.enqueue({ mode: 'wake', priority: 1, kind: controlKind, text: control(nonce, controlKind, body) });
+  }
+
+  /** One meeting turn of an agent; resolves with what it said (CrewHooks.meetingTurn). */
+  async meetingTurn(agentId: string, prompt: string, opts: { maxSentences: number }): Promise<string> {
+    const brain = this.#livingBrain(agentId);
+    return brain.meetingTurn(neutralizeControlTags(prompt).trim(), { maxSentences: opts.maxSentences });
+  }
+
+  /** Every crew member's fate, for the Game Over summary of the current world (call before it closes). */
+  crewFates(): CrewFate[] {
+    return this.#records.map((r) => {
+      const fate: CrewFate['fate'] =
+        r.status === 'dead' ? 'died' : r.status === 'dismissed' ? 'dismissed' : 'lost_with_world';
+      const detail =
+        r.status === 'dead' && r.cause
+          ? singleLine(`${r.cause}${r.diedDay !== undefined ? ` on Day ${r.diedDay}` : ''}`, 256)
+          : undefined;
+      return {
+        agentId: r.agentId,
+        name: singleLine(r.name, 32),
+        role: r.ceo ? 'ceo' : r.role,
+        fate,
+        ...(detail ? { detail } : {}),
+      };
+    });
+  }
+
   async command(agentId: string, command: CrewCommand): Promise<CrewActionResult> {
     const record = this.#records.find((r) => r.agentId === agentId);
     if (!record) throw new ApiError(ERROR_CODES.UNKNOWN_AGENT, `No agent ${agentId}.`);
@@ -1521,6 +1670,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       record.ceo = false;
       this.#succession(record);
     }
+    this.#endCalendarCards(record, `${record.name} was dismissed before you decided.`);
     for (const b of this.#brains.values())
       b.context(rosterContext(b.record.nonce, b.record.handle, this.#records));
     await this.#persist();

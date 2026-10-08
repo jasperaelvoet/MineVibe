@@ -36,6 +36,11 @@ export interface PcHost {
   access(tool: PcToolName): { readonly pcId: string; readonly epoch: number } | null;
   /** Display name for handoff notes. */
   authorName(): string;
+  /**
+   * Background jobs this agent started (job id → PC), kept by the brain so a session restart keeps them; default a
+   * map of this tool server's own.
+   */
+  readonly ownJobs?: Map<string, string> | undefined;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: the server holds tools of many different input shapes
@@ -112,6 +117,10 @@ export function pcToolDefinitions(host: PcHost): Def[] {
   const cwds = new Map<string, string>();
   const infos = new Map<string, PcGuestInfo>();
   const offsets = new Map<string, number>();
+  /** Background jobs this agent started, by job id → PC: only these can be read or killed (not another occupant's). */
+  const ownJobs = host.ownJobs ?? new Map<string, string>();
+  const notOwn = (jobId: string, pcId: string): CallToolResult =>
+    errorResult(`No background command ${jobId} of yours on ${pcId}.`);
 
   const info = async (pcId: string): Promise<PcGuestInfo> => {
     const cached = infos.get(pcId);
@@ -193,6 +202,7 @@ export function pcToolDefinitions(host: PcHost): Def[] {
           }
           if (res.kind === 'background') {
             offsets.set(res.jobId, 0);
+            ownJobs.set(res.jobId, pcId);
             return textResult(
               `Command running in background with ID: ${res.jobId}. Read its output with mcp__pc__bash_output{bash_id:"${res.jobId}"}.`,
             );
@@ -217,6 +227,7 @@ export function pcToolDefinitions(host: PcHost): Def[] {
         seated('bash_output', async (pcId) => {
           const jobId = args.bash_id ?? args.shell_id ?? args.id;
           if (!jobId) return errorResult('Give bash_id.');
+          if (ownJobs.get(jobId) !== pcId) return notOwn(jobId, pcId);
           const out = await host.pcs.jobOutput(pcId, jobId, offsets.get(jobId) ?? 0);
           offsets.set(jobId, out.nextOffset);
           let text = stripPwdMarker(out.output).output;
@@ -249,6 +260,7 @@ export function pcToolDefinitions(host: PcHost): Def[] {
         seated('bash_kill', async (pcId) => {
           const jobId = args.shell_id ?? args.bash_id ?? args.id;
           if (!jobId) return errorResult('Give shell_id.');
+          if (ownJobs.get(jobId) !== pcId) return notOwn(jobId, pcId);
           const n = await host.pcs.kill(pcId, { jobId });
           return textResult(n > 0 ? `Killed ${jobId}.` : `${jobId} was not running.`);
         })(),

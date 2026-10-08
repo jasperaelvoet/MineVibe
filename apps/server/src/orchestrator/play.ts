@@ -17,8 +17,9 @@ import { extraJarFor, findDevModJar, installMods, loadModsLock } from '../launch
 import { readDataVersion, seedOptionsTxt } from '../launcher/optionsTxt.js';
 import { seedConfigs } from '../launcher/seedConfigs.js';
 import { loadLauncherSettings } from '../launcher/settings.js';
-import { type DevServer, startDevServer } from './devServer.js';
+import { E2E_ENV, SCRIPTED_CREW_ENV } from './devServer.js';
 import { acquireRunLock } from './runLock.js';
+import { envFlag, type Runtime, type RuntimeOptions, startRuntime } from './runtime.js';
 
 /** Directory holding `mods.lock.json` and `seed-configs/` (dev: `<repo>/packaging`; app: `Resources/mod`). */
 export const RESOURCES_ENV = 'MINEVIBE_RESOURCES';
@@ -52,6 +53,10 @@ export interface PlayOptions {
   readonly fetch?: FetchLike;
   /** Called at each milestone. */
   readonly onProgress?: (event: PlayProgressEvent) => void;
+  /** `play` (default, `npm run play`) or `app` (MineVibe.app): the runtime mode the server starts in. */
+  readonly mode?: 'play' | 'app';
+  /** Module factories and agent seams for the composed runtime (tests). */
+  readonly runtime?: Pick<RuntimeOptions, 'modules' | 'agents' | 'crew'>;
 }
 
 export interface PlayTimings {
@@ -127,7 +132,8 @@ export function stopGame(child: ChildProcess, graceMs: number = GAME_STOP_GRACE_
  * `npm run play` (PLAN §9.3/§9.4, M1): one MineVibe session from the terminal.
  * 1. Data under the play home (`<repo>/.minevibe-dev/play`, or `MINEVIBE_HOME`), single-instance lock. `npm run dev`
  *    keeps its own home (`<repo>/.minevibe-dev`), so they never share `run/bridge.json` or the world record.
- * 2. Bridge on a random loopback port with a fresh token + the dev world loop; `run/bridge.json` for the mod.
+ * 2. The composed runtime ({@link startRuntime}: world loop, crew, PCs, org services) on a random loopback port with a
+ *    fresh token; `run/bridge.json` for the mod.
  * 3. Java 25, Minecraft, Fabric and the locked mods, installed or verified in parallel (fast when present).
  * 4. options.txt and mod configs merged, the dev mod jar copied into `game/mods`.
  * 5. The game runs with cwd = game dir; when the JVM exits everything is torn down and the exit code returned.
@@ -193,7 +199,7 @@ export async function play(options: PlayOptions): Promise<number> {
   };
   process.once('exit', stopOnExit);
 
-  let server: DevServer | null = null;
+  let server: Runtime | null = null;
   try {
     const settings = await loadLauncherSettings(paths.state, env, (msg) => log.warn(msg));
     const resources = resolveResources(repoRoot, env);
@@ -202,15 +208,21 @@ export async function play(options: PlayOptions): Promise<number> {
     log.info({ home: paths.appSupport, player: settings.playerName }, 'MineVibe play');
 
     let t = performance.now();
-    server = await startDevServer({
-      repoRoot: repoRoot ?? paths.appSupport,
+    // The composed server (crew, PCs, org services) on a random loopback port, as in `npm run dev`.
+    server = await startRuntime({
+      mode: options.mode ?? 'play',
       paths,
-      logger: log,
+      log,
+      env,
       port: 0,
       token: generateToken(),
       playerName: settings.playerName,
       // The launched game keeps its saves in the launcher's game dir, so dead worlds are buried there.
       savesDir: join(paths.game, 'saves'),
+      crew: options.runtime?.crew ?? (envFlag(env[SCRIPTED_CREW_ENV]) ? 'scripted' : 'agents'),
+      e2e: envFlag(env[E2E_ENV]),
+      ...(options.runtime?.modules ? { modules: options.runtime.modules } : {}),
+      ...(options.runtime?.agents ? { agents: options.runtime.agents } : {}),
     });
     mark('bridge', t);
     server.bridge.once('connected', () => progress({ phase: 'connected' }));

@@ -226,12 +226,34 @@ function formatEvent(e: CalendarEvent): string {
   return `[${e.id}] ${e.kind} "${e.title}" for ${who}, ${rec} from ${when}; next ${next}; ${e.status}; by ${e.createdBy}${e.task ? `\n  task: ${e.task}` : ''}`;
 }
 
+/**
+ * Splits the mod's status `footer` off a skill or observation result (protocol §7.3): the rest is the result the
+ * agent reads, the footer becomes the tool result's last line.
+ */
+export function splitFooter(result: Record<string, unknown> | undefined): {
+  result: Record<string, unknown> | undefined;
+  footer: string | null;
+} {
+  if (!result || typeof result.footer !== 'string') return { result, footer: null };
+  const { footer, ...rest } = result;
+  return { result: rest, footer: footer.trim().length > 0 ? footer.trim() : null };
+}
+
 /** Builds the `mc` tool definitions of one agent. */
 export function mcToolDefinitions(host: McHost): Def[] {
   const defs: Def[] = [];
   /** Adds definitions of any input shape (their handler argument types differ). */
   const push = (...ds: unknown[]) => {
     defs.push(...(ds as Def[]));
+  };
+  /**
+   * The mod's footer of a result that came from the mod (protocol §7.3: the source of the footer). `run` appends it,
+   * or Node's own line from `agent.state` for results that never reached the mod, so a result never gets two.
+   */
+  const modFooters = new WeakMap<CallToolResult, string>();
+  const fromMod = (result: CallToolResult, footer: string | null): CallToolResult => {
+    if (footer) modFooters.set(result, footer);
+    return result;
   };
   const run = async (fn: () => Promise<CallToolResult>): Promise<CallToolResult> => {
     let result: CallToolResult;
@@ -240,7 +262,7 @@ export function mcToolDefinitions(host: McHost): Def[] {
     } catch (err) {
       result = errorFrom(err);
     }
-    return withFooter(result, host.footer());
+    return withFooter(result, modFooters.get(result) ?? host.footer());
   };
 
   const runJob = async (skill: SkillName, args: Record<string, unknown>, waitS: unknown, label: string) => {
@@ -251,18 +273,25 @@ export function mcToolDefinitions(host: McHost): Def[] {
       waitMs: waitMs(waitS, DEFAULT_WAIT_S, MAX_WAIT_S),
       replace: skill !== 'emote',
     });
+    const { result, footer } = splitFooter(res.result);
     switch (res.status) {
       case 'running':
         host.trackJob(res.jobId, label);
-        return textResult(
-          `Job ${res.jobId} (${label}) is running. You'll get [JOB DONE] when it ends: end your turn now.`,
+        return fromMod(
+          textResult(
+            `Job ${res.jobId} (${label}) is running. You'll get [JOB DONE] when it ends: end your turn now.`,
+          ),
+          footer,
         );
       case 'done':
-        return textResult(`Done: ${label}. ${summarizeResult(res.result)}`);
+        return fromMod(textResult(`Done: ${label}. ${summarizeResult(result)}`), footer);
       case 'cancelled':
-        return errorResult(`Cancelled: ${label}.`);
+        return fromMod(errorResult(`Cancelled: ${label}.`), footer);
       default:
-        return errorResult(`Failed: ${label}. ${res.error?.code ?? 'FAILED'}: ${res.error?.msg ?? 'failed'}`);
+        return fromMod(
+          errorResult(`Failed: ${label}. ${res.error?.code ?? 'FAILED'}: ${res.error?.msg ?? 'failed'}`),
+          footer,
+        );
     }
   };
 
@@ -281,8 +310,10 @@ export function mcToolDefinitions(host: McHost): Def[] {
               queryArgs.jobId = queryArgs.job_id;
               delete queryArgs.job_id;
             }
-            const result = await host.skills.obsQuery(host.agentId, query, queryArgs);
-            return textResult(compactJson(result));
+            const { result, footer } = splitFooter(
+              await host.skills.obsQuery(host.agentId, query, queryArgs),
+            );
+            return fromMod(textResult(compactJson(result ?? {})), footer);
           }),
         READ_ONLY,
       ),
