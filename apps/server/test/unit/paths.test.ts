@@ -1,10 +1,22 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   agentDir,
   agentHome,
+  codexExportFor,
+  codexExportRelocated,
+  codexExportsRoot,
   devHome,
   ensureBaseDirs,
   findRepoRoot,
@@ -14,6 +26,7 @@ import {
   resolvePaths,
   worldDir,
 } from '../../src/config/paths.js';
+import { instanceIdFor } from '../../src/util/hostPaths.js';
 
 const tmpDirs: string[] = [];
 function tmp(): string {
@@ -61,6 +74,58 @@ describe('resolvePaths', () => {
     expect(p.appSupport).toBe('/home/ci/.local/share/minevibe');
     expect(p.caches).toBe('/cache/minevibe');
     expect(p.logs).toBe('/home/ci/.local/state/minevibe/logs');
+  });
+});
+
+describe('the Codex export folder (PLAN §6.6: PCs mount it read-only)', () => {
+  it('stays in the home when a PC can mount it there', () => {
+    const p = resolvePaths({ env: { [HOME_ENV]: '/x/dev' }, home: '/Users/jasper', platform: 'darwin' });
+    expect(p.codexExport).toBe('/x/dev/codex-export');
+    expect(codexExportRelocated(p)).toBe(false);
+  });
+
+  it('moves out of a TCC-protected home on macOS, named like the PC instance', () => {
+    const home = '/Users/jasper';
+    const dev = '/Users/jasper/Documents/MineVibe/.minevibe-dev';
+    const p = resolvePaths({ env: { [HOME_ENV]: dev }, home, platform: 'darwin' });
+    expect(p.codexExport).toBe(
+      `/Users/jasper/Library/Application Support/MineVibe-dev/codex-export/${instanceIdFor(`${dev}/state`)}`,
+    );
+    expect(codexExportsRoot(home)).toBe(
+      '/Users/jasper/Library/Application Support/MineVibe-dev/codex-export',
+    );
+    expect(codexExportRelocated(p)).toBe(true);
+    for (const d of ['Desktop', 'Downloads', 'Library/Mobile Documents/x']) {
+      expect(
+        codexExportFor(`${home}/${d}/h/codex-export`, `${home}/${d}/h/state`, { home, platform: 'darwin' }),
+      ).toMatch(/MineVibe-dev\/codex-export\/[0-9a-f]{8}$/);
+    }
+  });
+
+  it('moves out of a path `--mount` cannot carry; never moves off macOS', () => {
+    expect(codexExportFor('/x/a=b/codex-export', '/x/a=b/state', { home: '/h', platform: 'darwin' })).toMatch(
+      /^\/h\/Library\/Application Support\/MineVibe-dev\/codex-export\/[0-9a-f]{8}$/,
+    );
+    expect(
+      codexExportFor('/x/a,b/codex-export', '/x/a,b/state', { home: '/h', platform: 'darwin' }),
+    ).not.toBe('/x/a,b/codex-export');
+    const linux = '/home/ci/Documents/mv';
+    expect(
+      resolvePaths({ env: { [HOME_ENV]: linux }, home: '/home/ci', platform: 'linux' }).codexExport,
+    ).toBe(`${linux}/codex-export`);
+  });
+
+  it('ensureBaseDirs creates a relocated export and its owner file beside it', async () => {
+    const home = realpathSync(tmp());
+    const dev = join(home, 'Documents', 'checkout', '.minevibe-dev');
+    const p = resolvePaths({ env: { [HOME_ENV]: dev }, home, platform: 'darwin' });
+    expect(codexExportRelocated(p)).toBe(true);
+    await ensureBaseDirs(p);
+    expect(statSync(p.codexExport).isDirectory()).toBe(true);
+    const owner = JSON.parse(readFileSync(`${p.codexExport}.json`, 'utf8'));
+    expect(owner).toMatchObject({ v: 1, appSupport: dev, state: join(dev, 'state') });
+    // Nothing of MineVibe's own lands inside the folder PCs mount.
+    expect(existsSync(join(p.codexExport, 'owner.json'))).toBe(false);
   });
 });
 

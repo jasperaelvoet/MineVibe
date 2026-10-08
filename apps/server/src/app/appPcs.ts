@@ -17,6 +17,7 @@ import {
 } from '../pcs/drivers/ContainerRuntime.js';
 import { type ExecFn, type ExecResult, execWithTimeout } from '../pcs/drivers/exec.js';
 import type { PcDriver, Progress } from '../pcs/drivers/PcDriver.js';
+import { registryDirFor } from '../pcs/InstanceRegistry.js';
 import { PcManager } from '../pcs/PcManager.js';
 import { LINUX_PC_IMAGE_DEV } from '../pcs/PcTypes.js';
 import { SpacesdPool } from '../pcs/SpacesdPool.js';
@@ -556,11 +557,15 @@ export async function createAppPcs(options: AppPcsOptions): Promise<AppPcs | nul
     logger: pcLog,
     diskPath: roots.appRoot,
     imageBuild: { contextDir: imageContext, file: join(imageContext, 'Containerfile') },
+    // The org module's Codex export, read-only at /mnt/codex (PLAN §6.6), and the instance registry.
+    codexExport: paths.codexExport,
+    registryDir: registryDirFor(roots.appRoot),
     // A Vault folder may never expose MineVibe's own data, the engine's files or the app itself.
     vaultForbidden: [
       paths.appSupport,
       paths.caches,
       paths.logs,
+      paths.codexExport,
       roots.appRoot,
       roots.installRoot,
       ...(layout ? [layout.bundle] : []),

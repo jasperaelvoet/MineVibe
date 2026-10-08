@@ -84,7 +84,29 @@ The two never share state:
 home of either command; the run lock then refuses a second process on the same home ("MineVibe is already running",
 see [Troubleshooting](/MineVibe/troubleshooting/#running-from-source)). PC container roots are the exception:
 they live under `~/Library/Application Support/MineVibe-dev/`, outside the repository, because Apple `container`
-fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~/Downloads`).
+fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~/Downloads`). For the same reason a
+home in such a folder keeps its Codex export (what PCs see at `/mnt/codex`) in
+`~/Library/Application Support/MineVibe-dev/codex-export/<instance id>`; `npm run doctor` prints where.
+
+### Throwaway homes and their PCs
+
+Every home has its own PC instance in the shared dev container engine: container, network and three volumes named
+`mv-pc-<instance id>-…`, where the id is a hash of the home's state folder. Deleting a scratch `MINEVIBE_HOME` leaves
+them behind. Every server records which folder an instance belongs to (in the engine's app root,
+`minevibe-instances/`), so you can clean up:
+
+```sh
+npm run doctor -- --clean-orphans            # list every instance and what would be removed (dry run)
+npm run doctor -- --clean-orphans --apply    # remove the instances whose home is gone
+npm run doctor -- --clean-orphans --apply --instance 0fa3430b   # one instance only
+```
+
+Only an instance whose home no longer exists and that no running process uses is removed. A home the command cannot
+look into (a checkout in `~/Documents` from a terminal without access to it) counts as `unknown` and is kept.
+Instances from builds before the registry show as `unregistered` and are kept unless you name them with `--instance`. When the engine is
+stopped, the command starts it to list it and stops it again afterwards (unless another MineVibe uses it).
+`MINEVIBE_CONTAINER_APP_ROOT` points it at another engine. The acceptance harness removes its own instance when it
+exits.
 
 ### Environment variables
 
@@ -102,7 +124,7 @@ fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~
 | `MINEVIBE_LOG_LEVEL`, `MINEVIBE_LOG_JSON=1` | Log level, and JSON logs instead of the pretty terminal format |
 
 `node --conditions=source --import tsx apps/server/src/main.ts help` lists the server's commands (`dev`, `play`,
-`app`, `doctor`).
+`app`, `doctor`); `npm run doctor` runs `doctor` from the repo root.
 
 ## Tests
 
@@ -113,7 +135,7 @@ fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~
 | `npm test` | vitest in every workspace: unit tests, the protocol fixtures, contract tests against a fake mod over a real socket, the agent runtime with a fake SDK, the org services, the packaging tests (on macOS they compile the Swift stub). Uses zero tokens. | CI and local |
 | `cd apps/mod && ./gradlew build` | JUnit (protocol fixtures, key map, JPEG decode, fragmented WebSocket receive, ...) and, only with the EULA accepted, the server GameTests | CI and local |
 | `cd apps/mod && ./gradlew runClientGameTest` | Client GameTests (screens, UI), with the EULA accepted. Opens a game window. | Local |
-| `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation | Local only |
+| `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation, the Codex at `/mnt/codex`, orphaned instances | Local only |
 | `npm run test:live` | A small live smoke test of the Claude Agent SDK. **Uses a little of your subscription quota.** | Local only |
 | `node spikes/s7-boot/run.mjs` | The end-to-end scenario (E2E mode): boot, death, Begin, a Node restart, a kill on Game Over | Local only |
 | `node --conditions=source --import tsx scripts/e2e/run-scenario.ts` | The live acceptance run through `npm run play`: boot, the CEO, a task, a question, the PC flow and model swaps, a kick, the Codex and the calendar, death, quit with no orphans ([ACCEPTANCE.md](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/ACCEPTANCE.md)). **Uses your subscription quota**; `--crew scripted` runs the zero-token part. | Local only |
@@ -145,18 +167,10 @@ you add (or copy) one. The maintainer accepted the EULA for this repository's CI
 
 ### Linting inside a git worktree
 
-`biome.json` excludes `.claude/` (`"!!**/.claude"`), so that the agent worktrees under `.claude/worktrees/` are
-never linted from the main checkout. The flip side: inside such a worktree, `npm run lint` reports success
-**without checking a single file**. Lint there with a copy of the config that drops that one entry. Biome resolves
-`files.includes` relative to the config file, so the copy has to sit at the worktree's root:
-
-```sh
-sed '/"!!\*\*\/.claude"/d; s/"!\*\*\/.astro",/"!**\/.astro"/' biome.json > biome.worktree.json
-npx biome check --config-path=./biome.worktree.json apps/server packages
-rm biome.worktree.json
-```
-
-Or patch `biome.json` the same way for the run and don't commit the change.
+`biome.json` excludes the `.claude/` folder at the repository root (`"!!.claude"`, anchored to the root), so the agent
+worktrees under `.claude/worktrees/` are never linted from the main checkout, while `npm run lint` inside such a
+worktree checks the worktree's own files like any checkout. (The pattern used to be `"!!**/.claude"`, which also
+matched the worktree's own path, so lint there passed without checking a single file.)
 
 ## Spikes
 

@@ -28,7 +28,10 @@ public final class ProtocolCodec {
 	/** Reads and serialises payload records; null fields are omitted, which is how optional keys are written. */
 	public static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
-	/** Writes the final JSON tree; explicit {@code JsonNull}s (nullable keys in {@code ok} results) are kept. */
+	/**
+	 * Writes the final JSON tree, and converts the Java values of {@code ok} results: explicit {@code JsonNull}s and null
+	 * values (nullable keys in {@code ok} results, at any depth) are kept.
+	 */
 	private static final Gson WRITER = new GsonBuilder().disableHtmlEscaping().serializeNulls().create();
 
 	/** Outcome of {@link #parse(String)}. */
@@ -130,12 +133,24 @@ public final class ProtocolCodec {
 		return text;
 	}
 
-	/** An {@code ok} reply carrying {@code result} (any JSON-serialisable values; nulls are kept). */
+	/**
+	 * An {@code ok} reply carrying {@code result} (any JSON-serialisable values). Java nulls are kept at every depth: a
+	 * null map value and a null record component go out as {@code null}, because Node's reply schemas mark such keys
+	 * nullable (protocol.md §3: a key that may be absent instead is left out of the map). Converting with {@link #GSON}
+	 * dropped them, which failed {@code debug.state} replies.
+	 *
+	 * <p>A result value that already is a JSON tree (a job's {@code result} in {@code skill.run}, an observation in
+	 * {@code obs.query}, the forwarded {@code reply} of {@code debug.ui_request}) is free-form JSON, not a typed reply: it
+	 * goes out as a push writes it ({@link #encode}), with the {@code JsonNull} members of its objects left out. So a job
+	 * result reads the same whether it came in the {@code skill.run} reply or later as {@code skill.result}, and a skill
+	 * that {@code put}s a null key keeps meaning "no such key". A {@code JsonNull} value itself is still sent.
+	 */
 	public static String encodeOk(String re, @Nullable Map<String, ?> result) {
 		JsonObject body = new JsonObject();
 		if (result != null) {
 			for (Map.Entry<String, ?> e : result.entrySet()) {
-				body.add(e.getKey(), GSON.toJsonTree(e.getValue()));
+				Object value = e.getValue();
+				body.add(e.getKey(), value instanceof JsonElement tree ? GSON.toJsonTree(tree) : WRITER.toJsonTree(value));
 			}
 		}
 		return encode(Messages.OK, new Messages.Ok(body), null, re);

@@ -21,19 +21,25 @@
  *     --max-turns <n>          stop prompting the crew after n agent turns (default 40)
  *
  * Output: scripts/e2e/out/<run>/ (result.json, summary.md, events.jsonl, samples.jsonl, server.log, screenshots,
- * the game's console log). The temporary home is removed at the end unless --keep-home.
+ * the game's console log). The temporary home is removed at the end unless --keep-home, and so is its PC instance
+ * (container, network, volumes) in the shared dev engine, however the run ended (`doctor --clean-orphans`, scoped to
+ * this run's instance).
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp, mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pino } from 'pino';
 import { REDACT_PATHS } from '../../apps/server/src/log.js';
 import { type PlayControl, play } from '../../apps/server/src/orchestrator/play.js';
 import type { Runtime } from '../../apps/server/src/orchestrator/runtime.js';
+import { devContainerRoots } from '../../apps/server/src/pcs/drivers/ContainerRuntime.js';
+import { EngineLeases } from '../../apps/server/src/pcs/drivers/EngineLeases.js';
+import { runOrphanCleanup } from '../../apps/server/src/pcs/orphanCleanup.js';
+import { instanceIdFor } from '../../apps/server/src/util/hostPaths.js';
 
 type Json = Record<string, unknown>;
 type Status = 'PASS' | 'FAIL' | 'SKIP';
@@ -657,7 +663,7 @@ async function step1(r: StepResult): Promise<void> {
   });
   const runEv = events.find((e) => e.t === 'pc.status' && e.p.id === 'linux-1' && e.p.status === 'running');
   r.numbers.linux1RunningMs = runEv ? runEv.at - T0 : null;
-  const cleaned = cleanLeaked();
+  const cleaned = await cleanEarlierRuns();
   if (cleaned.length > 0)
     r.notes.push(`harness: removed ${cleaned.length} leftovers of earlier runs from the dev engine`);
   check(r, running === true, `linux-1 status running (${pcs().status('linux-1').status})`);
@@ -1455,21 +1461,6 @@ function descendants(root: number): Array<{ pid: number; ppid: number; cmd: stri
 /** The harness's own helpers (tsx's esbuild service, our ps): not part of the session under test. */
 const harnessChild = (p: { cmd: string }) => /\bps -axo\b|@esbuild\/|esbuild --service/.test(p.cmd);
 
-/** The dev container CLI with the MineVibe-dev roots (the roots `npm run play` uses). */
-function containerCli(args: string[]): { code: number | null; out: string } {
-  const base = join(homedir(), 'Library', 'Application Support', 'MineVibe-dev');
-  const r = spawnSync(join(base, 'container-root', 'bin', 'container'), args, {
-    encoding: 'utf8',
-    timeout: 60_000,
-    env: {
-      ...process.env,
-      CONTAINER_APP_ROOT: join(base, 'container'),
-      CONTAINER_INSTALL_ROOT: join(base, 'container-root'),
-    },
-  });
-  return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
-}
-
 async function step9(r: StepResult, home: string, playDone: Promise<number>): Promise<void> {
   const kids = descendants(process.pid).filter((p) => !harnessChild(p));
   const claudes = kids.filter((p) => /claude/i.test(p.cmd));
@@ -1526,79 +1517,73 @@ async function step9(r: StepResult, home: string, playDone: Promise<number>): Pr
   const otherMineVibe = all.filter(
     (p) => /main\.ts (play|dev|app)|minevibe-server/.test(p.cmd) && p.pid !== process.pid,
   );
+  // Whatever holds a live engine lease keeps the shared engine up by design (dev servers, test:pcs, probes), whether
+  // or not its command line looks like MineVibe.
+  const leases = await new EngineLeases({ dir: join(devContainerRoots().appRoot, 'minevibe-leases') })
+    .others()
+    .catch(() => []);
   r.numbers.engineJobs = engine.map((l) => l.trim());
   r.numbers.otherMineVibes = otherMineVibe.map((p) => `${p.pid} ${p.cmd.slice(0, 80)}`);
-  if (otherMineVibe.length > 0) {
+  r.numbers.otherEngineLeases = leases.map((l) => `${l.pid} ${l.holder}`);
+  if (otherMineVibe.length > 0 || leases.length > 0) {
     r.notes.push('another MineVibe ran on this Mac: the shared engine is allowed to stay up for it');
     check(r, true, `engine jobs left for the other MineVibe: ${engine.length}`);
   } else {
     check(r, engine.length === 0, `our container engine stopped (${engine.length} launchd jobs left)`);
   }
-  // Harness hygiene: each run has its own PC instance (a fresh home), so its container, network and volumes are
-  // removed from the shared dev engine when it is still up (another MineVibe runs). Not part of the product path.
-  const prefix = containerName?.replace(/linux-1$/, '');
-  if (prefix && engine.length > 0) {
-    const removed: string[] = [];
-    for (const [list, del] of [
-      [['list', '-a', '-q'], ['rm']],
-      [
-        ['network', 'list', '-q'],
-        ['network', 'delete'],
-      ],
-      [
-        ['volume', 'list', '-q'],
-        ['volume', 'delete'],
-      ],
-    ] as const) {
-      const names = containerCli([...list])
-        .out.split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.startsWith(prefix));
-      if (names.length > 0 && containerCli([...del, ...names]).code === 0) removed.push(...names);
-    }
-    r.numbers.cleanedUp = removed;
-  } else if (prefix) {
-    // The engine stopped with us (nobody else used it): remove this instance's leftovers on the next run instead.
-    writeFileSync(LEAKED, `${[...leakedPrefixes(), prefix].join('\n')}\n`);
-  }
+  // Harness hygiene: this run's PC instance (container, network, volumes) is removed after the home, in main().
 }
 
-/** PC instances of earlier runs whose container, network and volumes are still in the dev engine's store. */
+/**
+ * Leftovers of earlier runs, removed once the engine runs (step 1): instances of harness homes that are gone (the
+ * registry knows them; a run that crashed before its own cleanup), plus the instances older harness versions listed in
+ * `out/leaked-instances.txt`. Nothing else in the shared dev engine is touched, and play's engine lease stays.
+ */
 const LEAKED = join(here, 'out', 'leaked-instances.txt');
-function leakedPrefixes(): string[] {
+async function cleanEarlierRuns(): Promise<string[]> {
+  const legacy = (() => {
+    try {
+      return readFileSync(LEAKED, 'utf8')
+        .split('\n')
+        .map((l) => /^mv-pc-([0-9a-f]{8})-$/.exec(l.trim())?.[1])
+        .filter((x): x is string => x !== undefined);
+    } catch {
+      return [];
+    }
+  })();
   try {
-    return readFileSync(LEAKED, 'utf8')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => /^mv-pc-[0-9a-f]{8}-$/.test(l));
-  } catch {
+    const scan = await runOrphanCleanup({ releaseEngine: false });
+    const ours = scan.report.findings
+      .filter((f) => f.verdict === 'orphan' && f.stateDir?.includes('/minevibe-e2e-') === true)
+      .map((f) => f.instance);
+    const instances = [...new Set([...ours, ...legacy])];
+    if (instances.length === 0) return [];
+    const done = await runOrphanCleanup({ apply: true, instances, releaseEngine: false });
+    for (const f of done.report.failed) say(`harness: could not remove ${f.what}: ${f.error}`);
+    if (legacy.length > 0 && done.report.failed.length === 0) writeFileSync(LEAKED, '');
+    return [...done.report.removed];
+  } catch (err) {
+    say(`harness: cleaning earlier runs failed: ${String(err)}`);
     return [];
   }
 }
-/** Once the engine runs: removes the leftovers of earlier runs (only instances this harness created). */
-function cleanLeaked(): string[] {
-  const prefixes = leakedPrefixes();
-  if (prefixes.length === 0) return [];
-  const removed: string[] = [];
-  for (const [list, del] of [
-    [['list', '-a', '-q'], ['rm']],
-    [
-      ['network', 'list', '-q'],
-      ['network', 'delete'],
-    ],
-    [
-      ['volume', 'list', '-q'],
-      ['volume', 'delete'],
-    ],
-  ] as const) {
-    const names = containerCli([...list])
-      .out.split('\n')
-      .map((l) => l.trim())
-      .filter((l) => prefixes.some((p) => l.startsWith(p)));
-    if (names.length > 0 && containerCli([...del, ...names]).code === 0) removed.push(...names);
+
+/**
+ * Removes this run's PC instance from the shared dev engine once its home is gone (doctor --clean-orphans, scoped to
+ * the instance): starts the engine for it when it stopped with the session, and stops it again unless another
+ * MineVibe uses it. Never touches anything but this run's own instance.
+ */
+async function cleanOwnInstance(instance: string): Promise<void> {
+  try {
+    const { report } = await runOrphanCleanup({ apply: true, instances: [instance] });
+    const f = report.findings[0];
+    if (!f) say(`harness: PC instance ${instance} left nothing in the dev engine`);
+    else if (f.verdict !== 'orphan') say(`harness: kept PC instance ${instance} (${f.verdict}: ${f.why})`);
+    else say(`harness: removed PC instance ${instance} (${report.removed.join(', ') || 'nothing left'})`);
+    for (const x of report.failed) say(`harness: could not remove ${x.what}: ${x.error}`);
+  } catch (err) {
+    say(`harness: removing PC instance ${instance} failed: ${String(err)}`);
   }
-  writeFileSync(LEAKED, '');
-  return removed;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1660,7 +1645,25 @@ async function seedHome(home: string): Promise<void> {
 
 async function main(): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'minevibe-e2e-'));
-  say(`run ${runTag}: crew ${crewMode}, home ${home}, out ${outDir}`);
+  // This run's PC instance (its id is a hash of the home's state dir, as PcManager names it).
+  const instance = instanceIdFor(join(home, 'state'));
+  say(`run ${runTag}: crew ${crewMode}, home ${home}, PC instance ${instance}, out ${outDir}`);
+  try {
+    await session(home);
+  } finally {
+    // However the run ended: the home goes, then its PC instance (a --keep-home run keeps both).
+    if (!keepHome) {
+      await rm(home, { recursive: true, force: true }).catch(() => {});
+      await cleanOwnInstance(instance);
+    }
+    eventsOut.end();
+    samplesOut.end();
+    harnessLog.end();
+  }
+  process.exit(results.some((x) => x.status === 'FAIL') ? 1 : 0);
+}
+
+async function session(home: string): Promise<void> {
   await seedHome(home);
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -1751,11 +1754,6 @@ async function main(): Promise<void> {
     const src = join(home, f);
     if (existsSync(src)) await cp(src, join(outDir, f.replaceAll('/', '_'))).catch(() => {});
   }
-  if (!keepHome) await rm(home, { recursive: true, force: true }).catch(() => {});
-  eventsOut.end();
-  samplesOut.end();
-  harnessLog.end();
-  process.exit(results.some((x) => x.status === 'FAIL') ? 1 : 0);
 }
 
 await main();

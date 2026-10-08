@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync, realpathSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Logger } from 'pino';
+import { devSupportDir, isInside, realpathLoose, tccProtectedReason } from '../../util/hostPaths.js';
 import { EngineLeases } from './EngineLeases.js';
 import { CliError, type ExecFn, type ExecResult, execWithTimeout, redact } from './exec.js';
 
@@ -18,15 +19,6 @@ import { CliError, type ExecFn, type ExecResult, execWithTimeout, redact } from 
 
 /** The launchd label every `container` install shares (PLAN §8.1). */
 export const APISERVER_LABEL = 'com.apple.container.apiserver';
-
-/** Folders whose contents root daemons cannot read without a TCC grant (S5: vmnet 1001 hang). */
-const TCC_PROTECTED_HOME_DIRS = [
-  'Documents',
-  'Desktop',
-  'Downloads',
-  join('Library', 'Mobile Documents'),
-  join('Library', 'CloudStorage'),
-];
 
 export interface ContainerLock {
   version: string;
@@ -54,7 +46,7 @@ export interface ContainerRoots {
  * they must live outside `~/Documents` even though the repo and `MINEVIBE_HOME` are inside it).
  */
 export function devContainerRoots(home = homedir()): ContainerRoots {
-  const base = join(home, 'Library', 'Application Support', 'MineVibe-dev');
+  const base = devSupportDir(home);
   return { appRoot: join(base, 'container'), installRoot: join(base, 'container-root') };
 }
 
@@ -82,40 +74,8 @@ export function resolveContainerRoots(options: {
   return { appRoot: resolve(appRoot), installRoot: resolve(installRoot) };
 }
 
-/** Resolves symlinks of the longest existing prefix (paths may not exist yet). */
-export function realpathLoose(p: string): string {
-  let cur = resolve(p);
-  const rest: string[] = [];
-  for (;;) {
-    try {
-      const real = realpathSync(cur);
-      return rest.length ? join(real, ...rest.reverse()) : real;
-    } catch {
-      const parent = dirname(cur);
-      if (parent === cur) return resolve(p);
-      rest.push(cur.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
-      cur = parent;
-    }
-  }
-}
-
-/** Why `p` sits in a TCC-protected location (or null). */
-export function tccProtectedReason(p: string, home = homedir()): string | null {
-  const real = realpathLoose(p);
-  const realHome = realpathLoose(home);
-  for (const d of TCC_PROTECTED_HOME_DIRS) {
-    const base = join(realHome, d);
-    if (isInside(real, base)) return `inside ~/${d}`;
-  }
-  if (isInside(real, '/Volumes')) return 'on an external volume';
-  return null;
-}
-
-/** True when `child` equals `parent` or is below it. */
-export function isInside(child: string, parent: string): boolean {
-  const rel = relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-}
+// Moved to util/hostPaths.ts (config/paths.ts needs them too); re-exported for existing importers.
+export { isInside, realpathLoose, tccProtectedReason };
 
 /** Normalizes a root reported by `system status` (realpath, no trailing slash) for comparison. */
 export function normalizeRoot(p: string): string {

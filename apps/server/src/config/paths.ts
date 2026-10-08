@@ -3,6 +3,17 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { AgentId, WorldId } from '@minevibe/protocol';
+import { writeFileAtomic } from '../util/atomicFile.js';
+import {
+  devSupportDir,
+  instanceIdFor,
+  isInside,
+  mountSourceProblem,
+  tccProtectedReason,
+} from '../util/hostPaths.js';
+
+// `MineVibe-dev` in Application Support (util/hostPaths.ts, which the container runtime shares).
+export { DEV_SUPPORT_DIRNAME, devSupportDir } from '../util/hostPaths.js';
 
 export const APP_NAME = 'MineVibe';
 
@@ -41,7 +52,11 @@ export interface MineVibePaths {
   readonly lockFile: string;
   /** Codex git repo (`lasting/`, `world-<id>/`). */
   readonly codex: string;
-  /** Read-only Codex export mounted into PCs. */
+  /**
+   * Read-only Codex export mounted into PCs at `/mnt/codex`: `<appSupport>/codex-export`, or, for a home a PC cannot
+   * mount (TCC-protected, or a path `--mount` cannot carry), `<devSupportDir>/codex-export/<instance id>`
+   * ({@link codexExportFor}).
+   */
   readonly codexExport: string;
   /** Real-clock calendar events. */
   readonly calendar: string;
@@ -97,23 +112,61 @@ export function resolvePaths(options: ResolvePathsOptions = {}): MineVibePaths {
   }
 
   const run = join(appSupport, 'run');
+  const state = join(appSupport, 'state');
   return {
     overridden: Boolean(override),
     appSupport,
     caches,
     logs,
-    state: join(appSupport, 'state'),
+    state,
     run,
     bridgeFile: join(run, 'bridge.json'),
     lockFile: join(run, 'lock'),
     codex: join(appSupport, 'codex'),
-    codexExport: join(appSupport, 'codex-export'),
+    codexExport: codexExportFor(join(appSupport, 'codex-export'), state, { home, platform }),
     calendar: join(appSupport, 'calendar'),
     worlds: join(appSupport, 'worlds'),
     game: join(appSupport, 'game'),
     container: join(appSupport, 'container'),
     lume: join(appSupport, 'lume'),
   };
+}
+
+/** Where relocated Codex exports live: `<devSupportDir>/codex-export` (one folder per instance id). */
+export function codexExportsRoot(home = homedir()): string {
+  return join(devSupportDir(home), 'codex-export');
+}
+
+/**
+ * The Codex export folder for a home (PLAN §6.6, §8.6). Every PC mounts it read-only, and Apple `container` can neither
+ * bind-mount a TCC-protected folder (a dev checkout in `~/Documents` keeps `.minevibe-dev` there) nor carry a path with
+ * `,`, `=` or `:` in `--mount`. On macOS such a home keeps its export in `<codexExportsRoot>/<instance id>` instead,
+ * named like its PCs (sha256 of the state dir), with an owner file `<instance id>.json` beside it
+ * ({@link ensureBaseDirs}) so `doctor --clean-orphans` can remove it once the home is gone. Elsewhere `dir` is kept.
+ */
+export function codexExportFor(
+  dir: string,
+  stateDir: string,
+  options: { home?: string; platform?: NodeJS.Platform } = {},
+): string {
+  const home = options.home ?? homedir();
+  if ((options.platform ?? process.platform) !== 'darwin') return dir;
+  if (tccProtectedReason(dir, home) === null && mountSourceProblem(dir) === null) return dir;
+  return join(codexExportsRoot(home), instanceIdFor(stateDir));
+}
+
+/** Whether the Codex export lives outside the home ({@link codexExportFor}). */
+export function codexExportRelocated(paths: Pick<MineVibePaths, 'appSupport' | 'codexExport'>): boolean {
+  return !isInside(resolve(paths.codexExport), resolve(paths.appSupport));
+}
+
+/** What the owner file of a relocated Codex export holds. */
+export interface CodexExportOwner {
+  readonly v: 1;
+  /** The home ({@link MineVibePaths.appSupport}) and its state dir (whose hash names the folder). */
+  readonly appSupport: string;
+  readonly state: string;
+  readonly updatedAt: number;
 }
 
 /** `worlds/<worldId>`; rejects ids that are not safe slugs. */
@@ -131,13 +184,27 @@ export function agentHome(paths: MineVibePaths, worldId: string, agentId: string
   return join(agentDir(paths, worldId, agentId), 'home');
 }
 
-/** Creates the base directories. `state` and `run` hold secrets and are owner-only (0700). */
+/**
+ * Creates the base directories. `state` and `run` hold secrets and are owner-only (0700). A relocated Codex export
+ * ({@link codexExportFor}) gets its folder and its owner file.
+ */
 export async function ensureBaseDirs(paths: MineVibePaths): Promise<void> {
   for (const dir of [paths.appSupport, paths.caches, paths.logs, paths.worlds]) {
     await mkdir(dir, { recursive: true });
   }
   for (const dir of [paths.state, paths.run]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
+  }
+  if (codexExportRelocated(paths)) {
+    // The owner file sits beside the export, never inside it (the folder is mounted into the PCs).
+    await mkdir(paths.codexExport, { recursive: true });
+    const owner: CodexExportOwner = {
+      v: 1,
+      appSupport: paths.appSupport,
+      state: paths.state,
+      updatedAt: Date.now(),
+    };
+    await writeFileAtomic(`${paths.codexExport}.json`, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
   }
 }
 

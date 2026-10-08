@@ -206,6 +206,71 @@ describe('plan-first: plan mode, PlanCapture and the plan card', () => {
   });
 });
 
+describe('plan-first: a plan stated in prose (DEBT "a plan card without a plan")', () => {
+  it('without a plan file the card shows what the agent last said in its turn; a revise asks for the plan again', async () => {
+    const { w, id, q } = await world({ planFirst: true });
+    await wake(w, q, 'refactor the parser');
+    await sit(w, q, id);
+    q.result();
+    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
+    // Words from an earlier turn never become the plan.
+    expect(w.manager.brain(id)?.turnText.latest()).toBeNull();
+    q.assistantText('Let me look at the tokenizer first.');
+    // The CLI streams each tool_use before it runs the tool.
+    q.assistantToolUse('mcp__pc__bash', { command: 'git status' });
+    expect((await q.callTool('mcp__pc__bash', { command: 'git status' })).kind).toBe('allowed');
+    const plan = 'Plan:\n1. Add a failing test for nested quotes\n2. Fix the tokenizer\n3. Run the suite';
+    q.assistantText(plan);
+    q.assistantToolUse('ExitPlanMode', {});
+    const exiting = q.callTool('ExitPlanMode', {});
+    await w.until(() => w.manager.pendingCards().length === 1, 'plan card');
+    expect(w.manager.pendingCards()[0]).toMatchObject({ kind: 'plan', plan });
+    expect((await w.manager.deliverChat({ to: 'all', text: '@ada also cover escapes' })).echo).toMatch(
+      /revise plan/,
+    );
+    const denied = await exiting;
+    expect(denied).toMatchObject({ kind: 'denied', reason: expect.stringMatching(/also cover escapes/) });
+    expect(denied.kind === 'denied' ? denied.reason : '').toMatch(
+      /~\/\.claude\/plans\/ \(or state it in full\)/,
+    );
+
+    // The revised plan, stated again in the same turn, is the next card.
+    const revised = `${plan}\n4. Cover escapes`;
+    q.assistantText(revised);
+    const again = q.callTool('ExitPlanMode', {});
+    await w.until(() => w.manager.pendingCards().length === 1, 'second plan card');
+    expect(w.manager.pendingCards()[0]).toMatchObject({ kind: 'plan', plan: revised });
+    expect((await w.manager.deliverChat({ to: 'all', text: '@ada approve' })).echo).toBe(
+      'You → Ada: plan approved',
+    );
+    expect(await again).toMatchObject({ kind: 'allowed' });
+    q.result();
+    await w.until(() => w.manager.brain(id)?.turnText.latest() === null, 'turn text cleared');
+  });
+
+  it('a plan file written in the turn still wins over the prose around it', async () => {
+    const { w, id, q } = await world({ planFirst: true });
+    await wake(w, q, 'refactor the parser');
+    await sit(w, q, id);
+    q.result();
+    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
+    q.assistantToolUse('mcp__pc__write', {
+      file_path: '/Users/jasper/.claude/plans/p.md',
+      content: '# The plan',
+    });
+    await q.callTool('mcp__pc__write', {
+      file_path: '/Users/jasper/.claude/plans/p.md',
+      content: '# The plan',
+    });
+    q.assistantText('I wrote the plan to ~/.claude/plans/p.md.');
+    const exiting = q.callTool('ExitPlanMode', {});
+    await w.until(() => w.manager.pendingCards().length === 1, 'plan card');
+    expect(w.manager.pendingCards()[0]).toMatchObject({ kind: 'plan', plan: '# The plan' });
+    await w.manager.deliverChat({ to: 'all', text: '@ada approve' });
+    expect(await exiting).toMatchObject({ kind: 'allowed' });
+  });
+});
+
 describe('USER DECISION 2026-10-08: bypassPermissions, no automatic plan mode', () => {
   it('runs in bypassPermissions; Plan-first is off, so sitting never enters plan mode', async () => {
     const { w, id, q } = await world();
