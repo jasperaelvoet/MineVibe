@@ -145,3 +145,13 @@ describe('sleep', () => {
     expect(clock.pendingTimers).toBe(0);
   });
 });
+
+describe('parseRealWhen: dates that do not exist (regression)', () => {
+  it('rejects 31 February instead of rolling into March', () => {
+    const now = Date.UTC(2026, 9, 8, 10);
+    expect(parseRealWhen('2026-02-31 08:00', now, 'Europe/Brussels')).toBeNull();
+    expect(parseRealWhen('2026-04-31', now, 'UTC')).toBeNull();
+    expect(parseRealWhen('2028-02-29 08:00', now, 'UTC')).toBe(Date.UTC(2028, 1, 29, 8));
+    expect(parseRealWhen('2027-02-29 08:00', now, 'UTC')).toBeNull();
+  });
+});

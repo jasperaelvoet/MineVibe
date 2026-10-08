@@ -787,3 +787,160 @@ describe('CalendarService: reminders and meetings', () => {
     expect(h.meetings).toHaveLength(2);
   });
 });
+
+describe('CalendarService: review regressions', () => {
+  it('fires a one-off meeting the player approves after its time (CEO "now" meeting), within grace', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.onGameClock(1000);
+    const res = ok(h.svc.add(ceo, { title: 'Quick sync', kind: 'meeting', when: 'now' }));
+    expect(res.needsApproval).toBe(true);
+    h.svc.onGameClock(1000 + 800); // 40 s later the player says yes
+    ok(h.svc.decideApproval(res.event.id, true));
+    expect(h.meetings).toHaveLength(1);
+    expect(h.svc.get(res.event.id)).toMatchObject({ status: 'completed', nextAt: null });
+
+    // Approved long after its time: recorded as missed, never left active without a next time.
+    const late = ok(h.svc.add(ceo, { title: 'Old sync', kind: 'meeting', when: 'now' }));
+    h.svc.onGameClock(1800 + 20_000);
+    ok(h.svc.decideApproval(late.event.id, true));
+    expect(h.meetings).toHaveLength(1);
+    expect(h.svc.get(late.event.id)).toMatchObject({ status: 'completed', nextAt: null });
+    expect(h.svc.get(late.event.id)?.ring.at(-1)).toMatchObject({ status: 'missed' });
+  });
+
+  it('withdraws the approval card when an edit no longer needs approval', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.onGameClock(0);
+    const res = ok(h.svc.add(bram, { title: 'Daily mining', when: 'Day 2 08:00', recurrence: 'daily' }));
+    expect(h.cards).toHaveLength(1);
+    const edited = ok(h.svc.update(bram, res.event.id, { recurrence: 'once' }));
+    expect(edited).toMatchObject({ needsApproval: false, event: { status: 'active' } });
+    expect(h.withdrawn).toEqual([`cal:${res.event.id}`]);
+  });
+
+  it('counts CEO reschedules toward the 6-per-hour limit', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.onGameClock(1000);
+    const res = ok(h.svc.add(ceo, { title: 'Chop trees', assignees: ['bram'], when: 'now' }));
+    for (let i = 0; i < 5; i++) ok(h.svc.update(ceo, res.event.id, { when: `Day ${i + 2} 06:00` }));
+    expect(h.svc.update(ceo, res.event.id, { when: 'Day 9 06:00' })).toMatchObject({
+      ok: false,
+      code: 'RATE_LIMITED',
+    });
+    // Edits that do not reschedule are free.
+    expect(h.svc.update(ceo, res.event.id, { title: 'Chop birch' }).ok).toBe(true);
+  });
+
+  it('releases a queued CEO task when the open one ages out instead of missing it', async () => {
+    const h = harness({ limits: { openTaskTtlMs: 60_000, queueTtlMs: 120_000 } });
+    await h.svc.open('world-1');
+    h.svc.start();
+    h.svc.onGameClock(1000);
+    const first = ok(h.svc.add(ceo, { title: 'Chop trees', assignees: ['bram'], when: 'now' }));
+    const second = ok(h.svc.add(ceo, { title: 'Build shed', assignees: ['bram'], when: 'now' }));
+    expect(h.tasks.map((t) => t.eventId)).toEqual([first.event.id]);
+    await h.clock.advance(70_000); // Bram never reported the first one
+    expect(h.tasks.map((t) => t.eventId)).toEqual([first.event.id, second.event.id]);
+    expect(h.svc.get(second.event.id)?.ring[0]?.assignees).toEqual({ bram: 'fired' });
+    h.svc.stop();
+  });
+
+  it('fires a staggered catch-up from the live event: edits apply, cancellations stop it', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.start();
+    const ids: string[] = [];
+    for (const [i, title] of ['Alpha task', 'Beta task', 'Gamma task'].entries()) {
+      const r = ok(
+        h.svc.add(player, {
+          title,
+          assignees: ['bram'],
+          clock: 'real',
+          when: Date.UTC(2026, 9, 8, 11, i),
+          catchUp: 'once_late',
+        }),
+      );
+      ids.push(r.event.id);
+    }
+    h.svc.stop();
+    h.clock.set(Date.UTC(2026, 9, 8, 12, 0));
+    h.svc.start();
+    await h.clock.advance(1000); // Alpha fires; Beta and Gamma wait their turn
+    expect(h.tasks.map((t) => t.eventId)).toEqual([ids[0]]);
+    ok(h.svc.update(player, ids[1] as string, { title: 'Beta task, renamed' }));
+    ok(h.svc.cancel(player, ids[2] as string));
+    await h.clock.advance(40_000);
+    expect(h.tasks.map((t) => t.eventId)).toEqual([ids[0], ids[1]]);
+    expect(h.tasks[1]?.text).toContain('Beta task, renamed');
+    // Recorded on the live event (a stale copy would leave it "deferred" forever).
+    expect(h.svc.get(ids[1] as string)?.ring.at(-1)).toMatchObject({ status: 'fired', late: true });
+    h.svc.stop();
+  });
+
+  it('never writes an empty world file while switching worlds', async () => {
+    const h = harness({ persist: true });
+    await h.svc.open('world-2');
+    h.svc.onGameClock(0);
+    ok(h.svc.add(player, { title: 'World two job', assignees: ['bram'], when: 'Day 3 06:00' }));
+    await h.svc.setWorld('world-1');
+    await h.svc.flush();
+    const file = join(h.dir as string, 'worlds', 'world-2', 'calendar.json');
+    const switching = h.svc.setWorld('world-2');
+    // A save while the switch is loading (a real-clock event firing, a tool call).
+    ok(h.svc.add(player, { title: 'Real one', assignees: ['bram'], clock: 'real', when: 'now' }));
+    await switching;
+    await h.svc.flush();
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { events: CalendarEvent[] };
+    expect(saved.events.map((e) => e.title)).toEqual(['World two job']);
+    expect(h.svc.list().map((e) => e.title)).toContain('World two job');
+  });
+
+  it('measures recurring-meeting spacing from the start of the last one', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.onGameClock(0);
+    const res = ok(
+      h.svc.add(player, {
+        title: 'Planning',
+        kind: 'meeting',
+        when: 'Day 1 08:00',
+        recurrence: { every_n_days: 2 },
+      }),
+    );
+    h.svc.onGameClock(gameTicksAt(1, 8));
+    expect(h.meetings).toHaveLength(1);
+    await h.clock.advance(15 * 60_000); // a long meeting
+    h.svc.notePlayerInput();
+    h.svc.recordOccurrence(res.event.id, gameTicksAt(1, 8), 'done', 'held');
+    await h.clock.advance(25 * 60_000); // 40 real minutes after it started
+    h.svc.notePlayerInput();
+    h.svc.onGameClock(gameTicksAt(3, 8));
+    expect(h.meetings).toHaveLength(2);
+  });
+
+  it('cancels only the next occurrence of a recurring event', async () => {
+    const h = harness();
+    await h.svc.open('world-1');
+    h.svc.onGameClock(0);
+    const res = ok(
+      h.svc.add(player, {
+        title: 'Feed animals',
+        assignees: ['bram'],
+        when: 'Day 2 06:00',
+        recurrence: 'daily',
+      }),
+    );
+    const skipped = ok(h.svc.cancel(player, res.event.id, 'next'));
+    expect(skipped.event).toMatchObject({ status: 'active', nextAt: gameTicksAt(3, 6) });
+    expect(skipped.event.ring).toEqual([
+      expect.objectContaining({ at: gameTicksAt(2, 6), status: 'cancelled' }),
+    ]);
+    h.svc.onGameClock(gameTicksAt(2, 6));
+    expect(h.tasks).toHaveLength(0);
+    h.svc.onGameClock(gameTicksAt(3, 6));
+    expect(h.tasks).toHaveLength(1);
+  });
+});

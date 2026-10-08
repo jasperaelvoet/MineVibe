@@ -322,23 +322,29 @@ export class CalendarService {
 
   /** Loads lasting (real-clock) events and the world's game-clock events. */
   async open(worldId: string | null): Promise<void> {
-    this.#events = new Map();
-    for (const ev of await this.#loadFile(this.#lastingFile)) {
-      if (ev.clock === 'real') this.#events.set(ev.id, ev);
-    }
-    await this.setWorld(worldId);
+    // Load everything first, then swap in one step: a save during the awaits must never see a half-loaded map
+    // (it would overwrite the files with an empty event list).
+    const lasting = await this.#loadFile(this.#lastingFile);
+    const world = worldId !== null && this.#worldFile ? await this.#loadFile(this.#worldFile(worldId)) : [];
+    const events = new Map<string, CalendarEvent>();
+    for (const ev of lasting) if (ev.clock === 'real') events.set(ev.id, ev);
+    for (const ev of world)
+      if (ev.clock === 'game') events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
+    this.#events = events;
+    this.#worldId = worldId;
+    this.#gameTicks = null;
+    this.#changed();
   }
 
   /** Switches to a world's game-clock events (a new world after a death, or the first `world.open`). */
   async setWorld(worldId: string | null): Promise<void> {
+    // Load before switching: while the file is read, saves keep going to the old world's file.
+    const loaded = worldId !== null && this.#worldFile ? await this.#loadFile(this.#worldFile(worldId)) : [];
     for (const ev of [...this.#events.values()]) if (ev.clock === 'game') this.#events.delete(ev.id);
+    for (const ev of loaded)
+      if (ev.clock === 'game') this.#events.set(ev.id, { ...ev, worldId: worldId ?? undefined });
     this.#worldId = worldId;
     this.#gameTicks = null;
-    if (worldId !== null && this.#worldFile) {
-      for (const ev of await this.#loadFile(this.#worldFile(worldId))) {
-        if (ev.clock === 'game') this.#events.set(ev.id, { ...ev, worldId });
-      }
-    }
     this.#changed();
   }
 
@@ -505,19 +511,8 @@ export class CalendarService {
     const built = this.#build(actor, input, null);
     if (!built.ok) return built;
     const { event } = built;
-
-    if (actor.kind === 'agent' && this.#crew.isCeo(actor.id)) {
-      const now = this.#clock.now();
-      const log = (this.#ceoCreates.get(actor.id) ?? []).filter((t) => now - t < 3_600_000);
-      if (log.length >= this.#limits.ceoEventsPerHour) {
-        return fail(
-          'RATE_LIMITED',
-          `the CEO may create at most ${this.#limits.ceoEventsPerHour} events per hour`,
-        );
-      }
-      log.push(now);
-      this.#ceoCreates.set(actor.id, log);
-    }
+    const limited = this.#chargeCeo(actor);
+    if (limited) return limited;
 
     const needsApproval =
       actor.kind === 'agent' && (isRecurring(event.recurrence) || event.kind === 'meeting');
@@ -535,6 +530,25 @@ export class CalendarService {
       needsApproval,
       firedNow: stored.ring.length > firedBefore,
     };
+  }
+
+  /**
+   * The CEO's 6 events per real hour. A reschedule (`calendar_update` with a new `when`) counts too, since it
+   * re-delivers like a new event; otherwise one event could be re-fired without limit.
+   */
+  #chargeCeo(actor: CalendarActor): CalendarFailure | null {
+    if (actor.kind !== 'agent' || !this.#crew.isCeo(actor.id)) return null;
+    const now = this.#clock.now();
+    const log = (this.#ceoCreates.get(actor.id) ?? []).filter((t) => now - t < 3_600_000);
+    if (log.length >= this.#limits.ceoEventsPerHour) {
+      return fail(
+        'RATE_LIMITED',
+        `the CEO may create at most ${this.#limits.ceoEventsPerHour} events per hour`,
+      );
+    }
+    log.push(now);
+    this.#ceoCreates.set(actor.id, log);
+    return null;
   }
 
   /** `calendar_update` / `calendar.put` (existing). */
@@ -562,8 +576,23 @@ export class CalendarService {
       runWhileAway: patch.runWhileAway ?? ev.runWhileAway,
       tz: patch.tz ?? ev.tz,
     };
-    const built = this.#build(actor, merged, ev);
+    // An edit that leaves the schedule alone (title, task, assignees, ...) keeps `nextAt` as it is, so a one-off
+    // that is due, late or catching up can still be renamed or reassigned.
+    const keepSchedule =
+      patch.when === undefined &&
+      patch.clock === undefined &&
+      patch.recurrence === undefined &&
+      patch.tz === undefined;
+    const built = this.#build(actor, merged, ev, keepSchedule);
     if (!built.ok) return built;
+    if (keepSchedule) {
+      built.event.nextAt = ev.nextAt;
+      built.event.wallTime = ev.wallTime; // a start moved out of a DST gap keeps its requested wall time
+    }
+    if (patch.when !== undefined) {
+      const limited = this.#chargeCeo(actor);
+      if (limited) return limited;
+    }
     const next = built.event;
     // Any agent edit of a recurring event or a meeting goes back to the player.
     const needsApproval = actor.kind === 'agent' && (isRecurring(next.recurrence) || next.kind === 'meeting');
@@ -599,19 +628,35 @@ export class CalendarService {
     }
     this.#events.set(id, updated);
     if (needsApproval) this.#requestApproval(updated);
+    else if (ev.status === 'awaiting_approval') this.#sink.withdrawApproval?.(`cal:${ev.id}`);
     this.#save();
     this.#changed();
     if (!needsApproval) this.tick();
     return { ok: true, event: structuredClone(this.#events.get(id) ?? updated), needsApproval };
   }
 
-  /** `calendar_cancel` / `calendar.cancel`. */
-  cancel(actor: CalendarActor, id: string): CalendarResult<{ event: CalendarEvent }> {
+  /**
+   * `calendar_cancel` / `calendar.cancel{scope}`. `next` skips only the next occurrence of a recurring event (a
+   * one-off is cancelled whole); `all` cancels the event.
+   */
+  cancel(
+    actor: CalendarActor,
+    id: string,
+    scope: 'next' | 'all' = 'all',
+  ): CalendarResult<{ event: CalendarEvent }> {
     const ev = this.#events.get(id);
     if (!ev || ev.status === 'cancelled')
       return fail('NOT_FOUND', `no calendar event "${singleLine(id, 40)}"`);
     const rights = this.#checkEditRights(actor, ev);
     if (rights) return rights;
+    if (scope === 'next' && isRecurring(ev.recurrence) && ev.nextAt !== null) {
+      this.#pushRing(ev, { at: ev.nextAt, status: 'cancelled', note: 'skipped' });
+      ev.nextAt = occurrenceAfter(ev, ev.nextAt);
+      ev.updatedAt = this.#clock.now();
+      this.#save();
+      this.#changed();
+      return { ok: true, event: structuredClone(ev) };
+    }
     if (ev.status === 'awaiting_approval') this.#sink.withdrawApproval?.(`cal:${ev.id}`);
     ev.status = 'cancelled';
     ev.nextAt = null;
@@ -639,8 +684,7 @@ export class CalendarService {
     ev.updatedAt = this.#clock.now();
     if (approved) {
       ev.status = 'active';
-      const now = this.#nowFor(ev.clock);
-      if (now !== null) ev.nextAt = occurrenceAtOrAfter(ev, Math.max(now, ev.start));
+      this.#reschedule(ev, 'approved after its time');
     } else {
       ev.status = 'declined';
       ev.nextAt = null;
@@ -693,14 +737,35 @@ export class CalendarService {
     if (!ev || (ev.status !== 'active' && ev.status !== 'paused'))
       return fail('NOT_FOUND', 'no such active event');
     ev.status = paused ? 'paused' : 'active';
-    if (!paused) {
-      const now = this.#nowFor(ev.clock);
-      if (now !== null) ev.nextAt = occurrenceAtOrAfter(ev, Math.max(now, ev.start));
-    }
+    if (!paused) this.#reschedule(ev, 'resumed after its time');
     ev.updatedAt = this.#clock.now();
     this.#save();
     this.#changed();
     return { ok: true, event: structuredClone(ev) };
+  }
+
+  /**
+   * Recomputes `nextAt` when an event becomes active again (approved, resumed). A one-off whose time passed in the
+   * meantime goes out now when it is within the grace window (the player just said yes; e.g. a CEO's `when:"now"`
+   * meeting approved a minute later), otherwise it is recorded as missed and completed. Never left active with no
+   * next time.
+   */
+  #reschedule(ev: CalendarEvent, lateNote: string): void {
+    const now = this.#nowFor(ev.clock);
+    if (now === null) return; // the world clock is not known yet; the next tick handles it
+    const next = occurrenceAtOrAfter(ev, Math.max(now, ev.start));
+    if (next !== null || isRecurring(ev.recurrence)) {
+      ev.nextAt = next;
+      return;
+    }
+    const grace = ev.clock === 'game' ? this.#limits.gameGraceTicks : this.#limits.realGraceMs;
+    if (now - ev.start <= grace) {
+      ev.nextAt = now;
+      return;
+    }
+    ev.nextAt = null;
+    ev.status = 'completed';
+    this.#pushRing(ev, { at: ev.start, status: 'missed', note: lateNote });
   }
 
   /**
@@ -753,8 +818,11 @@ export class CalendarService {
       this.#pushRing(ev, { at, status, note });
     }
     if (ev.kind === 'meeting' && (status === 'done' || status === 'fired')) {
-      ev.lastMeetingAt = this.#clock.now();
-      ev.lastMeetingTick = this.#gameTicks ?? undefined;
+      // Spacing caps run from the start of the held meeting, not from its end (a 10-minute meeting would
+      // otherwise eat into the next occurrence's gap).
+      const held = ev.ring.find((o) => o.at === at);
+      ev.lastMeetingAt = held?.firedAt ?? this.#clock.now();
+      ev.lastMeetingTick = ev.clock === 'game' ? at : (this.#gameTicks ?? undefined);
     }
     this.#save();
     this.#changed();
@@ -814,7 +882,14 @@ export class CalendarService {
       this.#fire(ev, latest, false);
     } else if (ev.catchUp === 'once_late' && lateness <= grace) {
       this.#pushRing(ev, { at: latest, status: 'deferred', note: 'catching up' });
-      this.#queueStagger(() => this.#fire(ev, latest, true));
+      // Look the event up again when the stagger comes round: it may have been edited (a new object), cancelled,
+      // or dropped with its world in the meantime.
+      const id = ev.id;
+      this.#queueStagger(() => {
+        const current = this.#events.get(id);
+        if (current?.ring.some((o) => o.at === latest && o.status === 'deferred'))
+          this.#fire(current, latest, true);
+      });
     } else {
       this.#pushRing(ev, { at: latest, status: 'missed', note: 'missed while offline' });
       this.#noteOfflineMissed(ev);
@@ -1032,8 +1107,21 @@ export class CalendarService {
 
   #expireDeferred(nowReal: number): void {
     const keep: Deferred[] = [];
+    const released = new Set<string>();
     for (const d of this.#deferred) {
       if (d.reason === 'asleep' && nowReal >= d.until && nowReal < d.expiresAt) {
+        this.#queueStagger(() => this.#retryDeferred(d));
+        continue;
+      }
+      // A queued CEO task goes out once the open one stops blocking (reported, or older than openTaskTtlMs);
+      // one per agent per pass, oldest first (the list is in queue order).
+      if (
+        d.reason === 'queued' &&
+        nowReal < d.expiresAt &&
+        !released.has(d.agentId) &&
+        !this.#openCeoTask(d.agentId, d.eventId, d.at)
+      ) {
+        released.add(d.agentId);
         this.#queueStagger(() => this.#retryDeferred(d));
         continue;
       }
@@ -1141,6 +1229,7 @@ export class CalendarService {
     actor: CalendarActor,
     input: CalendarAddInput,
     existing: CalendarEvent | null,
+    keepSchedule = false,
   ): CalendarResult<{ event: CalendarEvent }> {
     const title = sanitizeTitle(String(input.title ?? ''));
     if (!title) return fail('INVALID', 'a title is required');
@@ -1225,7 +1314,7 @@ export class CalendarService {
     const slack = clock === 'game' ? this.#limits.gameSlackTicks : this.#limits.realSlackMs;
     const schedule = { clock, start, recurrence, tz, wallTime };
     const nextAt = occurrenceAtOrAfter(schedule, Math.max(start, now - slack));
-    if (nextAt === null || (!isRecurring(recurrence) && start < now - slack)) {
+    if (!keepSchedule && (nextAt === null || (!isRecurring(recurrence) && start < now - slack))) {
       return fail(
         'IN_PAST',
         `that time (${clock === 'game' ? formatGameTime(start) : formatRealTime(start, tz ?? this.#tz)}) has passed`,

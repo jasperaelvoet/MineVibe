@@ -27,7 +27,7 @@ import type { Logger } from 'pino';
 import { writeFileAtomic } from '../../util/atomicFile.js';
 import { TypedEmitter } from '../../util/TypedEmitter.js';
 import { type OrgClock, systemClock } from '../clock.js';
-import { authorLabel, type ControlNonce, singleLine } from '../envelope.js';
+import { authorLabel, type ControlNonce, sanitizeTitle, singleLine } from '../envelope.js';
 import { containsCoordinates } from './coordinates.js';
 import { buildCodexDigest } from './digest.js';
 import { formatCoords } from './format.js';
@@ -484,6 +484,10 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       for (const page of this.#pages.values()) {
         if (page.category !== 'log' || page.scope !== 'world' || page.rollup) continue;
         if (page.createdDay === undefined) continue;
+        // A page that would not fit a roll-up part with its header stays as it is (rolling it up would truncate it,
+        // and the original is deleted). So does a page someone is editing in CodexScreen.
+        if (byteLength(rollupSection(page)) > CODEX_MAX_BODY_BYTES) continue;
+        if (this.lockHolder(page.id) !== null) continue;
         const week = Math.floor((page.createdDay - 1) / 7);
         if (week >= currentWeek) continue;
         const group = groups.get(week) ?? [];
@@ -496,17 +500,10 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
         group.sort((a, b) => (a.createdDay ?? 0) - (b.createdDay ?? 0) || a.created.localeCompare(b.created));
         const first = week * 7 + 1;
         const title = `Log, Days ${first}–${first + 6}`;
-        const sections = group.map(
-          (p) =>
-            `### ${singleLine(p.title)} (${p.authorName}, Day ${p.createdDay ?? '?'})\n\n${p.body.trim()}`,
-        );
+        const sections = group.map(rollupSection);
         const chunks: string[] = [];
         let current = '';
-        for (const section of sections) {
-          const piece =
-            byteLength(section) > CODEX_MAX_BODY_BYTES
-              ? truncateBytes(section, CODEX_MAX_BODY_BYTES)
-              : section;
+        for (const piece of sections) {
           const joined = current ? `${current}\n\n${piece}` : piece;
           if (byteLength(joined) > CODEX_MAX_BODY_BYTES && current) {
             chunks.push(current);
@@ -579,7 +576,9 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
 
   #rollBudgetDay(): void {
     const day = this.#gameDay();
-    if (this.#state.budget.day !== day) this.#state.budget = { day, counts: {} };
+    // An unknown day (app start, world switch, before the first world.state) keeps today's counts: rolling over to
+    // `null` and back would hand every agent a fresh budget.
+    if (day !== null && this.#state.budget.day !== day) this.#state.budget = { day, counts: {} };
   }
 
   async #write(actor: CodexActor, input: CodexWriteInput): Promise<CodexWriteResult> {
@@ -589,7 +588,12 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       return err('INVALID', 'mode must be create, update or append');
     }
     if (typeof input.body !== 'string') return err('INVALID', 'body must be text');
-    const body = input.body.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+    // Leading blank lines are dropped too, so a page reads back exactly as written (the file format puts the body
+    // right after the frontmatter, and the parser tolerates one blank line there).
+    const body = input.body
+      .replace(/\r\n?/g, '\n')
+      .replace(/^(?:[ \t]*\n)+/, '')
+      .replace(/\s+$/, '');
     if (input.category !== undefined && !isCodexCategory(input.category)) {
       return err('INVALID', 'unknown category');
     }
@@ -652,7 +656,9 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       return err('NO_WORLD', 'no world is open; world pages need one');
 
     // Title and tags.
-    const title = singleLine(input.title ?? existing?.title ?? '');
+    // Titles are shown outside envelopes too (refusals, lists, CodexScreen), so `[MV:` look-alikes and envelope
+    // delimiters are escaped on the way in, like calendar titles.
+    const title = sanitizeTitle(input.title ?? existing?.title ?? '');
     if (!title) return err('INVALID', 'a title is required');
     const tags =
       input.tags !== undefined ? normalizeTags(input.tags, CODEX_MAX_TAGS) : [...(existing?.tags ?? [])];
@@ -793,7 +799,12 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
   #uniqueId(titleOrId: string): string {
     const base = slugify(titleOrId);
     let id = base;
-    for (let n = 2; this.#pages.has(id) || existsSync(this.#pathFor(id, 'lasting')); n++) id = `${base}-${n}`;
+    const taken = (candidate: string) =>
+      this.#pages.has(candidate) ||
+      existsSync(this.#pathFor(candidate, 'lasting')) ||
+      // A world file that was skipped at load (unparseable, or shadowed by a lasting page) must not be overwritten.
+      (this.#worldId !== null && existsSync(this.#pathFor(candidate, 'world')));
+    for (let n = 2; taken(id); n++) id = `${base}-${n}`;
     return id;
   }
 
@@ -966,8 +977,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
   }
 }
 
-function truncateBytes(s: string, max: number): string {
-  let out = s;
-  while (byteLength(out) > max - 3) out = out.slice(0, Math.floor(out.length * 0.95));
-  return `${out}…`;
+/** One log page inside a weekly roll-up. */
+function rollupSection(p: CodexPage): string {
+  return `### ${singleLine(p.title)} (${p.authorName}, Day ${p.createdDay ?? '?'})\n\n${p.body.trim()}`;
 }

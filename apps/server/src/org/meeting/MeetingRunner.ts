@@ -283,6 +283,8 @@ export class MeetingRunner {
   readonly #log: Logger | undefined;
 
   #active: Active | null = null;
+  /** Aborts the waits before a meeting starts (usage asleep, safety postponement). */
+  #preStart: AbortController | null = null;
   #queue: Pending[] = [];
   #running: Promise<void> | null = null;
   readonly #outcomes = new Map<string, MeetingOutcome>();
@@ -385,7 +387,7 @@ export class MeetingRunner {
   request(request: MeetingRequest): string {
     const id = `mt-${randomBytes(4).toString('hex')}`;
     this.#queue.push({ id, request, queuedAt: this.#clock.now() });
-    if (this.#active)
+    if (this.#active || this.#running)
       this.#fx.toast?.(`Meeting "${sanitizeTitle(request.title)}" is queued behind the current one`);
     this.#pump();
     return id;
@@ -413,6 +415,17 @@ export class MeetingRunner {
     m.turnAbort?.abort(new EndMeeting(reason));
     m.abort.abort(new EndMeeting(reason));
     m.waker?.();
+  }
+
+  /**
+   * Cancels everything: the active meeting adjourns, a meeting still waiting to start (usage asleep, safety
+   * postponement) and every queued one are missed. For world death and shutdown, so nothing from a dead world
+   * runs in the next one.
+   */
+  cancelAll(reason: string): void {
+    for (const p of this.#queue.splice(0)) this.#finish(p, { status: 'missed', reason });
+    this.#preStart?.abort(new EndMeeting(reason));
+    this.end(reason);
   }
 
   /** An agent sat down at the table. */
@@ -566,27 +579,53 @@ export class MeetingRunner {
     return null;
   }
 
+  /** Waits before a meeting starts (usage, safety). Returns an outcome when it will not start. Cancellable. */
+  async #beforeStart(request: MeetingRequest): Promise<MeetingOutcome | null> {
+    const pre = new AbortController();
+    this.#preStart = pre;
+    try {
+      // Usage: Asleep postpones until resetsAt.
+      const usage = this.#world.usage();
+      if (usage.state === 'asleep') {
+        const wait = (usage.resetsAt ?? Number.POSITIVE_INFINITY) - this.#clock.now();
+        if (wait > this.#limits.asleepMaxMs) return { status: 'missed', reason: 'the crew is out of usage' };
+        this.#fx.toast?.(`Meeting "${sanitizeTitle(request.title)}" waits until the crew has usage again`);
+        await sleep(this.#clock, wait, pre.signal);
+      }
+      // Safety (scheduled meetings only).
+      if (request.scheduled) {
+        const deadline = this.#clock.now() + this.#limits.safetyMaxMs;
+        let reason = this.#unsafe();
+        if (reason) this.#fx.toast?.(`Meeting "${sanitizeTitle(request.title)}" postponed: ${reason}`);
+        while (reason) {
+          if (this.#clock.now() >= deadline)
+            return { status: 'missed', reason: `postponed too long (${reason})` };
+          await sleep(
+            this.#clock,
+            Math.min(this.#limits.safetyRecheckMs, deadline - this.#clock.now()),
+            pre.signal,
+          );
+          reason = this.#unsafe();
+        }
+      }
+      return null;
+    } catch (e) {
+      if (pre.signal.aborted) {
+        const reason = pre.signal.reason instanceof Error ? pre.signal.reason.message : 'cancelled';
+        return { status: 'missed', reason };
+      }
+      throw e;
+    } finally {
+      if (this.#preStart === pre) this.#preStart = null;
+    }
+  }
+
   async #run(p: Pending): Promise<MeetingOutcome> {
     const request = p.request;
-    // Usage: Asleep postpones until resetsAt.
-    const usage = this.#world.usage();
-    if (usage.state === 'asleep') {
-      const wait = (usage.resetsAt ?? Number.POSITIVE_INFINITY) - this.#clock.now();
-      if (wait > this.#limits.asleepMaxMs) return { status: 'missed', reason: 'the crew is out of usage' };
-      this.#fx.toast?.(`Meeting "${sanitizeTitle(request.title)}" waits until the crew has usage again`);
-      await sleep(this.#clock, wait);
-    }
-    // Safety (scheduled meetings only).
-    if (request.scheduled) {
-      const deadline = this.#clock.now() + this.#limits.safetyMaxMs;
-      let reason = this.#unsafe();
-      if (reason) this.#fx.toast?.(`Meeting "${sanitizeTitle(request.title)}" postponed: ${reason}`);
-      while (reason) {
-        if (this.#clock.now() >= deadline)
-          return { status: 'missed', reason: `postponed too long (${reason})` };
-        await sleep(this.#clock, Math.min(this.#limits.safetyRecheckMs, deadline - this.#clock.now()));
-        reason = this.#unsafe();
-      }
+    // Only yield when there is something to wait for, so an unhindered meeting becomes active synchronously.
+    if (this.#world.usage().state === 'asleep' || (request.scheduled && this.#unsafe())) {
+      const notStarted = await this.#beforeStart(request);
+      if (notStarted) return notStarted;
     }
 
     const m: Active = {

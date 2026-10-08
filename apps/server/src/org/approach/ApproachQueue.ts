@@ -232,9 +232,14 @@ export class ApproachQueue {
     this.#evaluate();
   }
 
-  /** `@ada later`, the Later key: parks the agent's front card. Returns false when it had none. */
+  /**
+   * `@ada later`, the Later key: parks the card the agent is presenting (else its front card). Returns false when
+   * it had none.
+   */
   later(agentId: string): boolean {
-    const front = this.#frontCard(agentId, false);
+    const cur = this.#current;
+    const presented = cur?.agentId === agentId ? this.#cards.get(cur.cardId) : undefined;
+    const front = presented ?? this.#frontCard(agentId, false);
     if (!front) return false;
     this.#park(front);
     this.#evaluate();
@@ -446,19 +451,27 @@ export class ApproachQueue {
           if (d !== null && d <= this.#limits.arrivedBlocks) cur.reachedPlayer = true;
           walkedAway = cur.reachedPlayer && (d === null || d > this.#limits.walkAwayBlocks);
         }
-        if (cur.mode !== 'meeting' && (cur.shownMs >= this.#limits.autoParkMs || afk || walkedAway)) {
+        const next = this.#modeFor(cur.agentId, snap, now);
+        if (next.mode === 'meeting') {
+          // The meeting wins: the card is raised at the table instead, and the presenter slot goes to someone
+          // else. The card stays queued (not parked) and is presented again after the meeting.
+          this.#current = null;
+          if (cur.approachSent) this.#fx.approach?.(cur.agentId, null);
+        } else if (cur.shownMs >= this.#limits.autoParkMs || afk || walkedAway) {
           this.#park(card);
-        } else {
-          const next = this.#modeFor(cur.agentId, snap, now);
-          if (next.mode !== cur.mode || next.reason !== cur.reason) this.#apply(cur, next);
+        } else if (next.mode !== cur.mode || next.reason !== cur.reason) {
+          this.#apply(cur, next);
         }
       }
     }
 
-    // Pick the next presenter.
-    if (!this.#current) {
+    // Pick the next presenter. Nobody starts presenting to an AFK player (each card would be shown and auto-parked
+    // a second later, one after another), and meeting attendees raise their cards at the table instead.
+    const playerAfk = snap ? now - snap.player.lastInputAt >= this.#limits.afkParkMs : false;
+    if (!this.#current && !playerAfk) {
+      const attending = new Set(snap?.meetingAttendees ?? []);
       const candidates = this.#agentsWithCards()
-        .filter((id) => this.#frontCard(id, false) !== null)
+        .filter((id) => !attending.has(id) && this.#frontCard(id, false) !== null)
         .sort((a, b) => this.#rank(a) - this.#rank(b));
       const agentId = candidates[0];
       if (agentId !== undefined) {

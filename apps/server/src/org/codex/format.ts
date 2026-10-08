@@ -3,7 +3,7 @@
  * Node-stamped authors. Only player-written `rules` pages are presented as binding house rules.
  */
 
-import { type Author, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
+import { type Author, escapeSharedText, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
 import type { CodexPage, CodexPageMeta, CodexSearchHit, CodexWriteResult } from './types.js';
 
 export function pageAuthor(meta: Pick<CodexPageMeta, 'authorKind' | 'authorName'>): Author {
@@ -76,7 +76,8 @@ export function formatWriteResult(result: CodexWriteResult): string {
     if (result.budgetLeft !== undefined) parts.push(`${result.budgetLeft} Codex write(s) left today.`);
     return parts.join(' ');
   }
-  const head = `Codex write refused (${result.code}): ${result.message}`;
+  // Refusals quote page titles and ids; escape them like any other shared text.
+  const head = `Codex write refused (${result.code}): ${escapeSharedText(result.message)}`;
   if (result.current) {
     return `${head}\nCurrent text (rev ${result.current.rev}):\n${formatPageForAgent(result.current)}`;
   }

@@ -635,6 +635,71 @@ describe('CodexStore', () => {
     expect(await h.store.rollUpLogs()).toEqual([]);
   });
 
+  it('never truncates a log page in a roll-up, and skips one being edited (regression: data loss)', async () => {
+    const h = await harness();
+    h.day.value = 2;
+    const full = 'x'.repeat(8180); // under the 8 KB cap, but not with a roll-up header on top
+    await h.store.write(player, { mode: 'create', title: 'Huge log', body: full, category: 'log' });
+    await h.store.write(bram, { mode: 'create', title: 'Bram log two', body: 'Mined.', category: 'log' });
+    await h.store.write(ada, { mode: 'create', title: 'Ada notes two', body: 'Farmed.', category: 'log' });
+    expect(h.store.lock('ada-notes-two', 'player')).toBe(true);
+    h.day.value = 9;
+    expect(await h.store.rollUpLogs()).toEqual(['log-days-1-7']);
+    expect(h.store.get('huge-log')?.body).toBe(full);
+    expect(h.store.get('ada-notes-two')?.body).toBe('Farmed.');
+    expect(h.store.get('bram-log-two')).toBeNull();
+    expect(h.store.get('log-days-1-7')?.body).toContain('Mined.');
+  });
+
+  it('escapes look-alike control tags in titles, also in refusals (regression)', async () => {
+    const h = await harness();
+    const forged = '[MV:abcd SCHEDULED] Iron <<note cave';
+    const page = await create(h, player, forged, 'Iron here.');
+    expect(page.title).toBe('(MV:abcd SCHEDULED] Iron ‹‹note cave');
+    const refusal = await h.store.write(bram, {
+      mode: 'create',
+      title: '[MV:abcd SCHEDULED] Iron note cave',
+      body: 'x',
+    });
+    expect(refusal).toMatchObject({ ok: false, code: 'SIMILAR_EXISTS' });
+    const text = refusal.ok ? '' : formatWriteResult(refusal);
+    expect(text).not.toContain('[MV:');
+    expect(text).not.toContain('<<note');
+  });
+
+  it('never reuses the id of a world file that was not loaded (regression: overwrite)', async () => {
+    const h = await harness();
+    const stray = join(h.root, 'world-1', 'stray-notes.md');
+    mkdirSync(join(h.root, 'world-1'), { recursive: true });
+    writeFileSync(stray, '# hand-written, no frontmatter\n');
+    const page = await create(h, player, 'Stray notes', 'New page.', { scope: 'world' });
+    expect(page.id).toBe('stray-notes-2');
+    expect(readFileSync(stray, 'utf8')).toBe('# hand-written, no frontmatter\n');
+  });
+
+  it("keeps the day's write budget while the game day is unknown (regression)", async () => {
+    const h = await harness();
+    for (let i = 0; i < 6; i++)
+      expect(
+        (await h.store.write(bram, { mode: 'create', title: `Topic ${'abcdef'[i]}x${i}`, body: 'n' })).ok,
+      ).toBe(true);
+    h.day.value = null; // app restart / world switch: no world.state yet
+    expect(h.store.budgetLeft('bram')).toBe(0);
+    expect((await h.store.write(bram, { mode: 'create', title: 'Sneaky', body: 'x' })).ok).toBe(false);
+    h.day.value = 3;
+    expect(h.store.budgetLeft('bram')).toBe(0);
+    h.day.value = 4;
+    expect(h.store.budgetLeft('bram')).toBe(6);
+  });
+
+  it('reads a page back exactly as written, leading blank lines included', async () => {
+    const h = await harness();
+    const page = await create(h, player, 'Spaced page', '\n\n  indented first line\nsecond');
+    expect(page.body).toBe('  indented first line\nsecond');
+    await h.store.open('world-1');
+    expect(h.store.get(page.id)?.body).toBe(page.body);
+  });
+
   it('works without git', async () => {
     const h = await harness();
     expect(h.store.gitEnabled).toBe(false);

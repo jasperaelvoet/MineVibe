@@ -313,7 +313,7 @@ export class OrgServices implements OrgApi {
 
   async stop(): Promise<void> {
     this.calendar.stop();
-    this.meetings.end('MineVibe is closing');
+    this.meetings.cancelAll('MineVibe is closing');
     await this.calendar.flush();
     await this.codex.close();
   }
@@ -327,7 +327,8 @@ export class OrgServices implements OrgApi {
   async worldEnded(
     worldId: string,
   ): Promise<{ codexArchived: number; orphanedEvents: string[]; notice: string }> {
-    this.meetings.end('the world ended');
+    // Queued and postponed meetings of the dead world must not run in the next one.
+    this.meetings.cancelAll('the world ended');
     const codexArchived = await this.codex.archiveWorld(worldId);
     const orphanedEvents = await this.calendar.onWorldEnded(worldId);
     const lasting = this.codex.list({ scope: 'lasting' }).length;
@@ -602,8 +603,8 @@ export class OrgServices implements OrgApi {
     return res.ok ? { ok: true, event: res.event } : { ok: false, message: res.message };
   }
 
-  calendarCancelByPlayer(id: string): { ok: boolean; message?: string } {
-    const res = this.calendar.cancel({ kind: 'player', name: this.#playerName }, id);
+  calendarCancelByPlayer(id: string, scope: 'next' | 'all' = 'all'): { ok: boolean; message?: string } {
+    const res = this.calendar.cancel({ kind: 'player', name: this.#playerName }, id, scope);
     return res.ok ? { ok: true } : { ok: false, message: res.message };
   }
 

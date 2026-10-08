@@ -154,7 +154,8 @@ export interface OrgCalendarScreen {
   };
   /** New event (no `id`) or an edit (with `id`), as the player. */
   calendarPut(input: unknown): { ok: boolean; message?: string; event?: CalendarEvent };
-  calendarCancelByPlayer(id: string): { ok: boolean; message?: string };
+  /** `calendar.cancel{scope}`: `next` skips the next occurrence of a recurring event, `all` cancels it. */
+  calendarCancelByPlayer(id: string, scope?: 'next' | 'all'): { ok: boolean; message?: string };
   resolveOrphan(id: string, action: OrphanAction): { ok: boolean; message?: string };
   /** The player's answer to an agent's recurring-event or meeting card. */
   decideCalendarApproval(

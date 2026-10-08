@@ -302,8 +302,52 @@ describe('ApproachQueue', () => {
     h.q.setPingPreference('bram', false);
     expect(h.q.presenter?.mode).toBe('approach');
     h.update({ meetingAttendees: ['bram'] });
-    expect(h.q.presenter?.mode).toBe('meeting');
+    // The meeting wins: Bram stops walking over and gives up the presenter slot; his card stays queued.
+    expect(h.q.presenter).toBeNull();
     expect(h.log.at(-1)).toBe('approach bram null');
+    expect(h.q.state().queued).toEqual([{ agentId: 'bram', cardId: 'q1' }]);
+    h.update({ meetingAttendees: [] });
+    expect(h.q.presenter).toMatchObject({ agentId: 'bram', cardId: 'q1', mode: 'approach' });
+  });
+
+  it('lets a non-attendee present while an attendee waits for the meeting to end (regression)', () => {
+    const h = harness();
+    h.update({ meetingAttendees: ['bram'] });
+    h.q.enqueue(h.card('q1', 'bram', 'question', 60_000)); // older and blocking, but in the meeting
+    h.q.enqueue(h.card('h1', 'cleo', 'hire', 0));
+    expect(h.q.presenter).toMatchObject({ agentId: 'cleo', cardId: 'h1' });
+    h.q.resolve('h1');
+    expect(h.q.presenter).toBeNull();
+    h.update({ meetingAttendees: [] });
+    expect(h.q.presenter).toMatchObject({ agentId: 'bram', cardId: 'q1' });
+  });
+
+  it('"later" parks the card being presented, even when a blocking card arrived meanwhile (regression)', () => {
+    const h = harness();
+    h.update();
+    h.q.enqueue(h.card('h1', 'bram', 'hire', 0));
+    expect(h.q.presenter?.cardId).toBe('h1');
+    h.q.enqueue(h.card('q1', 'bram', 'question', 0)); // now Bram's front card, but h1 is on screen
+    expect(h.q.later('bram')).toBe(true);
+    expect(h.log).toContain('parked bram h1');
+    expect(h.q.presenter).toMatchObject({ agentId: 'bram', cardId: 'q1' });
+  });
+
+  it('does not start presentations to an AFK player (regression: cards churned one per second)', async () => {
+    const h = harness();
+    h.update();
+    h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+    h.q.enqueue(h.card('q2', 'cleo', 'question', 0));
+    h.q.enqueue(h.card('q3', 'ada', 'question', 0));
+    const lastInputAt = h.clock.now();
+    await h.tick(125_000, { player: { lastInputAt } });
+    // Bram's card auto-parked at 2 min of AFK; nobody else was shown or sent walking.
+    expect(h.q.presenter).toBeNull();
+    expect(h.log.filter((l) => l.startsWith('parked'))).toEqual(['parked bram q1']);
+    expect(h.log.filter((l) => /^(approach|ping) (cleo|ada) /.test(l))).toEqual([]);
+    // The player is back: the next card is presented.
+    h.update();
+    expect(h.q.presenter?.agentId).toMatch(/^(cleo|ada)$/);
   });
 
   it("drops an agent's cards when it dies or is dismissed", () => {

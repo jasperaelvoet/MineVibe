@@ -385,7 +385,9 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
       },
     });
     h.org.cardPending({ cardId: 'q1', agentId: 'cleo', kind: 'question', createdAt: h.clock.now() });
-    expect(h.org.approachState().presenter).toMatchObject({ agentId: 'cleo', mode: 'meeting' });
+    // The meeting wins: Cleo does not present (her card is raised at the table) and stays queued.
+    expect(h.org.approachState().presenter).toBeNull();
+    expect(h.org.approachState().queued).toEqual([{ agentId: 'cleo', cardId: 'q1' }]);
     expect(h.approaches).toEqual([]);
     h.org.endMeeting();
   });

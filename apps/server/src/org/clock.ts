@@ -288,7 +288,9 @@ export function parseRealWhen(text: string, nowMs: number, timeZone: string): nu
     const hm = dt[4] ? parseHhMm(dt[4]) : { hour: 0, minute: 0 };
     if (!hm) return null;
     const date = { year: Number(dt[1]), month: Number(dt[2]), day: Number(dt[3]) };
-    if (date.month < 1 || date.month > 12 || date.day < 1 || date.day > 31) return null;
+    if (date.month < 1 || date.month > 12 || date.day < 1) return null;
+    // Reject dates that do not exist ("2026-02-31" would otherwise roll over into March).
+    if (date.day > new Date(Date.UTC(date.year, date.month, 0)).getUTCDate()) return null;
     return zonedToEpoch({ ...date, ...hm }, timeZone);
   }
   const hm = parseHhMm(s);

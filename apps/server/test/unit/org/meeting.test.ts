@@ -603,3 +603,29 @@ describe('MeetingRunner', () => {
     expect(h.runner.chatScope()?.playerInScope).toBe(false);
   });
 });
+
+describe('MeetingRunner: cancelAll (world death, shutdown)', () => {
+  it('misses a meeting waiting for usage and every queued one, so none runs in the next world', async () => {
+    const h = await harness();
+    h.usage.value = { state: 'asleep', resetsAt: h.clock.now() + 3_600_000 };
+    const waiting = h.runner.request(everyone({ title: 'Waiting' }));
+    const queued = h.runner.request(everyone({ title: 'Queued', scheduled: false }));
+    await h.settle();
+    expect(h.fx.toasts).toContain('Meeting "Queued" is queued behind the current one');
+    h.runner.cancelAll('the world ended');
+    expect(await h.runner.outcome(waiting)).toEqual({ status: 'missed', reason: 'the world ended' });
+    expect(await h.runner.outcome(queued)).toEqual({ status: 'missed', reason: 'the world ended' });
+    h.usage.value = { state: 'ok' };
+    await h.clock.advance(3_700_000);
+    expect(h.fx.gather).toEqual([]);
+    expect(h.runner.active).toBeNull();
+  });
+
+  it('adjourns the active meeting', async () => {
+    const h = await harness();
+    const id = h.runner.request(everyone());
+    await h.arriveAll();
+    h.runner.cancelAll('MineVibe is closing');
+    expect(await h.runner.outcome(id)).toMatchObject({ status: 'adjourned', reason: 'MineVibe is closing' });
+  });
+});
