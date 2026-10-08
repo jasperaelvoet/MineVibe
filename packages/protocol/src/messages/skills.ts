@@ -37,6 +37,7 @@ export const SKILL_NAMES = [
   'ride',
   'dismount',
   'emote',
+  'sequence',
 ] as const;
 export const SkillName = z.enum(SKILL_NAMES);
 export type SkillName = z.infer<typeof SkillName>;
@@ -66,12 +67,14 @@ function exactlyOne(keys: readonly string[]) {
     keys.filter((k) => (value as Record<string, unknown>)[k] !== undefined).length === 1;
 }
 
-/**
- * Per-skill `args` of `skill.run`. Node validates `args` with the skill's schema before sending (and T3 builds
- * the `mcp__mc__*` tool input schemas from them); the mod's skill handler reads them into its own records.
- * The wire schema of `skill.run` itself only requires `args` to be an object.
- */
-export const SkillArgs = {
+/** Skills that cannot be a step of a `sequence` (protocol §7.4: no nesting, emotes run beside jobs). */
+export const SEQUENCE_EXCLUDED = ['sequence', 'emote'] as const;
+/** A `sequence` holds 2-8 steps. */
+export const SEQUENCE_MIN_STEPS = 2;
+export const SEQUENCE_MAX_STEPS = 8;
+
+/** The per-skill `args` of every skill but `sequence` (whose steps are validated against these). */
+const BASE_SKILL_ARGS = {
   /** Walk to a block position or an entity (`player`, an agent id, a UUID). Places are resolved by Node. */
   goto: z
     .object({
@@ -88,7 +91,17 @@ export const SkillArgs = {
     near: BlockPos.optional(),
     radius: Radius.optional(),
   }),
-  collect: z.object({ item: ItemId, count: Count, radius: Radius.optional() }),
+  /**
+   * Get `count` more of an item. `near` searches around a spot instead of the body; `make_tools` crafts a missing
+   * tool from the inventory instead of failing `NEEDS_TOOL` (both need the mod cap `collect.gather`).
+   */
+  collect: z.object({
+    item: ItemId,
+    count: Count,
+    radius: Radius.optional(),
+    near: BlockPos.optional(),
+    make_tools: z.boolean().optional(),
+  }),
   hunt: z.object({ entity: EntityRef, count: z.number().int().min(1).max(64), radius: Radius.optional() }),
   dig: z.object({ from: BlockPos, to: BlockPos }),
   place: z.object({ block: ItemId, pos: BlockPos }),
@@ -100,12 +113,24 @@ export const SkillArgs = {
   sleep: z.object({ pos: BlockPos.optional() }),
   pickup: z.object({ item: ItemId.optional(), radius: z.number().int().min(1).max(32).optional() }),
   drop: z.object({ item: ItemId, count: Count.optional() }),
-  give: z.object({ item: ItemId, count: Count, to: EntityRef }),
-  craft: z.object({ item: ItemId, count: Count, table: BlockPos.optional() }),
+  /** Without `count`: everything of the item (mod cap `give.all`). */
+  give: z.object({ item: ItemId, count: Count.optional(), to: EntityRef }),
+  /**
+   * `tree`: resolve the whole recipe tree (intermediates, smelting, a station placed when needed); `gather_missing`:
+   * also gather missing raw materials from nature (mod cap `craft.tree`).
+   */
+  craft: z.object({
+    item: ItemId,
+    count: Count,
+    table: BlockPos.optional(),
+    tree: z.boolean().optional(),
+    gather_missing: z.boolean().optional(),
+  }),
   smelt: z.object({ item: ItemId, count: Count, fuel: ItemId.optional(), furnace: BlockPos.optional() }),
+  /** Without `pos`: the nearest chest or barrel within 24 blocks (mod cap `container.nearest`). */
   container: z
     .object({
-      pos: BlockPos,
+      pos: BlockPos.optional(),
       action: z.enum(['list', 'put', 'take']),
       item: ItemId.optional(),
       count: Count.optional(),
@@ -130,6 +155,50 @@ export const SkillArgs = {
   ride: z.object({ entity: EntityRef }),
   dismount: z.object({}),
   emote: z.object({ kind: z.enum(['wave', 'nod', 'shake_head', 'point', 'cheer', 'facepalm']) }),
+} as const satisfies Record<Exclude<SkillName, 'sequence'>, z.ZodType>;
+
+/** A skill a `sequence` step may run. */
+export const SequenceStepSkill = SkillName.exclude(SEQUENCE_EXCLUDED);
+export type SequenceStepSkill = z.infer<typeof SequenceStepSkill>;
+
+/**
+ * `sequence{steps, stop_on_fail?}` (mod cap `skill.sequence`): 2-8 skills run in order as ONE job (one job id, one
+ * `skill.result`). Every step's `args` is validated against that skill's schema, so a bad step fails the whole
+ * request with `BAD_ARGS: steps.<i>.args...` before anything runs. `stop_on_fail` (default true) fails the sequence
+ * at the first failed step; with false the remaining steps still run.
+ */
+export const SequenceArgs = z
+  .object({
+    steps: z
+      .array(z.object({ skill: SequenceStepSkill, args: JsonObject }))
+      .min(SEQUENCE_MIN_STEPS)
+      .max(SEQUENCE_MAX_STEPS),
+    stop_on_fail: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    value.steps.forEach((step, i) => {
+      const schema: z.ZodType = BASE_SKILL_ARGS[step.skill];
+      const parsed = schema.safeParse(step.args);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['steps', i, 'args', ...issue.path],
+            message: `${step.skill}: ${issue.message}`,
+          });
+        }
+      }
+    });
+  });
+
+/**
+ * Per-skill `args` of `skill.run`. Node validates `args` with the skill's schema before sending (and T3 builds
+ * the `mcp__mc__*` tool input schemas from them); the mod's skill handler reads them into its own records.
+ * The wire schema of `skill.run` itself only requires `args` to be an object.
+ */
+export const SkillArgs = {
+  ...BASE_SKILL_ARGS,
+  sequence: SequenceArgs,
 } as const satisfies Record<SkillName, z.ZodType>;
 
 /** The validated `args` of skill `S`. */
@@ -172,6 +241,13 @@ export const SkillRunResult = z.object({
   /** Skill-specific result (items gathered, position reached, ...) when it ended. */
   result: JsonObject.optional(),
   error: SkillError.optional(),
+  /**
+   * The agent's job that `replace: true` cancelled to start this one (mod cap `run.replaced`): its id, skill and
+   * last progress text. Absent when nothing was running.
+   */
+  replaced: z
+    .object({ jobId: JobId, skill: z.string().min(1).max(32), text: z.string().max(256).optional() })
+    .optional(),
 });
 export type SkillRunResult = z.infer<typeof SkillRunResult>;
 
@@ -210,7 +286,10 @@ export const SkillResult = defineMessage('skill.result', {
 export const ObsQuery = defineMessage('obs.query', {
   agentId: AgentId,
   query: ObsQueryName,
-  /** Query-specific (`find{what, radius}`, `recipe{item}`, `job_status{jobId}`, ...). */
+  /**
+   * Query-specific (`find{what, radius?, limit?}`, `recipe{item, count?, tree?}`, `job_status{jobId}`, ...).
+   * `recipe{tree:true}` (mod cap `obs.recipe.tree`) answers the whole craft plan for `count` items.
+   */
   args: JsonObject,
 }).describe('Runs an observation query for an agent.');
 
