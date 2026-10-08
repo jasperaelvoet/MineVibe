@@ -7,8 +7,8 @@
  * time and wakes the agent with `[JOB DONE]` like the EventRouter would (within the per-run turn cap and the global
  * turn budget), lets the world settle, then evaluates the scenario's checks.
  *
- * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn, the PC session
- * starts seated (no sit/swap turn), WebSearch/WebFetch are denied (the eval PC is offline), question cards are
+ * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn (its first turn
+ * opens with the mode's MODE banner, as in production), the PC session starts seated (no sit/swap turn), WebSearch/WebFetch are denied (the eval PC is offline), question cards are
  * answered by the scenario at once, and every `mc` tool call costs 2 s of game time ("thinking").
  */
 
@@ -27,8 +27,10 @@ import { control, newNonce, singleLine } from '../../src/agents/envelope.js';
 import { createInteractionBroker } from '../../src/agents/InteractionBroker.js';
 import { HandoffNotes } from '../../src/agents/memory.js';
 import { type Card, PendingStore } from '../../src/agents/PendingStore.js';
+import { modeForSeat } from '../../src/agents/modes.js';
 import { PlanCapture } from '../../src/agents/PlanCapture.js';
 import { kickoffMessage, rosterContext } from '../../src/agents/prompts/kickoff.js';
+import { modeBanner } from '../../src/agents/prompts/modes.js';
 import { personaPrompt } from '../../src/agents/prompts/persona.js';
 import type { SeatSnapshot } from '../../src/agents/SeatFSM.js';
 import type {
@@ -453,6 +455,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         handoffs: [],
       });
     }
+    // As in production (AgentBrain), the first turn opens with the mode banner: Minecraft mode for mc, PC mode for pc.
+    text = `${modeBanner(modeForSeat(seat), { nonce, playerName: PLAYER })}\n\n${text}`;
     for (let t = 0; ; t++) {
       if (t >= opts.maxRunTurns) {
         stop = 'turn_cap';
