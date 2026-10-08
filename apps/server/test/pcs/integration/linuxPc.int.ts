@@ -4,9 +4,10 @@
  *
  * Provision runtime → build/pull image → create a PC with a temp Vault + overlay → SERVING → JPEG
  * screenshot → 3 s BGRA stream → input into a terminal → spawn as cua in the mount → read-only mount →
- * capped /tmp + /var/tmp → spacesd refuses a missing/wrong token → recreate keeps the home volume →
- * budget refusals (by resource) → per-PC networks isolate PCs → guest cannot reach host loopback →
- * monitor → cleanup.
+ * capped /tmp + /var/tmp → spacesd refuses a missing/wrong token (Unauthenticated) → recreate keeps the
+ * home volume → budget refusals (by resource) → per-PC networks isolate PCs → guest cannot reach host
+ * loopback → monitor: crash, then start on the same rootfs → restart() keeps the rootfs → a taken port
+ * recreates visibly → a second live engine lease keeps the engine running → cleanup.
  *
  * Everything it creates carries a per-run label `minevibe=pc-test-<run>` and a per-run instance id (the
  * temp state dir), and is deleted at the end. The container system is stopped at the end only when this
@@ -25,6 +26,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +40,7 @@ import {
   devContainerRoots,
   readContainerLock,
 } from '../../../src/pcs/drivers/ContainerRuntime.js';
-import { MANAGED_LABEL } from '../../../src/pcs/drivers/PcDriver.js';
+import { MANAGED_LABEL, tokenFingerprint } from '../../../src/pcs/drivers/PcDriver.js';
 import type { FrameService } from '../../../src/pcs/FrameService.js';
 import type { InputRouter } from '../../../src/pcs/InputRouter.js';
 import { PcError, PcManager } from '../../../src/pcs/PcManager.js';
@@ -144,6 +146,7 @@ beforeAll(async () => {
     lock,
     cacheDir: join(homedir(), 'Library', 'Caches', 'MineVibe-dev', 'vendor'),
     ...(process.env.MINEVIBE_CONTAINER_PKG ? { pkgPath: process.env.MINEVIBE_CONTAINER_PKG } : {}),
+    leaseHolder: `test:pcs ${RUN}`,
   });
   driver = new AppleContainerDriver(runtime);
   let t0 = performance.now();
@@ -204,9 +207,14 @@ afterAll(async () => {
     note('leftover_volumes', leftVols.length);
     note('leftover_networks', leftNets.length);
     await manager?.shutdown({ stopEngine: false });
-    // M1: stop the engine only when this run started it (never one that was already running).
-    if (runtime && engineBefore === 'not_running') note('engine_stopped', await runtime.stopIfOurs());
-    else note('engine_stopped', `left running (was ${engineBefore} before the run)`);
+    // M1/N4: stop the engine only when this run started it (never one that was already running), and
+    // even then only when no other live MineVibe holds a lease on it; always drop our own lease.
+    if (runtime && engineBefore === 'not_running') {
+      note('engine_stopped', await runtime.releaseAndStopIfUnused());
+    } else {
+      await runtime?.leases.release();
+      note('engine_stopped', `left running (was ${engineBefore} before the run)`);
+    }
   } finally {
     if (tmp) rmSync(tmp, { recursive: true, force: true });
     console.log(`[pcs] RESULTS ${JSON.stringify(results)}`);
@@ -249,6 +257,13 @@ describe('Linux PC on Apple container', () => {
       ['/home/cua', '/tmp', '/var/tmp', join(vaultRw, 'node_modules')].sort(),
     );
     note('cpus_seen_by_runtime', { cpus: info?.cpus, cpuOverhead: info?.cpuOverhead });
+    // inspect shows the token in plaintext; the driver keeps only its fingerprint, and it is ours.
+    const token = readFileSync(join(manager.tokensDir, `${ID}.token`), 'utf8').trim();
+    expect(info?.tokenSha256).toBe(tokenFingerprint(token));
+    expect(JSON.stringify(info)).not.toContain(token);
+    // N4: this process holds an engine lease in the app root.
+    const leases = readdirSync(runtime.leases.dir).filter((f) => f.startsWith(`${process.pid}-`));
+    expect(leases).toHaveLength(1);
     pc = await pool.client(ID);
     note('transport', pc.transport());
     const health = await pool.health(ID);
@@ -495,17 +510,22 @@ describe('Linux PC on Apple container', () => {
       const c = await mod.embedded().spacesd(url, token, { signal });
       return (c as unknown as SpacesdClientLike).displays({ signal });
     };
-    const wrong = await attempt('0'.repeat(48)).then(
-      () => 'accepted',
-      (e: unknown) => String(e).slice(0, 160),
-    );
-    const missing = await attempt(undefined).then(
-      () => 'accepted',
-      (e: unknown) => String(e).slice(0, 160),
-    );
+    const outcome = (e: unknown) => ({
+      tag: (e as { tag?: unknown }).tag,
+      message: String(e).slice(0, 160),
+    });
+    const wrong = await attempt('0'.repeat(48)).then(() => 'accepted' as const, outcome);
+    const missing = await attempt(undefined).then(() => 'accepted' as const, outcome);
     note('spacesd_auth', { wrong, missing });
-    expect(wrong).not.toBe('accepted');
-    expect(missing).not.toBe('accepted');
+    // L10: refused as Unauthenticated specifically (not a transport error or a timeout).
+    expect(wrong).toMatchObject({
+      tag: 'Unauthenticated',
+      message: expect.stringMatching(/Unauthenticated/),
+    });
+    expect(missing).toMatchObject({
+      tag: 'Unauthenticated',
+      message: expect.stringMatching(/Unauthenticated/),
+    });
     // Positive control: the real token works.
     expect(JSON.parse(await pc.displays()).length).toBeGreaterThan(0);
   });
@@ -609,17 +629,93 @@ describe('Linux PC on Apple container', () => {
     }
   });
 
-  it('the monitor sees a healthy PC and a crash (H4)', async () => {
+  /** A file on the container's own root filesystem (no volume): it survives only on the same container. */
+  const ROOTFS_MARKER = '/var/lib/mv-rootfs-marker';
+  let rootfsMarker = '';
+  const readRootfsMarker = async () =>
+    (await asCua(ID, `cat ${ROOTFS_MARKER} 2>/dev/null || echo missing`)).stdout;
+
+  it('the monitor sees a healthy PC and a crash; a start comes back on the same rootfs (H4)', async () => {
+    rootfsMarker = `rootfs-${Date.now()}`;
+    const w = await asCua(ID, `echo ${rootfsMarker} | sudo -n tee ${ROOTFS_MARKER} >/dev/null && echo ok`);
+    expect(w.stdout).toBe('ok');
     await manager.monitorOnce();
-    expect(manager.status(ID).status).toBe('running');
+    expect(manager.status(ID)).toEqual({ status: 'running' });
+    const port = manager.get(ID)?.hostPort;
     // Kill the container behind the manager's back: the next pass marks it crashed.
     await driver.stop(NAME, 2);
     await manager.monitorOnce();
     expect(manager.status(ID)).toMatchObject({ status: 'error', reason: 'crashed' });
-    // A start brings it back on the same container (rootfs kept).
+    // A start brings it back on the same container: rootfs and port kept, nothing recreated.
     const t0 = performance.now();
     await manager.start(ID);
     note('restart_after_crash_ms', ms(t0));
-    expect(manager.status(ID).status).toBe('running');
+    expect(manager.status(ID)).toEqual({ status: 'running' });
+    expect(manager.get(ID)?.hostPort).toBe(port);
+    pc = await pool.client(ID);
+    expect(await readRootfsMarker()).toBe(rootfsMarker);
+    await manager.monitorOnce();
+    expect(manager.status(ID)).toEqual({ status: 'running' });
+  });
+
+  it('restart() (stop, then start at once) reuses the container: rootfs and port survive', async () => {
+    const port = manager.get(ID)?.hostPort;
+    const t0 = performance.now();
+    await manager.restart(ID);
+    note('restart_ms', ms(t0));
+    // A port the engine had not released yet must not count as a conflict (that would recreate).
+    expect(manager.status(ID)).toEqual({ status: 'running' });
+    expect(manager.get(ID)?.hostPort).toBe(port);
+    pc = await pool.client(ID);
+    expect(await readRootfsMarker()).toBe(rootfsMarker);
+    expect((await asCua(ID, 'cat /home/cua/mv-persist.txt')).stdout).toMatch(/^persist-/);
+  });
+
+  it('a loopback port taken by another program recreates the container visibly (home kept)', async () => {
+    await manager.stop(ID);
+    const port = manager.get(ID)?.hostPort as number;
+    const squatter = createTcpServer();
+    await new Promise<void>((r, j) => {
+      squatter.once('error', j);
+      squatter.listen({ host: '127.0.0.1', port, exclusive: true }, () => r());
+    });
+    try {
+      const t0 = performance.now();
+      await manager.start(ID);
+      note('port_conflict_recreate_ms', ms(t0));
+    } finally {
+      await new Promise<void>((r) => squatter.close(() => r()));
+    }
+    const st = manager.status(ID);
+    note('port_conflict_status', st);
+    expect(st).toMatchObject({
+      status: 'running',
+      reason: 'port_conflict',
+      detail: expect.stringMatching(new RegExp(`port ${port} is in use.*recreated on a new port`)),
+    });
+    expect(manager.get(ID)?.hostPort).not.toBe(port);
+    pc = await pool.client(ID);
+    // The home volume survives a recreate; the rootfs does not (which is why it is surfaced).
+    expect((await asCua(ID, 'cat /home/cua/mv-persist.txt')).stdout).toMatch(/^persist-/);
+    expect(await readRootfsMarker()).toBe('missing');
+  });
+
+  it('a second live engine lease keeps the engine running when this process lets go (N4)', async () => {
+    const other = join(runtime.leases.dir, `${process.ppid}-it.json`);
+    const started = await runtime.leases.processStart(process.ppid);
+    writeFileSync(
+      other,
+      JSON.stringify({ pid: process.ppid, started, holder: 'test:pcs other', at: Date.now() }),
+    );
+    try {
+      expect(await driver.shutdownEngine()).toBe(false);
+      const st = await runtime.status();
+      expect(st.ownership).toBe('ours');
+      expect(st.state).toBe('running');
+      expect((await pool.health(ID)).serving).toBe(true);
+    } finally {
+      rmSync(other, { force: true });
+      await runtime.leases.acquire();
+    }
   });
 });

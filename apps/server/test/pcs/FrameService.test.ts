@@ -7,7 +7,9 @@ import {
   DEFAULT_RATES,
   type FrameClient,
   FrameService,
+  MAX_EARLY_ACKS,
   type MediaFrameLike,
+  type MediaSessionMin,
   visibleRate,
 } from '../../src/pcs/FrameService.js';
 
@@ -479,5 +481,113 @@ describe('M4: focus retries and backoff', () => {
     expect(signals[0]).toBeInstanceOf(AbortSignal);
     expect(svc.stats('p')?.errors).toBeGreaterThan(0);
     await svc.close();
+  });
+});
+
+describe('N5/N6: bounded close, no leaked or zombie media sessions', () => {
+  type Sink = { onFrame(f: MediaFrameLike): void; onEvent(e: { kind: string; json: string }): void };
+  function pending(callTimeoutMs: number, closeImpl: () => Promise<void> = async () => {}) {
+    const clock = new FakeClock();
+    const sent: Uint8Array[] = [];
+    const controls: string[] = [];
+    let closed = 0;
+    let sink: Sink | null = null;
+    let resolveOpen: (s: MediaSessionMin) => void = () => {};
+    const session: MediaSessionMin = {
+      close: () => {
+        closed++;
+        return closeImpl();
+      },
+      codec: () => 'bgra',
+      sessionId: () => 'late-1',
+      sendControl: (j) => controls.push(j),
+    };
+    const svc = new FrameService({
+      sink: {
+        sendFrame: (f) => {
+          sent.push(f);
+          return true;
+        },
+      },
+      getClient: async () => ({
+        screenshot: async () => ({ image: jpeg(1), width: 4, height: 2 }),
+        openMedia: (_o, s) => {
+          sink = s;
+          return new Promise<MediaSessionMin>((r) => {
+            resolveOpen = r;
+          });
+        },
+        cursorPosition: async () => ({ x: 0, y: 0 }),
+      }),
+      slotOf: () => 1,
+      jpegFormat: JPEG,
+      clock,
+      callTimeoutMs,
+      closeTimeoutMs: 50,
+    });
+    const frame = (seq: number): MediaFrameLike => ({
+      sequence: BigInt(seq),
+      codec: 'bgra',
+      width: 1,
+      height: 1,
+      data: new Uint8Array(4).buffer,
+    });
+    return {
+      clock,
+      svc,
+      sent,
+      controls,
+      session,
+      frame,
+      get closed() {
+        return closed;
+      },
+      get sink() {
+        return sink as Sink | null;
+      },
+      open: () => resolveOpen(session),
+    };
+  }
+  const bgra = (sent: Uint8Array[]) => sent.filter((f) => decodeFrame(f).header.codec === FrameCodec.BGRA8);
+
+  it('a session that opens after its deadline is closed, and its frames and acks are ignored', async () => {
+    const t = pending(10); // openMedia deadline: 20 ms
+    t.svc.setTier('p', { mode: 'focus' });
+    await t.clock.advance(1);
+    await new Promise((r) => setTimeout(r, 60));
+    await t.clock.advance(1);
+    for (let i = 0; i < 50; i++) t.sink?.onFrame(t.frame(i));
+    t.open();
+    await flush();
+    expect(t.closed).toBe(1);
+    expect(t.svc.stats('p')?.lateMediaClosed).toBe(1);
+    expect(t.controls).toEqual([]);
+    expect(bgra(t.sent)).toHaveLength(0);
+    await t.svc.close();
+  });
+
+  it('acks that arrive before openMedia resolves are capped to the newest few', async () => {
+    const t = pending(1000);
+    t.svc.setTier('p', { mode: 'focus' });
+    await t.clock.advance(1);
+    for (let i = 0; i < 40; i++) t.sink?.onFrame(t.frame(i));
+    t.open();
+    await flush();
+    const acks = t.controls.map((c) => (JSON.parse(c) as { payload: { sequence: number } }).payload.sequence);
+    expect(acks).toHaveLength(MAX_EARLY_ACKS);
+    expect(acks.at(-1)).toBe(39);
+    await t.svc.close();
+  });
+
+  it('close() waits a bounded time for a media session that never closes', async () => {
+    const t = pending(1000, () => new Promise(() => {}));
+    t.svc.setTier('p', { mode: 'focus' });
+    await t.clock.advance(1);
+    t.open();
+    await flush();
+    const t0 = Date.now();
+    await t.svc.close();
+    expect(t.closed).toBe(1);
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 });

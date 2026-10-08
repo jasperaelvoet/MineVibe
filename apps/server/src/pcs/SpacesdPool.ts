@@ -14,8 +14,18 @@ import { withDeadline } from './deadline.js';
  *   spacesd reports NOT_SERVING (S5).
  * - A transport failure drops the client; the next call reconnects.
  * - Every connect and call has a deadline (H3): the promise rejects at the deadline even when the native
- *   call ignores its AbortSignal, so a hung guest never blocks a caller.
+ *   call ignores its AbortSignal, so a hung guest never blocks a caller. A connect that completes after
+ *   its deadline is released at once (N6): nobody holds that client.
  */
+
+/** Frees a native client nobody will use (best effort; the `Like` interface has no close). */
+export function releaseClient(c: unknown): void {
+  try {
+    (c as { uniffiDestroy?: () => void } | null)?.uniffiDestroy?.();
+  } catch {
+    // already gone
+  }
+}
 
 /** The parts of the `@trycua/cua` module MineVibe uses. */
 export interface CuaModule {
@@ -134,6 +144,7 @@ export class SpacesdPool {
   readonly #healthTimeoutMs: number;
   readonly #callTimeoutMs: number;
   #module: CuaModule | null = null;
+  #lateConnects = 0;
 
   constructor(options: SpacesdPoolOptions) {
     this.#loader = options.loader ?? (() => loadCua(options.cachesDir));
@@ -141,6 +152,11 @@ export class SpacesdPool {
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
     this.#healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
     this.#callTimeoutMs = options.callTimeoutMs ?? 10_000;
+  }
+
+  /** Connects that completed after their deadline and were released (N6). */
+  get lateConnects(): number {
+    return this.#lateConnects;
   }
 
   /** Loads the cua module (idempotent) and returns it. */
@@ -197,8 +213,16 @@ export class SpacesdPool {
 
   async #connect(endpoint: PcEndpoint): Promise<SpacesdClientLike> {
     const mod = await this.module();
-    return withDeadline(this.#connectTimeoutMs, 'spacesd connect', (signal) =>
-      mod.embedded().spacesd(endpoint.url, endpoint.token, { signal }),
+    return withDeadline(
+      this.#connectTimeoutMs,
+      'spacesd connect',
+      (signal) => mod.embedded().spacesd(endpoint.url, endpoint.token, { signal }),
+      {
+        onLate: (c) => {
+          this.#lateConnects++;
+          releaseClient(c);
+        },
+      },
     );
   }
 

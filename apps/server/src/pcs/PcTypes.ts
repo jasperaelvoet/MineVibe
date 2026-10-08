@@ -150,6 +150,15 @@ export function containerName(pcId: string, instance: string): string {
   return scope(instance, pcId);
 }
 
+/**
+ * The container name used before instance scoping (`mv-pc-<id>`, label `minevibe=pc` but no
+ * `minevibe.instance`). Reconcile looks for these so a leftover from an older build is not left running
+ * unseen (M1).
+ */
+export function legacyContainerName(pcId: string): string {
+  return `mv-pc-${assertPcId(pcId)}`;
+}
+
 /** The home volume of a PC. */
 export function homeVolumeName(pcId: string, instance: string): string {
   return `${scope(instance, pcId)}-home`;
@@ -216,10 +225,26 @@ export function clampResources(type: PcType, r: Partial<PcResources>): PcResourc
   };
 }
 
-/** Why disk caps are unusable (L4), or null. Linux PCs need every volume cap ≥ 1 GiB. */
+/** The disk cap keys a PC record knows. */
+export const DISK_CAP_KEYS: readonly (keyof PcDiskCaps)[] = [
+  'homeGiB',
+  'overlayGiB',
+  'tmpGiB',
+  'varTmpGiB',
+  'rootfsGiB',
+];
+
+const isDiskCapKey = (k: string): k is keyof PcDiskCaps => (DISK_CAP_KEYS as readonly string[]).includes(k);
+
+/**
+ * Why disk caps are unusable (L4), or null. Unknown `disk.*` keys are refused (a typo would otherwise be
+ * stored and silently ignored), and Linux PCs need every volume cap ≥ 1 GiB.
+ */
 export function diskCapsProblem(type: PcType, d: Partial<PcDiskCaps>): string | null {
+  if (typeof d !== 'object' || d === null || Array.isArray(d)) return 'disk must be an object';
   const linux = PC_TYPE_SPECS[type].family === 'linux';
   for (const [k, v] of Object.entries(d)) {
+    if (!isDiskCapKey(k)) return `unknown disk cap disk.${k}`;
     if (v === undefined) continue;
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 4096) {
       return `disk.${k} must be a number of GiB between 0 and 4096`;
@@ -227,6 +252,17 @@ export function diskCapsProblem(type: PcType, d: Partial<PcDiskCaps>): string | 
     if (linux && k !== 'rootfsGiB' && v < 1) return `disk.${k} must be at least 1 GiB`;
   }
   return null;
+}
+
+/** Disk caps read from `pcs.json`: the type's defaults overridden by every known, valid stored value. */
+export function sanitizeDiskCaps(type: PcType, stored: unknown): PcDiskCaps {
+  const caps: PcDiskCaps = { ...PC_TYPE_SPECS[type].disk };
+  if (typeof stored !== 'object' || stored === null) return caps;
+  for (const [k, v] of Object.entries(stored)) {
+    if (!isDiskCapKey(k) || diskCapsProblem(type, { [k]: v })) continue;
+    caps[k] = v as number;
+  }
+  return caps;
 }
 
 /**

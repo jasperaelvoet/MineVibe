@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DeadlineError, withDeadline } from '../../src/pcs/deadline.js';
+import { DeadlineError, settleWithin, withDeadline } from '../../src/pcs/deadline.js';
 import { type CuaModule, isTransportError, SpacesdPool } from '../../src/pcs/SpacesdPool.js';
 
 function pool(client: Record<string, unknown>, opts: { connectHangs?: boolean } = {}) {
@@ -58,5 +58,56 @@ describe('H3: spacesd deadlines', () => {
       displays: async (o: { signal: AbortSignal }) => (o.signal instanceof AbortSignal ? 'ok' : 'no'),
     });
     await expect(p.call('pc', (c, signal) => c.displays({ signal }))).resolves.toBe('ok');
+  });
+});
+
+describe('N5/N6: late results are released, waits are bounded', () => {
+  it('withDeadline hands a value that arrives after the deadline to onLate (and only then)', async () => {
+    const late: number[] = [];
+    let resolve: (n: number) => void = () => {};
+    await expect(
+      withDeadline(
+        20,
+        'slow',
+        () =>
+          new Promise<number>((r) => {
+            resolve = r;
+          }),
+        { onLate: (v) => late.push(v) },
+      ),
+    ).rejects.toBeInstanceOf(DeadlineError);
+    resolve(7);
+    await new Promise((r) => setImmediate(r));
+    expect(late).toEqual([7]);
+    await withDeadline(1000, 'fast', async () => 1, { onLate: (v) => late.push(v) });
+    expect(late).toEqual([7]);
+  });
+
+  it('a spacesd connect that completes after its deadline is released, not leaked', async () => {
+    let destroyed = 0;
+    let resolve: (c: unknown) => void = () => {};
+    const mod: CuaModule = {
+      embedded: () => ({
+        spacesd: () =>
+          new Promise((r) => {
+            resolve = r as (c: unknown) => void;
+          }),
+      }),
+      ImageFormat: { Png: 0, Jpeg: 1, Webp: 2 },
+    };
+    const p = new SpacesdPool({ cachesDir: '/nonexistent', loader: async () => mod, connectTimeoutMs: 20 });
+    p.register('pc', { url: 'http://127.0.0.1:1', token: 't'.repeat(48) });
+    await expect(p.client('pc')).rejects.toThrow(/spacesd connect timed out/);
+    resolve({ uniffiDestroy: () => destroyed++ });
+    await new Promise((r) => setImmediate(r));
+    expect(destroyed).toBe(1);
+    expect(p.lateConnects).toBe(1);
+  });
+
+  it('settleWithin never waits past its bound and never rejects', async () => {
+    const t0 = Date.now();
+    expect(await settleWithin(new Promise(() => {}), 30)).toBe('timeout');
+    expect(await settleWithin(Promise.reject(new Error('x')), 1000)).toBe('settled');
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 });

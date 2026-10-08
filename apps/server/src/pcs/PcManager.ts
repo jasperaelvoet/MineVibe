@@ -17,6 +17,7 @@ import {
   type PcAllocation,
   planBoot,
 } from './Budget.js';
+import { settleWithin } from './deadline.js';
 import { EngineError, realpathLoose } from './drivers/ContainerRuntime.js';
 import {
   hasLabels,
@@ -28,6 +29,7 @@ import {
   type PcRunSpec,
   portProblems,
   specProblems,
+  tokenFingerprint,
   type VolumeInfo,
   type VolumeMount,
 } from './drivers/PcDriver.js';
@@ -42,6 +44,7 @@ import {
   homeVolumeName,
   isAllowedImage,
   isPcType,
+  legacyContainerName,
   networkName,
   PC_ID_RE,
   PC_TYPE_SPECS,
@@ -49,6 +52,7 @@ import {
   type PcStatus,
   type PcType,
   resourceProblem,
+  sanitizeDiskCaps,
   tmpVolumeName,
 } from './PcTypes.js';
 import type { SpacesdPool } from './SpacesdPool.js';
@@ -78,6 +82,10 @@ import {
  *   only on a recognized port conflict (M2).
  * - A failed boot stops the container, and the budget counts every container that actually runs, whatever
  *   the PC's status says (H4).
+ * - Admission is atomic (N3): one admission at a time, and an admitted start, boot or edit holds a
+ *   reservation until it ends, so concurrent operations never overrun the budget between their awaits.
+ * - The monitor acts only on what a fresh `inspect` under the PC's lock shows, never on a list taken
+ *   before a concurrent start finished (N1). An unresponsive spacesd degrades a PC, never stops it (N2).
  */
 
 export interface PcRecord {
@@ -112,7 +120,10 @@ interface PcsFile {
 export type PcStatusReason =
   | 'low_disk'
   | 'crashed'
+  /** On a `running` PC: spacesd fails its health checks (degraded; the PC is not stopped for it, N2). */
   | 'unresponsive'
+  /** On a `running` PC: its loopback port was taken, so the container was recreated on a new one. */
+  | 'port_conflict'
   | 'boot_failed'
   | 'stop_failed'
   | 'vault_refused'
@@ -180,8 +191,17 @@ export interface PcManagerOptions {
   diskWatch?: { warnBelowGiB?: number; stopBelowGiB?: number };
   /** Monitor period for {@link PcManager.startMonitor} (default 10 s). */
   monitorIntervalMs?: number;
-  /** Consecutive failed spacesd health probes before a running PC is `error`/`unresponsive` (default 3). */
+  /**
+   * Consecutive failed spacesd health probes before a running PC is marked `unresponsive` (default 3).
+   * It stays `running` (degraded) and is probed less and less often; it is never stopped for it (N2).
+   */
   unresponsiveAfter?: number;
+  /**
+   * Probing the stored loopback port before reusing a container: it counts as taken only when every one
+   * of `attempts` probes `intervalMs` apart finds it taken (default 6 × 250 ms), so a port the engine
+   * releases a moment after a stop never makes us recreate (and reset the rootfs).
+   */
+  portProbe?: { attempts?: number; intervalMs?: number };
   now?: () => number;
 }
 
@@ -204,8 +224,15 @@ export class PcError extends Error {
   }
 }
 
-/** Statuses during which a PC holds CPU and RAM. */
-const ACTIVE: ReadonlySet<PcStatus> = new Set(['booting', 'running', 'stopping', 'remounting', 'reimaging']);
+/** Statuses during which a PC holds (or is about to hold) CPU and RAM. */
+const ACTIVE: ReadonlySet<PcStatus> = new Set([
+  'downloading',
+  'booting',
+  'running',
+  'stopping',
+  'remounting',
+  'reimaging',
+]);
 
 /** Errors from `container start` that mean "the loopback port is taken" (the one case that recreates). */
 export function isPortConflictError(err: unknown): boolean {
@@ -259,7 +286,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   #monitorTimer: NodeJS.Timeout | null = null;
   #monitoring = false;
   readonly #healthFails = new Map<string, number>();
+  /** Monitor pass before which a degraded PC is not probed again (N2 backoff). */
+  readonly #healthNext = new Map<string, number>();
+  #pass = 0;
   #diskLevel: DiskLevel = 'ok';
+  /** Bumped on every status change of a PC; work started under an older epoch is stale (N1). */
+  readonly #epochs = new Map<string, number>();
+  /** Admitted activations still in progress, by PC (refcounted, N3). */
+  readonly #reservations = new Map<string, number>();
+  /** Tail of the global admission queue (N3). */
+  #admissionTail: Promise<void> = Promise.resolve();
+  /** A note shown with the next `running` status (why the container was recreated). */
+  readonly #notes = new Map<string, { reason: PcStatusReason; detail: string }>();
 
   constructor(options: PcManagerOptions) {
     super();
@@ -319,7 +357,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const raw = JSON.parse(await readFile(this.pcsFile, 'utf8')) as Partial<PcsFile>;
       const pcs = (raw.pcs ?? [])
         .filter((p) => isPcType(p.type) && typeof p.id === 'string' && PC_ID_RE.test(p.id))
-        .map((p) => ({ ...p, disk: { ...PC_TYPE_SPECS[p.type].disk, ...p.disk } }));
+        .map((p) => ({ ...p, disk: sanitizeDiskCaps(p.type, p.disk) }));
       const maxSlot = pcs.reduce((n, p) => Math.max(n, p.slot ?? 0), 0);
       this.#file = { version: 1, nextSlot: Math.max(raw.nextSlot ?? 1, maxSlot + 1), pcs };
     }
@@ -375,11 +413,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   async #addRecord(rec: PcRecord): Promise<PcRecord> {
+    this.#pushRecord(rec);
+    await this.#save();
+    return rec;
+  }
+
+  /** Adds a record in memory (synchronous: runs inside the admission critical section). */
+  #pushRecord(rec: PcRecord): void {
     rec.slot = this.#file.nextSlot++;
     this.#file.pcs.push(rec);
     this.#status.set(rec.id, { status: 'off' });
-    await this.#save();
-    return rec;
   }
 
   list(): PcRecord[] {
@@ -444,12 +487,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     )
       return;
     this.#status.set(id, info);
+    if (prev?.status !== info.status) this.#epochs.set(id, this.#epochOf(id) + 1);
     if (info.status === 'running' && prev?.status !== 'running') {
       this.#healthFails.delete(id);
+      this.#healthNext.delete(id);
       this.#frames?.wake(id);
     }
     this.emit('pc.status', id, info);
     this.emit('pc.state', this.views());
+  }
+
+  #epochOf(id: string): number {
+    return this.#epochs.get(id) ?? 0;
   }
 
   #setError(id: string, err: unknown, reason: PcStatusReason): void {
@@ -526,6 +575,17 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return st === 'running' || st === 'stopping';
   }
 
+  /** Records what a fresh inspect of one PC's container showed. */
+  #noteLive(id: string, info: PcContainerInfo | null): void {
+    if (info) this.#live.set(id, info);
+    else this.#live.delete(id);
+  }
+
+  /** Active status, or an admitted operation in progress (N3). */
+  #isActive(id: string): boolean {
+    return ACTIVE.has(this.status(id).status) || this.#reservations.has(id);
+  }
+
   /** Every volume name a record expects (home, tmp, var/tmp, every configured overlay). */
   #expectedVolumes(p: PcRecord): Set<string> {
     const names = new Set([
@@ -595,7 +655,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       cpus: p.cpus,
       memMiB: p.memMiB,
       cpuOverhead: family === 'linux' ? this.driver.cpuOverhead : 0,
-      active: active ?? (ACTIVE.has(this.status(p.id).status) || this.#liveActive(p.id)),
+      active: active ?? (this.#isActive(p.id) || this.#liveActive(p.id)),
       diskGiB: this.#diskGiB(p),
     };
   }
@@ -626,12 +686,52 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return state;
   }
 
-  async #admitOrThrow(kind: 'create' | 'start' | 'edit', p: PcRecord, active: boolean): Promise<string[]> {
-    const inv = await this.#inventory();
-    const host = await this.#hostFactsWith(inv);
-    const res = admit(host, this.#settings(), this.#allocations(inv), { kind, pc: this.#alloc(p, active) });
-    if (!res.ok) throw new PcError(res.reason, res.detail, res.resource);
-    return res.warnings;
+  /** Runs `fn` alone in the global admission queue (N3). */
+  #withAdmission<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#admissionTail.then(fn);
+    this.#admissionTail = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
+  /** Counts a PC as active until the returned release runs (idempotent). */
+  #reserve(id: string): () => void {
+    this.#reservations.set(id, (this.#reservations.get(id) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const n = (this.#reservations.get(id) ?? 1) - 1;
+      if (n > 0) this.#reservations.set(id, n);
+      else this.#reservations.delete(id);
+    };
+  }
+
+  /**
+   * Admission (N3): the check and the reservation are one critical section of the global admission
+   * queue, so two starts (or a start and an edit, or `bootAll`) can never both be admitted against the
+   * same free RAM. An activation (`active`) holds a reservation until `release()`: it counts while the PC
+   * downloads, boots or sits between awaits, whatever its status says. `apply` runs inside the critical
+   * section right after a successful check (the record change of an edit or a create).
+   */
+  async #admit(
+    kind: 'create' | 'start' | 'edit',
+    p: PcRecord,
+    opts: { active: boolean; apply?: () => void },
+  ): Promise<{ warnings: string[]; release: () => void }> {
+    return this.#withAdmission(async () => {
+      const inv = await this.#inventory();
+      const host = await this.#hostFactsWith(inv);
+      const res = admit(host, this.#settings(), this.#allocations(inv), {
+        kind,
+        pc: this.#alloc(p, opts.active),
+      });
+      if (!res.ok) throw new PcError(res.reason, res.detail, res.resource);
+      opts.apply?.();
+      return { warnings: res.warnings, release: opts.active ? this.#reserve(p.id) : () => {} };
+    });
   }
 
   /** Volumes of this instance no PC expects; `remove` deletes them (they hold only build output). */
@@ -855,12 +955,49 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   // ------------------------------------------------------------------ reconcile + boot
 
   /**
+   * Why an existing container cannot serve as this PC's (M10, L1 strict), or [] when it can: image,
+   * resources, mounts, volumes, labels, network, a 127.0.0.1-only port, and the token it was created with
+   * (when the engine shows it) must all match.
+   */
+  async #containerProblems(p: PcRecord, c: PcContainerInfo, token: string | null): Promise<string[]> {
+    if (!token) return ['no token for it'];
+    const want = await this.#buildSpec(p, c.hostPort ?? 0);
+    const problems = specProblems(want, c);
+    if (c.tokenSha256 !== undefined && c.tokenSha256 !== tokenFingerprint(token)) {
+      problems.push("it was created with another token than this PC's");
+    }
+    return problems;
+  }
+
+  /**
+   * Adopts a running container of this PC (under its lock): the Vault is re-checked and the container
+   * must match the record; then its endpoint is registered and the PC is `booting` until SERVING. Returns
+   * the problems that prevented adoption ([] = adopted).
+   */
+  async #tryAdoptLocked(rec: PcRecord, c: PcContainerInfo): Promise<string[]> {
+    const token = await this.#readToken(rec.id);
+    await this.#recheckVault(rec);
+    const problems = await this.#containerProblems(rec, c, token);
+    if (problems.length) return problems;
+    rec.hostPort = c.hostPort as number;
+    this.pool.register(rec.id, { url: `http://127.0.0.1:${c.hostPort}`, token: token as string });
+    this.#setStatus(rec.id, { status: 'booting', progress: 50 });
+    return [];
+  }
+
+  /**
    * Matches this instance's containers to records (PLAN §8.1). A running one is adopted only when it
    * matches the record (M10) and publishes on loopback (L1): it registers its endpoint and waits for
    * SERVING in `bootAll`. A mismatched one is stopped (the next start recreates it). Containers without a
-   * record are orphans: stopped (never deleted) and returned.
+   * record are orphans: stopped (never deleted) and returned. Containers from before instance scoping
+   * (`mv-pc-<id>`) are reported, and stopped only when provably this instance's (see {@link #reconcileLegacy}).
    */
-  async reconcile(): Promise<{ adopted: string[]; orphans: string[]; mismatched: string[] }> {
+  async reconcile(): Promise<{
+    adopted: string[];
+    orphans: string[];
+    mismatched: string[];
+    legacy: { stopped: string[]; left: string[] };
+  }> {
     const containers = await this.driver.list(this.labels);
     const adopted: string[] = [];
     const orphans: string[] = [];
@@ -877,60 +1014,163 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         this.#setStatus(rec.id, { status: 'off' });
         continue;
       }
-      try {
-        const token = await this.#readToken(rec.id);
-        await this.#recheckVault(rec);
-        const want = await this.#buildSpec(rec, c.hostPort ?? 0);
-        const problems = token ? specProblems(want, c) : ['no token for it'];
-        if (problems.length) {
+      await this.#serialize(rec.id, async () => {
+        try {
+          const problems = await this.#tryAdoptLocked(rec, c);
+          if (problems.length === 0) {
+            adopted.push(rec.id);
+            return;
+          }
           mismatched.push(rec.id);
           this.#log?.warn({ pcId: rec.id, problems }, 'running container does not match its PC; stopping it');
           await this.driver.stop(c.name).catch(() => {});
           this.#setStatus(rec.id, { status: 'off' });
-          continue;
+        } catch (err) {
+          await this.driver.stop(c.name).catch(() => {});
+          this.#setError(rec.id, err, 'boot_failed');
         }
-        rec.hostPort = c.hostPort as number;
-        this.pool.register(rec.id, { url: `http://127.0.0.1:${c.hostPort}`, token: token as string });
-        adopted.push(rec.id);
-        this.#setStatus(rec.id, { status: 'booting', progress: 50 });
+      });
+    }
+    const legacy = await this.#reconcileLegacy();
+    await this.#save();
+    await this.#inventory();
+    if (orphans.length) this.#log?.warn({ orphans }, 'stopped orphaned PC containers (not deleted)');
+    return { adopted, orphans, mismatched, legacy };
+  }
+
+  /**
+   * M1/N4: containers from before instance scoping are named `mv-pc-<id>` and carry `minevibe=<label>`
+   * but no `minevibe.instance`, so the labelled reconcile never sees them and one left running would hold
+   * RAM unseen. Several instances may share the engine, so one is stopped (never deleted) only when it is
+   * provably ours: a record with that id, the legacy name, the PC label, and the token we hold for that PC
+   * (its fingerprint, as `inspect` shows it). Every other one is left alone and reported.
+   */
+  async #reconcileLegacy(): Promise<{ stopped: string[]; left: string[] }> {
+    const stopped: string[] = [];
+    const left: string[] = [];
+    let cs: PcContainerInfo[];
+    try {
+      cs = await this.driver.list({ [MANAGED_LABEL]: this.#label });
+    } catch (err) {
+      this.#log?.debug({ err: errText(err) }, 'legacy container scan failed');
+      return { stopped, left };
+    }
+    for (const c of cs) {
+      if (c.labels[PC_INSTANCE_LABEL] !== undefined || !c.name.startsWith('mv-pc-')) continue;
+      const id = c.labels[PC_ID_LABEL];
+      const rec = id && PC_ID_RE.test(id) ? this.#file.pcs.find((p) => p.id === id) : undefined;
+      let ours = false;
+      if (rec && c.name === legacyContainerName(rec.id) && c.tokenSha256) {
+        const token = await this.#readToken(rec.id);
+        ours = !!token && tokenFingerprint(token) === c.tokenSha256;
+      }
+      if (ours && (c.state === 'running' || c.state === 'stopping')) {
+        try {
+          await this.driver.stop(c.name);
+          stopped.push(c.name);
+          continue;
+        } catch (err) {
+          this.#log?.warn({ name: c.name, err: errText(err) }, 'could not stop a legacy PC container');
+        }
+      }
+      left.push(c.name);
+    }
+    if (stopped.length)
+      this.#log?.warn({ stopped }, 'stopped legacy PC containers of this instance (not deleted)');
+    if (left.length) {
+      this.#log?.warn(
+        { legacy: left },
+        "legacy PC containers (no instance label) left alone: not provably this instance's; delete them with `container delete` when unused",
+      );
+    }
+    return { stopped, left };
+  }
+
+  /**
+   * N7: a PC whose container runs although its status is not active (a failed stop, a create the Node
+   * timeout killed, a status reset): adopt it when it is plugged, bootable and matches its record, else
+   * stop it. Runs under the PC's lock, so the decision is deterministic before `bootAll` plans.
+   */
+  async #reconcileStrayLocked(p: PcRecord): Promise<void> {
+    if (this.#isActive(p.id)) return;
+    const c = await this.#inspectOwned(p);
+    this.#noteLive(p.id, c);
+    if (!c || (c.state !== 'running' && c.state !== 'stopping')) return;
+    const spec = PC_TYPE_SPECS[p.type];
+    if (p.plugged && spec.available && !spec.driverStub && !this.#engineDown && c.state === 'running') {
+      try {
+        const problems = await this.#tryAdoptLocked(p, c);
+        if (problems.length === 0) {
+          this.#log?.info({ pcId: p.id }, 'adopted a PC container that was still running');
+          return;
+        }
+        this.#log?.warn({ pcId: p.id, problems }, 'a still-running PC container does not match; stopping it');
       } catch (err) {
-        await this.driver.stop(c.name).catch(() => {});
-        this.#setError(rec.id, err, 'boot_failed');
+        this.#log?.warn(
+          { pcId: p.id, err: errText(err) },
+          'cannot adopt a still-running PC container; stopping it',
+        );
       }
     }
-    await this.#save();
-    if (orphans.length) this.#log?.warn({ orphans }, 'stopped orphaned PC containers (not deleted)');
-    return { adopted, orphans, mismatched };
+    await this.driver.stop(c.name, 5);
+    this.#noteLive(p.id, await this.driver.inspect(c.name).catch(() => null));
+    this.pool.unregister(p.id);
+    this.#setStatus(p.id, { status: 'off' });
   }
 
   /**
    * Boots every plugged PC in boot-priority order (pinned, then most recently used) with budget
-   * admission; PCs that don't fit become `no_capacity` / `macos_slots_full`.
+   * admission; PCs that don't fit become `no_capacity` / `macos_slots_full`. Containers that still run
+   * for an inactive PC are adopted or stopped first (N7), and the plan is made and reserved in one
+   * admission critical section (N3).
    */
   async bootAll(): Promise<{ booted: string[]; refused: string[]; failed: string[] }> {
     const booted: string[] = [];
     const failed: string[] = [];
-    const inv = await this.#inventory();
-    const host = await this.#hostFactsWith(inv);
-    const alreadyActive = this.#file.pcs
-      .filter((p) => ACTIVE.has(this.status(p.id).status))
-      .map((p) => this.#alloc(p, true));
-    const candidates: BootCandidate[] = this.#file.pcs
-      .filter((p) => p.plugged && PC_TYPE_SPECS[p.type].available && !PC_TYPE_SPECS[p.type].driverStub)
-      .filter((p) => !ACTIVE.has(this.status(p.id).status))
-      .map((p) => ({
-        ...this.#alloc(p, false),
-        pinned: p.pinned,
-        ...(p.lastUsedAt !== undefined ? { lastUsedAt: p.lastUsedAt } : {}),
-        createdAt: p.createdAt,
-      }));
-    // Containers that run although their PC is not active (a failed stop) still hold their share.
-    const strays = this.#file.pcs
-      .filter((p) => !ACTIVE.has(this.status(p.id).status) && this.#liveActive(p.id))
-      .map((p) => this.#alloc(p, true));
-    const orphanAlloc = this.#allocations(inv).filter((a) => a.id === ORPHANS_ID);
-    const plan = planBoot(host, this.#settings(), candidates, [...alreadyActive, ...strays, ...orphanAlloc]);
-    const lowDisk = this.#diskFloorProblem(host.diskFreeBytes);
+    await this.#inventory();
+    for (const p of [...this.#file.pcs]) {
+      if (this.#isActive(p.id) || !this.#liveActive(p.id)) continue;
+      await this.#serialize(p.id, () => this.#reconcileStrayLocked(p)).catch((err: unknown) => {
+        this.#log?.warn(
+          { pcId: p.id, err: errText(err) },
+          'could not reconcile a still-running PC container',
+        );
+      });
+    }
+    const { plan, lowDisk, releases, waitFor } = await this.#withAdmission(async () => {
+      const inv = await this.#inventory();
+      const host = await this.#hostFactsWith(inv);
+      const alreadyActive = this.#file.pcs
+        .filter((p) => this.#isActive(p.id))
+        .map((p) => this.#alloc(p, true));
+      const candidates: BootCandidate[] = this.#file.pcs
+        .filter((p) => p.plugged && PC_TYPE_SPECS[p.type].available && !PC_TYPE_SPECS[p.type].driverStub)
+        .filter((p) => !this.#isActive(p.id) && !this.#liveActive(p.id))
+        .map((p) => ({
+          ...this.#alloc(p, false),
+          pinned: p.pinned,
+          ...(p.lastUsedAt !== undefined ? { lastUsedAt: p.lastUsedAt } : {}),
+          createdAt: p.createdAt,
+        }));
+      // Containers that still run for an inactive PC (a stop that failed above) hold their share.
+      const strays = this.#file.pcs
+        .filter((p) => !this.#isActive(p.id) && this.#liveActive(p.id))
+        .map((p) => this.#alloc(p, true));
+      const orphanAlloc = this.#allocations(inv).filter((a) => a.id === ORPHANS_ID);
+      const plan = planBoot(host, this.#settings(), candidates, [
+        ...alreadyActive,
+        ...strays,
+        ...orphanAlloc,
+      ]);
+      const lowDisk = this.#diskFloorProblem(host.diskFreeBytes);
+      const releases = new Map<string, () => void>();
+      if (!lowDisk) for (const id of plan.boot) releases.set(id, this.#reserve(id));
+      // Adopted PCs (booting, no operation of their own) only need readiness.
+      const waitFor = alreadyActive
+        .map((a) => a.id)
+        .filter((id) => this.status(id).status === 'booting' && !this.#reservations.has(id));
+      return { plan, lowDisk, releases, waitFor };
+    });
     for (const r of plan.refused) {
       this.#setStatus(r.id, {
         status: r.reason === 'MACOS_SLOTS' ? 'macos_slots_full' : 'no_capacity',
@@ -938,10 +1178,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       });
     }
     // PCs that were already running (adopted) only need readiness; a failure stops them (L7, H4).
-    for (const a of alreadyActive) {
+    for (const id of waitFor) {
       try {
-        await this.#serialize(a.id, async () => {
-          const p = this.#rec(a.id);
+        await this.#serialize(id, async () => {
+          if (this.status(id).status !== 'booting') return;
+          const p = this.#rec(id);
           try {
             await this.#waitReady(p);
           } catch (err) {
@@ -949,9 +1190,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
             throw err;
           }
         });
-        booted.push(a.id);
+        if (this.status(id).status === 'running') booted.push(id);
       } catch {
-        failed.push(a.id);
+        failed.push(id);
       }
     }
     for (const id of plan.boot) {
@@ -966,6 +1207,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       } catch (err) {
         failed.push(id);
         this.#log?.warn({ pcId: id, err: errText(err) }, 'PC failed to boot');
+      } finally {
+        releases.get(id)?.();
       }
     }
     await this.budget();
@@ -1021,6 +1264,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     this.#reservedIds.add(id);
     let rec: PcRecord;
     const warnings: string[] = [];
+    // With `boot`, the admitted RAM stays reserved until that first start ends (N3).
+    let release = () => {};
     try {
       rec = this.#newRecord(id, options.type, options);
       if (options.shmMiB !== undefined && options.shmMiB > rec.memMiB) {
@@ -1038,12 +1283,25 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         rec.mounts = v.mounts;
         warnings.push(...v.warnings);
       }
-      warnings.push(...(await this.#admitOrThrow('create', rec, !!options.boot)));
-      await this.#addRecord(rec);
+      const made = rec;
+      const adm = await this.#admit('create', made, {
+        active: !!options.boot,
+        apply: () => this.#pushRecord(made),
+      });
+      release = adm.release;
+      warnings.push(...adm.warnings);
+      await this.#save();
+    } catch (err) {
+      release();
+      throw err;
     } finally {
       this.#reservedIds.delete(id);
     }
-    if (options.boot) await this.start(rec.id);
+    try {
+      if (options.boot) await this.start(rec.id);
+    } finally {
+      release();
+    }
     return { pc: this.get(rec.id) as PcRecord, warnings };
   }
 
@@ -1096,9 +1354,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#setStatus(p.id, { status: 'error', reason: 'low_disk', detail: lowDisk });
       throw new PcError('OVER_BUDGET', lowDisk, 'disk');
     }
+    let release = () => {};
     if (!opts.admitted) {
       try {
-        await this.#admitOrThrow('start', p, true);
+        ({ release } = await this.#admit('start', p, { active: true }));
       } catch (err) {
         if (err instanceof PcError) {
           this.#setStatus(p.id, {
@@ -1109,14 +1368,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         throw err;
       }
     }
-    this.#setStatus(p.id, { status: 'booting', progress: 0 });
     try {
+      this.#setStatus(p.id, { status: 'booting', progress: 0 });
       await this.#bootContainer(p);
       await this.#save();
       await this.#waitReady(p);
     } catch (err) {
       await this.#failBoot(p, err);
       throw err;
+    } finally {
+      release();
     }
   }
 
@@ -1125,6 +1386,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * container stopped, so it holds no RAM the budget doesn't see. A foreign container is never touched.
    */
   async #failBoot(p: PcRecord, err: unknown): Promise<void> {
+    this.#notes.delete(p.id);
     this.#setError(p.id, err, 'boot_failed');
     this.pool.unregister(p.id);
     if (err instanceof PcError && err.code === 'BUSY') return;
@@ -1145,10 +1407,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     const info = await this.#inspectOwned(p);
     const token = await this.#readToken(p.id);
     if (info && token && info.hostPort) {
-      const want = await this.#buildSpec(p, info.hostPort);
-      const problems = specProblems(want, info);
+      const problems = await this.#containerProblems(p, info, token);
       if (problems.length === 0) {
-        if ((await this.#reuse(p, info, token)) === 'started') return;
+        const r = await this.#reuse(p, info, token);
+        if (r.kind === 'started') return;
+        // Visible, not silent: a recreate resets everything outside /home/cua and the Vault.
+        const detail = `${r.why}; the container was recreated on a new port (changes outside /home/cua and the Vault were reset)`;
+        this.#log?.warn(
+          { pcId: p.id, port: info.hostPort, why: r.why },
+          'recreating the PC container on a new port',
+        );
+        this.#notes.set(p.id, { reason: 'port_conflict', detail });
+        this.#setStatus(p.id, { status: 'booting', progress: 1, reason: 'port_conflict', detail });
       } else {
         this.#log?.info({ pcId: p.id, problems }, 'container differs from its PC record; recreating it');
       }
@@ -1165,20 +1435,22 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * taken now) returns `port_conflict`, which recreates on a fresh port (M2); every other failure throws
    * (the PC goes to `error`; its root filesystem is never wiped silently).
    */
-  async #reuse(p: PcRecord, info: PcContainerInfo, token: string): Promise<'started' | 'port_conflict'> {
+  async #reuse(
+    p: PcRecord,
+    info: PcContainerInfo,
+    token: string,
+  ): Promise<{ kind: 'started' } | { kind: 'port_conflict'; why: string }> {
     const port = info.hostPort as number;
     if (info.state !== 'running') {
-      if (!(await isLoopbackPortFree(port))) {
-        this.#log?.warn({ pcId: p.id, port }, 'the PC loopback port is taken; recreating on a new port');
-        return 'port_conflict';
+      if (await this.#portTaken(port)) {
+        return { kind: 'port_conflict', why: `loopback port ${port} is in use by another program` };
       }
       await this.#recheckVault(p);
       try {
         await this.driver.start(info.name);
       } catch (err) {
         if (isPortConflictError(err)) {
-          this.#log?.warn({ pcId: p.id, err: errText(err) }, 'start hit a port conflict; recreating');
-          return 'port_conflict';
+          return { kind: 'port_conflict', why: `starting on port ${port} failed: ${errText(err)}` };
         }
         throw err;
       }
@@ -1186,7 +1458,22 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     await this.#verifyStarted(p, { hostPort: port });
     p.hostPort = port;
     this.pool.register(p.id, { url: `http://127.0.0.1:${port}`, token });
-    return 'started';
+    return { kind: 'started' };
+  }
+
+  /**
+   * Whether the stored loopback port is really taken: only when every probe of a short series finds it
+   * bound, so a port the engine frees a moment after a stop (stop then start, `restart`) is not
+   * mistaken for a conflict that would recreate the container.
+   */
+  async #portTaken(port: number): Promise<boolean> {
+    const attempts = Math.max(1, this.#o.portProbe?.attempts ?? 6);
+    const interval = this.#o.portProbe?.intervalMs ?? 250;
+    for (let i = 0; i < attempts; i++) {
+      if (await isLoopbackPortFree(port)) return false;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, interval));
+    }
+    return true;
   }
 
   /** L1: after a start the container runs and publishes spacesd on 127.0.0.1:<port> only. */
@@ -1228,13 +1515,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     this.pool.register(p.id, { url: `http://127.0.0.1:${hostPort}`, token });
   }
 
+  /** Waits for SERVING; a recreate note (port conflict) stays visible through boot and on `running`. */
   async #waitReady(p: PcRecord): Promise<void> {
-    this.#setStatus(p.id, { status: 'booting', progress: this.status(p.id).progress ?? 10 });
+    const note = this.#notes.get(p.id);
+    const booting = (progress: number) =>
+      this.#setStatus(p.id, { status: 'booting', progress, ...(note ? { ...note } : {}) });
+    booting(this.status(p.id).progress ?? 10);
     await this.pool.waitServing(p.id, {
       timeoutMs: this.#o.bootTimeoutMs ?? 120_000,
-      onProgress: (pct) => this.#setStatus(p.id, { status: 'booting', progress: pct }),
+      onProgress: (pct) => booting(pct),
     });
-    this.#setStatus(p.id, { status: 'running' });
+    this.#notes.delete(p.id);
+    this.#setStatus(p.id, { status: 'running', ...(note ? { ...note } : {}) });
   }
 
   /** Stops a PC (its container and volumes stay). A failure leaves `error`; the budget still counts a running container. */
@@ -1313,10 +1605,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       });
       const next: PcRecord = { ...cur, ...res };
       const active = ACTIVE.has(this.status(id).status);
-      const warnings = await this.#admitOrThrow('edit', next, active);
-      Object.assign(cur, res);
-      await this.#save();
-      await this.#recreateLocked(cur, 'booting');
+      const { warnings, release } = await this.#admit('edit', next, {
+        active,
+        apply: () => Object.assign(cur, res),
+      });
+      try {
+        await this.#save();
+        await this.#recreateLocked(cur, 'booting');
+      } finally {
+        release();
+      }
       return { restarted: active, warnings };
     });
   }
@@ -1329,11 +1627,19 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         throw new PcError('UNAVAILABLE', 'only Linux ⇄ Linux slim changes are possible in place');
       }
       const next: PcRecord = { ...cur, type, ...clampResources(type, cur) };
-      await this.#admitOrThrow('edit', next, ACTIVE.has(this.status(id).status));
-      Object.assign(cur, { type, cpus: next.cpus, memMiB: next.memMiB, shmMiB: next.shmMiB });
-      if (cur.image && !isAllowedImage(type, cur.image)) delete cur.image;
-      await this.#save();
-      await this.#recreateLocked(cur, 'booting');
+      const { release } = await this.#admit('edit', next, {
+        active: ACTIVE.has(this.status(id).status),
+        apply: () => {
+          Object.assign(cur, { type, cpus: next.cpus, memMiB: next.memMiB, shmMiB: next.shmMiB });
+          if (cur.image && !isAllowedImage(type, cur.image)) delete cur.image;
+        },
+      });
+      try {
+        await this.#save();
+        await this.#recreateLocked(cur, 'booting');
+      } finally {
+        release();
+      }
     });
   }
 
@@ -1350,14 +1656,19 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const nested = crossPcNestingProblem(v.mounts, this.#otherMounts(id));
       if (nested) throw new PcError('PATH_REFUSED', nested);
       const next: PcRecord = { ...cur, mounts: v.mounts };
-      const warnings = [
-        ...v.warnings,
-        ...(await this.#admitOrThrow('edit', next, ACTIVE.has(this.status(id).status))),
-      ];
-      cur.mounts = v.mounts;
-      await this.#save();
-      await this.#recreateLocked(cur, 'remounting');
-      return { warnings };
+      const adm = await this.#admit('edit', next, {
+        active: ACTIVE.has(this.status(id).status),
+        apply: () => {
+          cur.mounts = v.mounts;
+        },
+      });
+      try {
+        await this.#save();
+        await this.#recreateLocked(cur, 'remounting');
+      } finally {
+        adm.release();
+      }
+      return { warnings: [...v.warnings, ...adm.warnings] };
     });
   }
 
@@ -1422,6 +1733,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#file.pcs = this.#file.pcs.filter((r) => r.id !== id);
       this.#status.delete(id);
       this.#healthFails.delete(id);
+      this.#healthNext.delete(id);
+      this.#notes.delete(id);
       this.#live.delete(id);
       await this.#save();
       this.emit('pc.state', this.views());
@@ -1461,13 +1774,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   /**
    * One monitor pass:
    * - a `running` PC whose container is gone or stopped becomes `error`/`crashed`;
-   * - a `running` PC whose spacesd fails `unresponsiveAfter` health probes in a row becomes
-   *   `error`/`unresponsive`;
+   * - a `running` PC whose spacesd fails `unresponsiveAfter` health probes in a row stays `running` with
+   *   reason `unresponsive` (degraded: never stopped for it, N2) and is probed less often (every 1, 2,
+   *   4 … 16 passes) until it answers again;
    * - a container that runs although its PC is not active (failed boot or stop, a create the Node
    *   timeout killed) is stopped;
    * - the free-disk watchdog (M6): below 20 GiB a `host.disk` warning, below 10 GiB every active PC is
    *   stopped with `error`/`low_disk` (the rootfs is an uncapped 512 GiB sparse image).
-   * PCs with an operation in progress are skipped.
+   * N1: the container list is only a hint. PCs with an operation in progress, or whose status changed
+   * since the list was taken, are skipped, and every action re-inspects that PC's container under its
+   * lock first, so a PC that finished booting during the pass is never marked crashed or stopped.
    */
   async monitorOnce(): Promise<void> {
     if (this.#monitoring) return;
@@ -1480,8 +1796,19 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     }
   }
 
+  /** A fresh inspect of one PC's container under its lock (null = gone); throws when it cannot tell. */
+  async #freshInspect(p: PcRecord): Promise<PcContainerInfo | null> {
+    const info = await this.#inspectOwned(p);
+    this.#noteLive(p.id, info);
+    return info;
+  }
+
   async #checkContainers(): Promise<void> {
     if (this.#engineDown) return;
+    this.#pass++;
+    const pass = this.#pass;
+    // Status epochs as of before the list: a PC whose status moves on meanwhile is not judged by it.
+    const epochs = new Map(this.#file.pcs.map((p) => [p.id, this.#epochOf(p.id)]));
     let live: Map<string, PcContainerInfo>;
     try {
       const cs = await this.driver.list(this.labels);
@@ -1497,46 +1824,81 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     }
     const limit = this.#o.unresponsiveAfter ?? 3;
     for (const p of [...this.#file.pcs]) {
-      if (this.#locks.has(p.id)) continue;
+      const epoch = epochs.get(p.id);
+      const unchanged = () => this.#epochOf(p.id) === epoch;
+      if (this.#locks.has(p.id) || !unchanged()) continue;
       const st = this.status(p.id).status;
       const c = live.get(p.id);
       const running = c?.state === 'running';
       if (st === 'running' && !running) {
         await this.#serialize(p.id, async () => {
-          if (this.status(p.id).status !== 'running') return;
-          this.#log?.warn({ pcId: p.id, state: c?.state ?? 'gone' }, 'PC container stopped unexpectedly');
+          if (this.status(p.id).status !== 'running' || !unchanged()) return;
+          let fresh: PcContainerInfo | null;
+          try {
+            fresh = await this.#freshInspect(p);
+          } catch (err) {
+            this.#log?.debug({ pcId: p.id, err: errText(err) }, 'monitor: inspect failed; next pass');
+            return;
+          }
+          if (fresh?.state === 'running' || !unchanged()) return;
+          this.#log?.warn({ pcId: p.id, state: fresh?.state ?? 'gone' }, 'PC container stopped unexpectedly');
           await this.#detachViewers(p.id);
           this.#setStatus(p.id, {
             status: 'error',
             reason: 'crashed',
-            detail: `the PC's container ${c ? `is ${c.state}` : 'is gone'}`,
+            detail: `the PC's container ${fresh ? `is ${fresh.state}` : 'is gone'}`,
           });
         });
       } else if (st === 'running') {
+        if (pass < (this.#healthNext.get(p.id) ?? 0)) continue;
         try {
           const h = await this.pool.health(p.id);
           if (!h.serving) throw new Error(h.status);
+          if (!unchanged()) continue;
           this.#healthFails.delete(p.id);
+          this.#healthNext.delete(p.id);
+          const cur = this.status(p.id);
+          if (cur.status === 'running' && cur.reason === 'unresponsive') {
+            this.#log?.info({ pcId: p.id }, 'spacesd answers again');
+            this.#setStatus(p.id, { status: 'running' });
+            this.#frames?.wake(p.id);
+          }
         } catch (err) {
+          if (!unchanged() || this.status(p.id).status !== 'running') continue;
           const n = (this.#healthFails.get(p.id) ?? 0) + 1;
           this.#healthFails.set(p.id, n);
-          if (n >= limit && this.status(p.id).status === 'running') {
+          if (n >= limit) {
+            // N2: degraded, not dead. Only a crash or the user stops it; probe less and less often.
+            this.#healthNext.set(p.id, pass + Math.min(16, 2 ** (n - limit)));
+            if (this.status(p.id).reason !== 'unresponsive') {
+              this.#log?.warn({ pcId: p.id, fails: n, err: errText(err) }, 'PC spacesd is unresponsive');
+            }
             this.#setStatus(p.id, {
-              status: 'error',
+              status: 'running',
               reason: 'unresponsive',
-              detail: `spacesd did not answer ${n} health checks: ${errText(err)}`,
+              detail: `spacesd did not answer ${n} health checks in a row: ${errText(err)}`,
             });
           }
         }
       } else if (!ACTIVE.has(st) && running && c && this.#owns(c, p.id)) {
-        this.#log?.warn({ pcId: p.id, status: st }, 'stopping a PC container that should not run');
         await this.#serialize(p.id, async () => {
-          if (ACTIVE.has(this.status(p.id).status)) return;
-          await this.driver
-            .stop(c.name)
-            .catch((err: unknown) =>
-              this.#log?.warn({ pcId: p.id, err: errText(err) }, 'could not stop a stray PC container'),
-            );
+          if (this.#isActive(p.id) || !unchanged()) return;
+          let fresh: PcContainerInfo | null;
+          try {
+            fresh = await this.#freshInspect(p);
+          } catch (err) {
+            this.#log?.debug({ pcId: p.id, err: errText(err) }, 'monitor: inspect failed; next pass');
+            return;
+          }
+          // Never stop a container whose PC is (or just became) active.
+          if (fresh?.state !== 'running' || this.#isActive(p.id) || !unchanged()) return;
+          this.#log?.warn({ pcId: p.id, status: st }, 'stopping a PC container that should not run');
+          try {
+            await this.driver.stop(fresh.name);
+            this.#noteLive(p.id, await this.driver.inspect(fresh.name).catch(() => fresh));
+          } catch (err) {
+            this.#log?.warn({ pcId: p.id, err: errText(err) }, 'could not stop a stray PC container');
+          }
         });
       }
     }
@@ -1577,8 +1939,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   // ------------------------------------------------------------------ shutdown
 
   /**
-   * Stops every active PC in parallel within `shutdownTimeoutMs` (20 s), then stops the engine when it
-   * is ours (`stopEngine`, default true).
+   * Stops every active PC in parallel within `shutdownTimeoutMs` (20 s), then lets go of the engine
+   * (`stopEngine`, default true): the driver stops it only when it is ours and no other live MineVibe
+   * process holds a lease on it (N4).
    */
   async shutdown(options: { stopEngine?: boolean } = {}): Promise<void> {
     this.stopMonitor();
@@ -1593,7 +1956,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([all, new Promise((r) => (timer = setTimeout(r, budgetMs)))]);
     if (timer) clearTimeout(timer);
-    await this.#frames?.close();
+    // N5: viewers are bounded too (FrameService.close waits at most 2 s per its own deadline).
+    if (this.#frames) await settleWithin(this.#frames.close(), 3000);
     this.pool.close();
     if (options.stopEngine ?? true) {
       try {

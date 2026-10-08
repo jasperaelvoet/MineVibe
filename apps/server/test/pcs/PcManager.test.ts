@@ -8,22 +8,14 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GiB, type HostFacts, MiB } from '../../src/pcs/Budget.js';
 import { EngineError } from '../../src/pcs/drivers/ContainerRuntime.js';
-import type { ExecResult } from '../../src/pcs/drivers/exec.js';
-import {
-  hasLabels,
-  type NetworkInfo,
-  type PcContainerInfo,
-  type PcDriver,
-  type PcRunSpec,
-  type VolumeInfo,
-  type VolumeMount,
-} from '../../src/pcs/drivers/PcDriver.js';
+import { type PcRunSpec, tokenFingerprint } from '../../src/pcs/drivers/PcDriver.js';
 import {
   instanceIdFor,
   isPortConflictError,
@@ -31,167 +23,7 @@ import {
   PcManager,
   type PcView,
 } from '../../src/pcs/PcManager.js';
-import { type CuaModule, SpacesdPool } from '../../src/pcs/SpacesdPool.js';
-
-type FakeContainer = { spec: PcRunSpec; state: 'running' | 'stopped'; labels: Record<string, string> };
-
-class FakeDriver implements PcDriver {
-  readonly kind = 'apple-container' as const;
-  readonly cpuOverhead = 1;
-  readonly capsVolumes = true;
-  containers = new Map<string, FakeContainer>();
-  volumes = new Map<string, { labels: Record<string, string>; sizeGiB: number }>();
-  networks = new Map<string, Record<string, string>>();
-  log: string[] = [];
-  engineError: Error | null = null;
-  /** Errors the next `start` calls throw, one per call. */
-  startErrors: string[] = [];
-  stopError: string | null = null;
-  publishAddress = '127.0.0.1';
-  usage = new Map<string, number>();
-  building = false;
-  onBuild: (() => Promise<void>) | null = null;
-  imagePresent = true;
-
-  async ensureEngine() {
-    if (this.engineError) throw this.engineError;
-    this.log.push('engine');
-  }
-  async shutdownEngine() {
-    this.log.push('engine-stop');
-    return true;
-  }
-  async imageExists() {
-    return this.imagePresent;
-  }
-  async pullImage(ref: string) {
-    this.log.push(`pull ${ref}`);
-  }
-  async buildImage() {
-    this.log.push('build');
-    await this.onBuild?.();
-    this.imagePresent = true;
-  }
-  async ensureVolume(v: VolumeMount, labels: Record<string, string>) {
-    const cur = this.volumes.get(v.name);
-    if (cur) {
-      if (!hasLabels(cur.labels, labels)) throw new Error(`volume ${v.name} belongs to someone else`);
-      return 'exists' as const;
-    }
-    this.volumes.set(v.name, { labels: { ...labels }, sizeGiB: v.sizeGiB });
-    return 'created' as const;
-  }
-  async removeVolume(name: string) {
-    this.log.push(`rmvol ${name}`);
-    this.volumes.delete(name);
-  }
-  async listVolumes(labels: Record<string, string>): Promise<VolumeInfo[]> {
-    return [...this.volumes]
-      .filter(([, v]) => hasLabels(v.labels, labels))
-      .map(([name, v]) => ({ name, labels: v.labels, sizeBytes: v.sizeGiB * GiB }));
-  }
-  async ensureNetwork(name: string, labels: Record<string, string>) {
-    const cur = this.networks.get(name);
-    if (cur) {
-      if (!hasLabels(cur, labels)) throw new Error(`network ${name} belongs to someone else`);
-      return 'exists' as const;
-    }
-    this.log.push(`net ${name}`);
-    this.networks.set(name, { ...labels });
-    return 'created' as const;
-  }
-  async removeNetwork(name: string) {
-    this.log.push(`rmnet ${name}`);
-    this.networks.delete(name);
-  }
-  async listNetworks(labels: Record<string, string>): Promise<NetworkInfo[]> {
-    return [...this.networks]
-      .filter(([, l]) => hasLabels(l, labels))
-      .map(([name, l]) => ({ name, labels: l }));
-  }
-  async create(spec: PcRunSpec) {
-    this.log.push(`create ${spec.name}`);
-    for (const v of spec.volumes) await this.ensureVolume(v, spec.ownerLabels ?? spec.labels);
-    this.containers.set(spec.name, { spec, state: 'stopped', labels: spec.labels });
-    return (await this.inspect(spec.name)) as PcContainerInfo;
-  }
-  async run(spec: PcRunSpec) {
-    await this.create(spec);
-    await this.start(spec.name);
-  }
-  async start(name: string) {
-    this.log.push(`start ${name}`);
-    const e = this.startErrors.shift();
-    if (e) throw new Error(e);
-    const c = this.containers.get(name);
-    if (c) c.state = 'running';
-  }
-  async stop(name: string) {
-    this.log.push(`stop ${name}`);
-    if (this.stopError) throw new Error(this.stopError);
-    const c = this.containers.get(name);
-    if (c) c.state = 'stopped';
-  }
-  async remove(name: string) {
-    this.log.push(`rm ${name}`);
-    this.containers.delete(name);
-  }
-  async inspect(name: string): Promise<PcContainerInfo | null> {
-    const c = this.containers.get(name);
-    if (!c) return null;
-    return {
-      name,
-      state: c.state,
-      image: c.spec.image,
-      labels: c.labels,
-      hostPort: c.spec.hostPort,
-      hostAddress: this.publishAddress,
-      binds: c.spec.binds,
-      volumes: c.spec.volumes.map((v) => ({ name: v.name, target: v.target })),
-      cpus: c.spec.cpus,
-      memoryBytes: c.spec.memoryMiB * MiB,
-      shmBytes: c.spec.shmMiB * MiB,
-      ...(c.spec.network ? { networks: [c.spec.network] } : {}),
-    };
-  }
-  async list(labels: Record<string, string>) {
-    const out: PcContainerInfo[] = [];
-    for (const name of this.containers.keys()) {
-      const info = await this.inspect(name);
-      if (info && hasLabels(info.labels, labels)) out.push(info);
-    }
-    return out;
-  }
-  async diskUsage() {
-    return this.usage;
-  }
-  async exec(): Promise<ExecResult> {
-    return { code: 0, signal: null, stdout: '', stderr: '', ms: 0, timedOut: false };
-  }
-}
-
-const serving = JSON.stringify({
-  status: 'HEALTH_STATUS_SERVING',
-  components: [{ name: 'desktop', status: 'HEALTH_STATUS_SERVING' }],
-});
-const notServing = JSON.stringify({ status: 'HEALTH_STATUS_NOT_SERVING', components: [] });
-
-function fakePool(
-  cachesDir: string,
-  connects: { url: string; token: string | undefined }[] = [],
-  health: { json: string } = { json: serving },
-) {
-  const mod: CuaModule = {
-    embedded: () => ({
-      spacesd: async (url, token) => {
-        connects.push({ url, token });
-        return { health: async () => health.json } as never;
-      },
-    }),
-    ImageFormat: { Png: 0, Jpeg: 1, Webp: 2 },
-  };
-  return new SpacesdPool({ cachesDir, loader: async () => mod, healthTimeoutMs: 200 });
-}
+import { type FakeContainer, FakeDriver, type FakeHealth, fakePool, notServing, serving } from './fakes.js';
 
 const INST = 'unit';
 const cname = (id: string) => `mv-pc-${INST}-${id}`;
@@ -212,10 +44,11 @@ function manager(
   driver = new FakeDriver(),
   opts: {
     connects?: { url: string; token: string | undefined }[];
-    health?: { json: string };
+    health?: FakeHealth;
     stateDir?: string;
     instanceId?: string | null;
     bootTimeoutMs?: number;
+    portProbe?: { attempts?: number; intervalMs?: number };
   } = {},
 ) {
   const connects = opts.connects ?? [];
@@ -229,6 +62,7 @@ function manager(
     home: join(dir, 'home'),
     bootTimeoutMs: opts.bootTimeoutMs ?? 2000,
     imageBuild: { contextDir: dir, file: join(dir, 'Containerfile') },
+    portProbe: opts.portProbe ?? { attempts: 2, intervalMs: 10 },
   });
   return { m, driver, connects };
 }
@@ -306,11 +140,16 @@ describe('PcManager persistence', () => {
       { type: 'linux' as const, memMiB: 2048, shmMiB: 4096 },
       { type: 'linux' as const, disk: { rootfsGiB: -1 } },
       { type: 'linux' as const, disk: { homeGiB: 0 } },
+      { type: 'linux' as const, disk: { homeGiB: 4, rootfsGb: 8 } as never },
+      { type: 'linux' as const, disk: { __proto__: { homeGiB: 1 }, swapGiB: 1 } as never },
       { type: 'linux' as const, image: 'evil/image:latest' },
       { type: 'linux' as const, id: 'Bad Id' },
       { type: 'nope' as never },
     ];
     for (const o of bad) await expect(m.create(o)).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(m.create({ type: 'linux', disk: { homeGiB: 4, rootfsGb: 8 } as never })).rejects.toThrow(
+      /unknown disk cap disk\.rootfsGb/,
+    );
     expect(m.list()).toEqual([]);
     const ok = await m.create({
       type: 'linux',
@@ -321,6 +160,24 @@ describe('PcManager persistence', () => {
     expect(ok.pc.shmMiB).toBe(1024);
     await expect(m.resize(ok.pc.id, { memMiB: 2048, shmMiB: 3000 })).rejects.toMatchObject({
       code: 'INVALID',
+    });
+  });
+
+  it('L4: unknown or invalid disk caps in pcs.json are dropped on load', async () => {
+    const { m } = manager();
+    await m.init({ createDefault: false });
+    await m.create({ type: 'linux', id: 'a', disk: { homeGiB: 4 } });
+    const file = JSON.parse(readFileSync(m.pcsFile, 'utf8')) as { pcs: { disk: Record<string, unknown> }[] };
+    (file.pcs[0] as { disk: Record<string, unknown> }).disk = { homeGiB: 4, tmpGiB: -3, bogusGiB: 9 };
+    writeFileSync(m.pcsFile, JSON.stringify(file));
+    const again = manager();
+    await again.m.init();
+    expect(again.m.get('a')?.disk).toEqual({
+      homeGiB: 4,
+      overlayGiB: 16,
+      tmpGiB: 8,
+      varTmpGiB: 4,
+      rootfsGiB: 24,
     });
   });
 
@@ -739,14 +596,38 @@ describe('H4: what actually runs is what the budget counts', () => {
     expect(m.status('b').status).toBe('off');
   });
 
-  it('the monitor marks a PC whose spacesd stops answering', async () => {
-    const health = { json: serving };
-    const { m } = manager(new FakeDriver(), { health });
+  it('N2: an unresponsive spacesd degrades the PC (running/unresponsive), is probed with backoff and never stopped', async () => {
+    const health: FakeHealth = { json: serving, probes: new Map() };
+    const { m, driver } = manager(new FakeDriver(), { health });
     await m.init();
     await m.bootAll();
+    const url = `http://127.0.0.1:${m.get('linux-1')?.hostPort}`;
     health.json = notServing;
     for (let i = 0; i < 3; i++) await m.monitorOnce();
-    expect(m.status('linux-1')).toMatchObject({ status: 'error', reason: 'unresponsive' });
+    expect(m.status('linux-1')).toMatchObject({
+      status: 'running',
+      reason: 'unresponsive',
+      detail: expect.stringMatching(/3 health checks/),
+    });
+    // ~30–40 s of slow health must never force-stop the PC: 20 more passes, the container keeps running.
+    const before = health.probes?.get(url) ?? 0;
+    for (let i = 0; i < 20; i++) await m.monitorOnce();
+    expect(driver.containers.get(cname('linux-1'))?.state).toBe('running');
+    expect(driver.log.filter((l) => l.startsWith('stop'))).toEqual([]);
+    expect(m.status('linux-1')).toMatchObject({ status: 'running', reason: 'unresponsive' });
+    // Backed off: far fewer than one probe per pass.
+    expect((health.probes?.get(url) ?? 0) - before).toBeLessThan(10);
+    expect((await m.budget()).allocated.memBytes).toBe((4096 + 256) * MiB);
+    // It answers again: the next due probe clears the degraded state.
+    health.json = serving;
+    for (let i = 0; i < 17 && m.status('linux-1').reason; i++) await m.monitorOnce();
+    expect(m.status('linux-1')).toEqual({ status: 'running' });
+    // A crash is still detected and the user can still stop it.
+    health.json = notServing;
+    for (let i = 0; i < 3; i++) await m.monitorOnce();
+    (driver.containers.get(cname('linux-1')) as FakeContainer).state = 'stopped';
+    await m.monitorOnce();
+    expect(m.status('linux-1')).toMatchObject({ status: 'error', reason: 'crashed' });
   });
 });
 
@@ -794,7 +675,12 @@ describe('reconcile and shutdown', () => {
     const { m } = manager(driver);
     await m.init();
     const r = await m.reconcile();
-    expect(r).toEqual({ adopted: ['linux-1'], orphans: [cname('ghost')], mismatched: ['linux-2'] });
+    expect(r).toEqual({
+      adopted: ['linux-1'],
+      orphans: [cname('ghost')],
+      mismatched: ['linux-2'],
+      legacy: { stopped: [], left: [] },
+    });
     expect(driver.containers.get(cname('ghost'))?.state).toBe('stopped');
     expect(driver.containers.get('mv-pc-other-linux-1')?.state).toBe('running');
     expect(driver.containers.get(cname('linux-2'))?.state).toBe('stopped');
@@ -805,6 +691,29 @@ describe('reconcile and shutdown', () => {
     expect(m.status('linux-1').status).toBe('running');
     expect(m.status('linux-2').status).toBe('running');
     expect(driver.log.filter((l) => l.startsWith('create'))).toEqual([`create ${cname('linux-2')}`]);
+  });
+
+  it('L1 (strict): a container that reports no host address for spacesd is never adopted', async () => {
+    const { m, driver } = manager();
+    await m.init();
+    await m.bootAll();
+    driver.publishAddress = undefined;
+    const again = manager(driver);
+    await again.m.init();
+    expect((await again.m.reconcile()).mismatched).toEqual(['linux-1']);
+    expect(driver.containers.get(cname('linux-1'))?.state).toBe('stopped');
+  });
+
+  it('a container created with another token than ours is not adopted', async () => {
+    const { m, driver } = manager();
+    await m.init();
+    await m.bootAll();
+    const c = driver.containers.get(cname('linux-1')) as FakeContainer;
+    c.spec = { ...c.spec, secretEnv: { CUA_ENV_TOKEN: 'e'.repeat(48) } };
+    expect((await driver.inspect(cname('linux-1')))?.tokenSha256).toBe(tokenFingerprint('e'.repeat(48)));
+    const again = manager(driver);
+    await again.m.init();
+    expect((await again.m.reconcile()).mismatched).toEqual(['linux-1']);
   });
 
   it('L1: a container publishing spacesd beyond loopback is never adopted or started', async () => {

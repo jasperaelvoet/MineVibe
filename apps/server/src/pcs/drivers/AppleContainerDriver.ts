@@ -17,6 +17,7 @@ import {
   type Progress,
   portProblems,
   SPACESD_GUEST_PORT,
+  tokenFingerprintFromEnv,
   type VolumeInfo,
   type VolumeMount,
 } from './PcDriver.js';
@@ -114,6 +115,7 @@ interface AppleContainerJson {
     id?: string;
     labels?: Record<string, string>;
     image?: { reference?: string; descriptor?: { digest?: string } };
+    initProcess?: { environment?: unknown[] };
     mounts?: AppleMountJson[];
     publishedPorts?: { containerPort?: number; hostAddress?: string; hostPort?: number; proto?: string }[];
     resources?: { cpus?: number; cpuOverhead?: number; memoryInBytes?: number };
@@ -146,6 +148,7 @@ export function parseAppleContainer(j: AppleContainerJson): PcContainerInfo {
   }
   const port = (c.publishedPorts ?? []).find((p) => p.containerPort === SPACESD_GUEST_PORT);
   const ip = statusObj?.networks?.[0]?.ipv4Address;
+  const tokenSha256 = tokenFingerprintFromEnv(c.initProcess?.environment);
   return {
     name: c.id ?? '',
     state,
@@ -162,6 +165,7 @@ export function parseAppleContainer(j: AppleContainerJson): PcContainerInfo {
     ...(c.shmSize !== undefined ? { shmBytes: c.shmSize } : {}),
     ...(c.networks ? { networks: c.networks.map((n) => n.network ?? '').filter(Boolean) } : {}),
     ...(ip ? { ipv4: ip.split('/')[0] } : {}),
+    ...(tokenSha256 ? { tokenSha256 } : {}),
   };
 }
 
@@ -197,13 +201,15 @@ export class AppleContainerDriver implements PcDriver {
     this.#platform = options.platform ?? 'linux/arm64';
   }
 
+  /** Provisions, takes this process's engine lease and starts our apiserver (N4). */
   async ensureEngine(onProgress?: Progress): Promise<void> {
     await this.runtime.provision(onProgress);
-    await this.runtime.ensureStarted(onProgress);
+    await this.runtime.startAndLease(onProgress);
   }
 
+  /** Drops the lease; stops our apiserver only when no other live MineVibe uses it (N4). */
   shutdownEngine(): Promise<boolean> {
-    return this.runtime.stopIfOurs();
+    return this.runtime.releaseAndStopIfUnused();
   }
 
   async imageExists(ref: string): Promise<boolean> {

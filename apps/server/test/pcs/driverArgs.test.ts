@@ -15,9 +15,10 @@ import type { ContainerRuntime } from '../../src/pcs/drivers/ContainerRuntime.js
 import {
   buildDockerCreateArgs,
   buildDockerRunArgs,
+  DockerDriver,
   parseDockerInspect,
 } from '../../src/pcs/drivers/DockerDriver.js';
-import type { ExecResult } from '../../src/pcs/drivers/exec.js';
+import type { ExecFn, ExecResult } from '../../src/pcs/drivers/exec.js';
 import {
   assertRunSpec,
   mountProblems,
@@ -25,6 +26,7 @@ import {
   type PcRunSpec,
   portProblems,
   specProblems,
+  tokenFingerprint,
 } from '../../src/pcs/drivers/PcDriver.js';
 
 const TOKEN = 'deadbeefcafebabe0123456789abcdef0123456789abcdef';
@@ -221,6 +223,20 @@ describe('inspect parsing and mount verification', () => {
     expect(info.volumes).toEqual([{ name: 'mv-pc-s5-home', target: '/home/cua' }]);
   });
 
+  it('keeps only a fingerprint of the token from the init process env', () => {
+    const info = parseAppleContainer({
+      configuration: {
+        id: 'x',
+        initProcess: { environment: ['PATH=/usr/bin', `CUA_ENV_TOKEN=${TOKEN}`] },
+      },
+    });
+    expect(info.tokenSha256).toBe(tokenFingerprint(TOKEN));
+    expect(JSON.stringify(info)).not.toContain(TOKEN);
+    expect(parseAppleContainer({ configuration: { id: 'y' } }).tokenSha256).toBeUndefined();
+    const d = parseDockerInspect({ Config: { Env: [`CUA_ENV_TOKEN=${TOKEN}`] } });
+    expect(d.tokenSha256).toBe(tokenFingerprint(TOKEN));
+  });
+
   it('detects the 1.5.0 `-v …:ro` bug (rw mount at DST+"o")', () => {
     const s = spec({ binds: [{ source: DOCS, target: DOCS, readonly: true }], volumes: [] });
     const info = parseAppleContainer({
@@ -311,6 +327,9 @@ describe('container spec checks (L1, M10)', () => {
       publishedPorts: [{ containerPort: 3211, hostAddress: '0.0.0.0', hostPort: 43211 }],
     });
     expect(specProblems(want, exposed)).toEqual([expect.stringMatching(/0\.0\.0\.0/)]);
+    // L1 (strict): no reported host address is as bad as a wrong one.
+    const unknown = info({ publishedPorts: [{ containerPort: 3211, hostPort: 43211 }] });
+    expect(specProblems(want, unknown)).toEqual([expect.stringMatching(/no host address/)]);
     expect(normalizeImageRef('docker.io/library/x:1')).toBe('x:1');
   });
 
@@ -478,5 +497,65 @@ describe('AppleContainerDriver.create', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('DockerDriver.create (N8)', () => {
+  const ok = (stdout = ''): ExecResult => ({
+    code: 0,
+    signal: null,
+    stdout,
+    stderr: '',
+    ms: 1,
+    timedOut: false,
+  });
+  const s = () =>
+    spec({
+      binds: [{ source: DOCS, target: DOCS, readonly: true }],
+      volumes: [{ name: 'mv-pc-linux-1-home', target: '/home/cua', sizeGiB: 32 }],
+      network: 'mv-net',
+      ownerLabels: { minevibe: 'pc', 'minevibe.pc': 'linux-1' },
+    });
+  function docker(net: { networks?: Record<string, unknown>; mode?: string }) {
+    const calls: string[][] = [];
+    const row = {
+      Name: '/mv-pc-linux-1',
+      State: { Status: 'created' },
+      Config: { Labels: { minevibe: 'pc', 'minevibe.pc': 'linux-1' }, Env: [`CUA_ENV_TOKEN=${TOKEN}`] },
+      Mounts: [
+        { Type: 'bind', Source: DOCS, Destination: DOCS, RW: false },
+        { Type: 'volume', Name: 'mv-pc-linux-1-home', Destination: '/home/cua', RW: true },
+      ],
+      HostConfig: {
+        ...(net.mode ? { NetworkMode: net.mode } : {}),
+        PortBindings: { '3211/tcp': [{ HostIp: '127.0.0.1', HostPort: '43211' }] },
+      },
+      NetworkSettings: { Ports: {}, Networks: net.networks ?? {} },
+    };
+    const exec: ExecFn = async (_file, args) => {
+      calls.push([...args]);
+      if (args[0] === 'volume' && args[1] === 'inspect')
+        return { ...ok(), code: 1, stderr: 'no such volume' };
+      if (args[0] === 'inspect') return ok(JSON.stringify([row]));
+      return ok();
+    };
+    return { d: new DockerDriver({ exec }), calls };
+  }
+
+  it('deletes the container and throws when it is not on its network, like the Apple driver', async () => {
+    const { d, calls } = docker({ networks: { bridge: {} } });
+    await expect(d.create(s())).rejects.toThrow(/not attached to network mv-net/);
+    expect(calls.some((c) => c[0] === 'rm' && c.includes('mv-pc-linux-1'))).toBe(true);
+    const { d: d2 } = docker({ mode: 'bridge' });
+    await expect(d2.create(s())).rejects.toThrow(/network mv-net/);
+  });
+
+  it('accepts a container on its network (NetworkMode before the first start)', async () => {
+    const { d } = docker({ networks: { 'mv-net': {} } });
+    await expect(d.create(s())).resolves.toMatchObject({ networks: ['mv-net'], hostAddress: '127.0.0.1' });
+    const { d: d2 } = docker({ mode: 'mv-net' });
+    const info = await d2.create(s());
+    expect(info.networks).toEqual(['mv-net']);
+    expect(info.tokenSha256).toBe(tokenFingerprint(TOKEN));
   });
 });

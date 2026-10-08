@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { encodeFrame, FrameCodec, FrameFlag, FrameKind } from '@minevibe/protocol';
 import type { Logger } from 'pino';
-import { withDeadline } from './deadline.js';
+import { settleWithin, withDeadline } from './deadline.js';
 
 /**
  * PC screen frames for the mod (PLAN §5, §8.4, §8.6).
@@ -19,7 +19,9 @@ import { withDeadline } from './deadline.js';
  * - The focus tier retries the BGRA stream with exponential backoff after a failure, JPEG in between, and
  *   reopens a closed stream exactly once per session (M4). Failing PCs are polled with backoff, and a PC
  *   without a slot (not running) is not polled at all until {@link FrameService.wake}.
- * - Every spacesd call has a deadline.
+ * - Every spacesd call has a deadline. A media session that opens only after its deadline is closed at
+ *   once, and every failed attempt bumps the session generation so its callbacks are ignored (N6).
+ *   `close()` waits at most `closeTimeoutMs` for sessions to close (N5).
  * - BGRA frames are damage-driven (0 fps while idle). Each received media frame is acked to the guest
  *   with `frame_ack` the way cua's viewer does.
  * - The guest cursor is NOT composited into frames; its position is polled separately at a low rate
@@ -156,6 +158,8 @@ export interface FrameServiceOptions {
   ackTimeoutMs?: number;
   /** Deadline of one screenshot / cursor call (default 5 s); `openMedia` gets twice this. */
   callTimeoutMs?: number;
+  /** How long {@link FrameService.close} waits for media sessions to close (default 2 s). */
+  closeTimeoutMs?: number;
   onCursor?: (pcId: string, pos: { x: number; y: number }) => void;
   logger?: Logger;
 }
@@ -173,12 +177,16 @@ export interface FrameStats {
   errors: number;
   /** `openMedia` attempts (first open, reopen after close, retries after failure). */
   mediaOpens: number;
+  /** Sessions that opened after their attempt was given up, closed right away (N6). */
+  lateMediaClosed: number;
 }
 
 /** Backoff bounds. */
 const SINK_RETRY_MS: [number, number] = [50, 1000];
 const MEDIA_RETRY_MS: [number, number] = [1000, 30_000];
 const ERROR_BACKOFF_MAX_MS = 5000;
+/** Guest acks remembered while `openMedia` is still resolving; only the newest few matter (N6). */
+export const MAX_EARLY_ACKS = 8;
 
 interface PcFrames {
   pcId: string;
@@ -218,10 +226,13 @@ const newStats = (): FrameStats => ({
   mediaFrames: 0,
   errors: 0,
   mediaOpens: 0,
+  lateMediaClosed: 0,
 });
 
 export class FrameService {
-  readonly #o: Required<Omit<FrameServiceOptions, 'onCursor' | 'logger' | 'rates' | 'callTimeoutMs'>> & {
+  readonly #o: Required<
+    Omit<FrameServiceOptions, 'onCursor' | 'logger' | 'rates' | 'callTimeoutMs' | 'closeTimeoutMs'>
+  > & {
     onCursor?: FrameServiceOptions['onCursor'];
     logger?: Logger;
   };
@@ -229,12 +240,14 @@ export class FrameService {
   readonly #clock: Clock;
   readonly #pcs = new Map<string, PcFrames>();
   readonly #callTimeoutMs: number;
+  readonly #closeTimeoutMs: number;
   #closed = false;
 
   constructor(options: FrameServiceOptions) {
     this.#clock = options.clock ?? realClock;
     this.#rates = { ...DEFAULT_RATES, ...options.rates };
     this.#callTimeoutMs = options.callTimeoutMs ?? 5000;
+    this.#closeTimeoutMs = options.closeTimeoutMs ?? 2000;
     this.#o = {
       sink: options.sink,
       getClient: options.getClient,
@@ -386,16 +399,20 @@ export class FrameService {
     return this.#pcs.get(pcId)?.unacked.size ?? 0;
   }
 
+  /** Stops everything; waits at most `closeTimeoutMs` for media sessions to close (N5). */
   async close(): Promise<void> {
     this.#closed = true;
     const closing: Promise<void>[] = [];
     for (const s of this.#pcs.values()) {
       const m = s.media;
+      s.media = null;
       this.#stopWork(s, false);
       if (m) closing.push(m.close().catch(() => {}));
     }
     this.#pcs.clear();
-    await Promise.all(closing);
+    if ((await settleWithin(Promise.all(closing), this.#closeTimeoutMs)) === 'timeout') {
+      this.#o.logger?.warn({ sessions: closing.length }, 'media sessions did not close in time; going on');
+    }
   }
 
   // ------------------------------------------------------------------ internals
@@ -575,7 +592,10 @@ export class FrameService {
     const earlyAcks: number[] = [];
     const guestAck = (sequence: number) => {
       if (!session) {
+        // N6: a given-up attempt keeps nothing, and a pending one only the newest few acks.
+        if (s.mediaGen !== gen) return;
         earlyAcks.push(sequence);
+        if (earlyAcks.length > MAX_EARLY_ACKS) earlyAcks.splice(0, earlyAcks.length - MAX_EARLY_ACKS);
         return;
       }
       try {
@@ -590,51 +610,65 @@ export class FrameService {
     const current = () => s.epoch === epoch && s.mediaGen === gen && s.tier.mode === 'focus' && !this.#closed;
     try {
       const client = await this.#o.getClient(s.pcId);
-      session = await withDeadline(this.#callTimeoutMs * 2, 'openMedia', (signal) =>
-        client.openMedia(
-          {
-            maxFps: this.#rates.focusMaxFps,
-            maxDimension: this.#rates.focusMaxDimension,
-            audio: false,
-            disableVideo: false,
-            requestJson: BGRA_REQUEST_JSON,
-          },
-          {
-            onFrame: (f) => {
-              const sequence = Number(f.sequence);
-              guestAck(sequence);
-              if (!current()) return;
-              s.stats.mediaFrames++;
-              if (f.codec !== 'bgra') return;
-              const payload = new Uint8Array(f.data);
-              if (payload.byteLength !== f.width * f.height * 4) {
-                s.stats.errors++;
-                return;
-              }
-              const frame = this.#encode(s, FrameCodec.BGRA8, f.width, f.height, payload);
-              if (frame) this.#offer(s, frame);
+      const onLate = (late: MediaSessionMin) => {
+        // N6: the attempt was given up at its deadline; nobody will ever use this session.
+        s.stats.lateMediaClosed++;
+        late.close().catch(() => {});
+      };
+      session = await withDeadline(
+        this.#callTimeoutMs * 2,
+        'openMedia',
+        (signal) =>
+          client.openMedia(
+            {
+              maxFps: this.#rates.focusMaxFps,
+              maxDimension: this.#rates.focusMaxDimension,
+              audio: false,
+              disableVideo: false,
+              requestJson: BGRA_REQUEST_JSON,
             },
-            onEvent: (e) => {
-              // A session may report both "closed" and "error": only the first reopens, once.
-              if (!/clos|error|disconnect/i.test(e.kind) || !current()) return;
-              this.#o.logger?.debug({ pcId: s.pcId, kind: e.kind }, 'media session ended; reopening');
-              s.mediaGen++;
-              if (s.media === session) s.media = null;
-              this.#scheduleMediaRetry(s, epoch, 500);
+            {
+              onFrame: (f) => {
+                const sequence = Number(f.sequence);
+                guestAck(sequence);
+                if (!current()) return;
+                s.stats.mediaFrames++;
+                if (f.codec !== 'bgra') return;
+                const payload = new Uint8Array(f.data);
+                if (payload.byteLength !== f.width * f.height * 4) {
+                  s.stats.errors++;
+                  return;
+                }
+                const frame = this.#encode(s, FrameCodec.BGRA8, f.width, f.height, payload);
+                if (frame) this.#offer(s, frame);
+              },
+              onEvent: (e) => {
+                // A session may report both "closed" and "error": only the first reopens, once.
+                if (!/clos|error|disconnect/i.test(e.kind) || !current()) return;
+                this.#o.logger?.debug({ pcId: s.pcId, kind: e.kind }, 'media session ended; reopening');
+                s.mediaGen++;
+                if (s.media === session) s.media = null;
+                this.#scheduleMediaRetry(s, epoch, 500);
+              },
             },
-          },
-          { signal },
-        ),
+            { signal },
+          ),
+        { onLate },
       );
     } catch (err) {
       s.stats.errors++;
-      if (s.epoch !== epoch || s.mediaGen !== gen) return;
+      earlyAcks.length = 0;
+      const stale = s.epoch !== epoch || s.mediaGen !== gen;
+      // N6: this attempt is over on every failure path: callbacks of a session that still turns up
+      // (after the deadline) no longer count as current.
+      if (s.mediaGen === gen) s.mediaGen++;
+      if (stale) return;
       this.#o.logger?.warn({ pcId: s.pcId, err: String(err) }, 'openMedia failed; JPEG until it reopens');
       this.#mediaFailed(s, epoch);
       return;
     }
     if (!current()) {
-      await session.close().catch(() => {});
+      session.close().catch(() => {});
       return;
     }
     if (session.codec() !== 'bgra') {

@@ -6,12 +6,14 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Logger } from 'pino';
+import { EngineLeases } from './EngineLeases.js';
 import { CliError, type ExecFn, type ExecResult, execWithTimeout, redact } from './exec.js';
 
 /**
  * Apple `container` runtime management (PLAN §8.1 + §8.6): provisioning a private install root from the
  * verified signed pkg, a timeout-wrapped CLI, `system status` ownership checks, and `system start`/`stop`
- * that never touch an apiserver someone else owns.
+ * that never touch an apiserver someone else owns. Processes sharing an app root hold engine leases in it
+ * (N4): the engine is stopped on quit only when no other live MineVibe still uses it.
  */
 
 /** The launchd label every `container` install shares (PLAN §8.1). */
@@ -207,6 +209,7 @@ export function parseLaunchctlProgram(text: string): string | null {
 export class EngineError extends Error {
   readonly code:
     | 'ENGINE_FOREIGN'
+    | 'ENGINE_IN_USE'
     | 'ENGINE_TIMEOUT'
     | 'ENGINE_START_FAILED'
     | 'TCC_PROTECTED'
@@ -248,6 +251,10 @@ export interface ContainerRuntimeOptions extends ContainerRoots {
   uid?: number;
   /** `fetch` used for the pkg download (tests). */
   fetchImpl?: typeof fetch;
+  /** Engine lease options (tests); the directory defaults to `<appRoot>/minevibe-leases`. */
+  leases?: Partial<ConstructorParameters<typeof EngineLeases>[0]>;
+  /** Who holds this process's lease (`minevibe-server`, `test:pcs`). */
+  leaseHolder?: string;
 }
 
 /** Hashes a file with sha256 (streaming). */
@@ -270,6 +277,8 @@ export class ContainerRuntime {
   readonly #fetch: typeof fetch;
   /** Set once we started the apiserver (or found it ours) in this process. */
   #startedByUs = false;
+  /** This process's hold on the engine (N4). */
+  readonly leases: EngineLeases;
 
   constructor(options: ContainerRuntimeOptions) {
     this.appRoot = resolve(options.appRoot);
@@ -282,6 +291,13 @@ export class ContainerRuntime {
     this.#t = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
     this.#uid = options.uid ?? process.getuid?.() ?? 501;
     this.#fetch = options.fetchImpl ?? fetch;
+    this.leases = new EngineLeases({
+      dir: join(this.appRoot, 'minevibe-leases'),
+      exec: this.#exec,
+      ...(options.logger ? { logger: options.logger } : {}),
+      ...(options.leaseHolder ? { holder: options.leaseHolder } : {}),
+      ...options.leases,
+    });
   }
 
   /** `<installRoot>/bin/container`. */
@@ -393,8 +409,16 @@ export class ContainerRuntime {
         const got = await sha256File(join(payload, rel)).catch(() => 'missing');
         if (got !== want) throw new Error(`container pkg: ${rel} sha256 ${got} != lock ${want}`);
       }
-      // M5: never pull the install root out from under a running apiserver of ours.
+      // M5: never pull the install root out from under a running apiserver of ours, and (N4) never
+      // stop it while another live MineVibe still uses it.
       if (existsSync(this.installRoot)) {
+        const others = await this.leases.others();
+        if (others.length > 0) {
+          throw new EngineError(
+            'ENGINE_IN_USE',
+            `the container install at ${this.installRoot} must be updated, but another MineVibe (pid ${others.map((o) => o.pid).join(', ')}) still uses it; quit it first`,
+          );
+        }
         const stopped = await this.stopIfOurs();
         if (stopped) onProgress?.('stopped the container system running from the old install root');
       }
@@ -539,6 +563,36 @@ export class ContainerRuntime {
   /** Whether this process started (or adopted) our apiserver. */
   get startedByUs(): boolean {
     return this.#startedByUs;
+  }
+
+  /**
+   * Takes this process's engine lease and makes sure our apiserver runs (N4), under the engine lock so a
+   * concurrent quit of another MineVibe cannot stop the engine in between.
+   */
+  startAndLease(onProgress?: (msg: string) => void): Promise<SystemStatus> {
+    return this.leases.withLock(async () => {
+      await this.leases.acquire();
+      return this.ensureStarted(onProgress);
+    });
+  }
+
+  /**
+   * Drops this process's lease and stops our apiserver only when no other live MineVibe holds a lease on
+   * this app root (N4). Returns whether it stopped the engine.
+   */
+  releaseAndStopIfUnused(): Promise<boolean> {
+    return this.leases.withLock(async () => {
+      await this.leases.release();
+      const others = await this.leases.others();
+      if (others.length > 0) {
+        this.#log?.info(
+          { others: others.map((o) => ({ pid: o.pid, holder: o.holder })) },
+          'another MineVibe still uses the container system; leaving it running',
+        );
+        return false;
+      }
+      return this.stopIfOurs();
+    });
   }
 
   /**

@@ -13,6 +13,7 @@ import {
   type Progress,
   portProblems,
   SPACESD_GUEST_PORT,
+  tokenFingerprintFromEnv,
   type VolumeInfo,
   type VolumeMount,
 } from './PcDriver.js';
@@ -62,7 +63,7 @@ export function buildDockerCreateArgs(spec: PcRunSpec): string[] {
 interface DockerInspectJson {
   Name?: string;
   State?: { Status?: string };
-  Config?: { Image?: string; Labels?: Record<string, string> };
+  Config?: { Image?: string; Labels?: Record<string, string>; Env?: unknown[] };
   Image?: string;
   Mounts?: { Type?: string; Name?: string; Source?: string; Destination?: string; RW?: boolean }[];
   NetworkSettings?: {
@@ -71,6 +72,7 @@ interface DockerInspectJson {
     Networks?: Record<string, unknown>;
   };
   HostConfig?: {
+    NetworkMode?: string;
     NanoCpus?: number;
     Memory?: number;
     ShmSize?: number;
@@ -99,6 +101,11 @@ export function parseDockerInspect(j: DockerInspectJson): PcContainerInfo {
   // Ports are only in NetworkSettings while running; PortBindings holds what was asked for.
   const key = `${SPACESD_GUEST_PORT}/tcp`;
   const port = j.NetworkSettings?.Ports?.[key]?.[0] ?? j.HostConfig?.PortBindings?.[key]?.[0];
+  // A created (never started) container may list no networks yet; its NetworkMode names the one asked for.
+  const nets = Object.keys(j.NetworkSettings?.Networks ?? {});
+  const mode = j.HostConfig?.NetworkMode;
+  const networks = nets.length > 0 ? nets : mode && !/^(default|container:.*)$/.test(mode) ? [mode] : null;
+  const tokenSha256 = tokenFingerprintFromEnv(j.Config?.Env);
   return {
     name: (j.Name ?? '').replace(/^\//, ''),
     state,
@@ -112,7 +119,8 @@ export function parseDockerInspect(j: DockerInspectJson): PcContainerInfo {
     ...(j.HostConfig?.NanoCpus ? { cpus: j.HostConfig.NanoCpus / 1e9, cpuOverhead: 0 } : {}),
     ...(j.HostConfig?.Memory ? { memoryBytes: j.HostConfig.Memory } : {}),
     ...(j.HostConfig?.ShmSize ? { shmBytes: j.HostConfig.ShmSize } : {}),
-    ...(j.NetworkSettings?.Networks ? { networks: Object.keys(j.NetworkSettings.Networks) } : {}),
+    ...(networks ? { networks } : {}),
+    ...(tokenSha256 ? { tokenSha256 } : {}),
   };
 }
 
@@ -247,6 +255,10 @@ export class DockerDriver implements PcDriver {
     const problems = info
       ? [...mountProblems(spec, info), ...portProblems(spec, info)]
       : ['container vanished after create'];
+    // N8: the same network check as the Apple driver.
+    if (info && spec.network && !(info.networks ?? []).includes(spec.network)) {
+      problems.push(`not attached to network ${spec.network}`);
+    }
     if (!info || problems.length > 0) {
       await this.remove(spec.name).catch(() => {});
       throw new Error(`docker create produced the wrong container: ${problems.join('; ')}`);

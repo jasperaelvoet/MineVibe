@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ExecResult } from './exec.js';
 
 /** spacesd's port inside every Linux PC. */
@@ -79,6 +80,29 @@ export interface PcContainerInfo {
   /** Networks the container is attached to (configuration, known before start). */
   networks?: string[];
   ipv4?: string;
+  /**
+   * {@link tokenFingerprint} of the `CUA_ENV_TOKEN` the container was created with. Only the hash leaves
+   * the parser; the token itself (plaintext in `inspect`) is never kept.
+   */
+  tokenSha256?: string;
+}
+
+/** Name of the env var carrying a PC's spacesd token. */
+export const TOKEN_ENV = 'CUA_ENV_TOKEN';
+
+/** sha256 (hex) of a token, for comparing a container's token with ours without holding it. */
+export function tokenFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/** The {@link tokenFingerprint} of `CUA_ENV_TOKEN` in a `K=V` env list, if present and non-empty. */
+export function tokenFingerprintFromEnv(env: readonly unknown[] | undefined): string | undefined {
+  for (const e of env ?? []) {
+    if (typeof e !== 'string' || !e.startsWith(`${TOKEN_ENV}=`)) continue;
+    const v = e.slice(TOKEN_ENV.length + 1);
+    return v ? tokenFingerprint(v) : undefined;
+  }
+  return undefined;
 }
 
 export interface VolumeInfo {
@@ -105,9 +129,15 @@ export interface PcDriver {
   /** Whether volume size caps are enforced. */
   readonly capsVolumes: boolean;
 
-  /** Provisions/starts the engine (or verifies it is reachable). Throws when it is down or foreign. */
+  /**
+   * Provisions/starts the engine (or verifies it is reachable) and takes this process's hold on it.
+   * Throws when it is down or foreign.
+   */
   ensureEngine(onProgress?: Progress): Promise<void>;
-  /** Stops the engine on quit, only when this process owns it. Returns whether it stopped. */
+  /**
+   * Lets go of the engine on quit: stops it only when it is ours and no other live MineVibe process
+   * still uses it (N4). Returns whether it stopped.
+   */
   shutdownEngine(): Promise<boolean>;
 
   imageExists(ref: string): Promise<boolean>;
@@ -273,8 +303,9 @@ export function specProblems(want: PcRunSpec, info: PcContainerInfo): string[] {
   if (want.network && info.networks && !info.networks.includes(want.network)) {
     problems.push(`not on network ${want.network}`);
   }
-  if (info.hostAddress !== undefined && info.hostAddress !== '127.0.0.1') {
-    problems.push(`spacesd is published on ${info.hostAddress}`);
+  // L1 (strict): a missing host address is as unacceptable as a wrong one.
+  if (info.hostAddress !== '127.0.0.1') {
+    problems.push(`spacesd is published on ${info.hostAddress ?? 'no host address'}, not 127.0.0.1`);
   }
   if (info.hostPort === undefined) problems.push('spacesd port is not published');
   return problems;
