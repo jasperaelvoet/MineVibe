@@ -115,7 +115,10 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 { "t": "err", "v": 1, "re": "m-42", "code": "BAD_MESSAGE", "msg": "chat.send: text: Too small" }
 ```
 
-- `ok` carries the request-specific result as extra keys (often none).
+- `ok` carries the request-specific result as extra keys (often none). A nullable key is sent as `null` at every
+  depth (inside nested objects and arrays too; the mod's `ProtocolCodec.encodeOk` keeps nested nulls since
+  2026-10-09), and an optional key is left out, so each side's reply schema can say `.nullable()` or `.optional()`
+  and mean it.
 - `err.code` is `SCREAMING_SNAKE_CASE`; `err.msg` is for humans (max 2000 characters).
 - A request that fails validation is answered `err BAD_MESSAGE`; a request nobody handles gets `NOT_HANDLED`.
 - Timeouts (sender side): 5 s for world queries, 15 s for configuration, 10 s default; skill calls use their own
@@ -371,7 +374,9 @@ Fixtures: `chat.send.json`, `chat.send--explicit.json`.
 
 ### 6.12 `ok` / `err`
 
-See section 5. Fixtures: `ok.json`, `err.json`, `ok--debug-state.json`.
+See section 5. Fixtures: `ok.json`, `err.json`, `ok--debug-state.json`, `ok--debug-state-crew.json` (nested nulls).
+The mod's JUnit suite encodes every `reply/ok*.json` with `encodeOk` from plain Java maps and lists and requires the
+same JSON back.
 
 ### 6.13 Debug (N→M requests, E2E only)
 
@@ -551,10 +556,6 @@ records flatten every variant into one record with `@Nullable` fields.
   connection and is dropped; the outcome follows as `skill.result` on the new one. Outcomes of jobs that end while
   Node is away go out after the next handshake. If the socket dies before either side notices, an outcome can still
   be lost: Node recovers with `obs.query job_status` or by repeating the `skill.run` with the same `jobId`.
-- **Footer.** Every job `result` and observation the mod returns carries `footer`, a one-line status (about 25
-  tokens): `HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld | collect 12/20 oak_log | iron_sword`. Node also
-  builds the same line from `agent.state` and appends it to every `mcp__mc__*` tool result, so it must not pass the
-  mod's `footer` on to the agent as well (which of the two stays is open: `docs/design/DEBT.md`).
 - Skills: `goto`, `mine`, `collect`, `hunt`, `dig`, `place`, `use_block`, `use_item`, `attack`, `equip`, `eat`,
   `sleep`, `pickup`, `drop`, `give`, `craft`, `smelt`, `container`, `open_menu`, `menu_click`, `menu_close`, `build`,
   `farm`, `ride`, `dismount`, `emote`. Their `args` schemas are exported as `SkillArgs.<skill>` (Node validates
@@ -754,7 +755,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 `DebugStateResult` gains three optional keys from newer mods: `player` (`{ x, y, z }` or null), `agents` (the crew as
 the client shows it: `agentId`, `handle`, `status`, `brain`, `headIcon`, the live `bubble` text or null, open
 `cards`, the body's `pos` or null, `atPc`) and `monitors` (each PC frame the client holds: `pcId`, `w`, `h`, `seq`,
-`patches`, `ageMs`, and `hash`, a CRC32 of the pixels).
+`patches`, `ageMs` (null before the first frame), and `hash`, a CRC32 of the pixels, null before the first frame).
+Inside `agents` and `monitors` every key is present; the nullable ones are `null`, never left out.
 
 Fixtures: `debug.chat.json`, `debug.ui_request.json`.
 

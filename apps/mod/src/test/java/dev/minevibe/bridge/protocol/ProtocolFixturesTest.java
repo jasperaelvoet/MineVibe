@@ -8,10 +8,15 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.ToNumberPolicy;
+import com.google.gson.reflect.TypeToken;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.ParameterizedType;
@@ -21,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,6 +35,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The contract test (PLAN §13.2): every fixture in {@code packages/protocol/fixtures/<group>/} is read with Gson exactly
@@ -237,6 +244,51 @@ class ProtocolFixturesTest {
 		String ok = ProtocolCodec.encode(Messages.PLAYER_DIED, new Messages.PlayerDied("world-1", "fell", null, 1, 0), "m-1", null);
 		JsonElement json = JsonParser.parseString(ok);
 		assertFalse(json.getAsJsonObject().has("killer"), "null optional keys are omitted");
+	}
+
+	/**
+	 * Every {@code reply/ok*.json} fixture, read into plain Java maps and lists (nulls included, as a handler builds its
+	 * result) and encoded with {@link ProtocolCodec#encodeOk}, comes out identical: nested nulls survive, so Node's
+	 * reply schemas (vitest checks the same fixtures against them) see what the mod sends. The old encoder dropped
+	 * {@code ok--debug-state-crew.json}'s {@code agents[].bubble} and {@code monitors[].hash}.
+	 */
+	@TestFactory
+	Stream<DynamicTest> okReplyFixturesReencodeThroughEncodeOk() {
+		Gson plain = new GsonBuilder().setObjectToNumberStrategy(ToNumberPolicy.LAZILY_PARSED_NUMBER).create();
+		List<Path> files = jsonFiles(fixtures().resolve("reply")).stream()
+				.filter(f -> !under(f, "invalid") && f.getFileName().toString().startsWith("ok"))
+				.toList();
+		assertTrue(files.size() >= 2);
+		return files.stream().map(file -> DynamicTest.dynamicTest(name(file), () -> {
+			JsonObject json = JsonParser.parseString(read(file)).getAsJsonObject();
+			String re = json.get("re").getAsString();
+			JsonObject result = json.deepCopy();
+			for (String key : List.of("t", "v", "id", "re")) result.remove(key);
+			Map<String, Object> asJava = plain.fromJson(result, new TypeToken<LinkedHashMap<String, Object>>() {}.getType());
+			assertEquals(json, JsonParser.parseString(ProtocolCodec.encodeOk(re, asJava)), "re-encoding " + name(file));
+		}));
+	}
+
+	/** A record inside an {@code ok} result, with a nullable component. */
+	record NestedResult(String jobId, @Nullable String note) {}
+
+	@Test
+	void okRepliesKeepNestedNulls() {
+		Map<String, Object> agent = new LinkedHashMap<>();
+		agent.put("bubble", null);
+		agent.put("pos", null);
+		JsonObject tree = new JsonObject();
+		tree.add("hash", JsonNull.INSTANCE);
+		tree.addProperty("seq", -1);
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put("agents", List.of(agent));
+		result.put("monitor", tree);
+		result.put("job", new NestedResult("j-1", null));
+		String text = ProtocolCodec.encodeOk("n-4", result);
+		assertEquals(
+				JsonParser.parseString("{\"t\":\"ok\",\"v\":1,\"re\":\"n-4\",\"agents\":[{\"bubble\":null,\"pos\":null}],"
+						+ "\"monitor\":{\"hash\":null,\"seq\":-1},\"job\":{\"jobId\":\"j-1\",\"note\":null}}"),
+				JsonParser.parseString(text));
 	}
 
 	@Test

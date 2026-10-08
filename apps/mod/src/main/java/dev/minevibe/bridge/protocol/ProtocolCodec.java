@@ -28,7 +28,10 @@ public final class ProtocolCodec {
 	/** Reads and serialises payload records; null fields are omitted, which is how optional keys are written. */
 	public static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
-	/** Writes the final JSON tree; explicit {@code JsonNull}s (nullable keys in {@code ok} results) are kept. */
+	/**
+	 * Writes the final JSON tree, and converts {@code ok} results: explicit {@code JsonNull}s and null values (nullable
+	 * keys in {@code ok} results, at any depth) are kept.
+	 */
 	private static final Gson WRITER = new GsonBuilder().disableHtmlEscaping().serializeNulls().create();
 
 	/** Outcome of {@link #parse(String)}. */
@@ -130,12 +133,17 @@ public final class ProtocolCodec {
 		return text;
 	}
 
-	/** An {@code ok} reply carrying {@code result} (any JSON-serialisable values; nulls are kept). */
+	/**
+	 * An {@code ok} reply carrying {@code result} (any JSON-serialisable values). Nulls are kept at every depth: a null
+	 * map value, a null record component and a {@code JsonNull} inside a {@code JsonObject} all go out as {@code null},
+	 * because Node's reply schemas mark such keys nullable (protocol.md §3: a key that may be absent instead is left out
+	 * of the map). Converting with {@link #GSON} dropped nested nulls, which failed {@code debug.state} replies.
+	 */
 	public static String encodeOk(String re, @Nullable Map<String, ?> result) {
 		JsonObject body = new JsonObject();
 		if (result != null) {
 			for (Map.Entry<String, ?> e : result.entrySet()) {
-				body.add(e.getKey(), GSON.toJsonTree(e.getValue()));
+				body.add(e.getKey(), WRITER.toJsonTree(e.getValue()));
 			}
 		}
 		return encode(Messages.OK, new Messages.Ok(body), null, re);
