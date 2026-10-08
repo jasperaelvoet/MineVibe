@@ -1,0 +1,722 @@
+/**
+ * The `mc` MCP tool server (PLAN §7.4): every `mcp__mc__*` tool. World jobs and observations go to the mod through
+ * the SkillApi; Codex, calendar and task reports go to the OrgApi; social and seat tools go to the agent's host (the
+ * AgentManager). Long jobs wait `wait_s` (default 20) and then answer `running` with a `job_id`; the agent is woken by
+ * `[JOB DONE]` later. Every result ends with a short status footer.
+ *
+ * Gate rules (who may call what, when) live in the ToolGate; handlers still fail closed where it matters.
+ */
+
+import {
+  createSdkMcpServer,
+  type McpSdkServerConfigWithInstance,
+  type SdkMcpToolDefinition,
+  tool,
+} from '@anthropic-ai/claude-agent-sdk';
+import {
+  AgentRole,
+  Assignees,
+  BlockPos,
+  CalendarClock,
+  type CalendarEvent,
+  CalendarKind,
+  CodexCategory,
+  type CodexHit,
+  CodexScope,
+  CodexTag,
+  CodexWriteMode,
+  EntityRef,
+  IdleMode,
+  type Place,
+  SkillArgs,
+  type SkillName,
+} from '@minevibe/protocol';
+import { z } from 'zod';
+import type { Actor } from '../../contracts/common.js';
+import { ApiError, isApiError } from '../../contracts/common.js';
+import type { CalendarEventInput, OrgApi } from '../../contracts/OrgApi.js';
+import type { SkillApi } from '../../contracts/SkillApi.js';
+import { DEFAULT_WAIT_S, MAX_WAIT_S, MCP_TOOL_TIMEOUT_MS } from '../constants.js';
+import { summarizeResult } from '../EventRouter.js';
+import { authorLabel, singleLine, wrapNote } from '../envelope.js';
+import { MC_TOOLS, type McToolName } from './catalog.js';
+import {
+  type CallToolResult,
+  compactJson,
+  errorFrom,
+  errorResult,
+  textResult,
+  waitMs,
+  withFooter,
+} from './results.js';
+
+/** What the `mc` tools need from the agent runtime, per agent. */
+export interface McHost {
+  readonly agentId: string;
+  readonly skills: SkillApi;
+  readonly org: OrgApi;
+  actor(): Actor;
+  playerName(): string;
+  /** The ~25-token status footer, or null when no body snapshot is known yet. */
+  footer(): string | null;
+  /** The agent's current position (for `here` and `when:"now"`). */
+  here(): Place | null;
+  /** The overworld clock in ticks, or null when unknown. */
+  clockTime(): number | null;
+  /** A job returned `running`: wake the agent with [JOB DONE] when it ends. */
+  trackJob(jobId: string, label: string): void;
+  say(text: string): void;
+  tell(to: string, text: string): Promise<string>;
+  remember(note: string): Promise<string>;
+  requestHire(request: {
+    role: AgentRole;
+    name?: string | undefined;
+    reason: string;
+    firstTask: string;
+  }): Promise<string>;
+  sitAtPc(request: { pcId: string; purpose: string; waitMs: number }): Promise<string>;
+  standUp(): Promise<string>;
+  /** Waits up to `ms`; resolves early when job `jobId` ends. */
+  wait(ms: number, jobId?: string): Promise<string>;
+  /** A task report was filed (wakes the CEO for failed/blocked). */
+  taskReported(report: {
+    eventId: string;
+    status: 'done' | 'failed' | 'blocked';
+    note?: string | undefined;
+  }): void;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: the server holds tools of many different input shapes
+type Def = SdkMcpToolDefinition<any>;
+
+const WaitS = z
+  .number()
+  .min(0)
+  .max(MAX_WAIT_S)
+  .optional()
+  .describe(`Seconds to wait for the job before it reports "running" (default ${DEFAULT_WAIT_S}).`);
+
+/** Skill tools: name → description. Input schemas come from the protocol's `SkillArgs`. */
+const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
+  mine: 'Mine blocks of a kind (block id or #tag) nearby, e.g. {block:"oak_log", count:10}. A job.',
+  collect: 'Collect items of a kind from the world (mine, pick up) until you hold count. A job.',
+  hunt: 'Hunt mobs of a kind (e.g. "minecraft:cow"), count of them. A job.',
+  dig: 'Dig out every block in the box from..to (inclusive). A job.',
+  place: 'Place one block from your inventory at pos.',
+  use_block: 'Use (right-click) the block at pos: doors, levers, beds, chests.',
+  use_item: 'Use your held item, or the given item, optionally on a block or entity.',
+  attack: 'Attack an entity until it dies or flees. A job.',
+  equip: 'Equip an item into a slot (default main hand).',
+  eat: 'Eat food now (the given item, or the best food you have).',
+  sleep: 'Sleep in a bed (nearest, or at pos) when it is night.',
+  pickup: 'Pick up dropped items nearby.',
+  drop: 'Drop items from your inventory.',
+  give: 'Give items to an entity (the player is "player", agents by id). Walks over first. A job.',
+  craft:
+    'Craft count of an item with a real crafting menu (uses a table nearby or at table when needed). A job.',
+  smelt: 'Smelt count of an item in a furnace (nearest, or at furnace). A job.',
+  container: 'List, put into or take from a container block at pos.',
+  open_menu:
+    'Open the menu of a block or entity (villager trading, enchanting, anvil, …). Then use menu_state and menu_click.',
+  menu_click: 'Click a slot of the open menu: {slot, button, type}.',
+  menu_close: 'Close the open menu.',
+  build: 'Build a blueprint (built-in id or a Codex page id) at origin. A job.',
+  farm: 'Till, plant and harvest the farmland in the box from..to. A job.',
+  ride: 'Ride an entity (boat, minecart, horse). Not office chairs: use sit_at_pc.',
+  dismount: 'Get off what you ride.',
+  emote: 'Play an emote: wave, nod, shake_head, point, cheer, facepalm.',
+};
+
+/** Observation tools → `obs.query` with these input shapes. */
+const OBS_TOOLS = {
+  status: { desc: 'Your body: health, food, position, held item, current job, mode.', shape: {} },
+  look_around: {
+    desc: 'What is around you: blocks of note, mobs, players, items, light.',
+    shape: { radius: z.number().int().min(1).max(64).optional() },
+  },
+  inventory: { desc: 'Your inventory and equipment.', shape: {} },
+  find: {
+    desc: 'Find the nearest blocks, entities or items of a kind, e.g. {what:"iron_ore"}.',
+    shape: { what: z.string().min(1).max(128), radius: z.number().int().min(1).max(128).optional() },
+  },
+  recipe: { desc: 'How to craft or smelt an item.', shape: { item: z.string().min(1).max(128) } },
+  recent_events: {
+    desc: 'What happened to you recently (reflexes, pickups, damage).',
+    shape: { limit: z.number().int().min(1).max(50).optional() },
+  },
+  crew: { desc: 'Where the crew and the player are and what they do.', shape: {} },
+  list_pcs: { desc: 'The office PCs: id, type, status, who sits there.', shape: {} },
+  job_status: {
+    desc: 'Status of a job (your current one when job_id is absent).',
+    shape: { job_id: z.string().min(1).max(64).optional() },
+  },
+  menu_state: { desc: 'The open menu: slots and their items.', shape: {} },
+} as const satisfies Record<string, { desc: string; shape: z.ZodRawShape }>;
+
+const READ_ONLY = { annotations: { readOnlyHint: true } } as const;
+
+/** Day N hh:mm → overworld clock ticks (06:00 = tick 0 of the day; PLAN §6.6). */
+export function gameTimeToTicks(day: number, hour: number, minute: number): number {
+  const hourOfDay = (((hour - 6) % 24) + 24) % 24;
+  return (day - 1) * 24_000 + hourOfDay * 1000 + Math.floor((minute * 1000) / 60);
+}
+
+/** Overworld ticks → "Day N hh:mm". */
+export function ticksToGameTime(ticks: number): string {
+  const day = Math.floor(ticks / 24_000) + 1;
+  const inDay = ticks % 24_000;
+  const hour = (Math.floor(inDay / 1000) + 6) % 24;
+  const minute = Math.floor(((inDay % 1000) * 60) / 1000);
+  return `Day ${day} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/** `when` of calendar_add: "now", ticks/epoch ms, "Day 3 06:00" (game) or an ISO date (real). */
+export function parseWhen(
+  when: unknown,
+  clock: 'game' | 'real',
+  now: { ticks: number | null; ms: number },
+): number {
+  if (when === 'now' || when === undefined) {
+    if (clock === 'game') {
+      if (now.ticks === null) throw new ApiError('CALENDAR_INVALID', 'the world clock is not known yet');
+      return now.ticks;
+    }
+    return now.ms;
+  }
+  if (typeof when === 'number' && Number.isFinite(when) && when >= 0) return Math.floor(when);
+  if (typeof when === 'string') {
+    const m = /^\s*day\s+(\d{1,5})\s+(\d{1,2}):(\d{2})\s*$/i.exec(when);
+    if (m) {
+      if (clock !== 'game')
+        throw new ApiError('CALENDAR_INVALID', '"Day N hh:mm" is a game-clock time; use clock:"game"');
+      const [day, hour, minute] = [Number(m[1]), Number(m[2]), Number(m[3])];
+      if (day < 1 || hour > 23 || minute > 59)
+        throw new ApiError('CALENDAR_INVALID', `bad game time "${when}"`);
+      return gameTimeToTicks(day, hour, minute);
+    }
+    const ms = Date.parse(when);
+    if (!Number.isNaN(ms)) {
+      if (clock !== 'real')
+        throw new ApiError('CALENDAR_INVALID', 'a date is a real-clock time; use clock:"real"');
+      return ms;
+    }
+  }
+  throw new ApiError(
+    'CALENDAR_INVALID',
+    `cannot read when=${JSON.stringify(when)}: use "now", "Day 3 06:00" or an ISO date`,
+  );
+}
+
+function formatHits(hits: readonly CodexHit[]): string {
+  if (hits.length === 0) return 'No Codex pages match.';
+  const body = hits.map((h) => `[${h.id}] ${h.title} (${h.category}, ${h.scope})\n${h.snippet}`).join('\n\n');
+  return `${hits.length} page(s); read one with mcp__mc__codex_read{id}.\n${wrapNote({ author: 'the Codex', kind: 'codex', text: body })}`;
+}
+
+function formatEvent(e: CalendarEvent): string {
+  const when = e.clock === 'game' ? ticksToGameTime(e.at) : new Date(e.at).toISOString();
+  const next =
+    e.nextAt === null
+      ? 'nothing due'
+      : e.clock === 'game'
+        ? ticksToGameTime(e.nextAt)
+        : new Date(e.nextAt).toISOString();
+  const who = e.assignees === 'all' ? 'all' : e.assignees.join(',');
+  const rec = e.recurrence.kind === 'every_n_days' ? `every ${e.recurrence.n} days` : e.recurrence.kind;
+  return `[${e.id}] ${e.kind} "${e.title}" for ${who}, ${rec} from ${when}; next ${next}; ${e.status}; by ${e.createdBy}${e.task ? `\n  task: ${e.task}` : ''}`;
+}
+
+/** Builds the `mc` tool definitions of one agent. */
+export function mcToolDefinitions(host: McHost): Def[] {
+  const defs: Def[] = [];
+  /** Adds definitions of any input shape (their handler argument types differ). */
+  const push = (...ds: unknown[]) => {
+    defs.push(...(ds as Def[]));
+  };
+  const run = async (fn: () => Promise<CallToolResult>): Promise<CallToolResult> => {
+    let result: CallToolResult;
+    try {
+      result = await fn();
+    } catch (err) {
+      result = errorFrom(err);
+    }
+    return withFooter(result, host.footer());
+  };
+
+  const runJob = async (skill: SkillName, args: Record<string, unknown>, waitS: unknown, label: string) => {
+    const res = await host.skills.runSkill({
+      agentId: host.agentId,
+      skill,
+      args: args as never,
+      waitMs: waitMs(waitS, DEFAULT_WAIT_S, MAX_WAIT_S),
+      replace: skill !== 'emote',
+    });
+    switch (res.status) {
+      case 'running':
+        host.trackJob(res.jobId, label);
+        return textResult(
+          `Job ${res.jobId} (${label}) is running. You'll get [JOB DONE] when it ends: end your turn now.`,
+        );
+      case 'done':
+        return textResult(`Done: ${label}. ${summarizeResult(res.result)}`);
+      case 'cancelled':
+        return errorResult(`Cancelled: ${label}.`);
+      default:
+        return errorResult(`Failed: ${label}. ${res.error?.code ?? 'FAILED'}: ${res.error?.msg ?? 'failed'}`);
+    }
+  };
+
+  // --- Observe -------------------------------------------------------------------------------------------------
+  for (const [name, spec] of Object.entries(OBS_TOOLS)) {
+    push(
+      tool(
+        name,
+        spec.desc,
+        spec.shape,
+        (args) =>
+          run(async () => {
+            const query = name as keyof typeof OBS_TOOLS;
+            const queryArgs: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+            if (typeof queryArgs.job_id === 'string') {
+              queryArgs.jobId = queryArgs.job_id;
+              delete queryArgs.job_id;
+            }
+            const result = await host.skills.obsQuery(host.agentId, query, queryArgs);
+            return textResult(compactJson(result));
+          }),
+        READ_ONLY,
+      ),
+    );
+  }
+
+  // --- Behaviour -----------------------------------------------------------------------------------------------
+  push(
+    tool(
+      'set_mode',
+      'Set your idle behaviour between jobs: follow (the player), stay, guard (an area) or wander.',
+      { mode: IdleMode, anchor: BlockPos.optional() },
+      (args) =>
+        run(async () => {
+          await host.skills.setMode(host.agentId, args.mode, args.anchor);
+          return textResult(`Idle mode: ${args.mode}.`);
+        }),
+    ),
+    tool('stop', 'Stop your current job.', {}, () =>
+      run(async () => {
+        const cancelled = await host.skills.cancelSkill(host.agentId, { reason: 'stop' });
+        return textResult(cancelled.length > 0 ? `Stopped ${cancelled.join(', ')}.` : 'No job was running.');
+      }),
+    ),
+  );
+
+  // --- Move ----------------------------------------------------------------------------------------------------
+  push(
+    tool(
+      'goto',
+      'Walk to a block position {pos}, an entity {entity: "player" | agent id | mob type}, or a named Codex place {place}. A job.',
+      {
+        pos: BlockPos.optional(),
+        entity: EntityRef.optional(),
+        place: z.string().min(1).max(80).optional().describe('A Codex `places` page id or title.'),
+        range: z.number().min(0).max(64).optional(),
+        wait_s: WaitS,
+      },
+      (args) =>
+        run(async () => {
+          const given = [args.pos, args.entity, args.place].filter((v) => v !== undefined).length;
+          if (given !== 1) return errorResult('Give exactly one of pos, entity or place.');
+          let pos = args.pos;
+          if (args.place !== undefined) {
+            pos = await resolvePlace(host, args.place);
+          }
+          const skillArgs: Record<string, unknown> = {};
+          if (pos) skillArgs.pos = pos;
+          if (args.entity) skillArgs.entity = args.entity;
+          if (args.range !== undefined) skillArgs.range = args.range;
+          const label = args.place
+            ? `goto ${args.place}`
+            : args.entity
+              ? `goto ${args.entity}`
+              : `goto ${pos?.x},${pos?.y},${pos?.z}`;
+          return runJob('goto', skillArgs, args.wait_s, label);
+        }),
+    ),
+  );
+
+  // --- World, craft, menus, build, ride, emote (skill jobs) ------------------------------------------------------
+  for (const [skill, desc] of Object.entries(SKILL_TOOLS) as [Exclude<SkillName, 'goto'>, string][]) {
+    const base = (SkillArgs[skill] as unknown as z.ZodObject<z.ZodRawShape>).shape;
+    push(
+      tool(skill, desc, { ...base, wait_s: WaitS }, (args) =>
+        run(async () => {
+          const { wait_s: w, ...skillArgs } = args as Record<string, unknown>;
+          return runJob(skill, skillArgs, w, labelOf(skill, skillArgs));
+        }),
+      ),
+    );
+  }
+
+  // --- PC ------------------------------------------------------------------------------------------------------
+  push(
+    tool(
+      'sit_at_pc',
+      'Walk to a PC and sit down to work on it (shell, files, screen). Say what for in purpose. When it says "Seated", end your turn: your PC session starts next turn.',
+      {
+        pc: z.string().min(1).max(64).describe('PC id, e.g. "linux-1" (see mcp__mc__list_pcs).'),
+        purpose: z
+          .string()
+          .min(1)
+          .max(200)
+          .describe('The task, shown on the monitor ("fix the failing test").'),
+        wait_s: WaitS,
+      },
+      (args) =>
+        run(async () =>
+          textResult(
+            await host.sitAtPc({
+              pcId: args.pc,
+              purpose: args.purpose,
+              waitMs: waitMs(args.wait_s, 60, MAX_WAIT_S),
+            }),
+          ),
+        ),
+    ),
+    tool('stand_up', 'Stand up from your PC (or leave the chair you walk to).', {}, () =>
+      run(async () => textResult(await host.standUp())),
+    ),
+  );
+
+  // --- Social --------------------------------------------------------------------------------------------------
+  push(
+    tool(
+      'say',
+      'Say something out loud now (a bubble above your head), without ending your turn.',
+      { text: z.string().min(1).max(500) },
+      (args) =>
+        run(async () => {
+          host.say(args.text);
+          return textResult('Said.');
+        }),
+    ),
+    tool(
+      'tell',
+      'Send a short message to one crew member (by @handle, name or "ceo"). It reaches only them.',
+      { to: z.string().min(1).max(64), text: z.string().min(1).max(2000) },
+      (args) => run(async () => textResult(await host.tell(args.to, args.text))),
+    ),
+    tool(
+      'remember',
+      'Write a note to your private long-term memory (memory.md). Keep it short; it is re-read after restarts.',
+      { note: z.string().min(1).max(600) },
+      (args) => run(async () => textResult(await host.remember(args.note))),
+    ),
+    tool(
+      'wait',
+      'Wait a while (at most 120 s), or until a job ends. Prefer ending your turn for long waits.',
+      { seconds: z.number().min(1).max(MAX_WAIT_S), job_id: z.string().min(1).max(64).optional() },
+      (args) => run(async () => textResult(await host.wait(Math.round(args.seconds * 1000), args.job_id))),
+    ),
+    tool(
+      'request_hire',
+      'CEO only: ask the player to hire a new crew member. Returns at once; you get [HIRE DECISION] later.',
+      {
+        role: AgentRole.exclude(['ceo']),
+        name: z.string().min(1).max(24).optional(),
+        reason: z.string().min(1).max(500),
+        first_task: z.string().min(1).max(2000),
+      },
+      (args) =>
+        run(async () =>
+          textResult(
+            await host.requestHire({
+              role: args.role,
+              name: args.name,
+              reason: args.reason,
+              firstTask: args.first_task,
+            }),
+          ),
+        ),
+    ),
+  );
+
+  // --- Codex ---------------------------------------------------------------------------------------------------
+  push(
+    tool(
+      'codex_search',
+      'Search the shared Codex (notes written by the crew and the player). Returns the top 8 snippets.',
+      {
+        query: z.string().min(1).max(200),
+        tags: z.array(CodexTag).max(8).optional(),
+        category: CodexCategory.optional(),
+      },
+      (args) =>
+        run(async () => {
+          const hits = await host.org.codex.search(host.actor(), {
+            query: args.query,
+            tags: args.tags,
+            category: args.category,
+            limit: 8,
+          });
+          return textResult(formatHits(hits));
+        }),
+      READ_ONLY,
+    ),
+    tool(
+      'codex_read',
+      'Read one Codex page with its revision (pass it as base_rev to update).',
+      { id: z.string().min(1).max(80) },
+      (args) =>
+        run(async () => {
+          const page = await host.org.codex.read(host.actor(), args.id);
+          const head = `Page ${page.id} rev ${page.rev} (${page.category}, ${page.scope}${page.pinned ? ', pinned' : ''}).`;
+          return textResult(
+            `${head}\n${wrapNote({
+              author: authorLabel(page.author),
+              kind: 'codex',
+              attrs: { id: page.id, title: page.title, scope: page.scope, rev: page.rev },
+              text: page.body,
+            })}`,
+          );
+        }),
+      READ_ONLY,
+    ),
+    tool(
+      'codex_write',
+      'Write to the shared Codex: mode create (new page), update (replace body; needs id and base_rev) or append (add to the end; needs id). Set here:true on a places page to stamp your position.',
+      {
+        mode: CodexWriteMode,
+        title: z.string().min(1).max(80),
+        body: z.string().min(1).max(8192),
+        tags: z.array(CodexTag).max(16).optional(),
+        category: CodexCategory.exclude(['rules']),
+        scope: CodexScope,
+        id: z.string().min(1).max(80).optional(),
+        base_rev: z.string().min(7).max(64).optional(),
+        here: z.boolean().optional(),
+      },
+      (args) =>
+        run(async () => {
+          const here = args.here ? host.here() : null;
+          if (args.here && !here)
+            return errorResult('Your position is not known yet; try again in a moment.');
+          try {
+            const res = await host.org.codex.write(host.actor(), {
+              mode: args.mode,
+              pageId: args.id,
+              baseRev: args.base_rev,
+              title: singleLine(args.title, 80),
+              body: args.body,
+              tags: args.tags ?? [],
+              category: args.category,
+              scope: args.scope,
+              here: here ?? undefined,
+            });
+            return textResult(`Saved page ${res.pageId} rev ${res.rev}.`);
+          } catch (err) {
+            if (isApiError(err, 'CODEX_CONFLICT') && typeof err.details?.body === 'string') {
+              return errorResult(
+                `Error CODEX_CONFLICT: the page changed (now rev ${String(err.details.rev)}). Merge your change into the current text and update with that base_rev:\n${wrapNote({ author: 'the Codex', kind: 'codex', text: err.details.body })}`,
+              );
+            }
+            throw err;
+          }
+        }),
+    ),
+    tool(
+      'codex_list',
+      'List Codex pages, optionally by category or tag.',
+      { category: CodexCategory.optional(), tag: CodexTag.optional() },
+      (args) =>
+        run(async () => {
+          const pages = await host.org.codex.list(host.actor(), { category: args.category, tag: args.tag });
+          if (pages.length === 0) return textResult('No pages.');
+          const body = pages
+            .slice(0, 60)
+            .map((p) => `[${p.id}] ${p.title} (${p.category}, ${p.scope}) by ${authorLabel(p.author)}`)
+            .join('\n');
+          return textResult(wrapNote({ author: 'the Codex', kind: 'codex', text: body }));
+        }),
+      READ_ONLY,
+    ),
+  );
+
+  // --- Calendar ------------------------------------------------------------------------------------------------
+  const Recurrence = z.object({
+    kind: z.enum(['once', 'daily', 'every_n_days', 'weekdays']),
+    n: z.number().int().min(2).max(365).optional(),
+  });
+  push(
+    tool(
+      'calendar_list',
+      'List calendar events (tasks, reminders, meetings), optionally for one agent.',
+      {
+        from: z.number().min(0).optional(),
+        to: z.number().min(0).optional(),
+        agent: z.string().min(1).max(64).optional(),
+      },
+      (args) =>
+        run(async () => {
+          const events = await host.org.calendar.list(host.actor(), {
+            from: args.from,
+            to: args.to,
+            agentId: args.agent,
+          });
+          if (events.length === 0) return textResult('No events.');
+          return textResult(
+            wrapNote({
+              author: 'calendar',
+              kind: 'calendar',
+              text: events.slice(0, 40).map(formatEvent).join('\n'),
+            }),
+          );
+        }),
+      READ_ONLY,
+    ),
+    tool(
+      'calendar_add',
+      'Schedule a task, reminder or meeting. when: "now", "Day 3 06:00" (game clock) or an ISO date (real clock). assignees: agent ids or "all" (only the CEO schedules for others).',
+      {
+        title: z.string().min(1).max(80),
+        kind: CalendarKind,
+        assignees: Assignees,
+        clock: CalendarClock,
+        when: z.union([z.string().min(1).max(64), z.number().min(0)]),
+        recurrence: Recurrence.optional(),
+        duration_min: z.number().int().min(1).max(1440).optional(),
+        location: z.string().min(1).max(80).optional(),
+        task: z.string().min(1).max(2000).optional(),
+        catch_up: z.enum(['skip', 'once_late']).optional(),
+        run_while_away: z.boolean().optional(),
+      },
+      (args) =>
+        run(async () => {
+          const at = parseWhen(args.when, args.clock, { ticks: host.clockTime(), ms: Date.now() });
+          const event: CalendarEventInput = {
+            title: singleLine(args.title, 80),
+            kind: args.kind,
+            assignees: args.assignees,
+            clock: args.clock,
+            at,
+            recurrence: args.recurrence ?? { kind: 'once' },
+            durationMin: args.duration_min ?? 30,
+            catchUp: args.catch_up ?? 'skip',
+            runWhileAway: args.run_while_away ?? false,
+            ...(args.location !== undefined ? { location: args.location } : {}),
+            ...(args.task !== undefined ? { task: args.task } : {}),
+          };
+          const res = await host.org.calendar.add(host.actor(), event);
+          return textResult(
+            res.needsApproval
+              ? `Created ${res.eventId}; it waits for ${host.playerName()}'s approval.`
+              : `Scheduled ${res.eventId}.`,
+          );
+        }),
+    ),
+    tool(
+      'calendar_update',
+      'Change an event you may edit (not events the player created).',
+      {
+        id: z.string().min(1).max(64),
+        title: z.string().min(1).max(80).optional(),
+        assignees: Assignees.optional(),
+        when: z.union([z.string().min(1).max(64), z.number().min(0)]).optional(),
+        clock: CalendarClock.optional(),
+        recurrence: Recurrence.optional(),
+        duration_min: z.number().int().min(1).max(1440).optional(),
+        location: z.string().min(1).max(80).optional(),
+        task: z.string().min(1).max(2000).optional(),
+      },
+      (args) =>
+        run(async () => {
+          const patch: Partial<CalendarEventInput> = {};
+          if (args.title !== undefined) patch.title = singleLine(args.title, 80);
+          if (args.assignees !== undefined) patch.assignees = args.assignees;
+          if (args.recurrence !== undefined) patch.recurrence = args.recurrence;
+          if (args.duration_min !== undefined) patch.durationMin = args.duration_min;
+          if (args.location !== undefined) patch.location = args.location;
+          if (args.task !== undefined) patch.task = args.task;
+          if (args.clock !== undefined) patch.clock = args.clock;
+          if (args.when !== undefined) {
+            patch.at = parseWhen(args.when, args.clock ?? 'game', {
+              ticks: host.clockTime(),
+              ms: Date.now(),
+            });
+          }
+          await host.org.calendar.update(host.actor(), args.id, patch);
+          return textResult(`Updated ${args.id}.`);
+        }),
+    ),
+    tool(
+      'calendar_cancel',
+      'Cancel an event (scope "all") or only its next occurrence ("next").',
+      { id: z.string().min(1).max(64), scope: z.enum(['next', 'all']).optional() },
+      (args) =>
+        run(async () => {
+          await host.org.calendar.cancel(host.actor(), args.id, args.scope ?? 'all');
+          return textResult(`Cancelled ${args.id}${args.scope === 'next' ? ' (next occurrence)' : ''}.`);
+        }),
+    ),
+    tool(
+      'report_task',
+      'Close a scheduled task occurrence: done, failed or blocked (failed and blocked wake the CEO).',
+      {
+        event_id: z.string().min(1).max(64),
+        status: z.enum(['done', 'failed', 'blocked']),
+        note: z.string().min(1).max(500).optional(),
+      },
+      (args) =>
+        run(async () => {
+          const report = { eventId: args.event_id, status: args.status, note: args.note };
+          await host.org.calendar.report(host.actor(), report);
+          host.taskReported(report);
+          return textResult(`Reported ${args.event_id} ${args.status}.`);
+        }),
+    ),
+  );
+
+  return defs;
+}
+
+function labelOf(skill: SkillName, args: Record<string, unknown>): string {
+  const what = args.block ?? args.item ?? args.entity ?? args.blueprint ?? args.kind ?? args.crop;
+  const count = typeof args.count === 'number' ? ` ×${args.count}` : '';
+  return what !== undefined ? `${skill} ${String(what)}${count}` : skill;
+}
+
+const COORD_RE = /(-?\d{1,8})\s*[, ]\s*(-?\d{1,4})\s*[, ]\s*(-?\d{1,8})/;
+
+/** A Codex `places` page → its coordinates (the first `x, y, z` triple in the body). */
+async function resolvePlace(host: McHost, place: string): Promise<{ x: number; y: number; z: number }> {
+  const actor = host.actor();
+  let page: Awaited<ReturnType<OrgApi['codex']['read']>> | null = null;
+  try {
+    page = await host.org.codex.read(actor, place);
+  } catch (err) {
+    if (!isApiError(err, 'CODEX_NOT_FOUND')) throw err;
+  }
+  if (!page) {
+    const hits = await host.org.codex.search(actor, { query: place, category: 'places', limit: 1 });
+    const hit = hits[0];
+    if (!hit) throw new ApiError('UNKNOWN_PLACE', `no Codex place called "${place}"`);
+    page = await host.org.codex.read(actor, hit.id);
+  }
+  const m = COORD_RE.exec(page.body);
+  if (!m) throw new ApiError('UNKNOWN_PLACE', `the page "${page.title}" has no coordinates`);
+  return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]) };
+}
+
+/** The in-process `mc` server (never swapped; `alwaysLoad`, 600 s tool timeout). */
+export function createMcServer(host: McHost): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: 'mc',
+    version: '1.0.0',
+    alwaysLoad: true,
+    timeout: MCP_TOOL_TIMEOUT_MS,
+    tools: mcToolDefinitions(host),
+  });
+}
+
+/** Every mc tool name the server defines (tests compare it with the catalog). */
+export function mcToolNames(defs: readonly { name: string }[]): McToolName[] {
+  return defs.map((d) => d.name).filter((n): n is McToolName => Object.hasOwn(MC_TOOLS, n));
+}

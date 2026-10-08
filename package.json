@@ -17,6 +17,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:live": "npm run test:live -w apps/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome check .",
     "format": "biome format --write .",

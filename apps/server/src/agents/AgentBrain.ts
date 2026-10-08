@@ -1,0 +1,1462 @@
+/**
+ * AgentBrain: everything one agent's mind does between the SDK session and the crew (PLAN §6.1-6.5).
+ *
+ * - Owns the AgentSession, the SeatFSM, PlanCapture, the Digest and the agent's wake queue.
+ * - Gets brain slots from the BrainScheduler for each turn and releases them at `result` and while a card waits.
+ * - Applies model/effort swaps only at turn boundaries (sit → Opus/medium, stand → Haiku/xhigh after the 60 s re-sit
+ *   debounce, kick/damage/PC down → Haiku at once), with the context guard before a downswap.
+ * - Builds the ToolGate context, the broker hooks and the `mc` / `pc` tool hosts.
+ *
+ * The AgentManager creates brains and provides crew-level services through {@link BrainEnv}.
+ */
+
+import { randomUUID } from 'node:crypto';
+import type {
+  AgentBody,
+  AgentRole,
+  Autonomy,
+  BrainStatus,
+  ModelTier,
+  PayloadOf,
+  Place,
+} from '@minevibe/protocol';
+import type { Logger } from 'pino';
+import { ApiError, agentActor } from '../contracts/common.js';
+import type { OrgApi } from '../contracts/OrgApi.js';
+import type { PcApi } from '../contracts/PcApi.js';
+import type { SkillApi } from '../contracts/SkillApi.js';
+import { AgentSession, type SwapResult } from './AgentSession.js';
+import type { BrainScheduler, Grant, WakePriority } from './BrainScheduler.js';
+import type { ResolvedClaude } from './claudeBinary.js';
+import {
+  BUBBLE_MAX_CHARS,
+  CONTEXT_GUARD_RATIO,
+  CONTEXT_GUARD_TIMEOUT_MS,
+  HAIKU_CONTEXT_TOKENS,
+  MAX_SEATED,
+  SEATED_PROFILE,
+  WANDERING_PROFILE,
+} from './constants.js';
+import { Digest, type Routed } from './EventRouter.js';
+import { type ControlKind, control, escapeShared, singleLine } from './envelope.js';
+import { createInteractionBroker } from './InteractionBroker.js';
+import type { HandoffNotes, MemoryStore } from './memory.js';
+import type { Card, PendingStore } from './PendingStore.js';
+import { PlanCapture } from './PlanCapture.js';
+import { BARKS, type BarkKey } from './prompts/barks.js';
+import { kickoffMessage } from './prompts/kickoff.js';
+import { personaPrompt } from './prompts/persona.js';
+import { Mutex, type SeatEndReason, SeatFSM, type SeatSnapshot } from './SeatFSM.js';
+import type {
+  HookCallback,
+  PermissionMode,
+  QueryFactory,
+  SDKResultMessage,
+  SDKSystemMessage,
+} from './sdk.js';
+import { buildSessionOptions } from './sessionOptions.js';
+import { createToolGateHook, type GateContext, type GateObservation } from './ToolGate.js';
+import type { TranscriptStore } from './TranscriptStore.js';
+import { type PcToolName, pcToolName } from './tools/catalog.js';
+import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
+import { createPcServer, type PcHost } from './tools/pcServer.js';
+import type { UsageGovernor } from './UsageGovernor.js';
+
+/** The persisted crew record of one agent (`worlds/<w>/crew.json`). */
+export interface AgentRecord {
+  readonly agentId: string;
+  readonly handle: string;
+  name: string;
+  readonly role: AgentRole;
+  ceo: boolean;
+  status: 'alive' | 'dead' | 'dismissed';
+  readonly hiredAt: number;
+  /** Lower is more senior (succession). */
+  readonly seniority: number;
+  /** The SDK session id (new sessions are started with it; restarts resume it). */
+  sessionId: string;
+  /** Whether the session was ever started (resume vs new). */
+  sessionStarted: boolean;
+  nonce: string;
+  autonomy: Autonomy;
+  planFirst: boolean;
+  pingInstead: boolean;
+  diedDay?: number | undefined;
+  cause?: string | undefined;
+  /** The PC the agent sat at when the app stopped (restart notice). */
+  lastSeatedPc?: string | null | undefined;
+  lastActiveAt?: number | undefined;
+}
+
+/** Crew-level services a brain needs (implemented by the AgentManager). */
+export interface BrainEnv {
+  readonly scheduler: BrainScheduler;
+  readonly governor: UsageGovernor;
+  readonly pending: PendingStore;
+  readonly transcripts: TranscriptStore;
+  readonly memory: MemoryStore;
+  readonly handoffs: HandoffNotes;
+  readonly skills: SkillApi;
+  readonly org: OrgApi;
+  readonly pcs: PcApi;
+  readonly queryFactory: QueryFactory;
+  readonly log: Logger;
+  now(): number;
+  claude(): ResolvedClaude;
+  agentEnv(): Record<string, string>;
+  /** The agent's claude cwd (`worlds/<w>/agents/<id>/home`). */
+  agentHome(agentId: string): string;
+  playerName(): string;
+  /** Who sits at a PC per the mod's PcRegistry. */
+  occupant(pcId: string): string | null;
+  /** Agents (other than `agentId`) holding a PC seat. */
+  seatedOthers(agentId: string): number;
+  body(agentId: string): AgentBody | null;
+  clockTime(): number | null;
+  /** Crew messages. */
+  tell(from: AgentBrain, to: string, text: string): Promise<string>;
+  requestHire(from: AgentBrain, request: Parameters<McHost['requestHire']>[0]): Promise<string>;
+  taskReported(from: AgentBrain, report: Parameters<McHost['taskReported']>[0]): void;
+  /** UI events. */
+  say(payload: PayloadOf<'agent.say'>): void;
+  brainChanged(brain: AgentBrain): void;
+  /** The session exited on its own (crash): the supervisor decides. */
+  sessionExited(brain: AgentBrain, error: Error): void;
+  /** Startup assertions failed. */
+  assertionsFailed(brain: AgentBrain, problems: readonly string[]): void;
+  /** Usage accounting per turn. */
+  turnEnded(brain: AgentBrain, result: SDKResultMessage): void;
+  /** Every ToolGate decision (activity log, debugging, the live smoke). */
+  toolObserved?(brain: AgentBrain, observation: GateObservation): void;
+  /** A card went up or ended (approach queue, toasts). */
+  cardRaised(brain: AgentBrain, card: Card): void;
+  /** `mode` per settings ("subscription" unless API-key mode). */
+  authMode(): 'subscription' | 'api_key';
+  /** Re-sit debounce override (tests, the live smoke); default 60 s. */
+  readonly swapDebounceMs?: number | undefined;
+  /** The record changed in a way that must reach `crew.json` now (e.g. the session was created). */
+  recordChanged?(brain: AgentBrain): void;
+}
+
+interface QueuedWake {
+  readonly priority: WakePriority;
+  readonly kind: ControlKind | 'PLAYER';
+  readonly text: string;
+  readonly key: string | undefined;
+  readonly epoch: number | null;
+  readonly seq: number;
+}
+
+/** Strikes before a turn that keeps calling tools after "end your turn" is interrupted. */
+const PENDING_SWAP_STRIKES = 2;
+const TURN_CAP_STRIKES = 3;
+
+/** Seat ends after which the brain stops anyway: no model swap, no compaction. */
+const TERMINAL_ENDS: ReadonlySet<SeatEndReason> = new Set(['death', 'world_end', 'dismiss']);
+
+/** How long a tool call waits for the session's startup assertions before it is denied. */
+const STARTUP_GATE_WAIT_MS = 15_000;
+
+/** Whether `p` settles within `ms`. */
+function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+    void p.then(
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+    );
+  });
+}
+
+/**
+ * Whether an error result means the subscription's usage ran out (the crew sleeps). Context-length errors ("prompt is
+ * too long", "context limit") mention limits too but are not usage.
+ */
+export function isUsageLimitText(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  if (/context|too long|max_tokens|prompt/i.test(text)) return false;
+  return /(usage|rate)[ _-]?limit|hit your (usage )?limit|limit (reached|exceeded)|out of (extra )?usage|quota/i.test(
+    text,
+  );
+}
+
+/** First 1-2 sentences of `text`, at most {@link BUBBLE_MAX_CHARS}. */
+export function bubbleText(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const sentences = flat.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [flat];
+  let out = sentences.slice(0, 2).join('').trim();
+  if (out.length === 0) out = flat;
+  return out.length > BUBBLE_MAX_CHARS ? `${out.slice(0, BUBBLE_MAX_CHARS - 1)}…` : out;
+}
+
+/** One activity line for a tool call ("mine oak_log ×10", "bash: npm test"). */
+export function describeTool(name: string, input: unknown): string {
+  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const short = name.replace(/^mcp__(mc|pc)__/, '');
+  const pick = (...keys: string[]) =>
+    keys.map((k) => i[k]).find((v) => typeof v === 'string' || typeof v === 'number');
+  let detail: unknown;
+  switch (short) {
+    case 'bash':
+      detail = i.description ?? i.command;
+      break;
+    case 'read':
+    case 'write':
+    case 'edit':
+      detail = i.file_path;
+      break;
+    default:
+      detail = pick(
+        'block',
+        'item',
+        'entity',
+        'place',
+        'pc',
+        'query',
+        'title',
+        'to',
+        'pattern',
+        'text',
+        'id',
+        'mode',
+      );
+  }
+  const count = typeof i.count === 'number' ? ` ×${i.count}` : '';
+  const line = detail !== undefined ? `${short}: ${String(detail)}${count}` : short;
+  return singleLine(line, 160);
+}
+
+function tierOf(model: string | null): ModelTier {
+  return model?.includes('opus') ? 'opus' : 'haiku';
+}
+
+const CRITICAL_UNSEAT: Partial<
+  Record<SeatEndReason, { kind: ControlKind; text: (pc: string, player: string) => string }>
+> = {
+  kick: {
+    kind: 'KICKED',
+    text: (pc, p) => `${p} kicked you off ${pc} mid-task. Ask what they want, or do something else.`,
+  },
+  damage: { kind: 'CRITICAL', text: (pc) => `You got up from ${pc} to fight: you were attacked.` },
+  survival: { kind: 'CRITICAL', text: (pc) => `You got up from ${pc} to survive (hunger or a hazard).` },
+  pc_down: { kind: 'PC DOWN', text: (pc) => `${pc} went down; you are no longer seated.` },
+  player_took: { kind: 'KICKED', text: (pc, p) => `${p} took your chair at ${pc} while you were away.` },
+  reservation_expired: {
+    kind: 'CRITICAL',
+    text: (pc) => `Your reservation at ${pc} expired while you were away.`,
+  },
+};
+
+export class AgentBrain {
+  readonly record: AgentRecord;
+  readonly fsm: SeatFSM;
+  readonly plans: PlanCapture;
+  readonly digest = new Digest();
+  readonly #env: BrainEnv;
+  readonly #seatMutex = new Mutex();
+  readonly #log: Logger;
+  #session: AgentSession | null = null;
+  #queue: QueuedWake[] = [];
+  #contexts: string[] = [];
+  #seq = 0;
+  #grant: Grant | null = null;
+  #acquiring: WakePriority | null = null;
+  #trackedMode: PermissionMode = 'default';
+  #status: BrainStatus = 'idle';
+  #offline = false;
+  #assertionsFailed: readonly string[] | null = null;
+  /**
+   * Settles once the current session's `system/init` arrived and its startup assertions ran; null afterwards. The
+   * gate waits for it, so no tool runs before the assertions passed (a hook can reach Node before the init message).
+   */
+  #startupCheck: Promise<void> | null = null;
+  #startupChecked: (() => void) | null = null;
+  /** >0 while a turn boundary is queued or running: no new turn starts until its swap is applied. */
+  #boundaryHold = 0;
+  #activity: string | null = null;
+  #turn = { calls: 0, startedAt: 0, pausedAt: 0 as number, pausedMs: 0, pendingStrikes: 0, capStrikes: 0 };
+  #waitingCards = new Set<string>();
+  readonly #pcEpochs = new Map<PcToolName, number[]>();
+  readonly #jobs = new Map<string, string>();
+  readonly #turnEndWaiters: ((r: SDKResultMessage) => void)[] = [];
+  #debounceTimer: NodeJS.Timeout | null = null;
+  #awayTimer: NodeJS.Timeout | null = null;
+  #stopped = false;
+  #lastEffort: string | null = null;
+  #lastSwap: SwapResult | null = null;
+  #lastPlayerAt = 0;
+  #lastAutonomousAt: number | null = null;
+
+  constructor(record: AgentRecord, env: BrainEnv) {
+    this.record = record;
+    this.#env = env;
+    this.#log = env.log.child({ agentId: record.agentId });
+    this.fsm = new SeatFSM({
+      now: () => env.now(),
+      ...(env.swapDebounceMs !== undefined ? { debounceMs: env.swapDebounceMs } : {}),
+    });
+    const home = env.agentEnv().HOME ?? '';
+    this.plans = new PlanCapture(
+      [home, '/home/cua'].filter((h) => h.length > 0),
+      { now: () => env.now() },
+    );
+  }
+
+  get agentId(): string {
+    return this.record.agentId;
+  }
+
+  get session(): AgentSession | null {
+    return this.#session;
+  }
+
+  get status(): BrainStatus {
+    return this.#status;
+  }
+
+  get activity(): string | null {
+    return this.#activity;
+  }
+
+  get trackedMode(): PermissionMode {
+    return this.#trackedMode;
+  }
+
+  /** The tier the session actually runs (from the stream), haiku before it starts. */
+  get model(): ModelTier {
+    return tierOf(this.#session?.model ?? null);
+  }
+
+  get lastEffort(): string | null {
+    return this.#lastEffort;
+  }
+
+  get lastSwap(): SwapResult | null {
+    return this.#lastSwap;
+  }
+
+  get queuedWakes(): readonly { priority: WakePriority; kind: string; text: string }[] {
+    return this.#queue;
+  }
+
+  get offline(): boolean {
+    return this.#offline;
+  }
+
+  /** Ms since the player last addressed this agent (idle nudges). */
+  idleMs(now = this.#env.now()): number {
+    return now - Math.max(this.#lastPlayerAt, this.record.lastActiveAt ?? 0);
+  }
+
+  get lastAutonomousAt(): number | null {
+    return this.#lastAutonomousAt;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Starts (or resumes) the SDK session. `contexts` are delivered first as `shouldQuery:false` (memory, roster,
+   * restart notice); `wakes` are queued (welcome, kickoff).
+   */
+  start(options: { contexts?: readonly string[]; wakes?: readonly Routed[] } = {}): void {
+    if (this.#stopped) throw new Error('brain stopped');
+    if (this.#session?.started) return;
+    this.#offline = false;
+    // A (re)start re-runs the startup assertions (e.g. Retry after logging in again).
+    this.#assertionsFailed = null;
+    this.#startupChecked?.();
+    const startup = new Promise<void>((resolve) => {
+      this.#startupChecked = resolve;
+    });
+    this.#startupCheck = startup;
+    void startup.then(() => {
+      if (this.#startupCheck === startup) this.#startupCheck = null;
+    });
+    const env = this.#env;
+    const gateHook = createToolGateHook(
+      () => this.gateContext(),
+      (o) => this.#observeGate(o),
+    );
+    // Fail closed: no tool runs before the startup assertions of this session have passed.
+    const gate: HookCallback = async (input, toolUseId, opts) => {
+      const pending = this.#startupCheck;
+      if (pending && !(await settlesWithin(pending, STARTUP_GATE_WAIT_MS))) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'MineVibe is still checking this session; try again in a moment.',
+          },
+        };
+      }
+      return gateHook(input, toolUseId, opts);
+    };
+    const persona = personaPrompt({
+      name: this.record.name,
+      handle: this.record.handle,
+      role: this.record.role,
+      ceo: this.record.ceo,
+      playerName: env.playerName(),
+      nonce: this.record.nonce,
+    });
+    const resume = this.record.sessionStarted ? this.record.sessionId : null;
+    const session = new AgentSession(
+      {
+        agentId: this.agentId,
+        options: buildSessionOptions({
+          claude: env.claude(),
+          env: env.agentEnv(),
+          cwd: env.agentHome(this.agentId),
+          resume,
+          sessionId: this.record.sessionId,
+          persona,
+          mc: createMcServer(this.#mcHost()),
+          pc: createPcServer(this.#pcHost()),
+          profile: WANDERING_PROFILE,
+          stderr: (d) => this.#log.debug({ stderr: d.slice(0, 500) }, 'claude stderr'),
+        }),
+        gate,
+        canUseTool: createInteractionBroker({
+          agentId: this.agentId,
+          store: env.pending,
+          plans: this.plans,
+          canEnterPlan: () => this.fsm.hasPcAccess,
+          seatEpoch: () => this.fsm.epoch,
+          playerName: () => env.playerName(),
+          now: () => env.now(),
+          hooks: {
+            onWaitStart: (card) => this.#onCardWait(card),
+            onWaitEnd: (card) => this.#onCardAnswered(card),
+            setPermissionMode: async (mode) => {
+              this.#trackedMode = mode;
+              await this.#session?.setPermissionMode(mode);
+            },
+            trackMode: (mode) => {
+              this.#trackedMode = mode;
+            },
+          },
+        }),
+        queryFactory: env.queryFactory,
+        log: this.#log,
+        now: () => env.now(),
+      },
+      {
+        onInit: (init, first) => this.#onInit(init, first),
+        onAssistantText: (text) => this.#onText(text),
+        onToolUse: (name, input) => this.#onToolUse(name, input),
+        onTurnEnd: (result) => this.#onTurnEnd(result),
+        onRateLimit: (info) => env.governor.onRateLimit(info as never),
+        onAssistantError: (error) => {
+          if (error === 'rate_limit') env.governor.onRejected();
+          else if (error === 'authentication_failed' || error === 'oauth_org_not_allowed')
+            env.governor.onAuthFailure();
+        },
+        onModelSwitched: (input) =>
+          this.#log.info(
+            { from: input.from_model, to: input.to_model, cacheUsd: input.estimated_cache_write_usd },
+            'model switched',
+          ),
+        onExit: (error) => this.#onExit(error),
+      },
+    );
+    this.#session = session;
+    this.#trackedMode = 'default';
+    session.start();
+    for (const text of options.contexts ?? []) this.context(text);
+    for (const item of this.#contexts.splice(0)) session.send(item, { shouldQuery: false });
+    for (const w of options.wakes ?? []) this.enqueue(w);
+    this.#setStatus();
+    this.#pump();
+  }
+
+  /** Closes the session and cancels everything (dismissal, death, world end, shutdown). */
+  async stop(reason: string, options: { keepCards?: boolean } = {}): Promise<void> {
+    this.#stopped = true;
+    this.#clearTimers();
+    this.#env.scheduler.cancel(this.agentId);
+    this.#grant = null;
+    this.#queue = [];
+    if (!options.keepCards) {
+      this.#env.pending.cleanup(this.agentId, reason, (c) => c.kind === 'question' || c.kind === 'plan');
+    }
+    const session = this.#session;
+    this.#session = null;
+    await session?.close();
+  }
+
+  /** Closes the session without stopping the brain (the supervisor restarts it). */
+  async closeSession(): Promise<void> {
+    const session = this.#session;
+    this.#session = null;
+    this.#grant?.release();
+    this.#grant = null;
+    await session?.close();
+  }
+
+  markOffline(): void {
+    this.#offline = true;
+    this.#grant?.release();
+    this.#grant = null;
+    this.#setStatus();
+  }
+
+  /** Re-evaluates the status (governor and scheduler changes). */
+  refresh(): void {
+    this.#setStatus();
+    this.#pump();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Inputs
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Queues one routed item: a wake, a context line or a digest line. */
+  enqueue(item: Routed): void {
+    if (this.#stopped) return;
+    if (item.mode === 'digest') {
+      this.digest.push(item.line);
+      return;
+    }
+    if (item.mode === 'context') {
+      this.context(item.text);
+      return;
+    }
+    if (item.autonomous) this.#lastAutonomousAt = this.#env.now();
+    if (item.now && this.#session?.inTurn) {
+      void this.#session.interrupt();
+    }
+    // A player message during a running turn folds into it at the next tool boundary (`next`).
+    if (item.priority === 0 && this.#session?.started && this.#session.inTurn && this.#grant && !item.now) {
+      this.#session.send(item.text, { priority: 'next' });
+      return;
+    }
+    const wake: QueuedWake = {
+      priority: item.priority,
+      kind: item.kind,
+      text: item.text,
+      key: item.key,
+      epoch: item.kind === 'KICKOFF' ? this.fsm.epoch : null,
+      seq: ++this.#seq,
+    };
+    if (item.key !== undefined) this.#queue = this.#queue.filter((q) => q.key !== item.key);
+    this.#queue.push(wake);
+    this.#setStatus();
+    this.#pump();
+  }
+
+  /** Adds context without a turn (`shouldQuery:false`); buffered while the session is down. */
+  context(text: string): void {
+    if (this.#session?.started) this.#session.send(text, { shouldQuery: false });
+    else this.#contexts.push(text);
+  }
+
+  /** The player addressed this agent (debounced by the caller). */
+  playerMessage(
+    texts: readonly string[],
+    mode: 'wake' | 'context',
+    chatMode: 'chat' | 'reply' | 'task' | 'interrupt' = 'chat',
+  ): void {
+    const player = this.#env.playerName();
+    this.#lastPlayerAt = this.#env.now();
+    this.#lastAutonomousAt = null;
+    const lead =
+      chatMode === 'task'
+        ? `New task from ${player}`
+        : chatMode === 'interrupt'
+          ? `${player} interrupts you`
+          : player;
+    const body = texts.map((t) => escapeShared(t)).join('\n');
+    const text = `${lead}: ${body}`;
+    if (mode === 'context') {
+      this.context(
+        `${control(this.record.nonce, 'CONTEXT', `${player} said to everyone (not for you to act on unless relevant):`)}\n${body}`,
+      );
+      return;
+    }
+    if (chatMode === 'task')
+      void this.#env.skills.cancelSkill(this.agentId, { reason: 'new task' }).catch(() => {});
+    this.enqueue({ mode: 'wake', priority: 0, kind: 'PLAYER', text, now: chatMode === 'interrupt' });
+  }
+
+  /** A job this agent started (returned `running`) is tracked for [JOB DONE]. */
+  jobLabel(jobId: string): string | undefined {
+    return this.#jobs.get(jobId);
+  }
+
+  forgetJob(jobId: string): void {
+    this.#jobs.delete(jobId);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Gate
+  // ---------------------------------------------------------------------------------------------------------------
+
+  gateContext(): GateContext {
+    const t = this.#turn;
+    const now = this.#env.now();
+    const paused = t.pausedAt > 0 ? now - t.pausedAt : 0;
+    return {
+      agentId: this.agentId,
+      ceo: this.record.ceo,
+      seat: this.fsm.snapshot,
+      occupant: (pcId) => this.#env.occupant(pcId),
+      trackedMode: this.#trackedMode,
+      plans: this.plans,
+      turn: {
+        calls: t.calls,
+        activeMs: t.startedAt > 0 ? Math.max(0, now - t.startedAt - t.pausedMs - paused) : 0,
+      },
+      playerName: this.#env.playerName(),
+      halted: this.#assertionsFailed ? (this.#assertionsFailed[0] ?? 'startup check failed') : null,
+    };
+  }
+
+  #observeGate(o: GateObservation): void {
+    this.#env.toolObserved?.(this, o);
+    this.#turn.calls++;
+    if (o.effort) this.#lastEffort = o.effort;
+    if (o.permissionMode === 'plan' || o.permissionMode === 'default') {
+      // The CLI's own view wins (e.g. after ExitPlanMode it switched itself).
+      this.#trackedMode = o.permissionMode;
+    }
+    const pc = pcToolName(o.toolName);
+    if (o.decision.behavior === 'allow' && pc !== null) {
+      const list = this.#pcEpochs.get(pc) ?? [];
+      list.push(this.fsm.epoch);
+      this.#pcEpochs.set(pc, list);
+    }
+    if (o.decision.behavior === 'deny') {
+      if (o.decision.code === 'pending_swap' && ++this.#turn.pendingStrikes >= PENDING_SWAP_STRIKES) {
+        void this.#session?.interrupt();
+      }
+      if (o.decision.code === 'turn_cap' && ++this.#turn.capStrikes >= TURN_CAP_STRIKES) {
+        void this.#session?.interrupt();
+      }
+    }
+  }
+
+  /** The seat a `pc` handler may use: seated, and the same epoch the gate allowed the call under. */
+  #pcAccess(tool: PcToolName): { pcId: string; epoch: number } | null {
+    const allowedAt = this.#pcEpochs.get(tool)?.shift();
+    const s = this.fsm.snapshot;
+    if (!this.fsm.hasPcAccess || s.pcId === null) return null;
+    if (allowedAt !== undefined && allowedAt !== s.epoch) return null;
+    if (this.#env.occupant(s.pcId) !== this.agentId) return null;
+    return { pcId: s.pcId, epoch: s.epoch };
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Turns and slots
+  // ---------------------------------------------------------------------------------------------------------------
+
+  #pump(): void {
+    const session = this.#session;
+    if (
+      this.#stopped ||
+      this.#offline ||
+      this.#assertionsFailed ||
+      !session?.started ||
+      session.inTurn ||
+      this.#grant ||
+      this.#boundaryHold > 0
+    )
+      return;
+    if (this.#queue.length === 0) {
+      this.#setStatus();
+      return;
+    }
+    const best = Math.min(...this.#queue.map((q) => q.priority)) as WakePriority;
+    if (this.#acquiring !== null) {
+      if (best < this.#acquiring) {
+        this.#acquiring = best;
+        this.#env.scheduler.acquire(this.agentId, best).catch(() => {});
+      }
+      return;
+    }
+    this.#acquiring = best;
+    this.#setStatus();
+    this.#env.scheduler.acquire(this.agentId, best).then(
+      (grant) => {
+        this.#acquiring = null;
+        // The scheduler hands an agent's held grant back, so never release the one a running turn owns.
+        const drop = () => {
+          if (this.#grant !== grant) grant.release();
+          this.#setStatus();
+        };
+        if (this.#stopped || !this.#session?.started) {
+          drop();
+          return;
+        }
+        if (this.#session.inTurn) {
+          // A turn started meanwhile (e.g. an answered card resumed it): it runs on this slot.
+          if (this.#grant && this.#grant !== grant) grant.release();
+          else this.#grant = grant;
+          this.#setStatus();
+          return;
+        }
+        if (this.#queue.length === 0 || this.#boundaryHold > 0 || this.#assertionsFailed) {
+          // A turn boundary is swapping the model: it pumps again when done.
+          drop();
+          return;
+        }
+        this.#grant = grant;
+        this.#startTurn();
+      },
+      () => {
+        this.#acquiring = null;
+      },
+    );
+  }
+
+  #startTurn(): void {
+    const session = this.#session;
+    if (!session) return;
+    const epoch = this.fsm.epoch;
+    const items = this.#queue
+      .filter((q) => q.epoch === null || q.epoch === epoch)
+      .sort((a, b) => a.priority - b.priority || a.seq - b.seq);
+    this.#queue = [];
+    if (items.length === 0) {
+      this.#grant?.release();
+      this.#grant = null;
+      this.#setStatus();
+      return;
+    }
+    const parts: string[] = [];
+    const digest = this.digest.take(this.record.nonce);
+    if (digest) parts.push(digest);
+    for (const item of items) parts.push(item.text);
+    this.#turn = {
+      calls: 0,
+      startedAt: this.#env.now(),
+      pausedAt: 0,
+      pausedMs: 0,
+      pendingStrikes: 0,
+      capStrikes: 0,
+    };
+    this.record.lastActiveAt = this.#env.now();
+    // Gate epochs of calls whose handler never ran (e.g. rejected input) must not leak into this turn.
+    this.#pcEpochs.clear();
+    session.send(parts.join('\n\n'));
+    this.bark(BARKS.wake);
+    this.#setStatus();
+  }
+
+  #onTurnEnd(result: SDKResultMessage): void {
+    this.#env.turnEnded(this, result);
+    for (const w of this.#turnEndWaiters.splice(0)) w(result);
+    if (result.is_error && result.subtype === 'success' && isUsageLimitText(result.result)) {
+      this.#env.governor.onRejected();
+    }
+    const more = (result.queued_turn_count ?? 0) > 0;
+    if (!more) {
+      this.#grant?.release();
+      this.#grant = null;
+      this.#pcEpochs.clear();
+    }
+    this.#turn = {
+      calls: 0,
+      startedAt: more ? this.#env.now() : 0,
+      pausedAt: 0,
+      pausedMs: 0,
+      pendingStrikes: 0,
+      capStrikes: 0,
+    };
+    if (!more) this.#activity = null;
+    this.#setStatus();
+    if (!more) void this.#runBoundary();
+  }
+
+  /**
+   * Queues the turn boundary on the seat mutex. From now until it ran, no new turn starts (#pump is held), so a wake
+   * that arrives meanwhile can never start a turn before the swap, the plan mode and the kickoff are in place.
+   */
+  #runBoundary(): Promise<void> {
+    this.#boundaryHold++;
+    return this.#seatMutex
+      .run(() => this.#boundary())
+      .catch((err: unknown) => this.#log.error({ err }, 'turn boundary failed'))
+      .finally(() => {
+        this.#boundaryHold--;
+        this.#pump();
+      });
+  }
+
+  #onCardWait(card: Card): void {
+    this.#waitingCards.add(card.id);
+    if (this.#turn.pausedAt === 0) this.#turn.pausedAt = this.#env.now();
+    this.#grant?.release();
+    this.#grant = null;
+    this.bark(BARKS.question);
+    this.#env.cardRaised(this, card);
+    this.#setStatus();
+  }
+
+  async #onCardAnswered(card: Card): Promise<void> {
+    this.#waitingCards.delete(card.id);
+    if (this.#turn.pausedAt > 0) {
+      this.#turn.pausedMs += this.#env.now() - this.#turn.pausedAt;
+      this.#turn.pausedAt = 0;
+    }
+    this.#setStatus();
+    // An answered card resumes at P0 on the interactive lane.
+    const session = this.#session;
+    const grant = await this.#env.scheduler.acquire(this.agentId, 0);
+    if (this.#stopped || this.#session !== session || !session?.inTurn) {
+      // The turn ended while the slot was coming (interrupt, kick, crash, stop): nothing runs on it.
+      if (this.#grant !== grant) grant.release();
+      this.#setStatus();
+      this.#pump();
+      return;
+    }
+    if (this.#grant && this.#grant !== grant) grant.release();
+    else this.#grant = grant;
+    this.#setStatus();
+  }
+
+  /** A card of this agent ended without its waiter continuing (cleanup) or was answered. */
+  cardGone(cardId: string): void {
+    if (this.#waitingCards.delete(cardId)) this.#setStatus();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Stream callbacks
+  // ---------------------------------------------------------------------------------------------------------------
+
+  #onInit(init: SDKSystemMessage, first: boolean): void {
+    if (!first || !this.#session) return;
+    // From now on a restart resumes this session (persisted at once: a crash must not re-create it).
+    if (!this.record.sessionStarted) {
+      this.record.sessionStarted = true;
+      this.#env.recordChanged?.(this);
+    }
+    const session = this.#session;
+    const checked = this.#startupChecked;
+    void session
+      .checkStartup(init, this.#env.authMode())
+      .then(
+        (problems) => {
+          if (problems.length > 0) this.#halt(session, problems);
+        },
+        (err: unknown) =>
+          this.#halt(session, [`startup check failed (${err instanceof Error ? err.message : String(err)})`]),
+      )
+      .finally(() => checked?.());
+  }
+
+  /**
+   * Startup assertions failed (PLAN §6.1): the brain stays asleep. The running turn is interrupted, the claude process
+   * closed (no more spending), every tool call is denied and nothing new starts until Retry starts a fresh session.
+   */
+  #halt(session: AgentSession, problems: readonly string[]): void {
+    this.#assertionsFailed = problems;
+    this.#log.error({ problems }, 'startup assertions failed');
+    this.#env.assertionsFailed(this, problems);
+    this.#setStatus();
+    if (this.#session !== session) return;
+    void session
+      .interrupt()
+      .then(() => (this.#session === session ? this.closeSession() : undefined))
+      .catch((err: unknown) => this.#log.warn({ err }, 'closing the halted session failed'))
+      .finally(() => this.#setStatus());
+  }
+
+  #onText(text: string): void {
+    const trimmed = text.trim();
+    this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed });
+    if (/^\(?silent\)?\.?$/i.test(trimmed)) return;
+    const bubble = bubbleText(trimmed);
+    if (bubble.length === 0) return;
+    this.#env.say({
+      agentId: this.agentId,
+      text: bubble,
+      style: 'speech',
+      ttlMs: Math.min(20_000, Math.max(4_000, bubble.length * 70)),
+    });
+  }
+
+  #onToolUse(name: string, input: unknown): void {
+    const line = describeTool(name, input);
+    this.#activity = line;
+    this.#env.transcripts.append(this.agentId, { kind: 'activity', text: line });
+    this.#env.brainChanged(this);
+  }
+
+  #onExit(error: Error | null): void {
+    this.#grant?.release();
+    this.#grant = null;
+    this.#acquiring = null;
+    for (const w of this.#turnEndWaiters.splice(0))
+      w({ subtype: 'error_during_execution' } as SDKResultMessage);
+    if (!this.#stopped) {
+      // A crash: questions are re-asked (stale), plans die with the turn.
+      this.#env.pending.markStale(this.agentId);
+      this.#env.pending.cleanup(
+        this.agentId,
+        'The brain restarted.',
+        (c, e) => c.kind === 'plan' && !e.stale,
+      );
+    }
+    this.#waitingCards.clear();
+    if (error && !this.#stopped) {
+      this.#log.warn({ err: error.message }, 'session ended unexpectedly');
+      if (/No conversation found/i.test(error.message)) {
+        // The session to resume never got written (e.g. the first launch failed): start a new one.
+        this.record.sessionStarted = false;
+        this.record.sessionId = randomUUID();
+      }
+      this.#session = null;
+      this.#env.sessionExited(this, error);
+    }
+    this.#setStatus();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Status
+  // ---------------------------------------------------------------------------------------------------------------
+
+  #setStatus(): void {
+    const prev = this.#status;
+    const session = this.#session;
+    for (const id of [...this.#waitingCards])
+      if (this.#env.pending.get(id) === undefined) this.#waitingCards.delete(id);
+    let next: BrainStatus;
+    if (this.#offline) next = 'offline';
+    else if (this.#env.governor.mode === 'asleep' || this.#assertionsFailed) next = 'asleep';
+    else if (this.#waitingCards.size > 0) next = 'waiting_player';
+    else if (session?.inTurn && this.#grant) next = 'thinking';
+    else if (this.#queue.length > 0 || this.#acquiring !== null) next = 'queued';
+    else next = 'idle';
+    this.#status = next;
+    if (next !== prev) this.#env.brainChanged(this);
+  }
+
+  /** The `agent.brain` payload. */
+  brainPayload(): PayloadOf<'agent.brain'> {
+    return {
+      agentId: this.agentId,
+      model: this.model,
+      status: this.#status,
+      activity: this.#activity,
+      autonomy: this.record.autonomy,
+      planFirst: this.record.planFirst,
+      pingInstead: this.record.pingInstead,
+    };
+  }
+
+  bark(bark: BarkKey): void {
+    this.#env.say({ agentId: this.agentId, bark, style: 'bark', ttlMs: 3000 });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Seats (PLAN §6.3)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The turn boundary: swap model/effort when the seat asks for it, then finish pending seat transitions (and queue
+   * the kickoff after a sit). Runs under the seat mutex.
+   */
+  async #boundary(): Promise<void> {
+    const session = this.#session;
+    if (!session?.started || this.#stopped) return;
+    if (session.inTurn) return;
+    this.#boundaryHold++;
+    try {
+      const s = this.fsm.snapshot;
+      // A dying, dismissed or ending brain is about to stop: no swap, and never a compaction.
+      const ending = s.lastEnd !== null && TERMINAL_ENDS.has(s.lastEnd) && !this.fsm.holdsPcSeat;
+      const target = this.fsm.wantsOpus(this.#env.now()) ? SEATED_PROFILE : WANDERING_PROFILE;
+      if (!ending && tierOf(session.model) !== target.tier) {
+        if (target.tier === 'haiku') await this.#contextGuard();
+        if (this.#session !== session || !session.started || session.inTurn) return;
+        try {
+          this.#lastSwap = await session.applyProfile(target);
+          this.#log.info({ swap: this.#lastSwap }, 'brain swapped');
+        } catch (err) {
+          this.#log.error({ err }, 'applyFlagSettings failed');
+        }
+        this.#env.brainChanged(this);
+      }
+      // Sat at a PC: plan mode and the bark also apply to a quick re-sit that needed no swap (debounce).
+      if (this.fsm.state === 'seated_pending_swap' && this.fsm.snapshot.kind === 'pc') {
+        if (this.record.planFirst && this.#trackedMode !== 'plan') await this.#setMode('plan');
+        this.bark(BARKS.satAtPc);
+      }
+      if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== 'default')
+        await this.#setMode('default');
+      const t = this.fsm.boundary();
+      if (t?.to === 'seated') await this.#queueKickoff(t.snapshot);
+      if (t?.to === 'wandering') this.plans.clear();
+      this.#scheduleDebounce();
+    } finally {
+      this.#boundaryHold--;
+      if (this.#boundaryHold === 0) queueMicrotask(() => this.#pump());
+    }
+  }
+
+  async #setMode(mode: PermissionMode): Promise<void> {
+    this.#trackedMode = mode;
+    try {
+      await this.#session?.setPermissionMode(mode);
+    } catch (err) {
+      this.#log.warn({ err, mode }, 'setPermissionMode failed');
+    }
+  }
+
+  /**
+   * Before Opus→Haiku: compact when the context exceeds ~70% of Haiku's window [U S3]. The `/compact` result always
+   * ends its turn (a command), and the wait is capped so the seat mutex can never wedge on it.
+   */
+  async #contextGuard(): Promise<void> {
+    const session = this.#session;
+    const used = session?.lastUsage?.contextTokens ?? 0;
+    if (!session || used <= CONTEXT_GUARD_RATIO * HAIKU_CONTEXT_TOKENS) return;
+    this.#log.info({ used }, 'compacting before the downswap');
+    const ended = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.#log.warn('compaction did not finish in time; the swap waits for its turn to end');
+        resolve();
+      }, CONTEXT_GUARD_TIMEOUT_MS);
+      timer.unref?.();
+      this.#turnEndWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    session.send('/compact', { command: true });
+    await ended;
+  }
+
+  #scheduleDebounce(): void {
+    if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
+    this.#debounceTimer = null;
+    const s = this.fsm.snapshot;
+    const now = this.#env.now();
+    if (this.model !== 'opus' || s.debounceUntil <= now || this.fsm.holdsPcSeat) return;
+    this.#debounceTimer = setTimeout(
+      () => {
+        this.#debounceTimer = null;
+        if (this.#session?.inTurn) return; // the turn's own boundary swaps
+        void this.#runBoundary();
+      },
+      s.debounceUntil - now + 5,
+    );
+    this.#debounceTimer.unref?.();
+  }
+
+  async #queueKickoff(seat: SeatSnapshot): Promise<void> {
+    if (seat.pcId === null) return;
+    const pcId = seat.pcId;
+    const env = this.#env;
+    let info: Awaited<ReturnType<PcApi['info']>>;
+    try {
+      info = await env.pcs.info(pcId);
+    } catch (err) {
+      this.#log.warn({ err, pcId }, 'kickoff: PC info failed');
+      return;
+    }
+    const primary = info.mounts.find((m) => m.mode === 'rw') ?? info.mounts[0];
+    let claudeMd: { path: string; text: string } | null = null;
+    if (primary) {
+      const path = `${primary.hostPath.replace(/\/+$/, '')}/CLAUDE.md`;
+      try {
+        const res = await env.pcs.readFile(pcId, { path, limit: 400 });
+        if (res.content.trim().length > 0) claudeMd = { path, text: res.content };
+      } catch {
+        // no CLAUDE.md
+      }
+    }
+    const handoffs = [
+      ...(await env.handoffs.list(pcId)),
+      ...(primary ? await env.handoffs.list(primary.hostPath) : []),
+    ].sort((a, b) => a.at - b.at);
+    this.enqueue({
+      mode: 'wake',
+      priority: 1,
+      kind: 'KICKOFF',
+      key: 'kickoff',
+      text: kickoffMessage({
+        nonce: this.record.nonce,
+        playerName: env.playerName(),
+        pc: info,
+        task: seat.purpose,
+        planFirst: this.record.planFirst,
+        claudeMd,
+        handoffs,
+      }),
+    });
+  }
+
+  /** `mcp__mc__sit_at_pc` (PLAN §6.3 "Sitting"). */
+  sitAtPc(request: { pcId: string; purpose: string; waitMs: number }): Promise<string> {
+    const env = this.#env;
+    return this.#seatMutex
+      .run(async () => {
+        if (this.fsm.state !== 'wandering' && this.fsm.state !== 'standing_pending_swap') {
+          throw new ApiError('SEATED', 'You are already seated or on your way to a chair.');
+        }
+        let status: string;
+        try {
+          status = (await env.pcs.info(request.pcId)).status;
+        } catch (err) {
+          throw new ApiError(
+            'PC_UNKNOWN',
+            `There is no PC called ${request.pcId}. ${err instanceof Error ? err.message : ''}`.trim(),
+          );
+        }
+        if (status !== 'running') throw new ApiError('PC_DOWN', `${request.pcId} is ${status}, not running.`);
+        if (env.seatedOthers(this.agentId) >= MAX_SEATED) {
+          throw new ApiError(
+            'SEAT_CAP',
+            `${MAX_SEATED} agents already sit at PCs; wait for one to stand up.`,
+          );
+        }
+        const occupant = env.occupant(request.pcId);
+        if (occupant === 'player')
+          throw new ApiError('OCCUPIED_BY_PLAYER', `${env.playerName()} sits at ${request.pcId}.`);
+        if (occupant !== null && occupant !== this.agentId)
+          throw new ApiError('RESERVED', `${request.pcId} is taken.`);
+        const jobId = `sit-${randomUUID().slice(0, 8)}`;
+        const t = this.fsm.beginSit({ kind: 'pc', pcId: request.pcId }, { purpose: request.purpose, jobId });
+        try {
+          await env.skills.seat({
+            agentId: this.agentId,
+            seatEpoch: t.epoch,
+            target: { kind: 'pc', pcId: request.pcId },
+            purpose: singleLine(request.purpose, 200),
+            jobId,
+          });
+        } catch (err) {
+          this.fsm.sitFailed();
+          throw err;
+        }
+        return jobId;
+      })
+      .then(async (jobId) => {
+        let end: Awaited<ReturnType<SkillApi['awaitJob']>> | null = null;
+        try {
+          end = await env.skills.awaitJob(jobId, request.waitMs);
+        } catch {
+          end = null;
+        }
+        if (end === null) {
+          this.#jobs.set(jobId, `sit at ${request.pcId}`);
+          return `Walking to ${request.pcId} (job ${jobId}). You'll get [SEATED] when you sit: end your turn now.`;
+        }
+        return this.#seatSettled(jobId, end.status === 'done', end.error?.msg ?? end.status);
+      });
+  }
+
+  /** The sit job ended (from the tool, or later from `skill.result`). */
+  async #seatSettled(jobId: string, ok: boolean, detail: string): Promise<string> {
+    return this.#seatMutex.run(async () => {
+      const s = this.fsm.snapshot;
+      if (s.jobId !== jobId || s.state !== 'walking_to_seat') {
+        const seated = s.jobId === jobId && (s.state === 'seated_pending_swap' || s.state === 'seated');
+        if (ok && seated)
+          return `Seated at ${s.pcId}. End your turn now; your PC session starts with your next turn.`;
+        return ok ? 'You are no longer on your way to that chair.' : `Could not sit: ${detail}.`;
+      }
+      if (!ok) {
+        this.fsm.sitFailed();
+        throw new ApiError('UNREACHABLE', `Could not sit at ${s.pcId}: ${detail}.`);
+      }
+      this.fsm.arrived();
+      if (!this.#session?.inTurn) await this.#boundary();
+      this.#pump();
+      return `Seated at ${s.pcId}. End your turn now; your PC session starts with your next turn.`;
+    });
+  }
+
+  /** A sit job that outlived its tool call ended. */
+  async sitJobEnded(jobId: string, ok: boolean, detail: string): Promise<void> {
+    this.#jobs.delete(jobId);
+    try {
+      const text = await this.#seatSettled(jobId, ok, detail);
+      if (!ok)
+        this.enqueue({
+          mode: 'wake',
+          priority: 3,
+          kind: 'JOB FAILED',
+          text: control(this.record.nonce, 'JOB FAILED', text),
+        });
+    } catch (err) {
+      this.enqueue({
+        mode: 'wake',
+        priority: 3,
+        kind: 'JOB FAILED',
+        text: control(this.record.nonce, 'JOB FAILED', err instanceof Error ? err.message : String(err)),
+      });
+    }
+  }
+
+  /** The mod says the body sat down (`pc.seat`). */
+  async seatedByMod(pcId: string, epoch: number | undefined): Promise<void> {
+    await this.#seatMutex.run(async () => {
+      const s = this.fsm.snapshot;
+      if (epoch !== undefined && epoch < s.epoch) {
+        // A late pc.seat for a sit this agent already gave up (stood up, cancelled the walk, kicked): the seat is
+        // over for Node, so stand the body up instead of re-seating a brain that thinks it wanders.
+        this.#log.info({ pcId, epoch, current: s.epoch }, 'stale pc.seat: standing the body up');
+        await this.#env.skills
+          .unseat({ agentId: this.agentId, seatEpoch: epoch, reason: 'stand', keepReservation: false })
+          .catch((err: unknown) => this.#log.warn({ err }, 'unseat (stale seat) failed'));
+        return;
+      }
+      if (s.state === 'walking_to_seat' && s.pcId === pcId && (epoch === undefined || epoch === s.epoch)) {
+        this.fsm.arrived();
+        if (!this.#session?.inTurn) await this.#boundary();
+        return;
+      }
+      if (s.state === 'wandering' && epoch !== undefined) {
+        // Worker restart: the mod still has the agent in the chair.
+        this.fsm.restoreSeated(pcId, epoch);
+        this.context(
+          control(this.record.nonce, 'RESTARTED', `MineVibe restarted; you are still seated at ${pcId}.`),
+        );
+        if (!this.#session?.inTurn) await this.#boundary();
+      }
+    });
+    this.#pump();
+  }
+
+  /** `mcp__mc__stand_up`. */
+  standUp(): Promise<string> {
+    return this.#seatMutex.run(async () => {
+      const s = this.fsm.snapshot;
+      if (s.state === 'wandering' || s.state === 'standing_pending_swap') return 'You are not seated.';
+      if (s.state === 'walking_to_seat') {
+        if (s.jobId)
+          await this.#env.skills
+            .cancelSkill(this.agentId, { jobId: s.jobId, reason: 'stand_up' })
+            .catch(() => []);
+        this.fsm.stand('stand');
+        return 'Cancelled: you are no longer walking to the chair.';
+      }
+      await this.#env.skills
+        .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'stand', keepReservation: false })
+        .catch((err: unknown) => this.#log.warn({ err }, 'unseat failed'));
+      this.fsm.stand('stand');
+      if (!this.#session?.inTurn) await this.#boundary();
+      return s.kind === 'pc'
+        ? `Stood up from ${s.pcId}. Your PC tools stop now; tell ${this.#env.playerName()} the result if you haven't.`
+        : 'You left the meeting chair.';
+    });
+  }
+
+  /**
+   * The seat ended without the agent asking (`pc.unseat` from the mod: kick, damage, survival, PC down, player took
+   * the chair, reservation expired, death, world end, dismissal). PLAN §6.3: interrupt, kill the agent's tagged guest
+   * processes, purge the stale kickoff, deny the pending plan card, swap to Haiku and wake with a critical notice.
+   */
+  async seatLost(reason: SeatEndReason, options: { releaseReservation?: boolean } = {}): Promise<void> {
+    await this.#seatMutex.run(async () => {
+      const before = this.fsm.snapshot;
+      if (before.state === 'wandering' || before.state === 'standing_pending_swap') return;
+      if (before.state === 'away_from_seat' && reason === 'away') return;
+      // The away timer fired but the agent sat back down meanwhile.
+      if (reason === 'reservation_expired' && before.state !== 'away_from_seat') return;
+      if (options.releaseReservation) {
+        // Node's own 3-minute expiry: the mod still holds the chair ("BRB") until told otherwise.
+        await this.#env.skills
+          .unseat({
+            agentId: this.agentId,
+            seatEpoch: before.epoch,
+            reason: 'reservation_expired',
+            keepReservation: false,
+          })
+          .catch((err: unknown) => this.#log.warn({ err }, 'unseat (release reservation) failed'));
+      }
+      this.fsm.stand(reason);
+      if (this.#awayTimer) clearTimeout(this.#awayTimer);
+      this.#awayTimer = null;
+      if (reason === 'stand') {
+        if (!this.#session?.inTurn) await this.#boundary();
+        return;
+      }
+      if (this.#session?.inTurn) await this.#session.interrupt();
+      if (before.kind === 'pc' && before.pcId) {
+        await this.#env.pcs
+          .kill(before.pcId, { tag: `${this.agentId}:${before.epoch}` })
+          .catch((err: unknown) => this.#log.warn({ err }, 'kill tagged processes failed'));
+      }
+      this.#queue = this.#queue.filter((q) => q.kind !== 'KICKOFF');
+      this.#env.pending.cleanup(this.agentId, `Not seated any more (${reason}).`, (c) => c.kind === 'plan');
+      this.plans.clear();
+      const notice = CRITICAL_UNSEAT[reason];
+      if (reason === 'kick') this.bark(BARKS.kicked);
+      if (notice && before.pcId) {
+        this.enqueue({
+          mode: 'wake',
+          priority: 2,
+          kind: notice.kind,
+          key: `unseat:${reason}`,
+          text: control(this.record.nonce, notice.kind, notice.text(before.pcId, this.#env.playerName())),
+        });
+      }
+      if (!this.#session?.inTurn) await this.#boundary();
+    });
+    this.#pump();
+  }
+
+  /** `seated → away_from_seat`: the agent walks over to ask the player (chair stays reserved, model stays Opus). */
+  async goAway(): Promise<boolean> {
+    return this.#seatMutex.run(async () => {
+      if (this.fsm.state !== 'seated') return false;
+      const s = this.fsm.snapshot;
+      await this.#env.skills
+        .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'away', keepReservation: true })
+        .catch((err: unknown) => this.#log.warn({ err }, 'unseat(away) failed'));
+      const t = this.fsm.goAway();
+      const ms = (t.snapshot.awayExpiresAt ?? this.#env.now()) - this.#env.now();
+      this.#awayTimer = setTimeout(
+        () => {
+          this.#awayTimer = null;
+          void this.seatLost('reservation_expired', { releaseReservation: true });
+        },
+        Math.max(0, ms),
+      );
+      this.#awayTimer.unref?.();
+      return true;
+    });
+  }
+
+  /** The answer came; walk back and sit with no swap (`away_from_seat → seated`). */
+  async comeBack(): Promise<boolean> {
+    return this.#seatMutex.run(async () => {
+      if (this.fsm.state !== 'away_from_seat') return false;
+      const s = this.fsm.snapshot;
+      if (this.#awayTimer) clearTimeout(this.#awayTimer);
+      this.#awayTimer = null;
+      if (s.pcId) {
+        await this.#env.skills
+          .seat({ agentId: this.agentId, seatEpoch: s.epoch, target: { kind: 'pc', pcId: s.pcId } })
+          .catch((err: unknown) => this.#log.warn({ err }, 'seat(back) failed'));
+      }
+      this.fsm.comeBack();
+      return true;
+    });
+  }
+
+  /** App restart, death, dismissal or world end: unseated with no swap debounce. */
+  async resetSeat(reason: SeatEndReason): Promise<void> {
+    await this.#seatMutex.run(async () => {
+      if (this.fsm.state === 'wandering') return;
+      this.fsm.reset(reason);
+      this.plans.clear();
+      if (!this.#session?.inTurn) await this.#boundary();
+    });
+  }
+
+  #clearTimers(): void {
+    if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
+    if (this.#awayTimer) clearTimeout(this.#awayTimer);
+    this.#debounceTimer = null;
+    this.#awayTimer = null;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Tool hosts
+  // ---------------------------------------------------------------------------------------------------------------
+
+  #mcHost(): McHost {
+    const env = this.#env;
+    return {
+      agentId: this.agentId,
+      skills: env.skills,
+      org: env.org,
+      actor: () => agentActor(this.agentId, this.record.ceo),
+      playerName: () => env.playerName(),
+      footer: () => this.footer(),
+      here: () => {
+        const body = env.body(this.agentId);
+        if (!body) return null;
+        const place: Place = {
+          pos: { x: Math.floor(body.pos.x), y: Math.floor(body.pos.y), z: Math.floor(body.pos.z) },
+          dim: body.dim,
+        };
+        return place;
+      },
+      clockTime: () => env.clockTime(),
+      trackJob: (jobId, label) => {
+        this.#jobs.set(jobId, label);
+      },
+      say: (text) => {
+        const bubble = bubbleText(text);
+        env.say({
+          agentId: this.agentId,
+          text: bubble,
+          style: 'speech',
+          ttlMs: Math.min(20_000, Math.max(4_000, bubble.length * 70)),
+        });
+        env.transcripts.append(this.agentId, { kind: 'agent', text });
+      },
+      tell: (to, text) => env.tell(this, to, text),
+      remember: async (note) => {
+        const clock = env.clockTime();
+        const stamp =
+          clock !== null
+            ? `[${ticksToGameTime(clock)}]`
+            : `[${new Date(env.now()).toISOString().slice(0, 16)}]`;
+        const res = await env.memory.remember(this.agentId, note, stamp);
+        return res.dropped > 0
+          ? `Remembered. (Memory is full: ${res.dropped} oldest note(s) dropped.)`
+          : 'Remembered.';
+      },
+      requestHire: (request) => env.requestHire(this, request),
+      sitAtPc: (request) => this.sitAtPc(request),
+      standUp: () => this.standUp(),
+      wait: async (ms, jobId) => {
+        if (jobId) {
+          try {
+            const end = await env.skills.awaitJob(jobId, ms);
+            this.#jobs.delete(jobId);
+            return `Job ${jobId} ${end.status}.`;
+          } catch {
+            return `Waited ${Math.round(ms / 1000)} s; job ${jobId} is still running.`;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, ms).unref?.());
+        return `Waited ${Math.round(ms / 1000)} s.`;
+      },
+      taskReported: (report) => env.taskReported(this, report),
+    };
+  }
+
+  #pcHost(): PcHost {
+    const env = this.#env;
+    return {
+      agentId: this.agentId,
+      pcs: env.pcs,
+      plans: this.plans,
+      handoffs: env.handoffs,
+      access: (tool) => this.#pcAccess(tool),
+      authorName: () => this.record.name,
+    };
+  }
+
+  /** The ~25-token status footer of every `mc` result. */
+  footer(): string | null {
+    const body = this.#env.body(this.agentId);
+    if (!body) return null;
+    const clock = this.#env.clockTime();
+    const parts = [
+      `HP ${Math.round(body.hp)}/${Math.round(body.maxHp)}`,
+      `food ${body.food}/20`,
+      clock !== null ? ticksToGameTime(clock) : null,
+      `at ${Math.floor(body.pos.x)},${Math.floor(body.pos.y)},${Math.floor(body.pos.z)}`,
+      body.job ? `job ${body.job.skill}` : 'no job',
+      body.inCombat ? 'IN COMBAT' : null,
+    ].filter((p): p is string => p !== null);
+    return `[${parts.join(' · ')}]`;
+  }
+}
