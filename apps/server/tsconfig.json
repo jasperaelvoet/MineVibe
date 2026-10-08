@@ -6,5 +6,5 @@
     "types": ["node"],
     "customConditions": ["source"]
   },
-  "include": ["src", "test", "scripts", "vitest.config.ts", "package.json"]
+  "include": ["src", "test", "eval", "scripts", "vitest.config.ts", "package.json"]
 }
