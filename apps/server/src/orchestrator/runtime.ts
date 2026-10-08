@@ -357,15 +357,6 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
         spawnPlace: () => doorOfOpenWorld(),
         // The org module delivers calendar tasks through the CrewHooks (modules.ts).
         calendarWakes: false,
-        approveCalendarEvent: async (eventId) => {
-          // contracts/OrgApi has no approve call yet; an org module that offers one is used (I1c).
-          const calendar = orgModule.orgApi.calendar as typeof orgModule.orgApi.calendar & {
-            approve?: (actor: { kind: 'player' }, eventId: string) => Promise<void>;
-          };
-          if (!calendar.approve)
-            throw new ApiError('NOT_SUPPORTED', 'Approving events is not available yet.');
-          await calendar.approve({ kind: 'player' }, eventId);
-        },
         ...options.agents?.manager,
       },
     });

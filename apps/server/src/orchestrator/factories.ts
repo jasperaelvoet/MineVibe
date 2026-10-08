@@ -7,14 +7,12 @@
  *   import { createPcModule } from '../pcs/module.js';
  *   import { createOrgModule } from '../org/module.js';
  *
- * and nothing else changes. Until then the stand-ins run: no PCs, and in-memory org services.
+ * and nothing else changes. The org module is merged; until the PC module is, the null PC module runs (no PCs).
  */
 
+import { createOrgModule } from '../org/module.js';
 import type { CreateOrgModule, CreatePcModule } from './modules.js';
-import {
-  createMemoryOrgModule as createOrgModule,
-  createNullPcModule as createPcModule,
-} from './placeholderModules.js';
+import { createNullPcModule as createPcModule } from './placeholderModules.js';
 
 export const defaultPcModule: CreatePcModule = createPcModule;
 export const defaultOrgModule: CreateOrgModule = createOrgModule;
