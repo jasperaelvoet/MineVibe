@@ -16,8 +16,12 @@ import {
 import { ManualClock } from '../../helpers/manualClock.js';
 
 const tmpDirs: string[] = [];
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+const running: OrgServices[] = [];
+afterEach(async () => {
+  // Let pending Codex writes settle before the folder goes, or rm races them (ENOTEMPTY under load).
+  for (const o of running.splice(0)) await o.stop().catch(() => {});
+  for (const d of tmpDirs.splice(0))
+    rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 function crewMember(agentId: string, name: string, extra: Partial<OrgCrewMember> = {}): OrgCrewMember {
@@ -91,6 +95,7 @@ async function harness() {
       approachEffects: { approach: (a, c) => approaches.push(`${a} ${c ?? 'null'}`) },
     },
   });
+  running.push(org);
   await org.start('world-1');
   org.onGameClock(gameTicksAt(2, 20)); // Day 2 20:00
   return {
@@ -353,9 +358,12 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
     h.org.onGameClock(gameTicksAt(7, 12));
     expect(h.org.codexGet('log-days-1-7')).toBeNull();
     h.org.onGameClock(gameTicksAt(9, 7)); // slept past the start of Day 8
-    await vi.waitFor(() => expect(h.org.codexGet('log-days-1-7')).not.toBeNull());
+    // The roll-up page is written first and the originals removed after it: wait for both.
+    await vi.waitFor(() => {
+      expect(h.org.codexGet('log-days-1-7')).not.toBeNull();
+      expect(h.org.codexGet('bram-diary-two')).toBeNull();
+    });
     expect(h.org.codexGet('log-days-1-7')?.body).toContain('### Bram diary two (Bram, Day 2)');
-    expect(h.org.codexGet('bram-diary-two')).toBeNull();
   });
 
   it('keeps meeting attendees from walking to the player while the meeting gathers', async () => {

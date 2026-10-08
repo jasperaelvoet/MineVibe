@@ -183,7 +183,8 @@ describe('N4: the engine lock excludes, and a process holds one lease', () => {
       }),
     ]);
     expect(max()).toBe(1);
-    expect(order).toEqual([111, 222]);
+    // Both get in, one after the other; which goes first depends on scheduling under load.
+    expect([...order].sort()).toEqual([111, 222]);
     // Nothing is left behind: no lock, no tombstone, no temp file.
     expect(readdirSync(dir)).toEqual([]);
   });
