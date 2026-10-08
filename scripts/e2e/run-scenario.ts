@@ -259,8 +259,9 @@ function screenshot(name: string): string | null {
 }
 
 /**
- * The CEO is plan-first, so sitting at a PC starts in plan mode and its ExitPlanMode becomes a plan card: the harness
- * approves it as the player would (the card's Approve, `plan.decision`), through the mod's UI transport.
+ * A plan-first agent's PC session starts in plan mode and its ExitPlanMode becomes a plan card: the harness approves it
+ * as the player would (the card's Approve, `plan.decision`), through the mod's UI transport. Plan-first is off for every
+ * role unless the player turns it on (USER DECISION 2026-10-08), so a default crew raises no plan cards.
  */
 function approvePlans(p: Json): void {
   if (!autoApprovePlans || !rt?.debug) return;

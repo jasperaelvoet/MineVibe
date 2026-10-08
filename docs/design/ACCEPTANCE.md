@@ -28,7 +28,8 @@ node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripte
 - the runtime's own events: each turn's model (`message.model`), each tool call's model and effort, brain swaps, PC
   status.
 
-It approves plan cards as the player would (the CEO is plan-first, so sitting at a PC starts in plan mode), stops
+It approves plan cards as the player would (runs 1-4 predate the 2026-10-08 user decision, when the CEO was plan-first
+by default; plan-first is now off unless the player turns it on, so a default crew raises none), stops
 prompting the crew at `--max-turns`, captures screenshots of the game window only, and writes everything to
 `scripts/e2e/out/<run>/` (`result.json`, `summary.md`, `events.jsonl` with every bridge message, `samples.jsonl`
 with the client snapshots, `server.log`, the game's logs, screenshots). `--crew scripted` runs boot, a chat and UI
