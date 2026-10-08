@@ -104,15 +104,19 @@ export class UiHub {
     const b = this.#bridge;
     this.#offs.push(
       b.handle('chat.send', (m) => this.#chatSend(m)),
-      b.handle('pending.answer', (m) => this.#answer(m.pendingId, m.answer)),
-      b.handle('plan.decision', (m) =>
-        this.#answer(
+      b.handle('pending.answer', (m) => {
+        this.#checkOwner(m.agentId, m.pendingId);
+        return this.#answer(m.pendingId, m.answer);
+      }),
+      b.handle('plan.decision', (m) => {
+        this.#checkOwner(m.agentId, m.pendingId);
+        return this.#answer(
           m.pendingId,
           m.decision === 'approve'
             ? { kind: 'approve' }
             : { kind: 'revise', feedback: m.feedback ?? 'Revise.' },
-        ),
-      ),
+        );
+      }),
       b.handle('hire.decision', (m) =>
         this.#answer(
           m.pendingId,
@@ -204,6 +208,17 @@ export class UiHub {
       echo,
     );
     return { echo };
+  }
+
+  /**
+   * A card answered from an agent's screen must be that agent's card: a stale screen (or a moved hire card) never
+   * answers another agent's question. Cards the hub has not seen are left to the CrewApi (`CARD_GONE`).
+   */
+  #checkOwner(agentId: string, pendingId: string): void {
+    for (const [owner, cards] of this.#pending) {
+      if (owner === agentId || !cards.some((c) => c.id === pendingId)) continue;
+      throw new BridgeError(ERROR_CODES.CARD_GONE, 'That card belongs to another agent now.');
+    }
   }
 
   async #answer(pendingId: string, answer: CrewCardAnswer): Promise<{ echo: string }> {

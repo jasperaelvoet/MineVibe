@@ -139,6 +139,11 @@ export interface BrainEnv {
   readonly swapDebounceMs?: number | undefined;
   /** The record changed in a way that must reach `crew.json` now (e.g. the session was created). */
   recordChanged?(brain: AgentBrain): void;
+  /**
+   * Whether a `pc.seat` for an agent Node thinks is wandering restores the seat (a Node-only "worker" restart, the
+   * game kept running) or stands the body up (an app restart: everyone loads unseated). Default true.
+   */
+  seatRestore?(): boolean;
 }
 
 interface QueuedWake {
@@ -1392,6 +1397,19 @@ export class AgentBrain {
         return;
       }
       if (s.state === 'wandering' && epoch !== undefined) {
+        if (this.#env.seatRestore?.() === false) {
+          // App restart (the game booted again): everyone loads unseated (PLAN §6.3), so the body stands up.
+          this.#log.info({ pcId, epoch }, 'seated after an app restart: standing the body up');
+          await this.#env.skills
+            .unseat({
+              agentId: this.agentId,
+              seatEpoch: epoch,
+              reason: 'app_restart',
+              keepReservation: false,
+            })
+            .catch((err: unknown) => this.#log.warn({ err }, 'unseat (app restart) failed'));
+          return;
+        }
         // Worker restart: the mod still has the agent in the chair.
         this.fsm.restoreSeated(pcId, epoch);
         this.context(

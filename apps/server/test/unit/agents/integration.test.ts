@@ -264,6 +264,24 @@ describe('spawning and world events', () => {
   });
 });
 
+describe('restarts: worker vs app (PLAN §6.3)', () => {
+  it('after hello{in_world} a reported seat is restored; after hello{boot} the body is stood up', async () => {
+    const { w, id } = await world();
+    const brain = w.manager.brain(id);
+    w.manager.noteHello('boot');
+    w.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: 4 });
+    await w.until(() => w.skills.seats.length > 0, 'unseat');
+    expect(w.skills.seats[0]).toMatchObject({ agentId: id, seatEpoch: 4, reason: 'app_restart' });
+    expect(brain?.fsm.state).toBe('wandering');
+
+    w.manager.noteHello('in_world');
+    w.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: 5 });
+    await w.until(() => brain?.fsm.state === 'seated', 'restored seat');
+    expect(brain?.fsm.snapshot).toMatchObject({ pcId: 'linux-1', epoch: 5 });
+    expect(w.skills.seats).toHaveLength(1);
+  });
+});
+
 describe('calendar approval cards of gone agents', () => {
   async function withCard(kind: 'died' | 'dismissed') {
     const org = new FakeOrgApi();

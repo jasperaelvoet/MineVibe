@@ -223,6 +223,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   readonly #off: (() => void)[] = [];
   #ending = false;
   #ended: CrewFile['ended'] = undefined;
+  /** False after the game booted again (an app restart): seats the mod reports are not restored. */
+  #seatRestore = true;
   #tokens = new Map<string, number>();
 
   constructor(options: AgentManagerOptions) {
@@ -405,6 +407,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       authMode: () => o.authMode ?? 'subscription',
       swapDebounceMs: o.swapDebounceMs,
       recordChanged: () => void this.#persist(),
+      seatRestore: () => this.#seatRestore,
     };
   }
 
@@ -778,6 +781,15 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       this.#dawnNewcomer = false;
       void this.#hireCeo({ fresh: false });
     }
+  }
+
+  /**
+   * The mod said hello (PLAN §6.3 "Restarts"): `in_world` means only Node restarted (or the socket dropped), so seats
+   * the mod still reports are restored (worker restart); `boot` means the game started again, so every agent loads
+   * unseated (app restart) and a body found sitting is stood up.
+   */
+  noteHello(phase: 'boot' | 'in_world'): void {
+    this.#seatRestore = phase === 'in_world';
   }
 
   onAgentState(msg: PayloadOf<'agent.state'>): void {

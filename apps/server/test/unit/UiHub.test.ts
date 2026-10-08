@@ -160,6 +160,22 @@ describe('UiHub', () => {
     ).rejects.toMatchObject({ code: ERROR_CODES.CARD_GONE });
   });
 
+  it('refuses an answer sent from another agent screen than the card owner', async () => {
+    crew.raiseCard(question);
+    await expect(
+      bridge.call('pending.answer', { agentId: 'bram', pendingId: 'q-1', answer: { kind: 'later' } }),
+    ).rejects.toMatchObject({
+      code: ERROR_CODES.CARD_GONE,
+      message: 'That card belongs to another agent now.',
+    });
+    await expect(
+      bridge.call('plan.decision', { agentId: 'bram', pendingId: 'q-1', decision: 'approve' }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.CARD_GONE });
+    expect(crew.answers).toEqual([]);
+    await bridge.call('pending.answer', { agentId: 'ada', pendingId: 'q-1', answer: { kind: 'later' } });
+    expect(crew.answers).toHaveLength(1);
+  });
+
   it('runs agent.cmd with its toggle and level, and pages chat.history', async () => {
     const reply = await bridge.call('agent.cmd', { agentId: 'bram', cmd: 'plan_first', on: true });
     await bridge.call('agent.cmd', { agentId: 'bram', cmd: 'autonomy', level: 'helpful' });

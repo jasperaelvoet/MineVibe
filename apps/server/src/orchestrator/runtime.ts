@@ -483,6 +483,8 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
   bridge.on('hello', (msg) => {
     // BootScreen: a new game session (the game restarted), so the next `ready` opens the world again.
     if (msg.phase === 'boot') gameSession++;
+    // Seats the mod reports survive a Node-only restart, never an app restart (PLAN §6.3).
+    agents?.manager.noteHello(msg.phase);
   });
   bridge.on('world.state', (msg) => {
     if (msg.office) {
