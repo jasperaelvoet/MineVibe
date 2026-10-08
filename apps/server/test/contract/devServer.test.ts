@@ -362,12 +362,15 @@ describe('dev server', () => {
     await crashed.markDead('world-1', { cause: 'fell', day: 1, ticksAlive: 10 });
     await crashed.advanceFrom('world-1');
 
+    // No real crew and no PC module: without NO_CREW this booted linux-1 in the shared dev engine from `npm test` and
+    // left its PC instance behind with the temp home (DEBT "throwaway homes leak PC instances").
     const again = await startDevServer({
       repoRoot: first.repo,
       logger: silentLogger(),
       port: 0,
       env: {},
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(again);
     await again.lifecycle.whenRecovered();

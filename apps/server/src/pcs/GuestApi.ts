@@ -75,6 +75,8 @@ export interface PcGuestApiOptions {
   readonly pcs: {
     get(id: string): PcRecord | undefined;
     status(id: string): PcStatusInfo;
+    /** Where the PC sees the read-only Codex export (`/mnt/codex`), or null (PcManager.codexPathOf). */
+    codexPathOf?(id: string): string | null;
   };
   /** The connected spacesd client of a running PC (SpacesdPool.client). */
   readonly client: (pcId: string) => Promise<SpacesdClientLike>;
@@ -256,7 +258,7 @@ export class PcGuestApi implements PcApi {
       user: GUEST_USER,
       home: GUEST_HOME,
       mounts: rec.mounts.map((m) => ({ hostPath: m.host, mode: m.ro ? ('ro' as const) : ('rw' as const) })),
-      codexPath: null,
+      codexPath: this.#o.pcs.codexPathOf?.(pcId) ?? null,
       cpus: rec.cpus,
       memoryMiB: rec.memMiB,
       ...(osVersion ? { osVersion } : {}),

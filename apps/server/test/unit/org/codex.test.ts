@@ -2,10 +2,13 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -13,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CodexStore } from '../../../src/org/codex/CodexStore.js';
+import { CodexStore, EXPORT_GENERATIONS } from '../../../src/org/codex/CodexStore.js';
 import { containsCoordinates } from '../../../src/org/codex/coordinates.js';
 import {
   formatPageForAgent,
@@ -546,6 +549,64 @@ describe('CodexStore', () => {
 
     await h.store.archiveWorld('world-1');
     expect(existsSync(worldFile)).toBe(false);
+  });
+
+  it('swaps a world in one rename: lasting/ and world/ are symlinks to whole generations', async () => {
+    const h = await harness();
+    await create(h, bram, 'Smelting', 'Furnace.');
+    await create(h, bram, 'Iron cave', 'There.', { category: 'places' });
+    await create(h, ada, 'Wheat farm', 'By the river.', { category: 'places' });
+    const world = join(h.exportDir, 'world');
+    expect(lstatSync(world).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(h.exportDir, 'lasting')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(world)).toMatch(new RegExp(`^\\${EXPORT_GENERATIONS}/world-`));
+    const before = realpathSync(world);
+    expect(readdirSync(before).sort()).toEqual(['iron-cave.md', 'wheat-farm.md']);
+
+    // A reader that resolved the link before the swap keeps a whole, consistent old world.
+    await h.store.setWorld('world-2');
+    const after = realpathSync(world);
+    expect(after).not.toBe(before);
+    expect(readdirSync(world)).toEqual([]);
+    expect(readdirSync(before).sort()).toEqual(['iron-cave.md', 'wheat-farm.md']);
+    expect(readdirSync(join(h.exportDir, 'lasting'))).toEqual(['smelting.md']);
+
+    // Pages of the new world land in the new generation; the one before last is pruned on the next swap.
+    await create(h, ada, 'Sand pit', 'East.', { category: 'places' });
+    expect(readdirSync(after)).toEqual(['sand-pit.md']);
+    await h.store.rebuildExport();
+    expect(existsSync(before)).toBe(false);
+    expect(existsSync(after)).toBe(true);
+    expect(readdirSync(world)).toEqual(['sand-pit.md']);
+    const gens = readdirSync(join(h.exportDir, EXPORT_GENERATIONS));
+    expect(gens.filter((g) => g.startsWith('world-'))).toHaveLength(2);
+    expect(gens.filter((g) => g.startsWith('lasting-'))).toHaveLength(2);
+    // Nothing but the links, the README and the hidden generations at the top.
+    expect(readdirSync(h.exportDir).sort()).toEqual([EXPORT_GENERATIONS, 'README.md', 'lasting', 'world']);
+  });
+
+  it('turns an export from before generations (real folders) into links', async () => {
+    const base = tmp();
+    const exportDir = join(base, 'codex-export');
+    mkdirSync(join(exportDir, 'world'), { recursive: true });
+    mkdirSync(join(exportDir, 'lasting'), { recursive: true });
+    writeFileSync(join(exportDir, 'world', 'old-page.md'), 'old');
+    const store = new CodexStore({
+      root: join(base, 'codex'),
+      exportDir,
+      gitBinary: null,
+      clock: new ManualClock(),
+    });
+    await store.open('world-1');
+    expect(lstatSync(join(exportDir, 'world')).isSymbolicLink()).toBe(true);
+    expect(readdirSync(join(exportDir, 'world'))).toEqual([]);
+    expect(
+      readdirSync(join(exportDir, EXPORT_GENERATIONS)).filter((g) => g.includes('-legacy-')),
+    ).toHaveLength(2);
+    await store.rebuildExport();
+    expect(readdirSync(join(exportDir, EXPORT_GENERATIONS)).filter((g) => g.includes('-legacy-'))).toEqual(
+      [],
+    );
   });
 
   it('archives world pages on world death and keeps lasting pages', async () => {
