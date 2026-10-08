@@ -17,16 +17,22 @@
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"dev.minevibe.MineVibeMod"
+			"dev.minevibe.MineVibeMod",
+			"dev.minevibe.agent.AgentModInit"
 		],
 		"client": [
-			"dev.minevibe.client.MineVibeClient"
+			"dev.minevibe.client.MineVibeClient",
+			"dev.minevibe.client.agent.AgentClientInit"
 		]
 	},
 	"mixins": [
 		"minevibe.mixins.json",
 		{
 			"config": "minevibe.client.mixins.json",
+			"environment": "client"
+		},
+		{
+			"config": "minevibe.agent.client.mixins.json",
 			"environment": "client"
 		}
 	],
