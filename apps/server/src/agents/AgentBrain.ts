@@ -27,6 +27,7 @@ import { ApiError, agentActor } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
 import type { SkillApi } from '../contracts/SkillApi.js';
+import type { BaseArea } from '../world/baseArea.js';
 import { AgentSession, type SwapResult } from './AgentSession.js';
 import type { BrainScheduler, Grant, WakePriority } from './BrainScheduler.js';
 import type { ResolvedClaude } from './claudeBinary.js';
@@ -69,6 +70,8 @@ import { type PcToolName, pcToolName } from './tools/catalog.js';
 import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
 import { createPcServer, type PcHost } from './tools/pcServer.js';
 import type { UsageGovernor } from './UsageGovernor.js';
+import type { ConsentLedger } from './world/consent.js';
+import { PerceptionMemory, sceneLine } from './world/scene.js';
 
 /** The persisted crew record of one agent (`worlds/<w>/crew.json`). */
 export interface AgentRecord {
@@ -126,6 +129,10 @@ export interface BrainEnv {
   seatedOthers(agentId: string): number;
   body(agentId: string): AgentBody | null;
   clockTime(): number | null;
+  /** The Base of the current world (`world.state.office`), for the scene line and perception texts. */
+  base?(): BaseArea | null;
+  /** Consents to change protected blocks (protocol §7.4.3); without it no job ever carries one. */
+  readonly consents?: ConsentLedger | undefined;
   /** Crew messages. */
   tell(from: AgentBrain, to: string, text: string): Promise<string>;
   requestHire(from: AgentBrain, request: Parameters<McHost['requestHire']>[0]): Promise<string>;
@@ -309,6 +316,8 @@ export class AgentBrain {
   readonly fsm: SeatFSM;
   readonly plans: PlanCapture;
   readonly digest = new Digest();
+  /** What this agent's look_around / find showed (the scene line's trees). */
+  readonly perception: PerceptionMemory;
   readonly #env: BrainEnv;
   readonly #seatMutex = new Mutex();
   readonly #log: Logger;
@@ -361,6 +370,7 @@ export class AgentBrain {
   constructor(record: AgentRecord, env: BrainEnv) {
     this.record = record;
     this.#env = env;
+    this.perception = new PerceptionMemory(() => env.now());
     this.#log = env.log.child({ agentId: record.agentId });
     this.fsm = new SeatFSM({
       now: () => env.now(),
@@ -917,7 +927,7 @@ export class AgentBrain {
     const mode = modeForSeat(this.fsm.snapshot);
     const banner = this.#modeBanner(mode);
     if (banner) parts.push(banner);
-    const digest = meeting.length > 0 ? null : this.digest.take(this.record.nonce);
+    const digest = meeting.length > 0 ? null : this.digest.take(this.record.nonce, this.scene());
     if (digest) parts.push(digest);
     for (const item of items) {
       parts.push(item.text);
@@ -1842,6 +1852,18 @@ export class AgentBrain {
         return `Waited ${Math.round(ms / 1000)} s.`;
       },
       taskReported: (report) => env.taskReported(this, report),
+      world: () => {
+        const body = env.body(this.agentId);
+        return {
+          here: body ? body.pos : null,
+          base: env.base?.() ?? null,
+          zone: body?.zone ?? null,
+          playerName: env.playerName(),
+        };
+      },
+      noteTrees: (sighting) => this.perception.noteTrees(sighting, env.body(this.agentId)?.pos ?? null),
+      consent: () => env.consents?.active(this.agentId) ?? null,
+      noteRefusal: (refusal) => env.consents?.noteRefusal(this.agentId, refusal),
     };
   }
 
@@ -1865,6 +1887,21 @@ export class AgentBrain {
    */
   footer(): string | null {
     return statusFooter(this.#env.body(this.agentId), this.#env.clockTime());
+  }
+
+  /**
+   * The one-line scene of the Digest (world/scene.ts): `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no
+   * threats`. Null before Node knows the clock or the body.
+   */
+  scene(): string | null {
+    const body = this.#env.body(this.agentId);
+    return sceneLine({
+      clockTime: this.#env.clockTime(),
+      body,
+      base: this.#env.base?.() ?? null,
+      trees: this.perception.trees(body?.pos ?? null),
+      playerName: this.#env.playerName(),
+    });
   }
 }
 

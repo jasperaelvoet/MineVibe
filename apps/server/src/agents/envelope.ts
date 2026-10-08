@@ -55,6 +55,7 @@ export type ControlKind =
   | 'MEETING'
   /** The mode banner at the start of the first turn after a mode switch (agents/modes.ts). */
   | 'MODE'
+  | 'CONSENT'
   | 'PLAYER';
 
 /** `[MV:<nonce> <KIND>] text`. */

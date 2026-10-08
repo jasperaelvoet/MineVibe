@@ -368,7 +368,20 @@ describe('createBridgeSkillApi', () => {
     expect(sent).toHaveLength(0);
     await rejectsWith(api.runSkill({ agentId: 'ada', skill: 'eat', args: {} }), 'BUSY');
     expect(sent[0]?.payload).toMatchObject({ agentId: 'ada', skill: 'eat', waitMs: 20_000, replace: false });
+    expect(sent[0]?.payload).not.toHaveProperty('consent');
     expect(sent[0]?.timeoutMs).toBe(25_000);
+    // Node's consent (protocol §7.4.3) goes out as skill.run.consent; it is never part of args.
+    const consent = {
+      consentId: 'consent-1',
+      agentId: 'ada',
+      positions: [{ x: 1, y: 2, z: 3 }],
+      expiresAt: 5,
+    };
+    await rejectsWith(
+      api.runSkill({ agentId: 'ada', skill: 'mine', args: { block: 'oak_log', count: 1 }, consent }),
+      'BUSY',
+    );
+    expect(sent[1]?.payload).toMatchObject({ args: { block: 'oak_log', count: 1 }, consent });
   });
 
   it('resolves awaitJob from the reply or a later skill.result, and forwards progress', async () => {

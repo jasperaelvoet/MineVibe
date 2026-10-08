@@ -42,6 +42,8 @@ interface Entry {
 export type PendingEvents = {
   /** The full card list of one agent changed (forward as `agent.pending`). */
   changed: [agentId: string, cards: readonly Card[]];
+  /** A card ended with `outcome` (after its waiter heard it): consents, logs. */
+  resolved: [card: Card, outcome: CardOutcome];
 };
 
 const PendingFile = z.object({ v: z.literal(1), cards: z.array(WireCardSchema) });
@@ -154,6 +156,11 @@ export class PendingStore extends TypedEmitter<PendingEvents> {
     this.#changed(entry.card.agentId);
     try {
       entry.waiter?.(outcome);
+    } catch (err) {
+      this.#onError(err);
+    }
+    try {
+      this.emit('resolved', entry.card, outcome);
     } catch (err) {
       this.#onError(err);
     }
