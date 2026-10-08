@@ -1,0 +1,4 @@
+# MineVibe (PLAN §6.2, §8.6): what an agent starts with sudo keeps its seat tag (MV_TAG, MV_CALL), so the kill on
+# stand-up, kick or timeout finds it too. sudo resets the environment otherwise, and a sudo the call's shell left
+# behind is reparented away from it, so neither the environment nor the parent pid would lead back to the seat.
+Defaults env_keep += "MV_TAG MV_CALL"

@@ -397,6 +397,30 @@ describe('provisioning', () => {
     expect(existsSync(join(roots.installRoot, 'libexec', 'container', 'plugins', 'k8s'))).toBe(false);
   });
 
+  it('never writes into a read-only (bundled) install root', async () => {
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    const { exec, calls } = fakeExec(() => undefined);
+    const fetchImpl = (async () => {
+      throw new Error('no download expected');
+    }) as unknown as typeof fetch;
+    // The bundle's binary does not match the lock: refused, not replaced.
+    const rt = new ContainerRuntime({
+      ...roots,
+      lock: { ...lock, installRootFiles: { 'bin/container': sha('something else') } },
+      cacheDir: join(dir, 'cache'),
+      exec,
+      fetchImpl,
+      readOnlyInstall: true,
+    });
+    await expect(rt.provision()).rejects.toMatchObject({ code: 'NOT_PROVISIONED' });
+    expect(calls).toEqual([]);
+    expect(readFileSync(join(roots.installRoot, 'bin', 'container'), 'utf8')).toBe('#!/bin/sh\n');
+    // A matching (or unpinned) bundle is fine.
+    const ok2 = new ContainerRuntime({ ...roots, lock, cacheDir: dir, exec, readOnlyInstall: true });
+    await ok2.provision();
+    expect(calls).toEqual([]);
+  });
+
   it('is a no-op when the install root already matches', async () => {
     const { exec, calls } = fakeExec(() => undefined);
     const rt = new ContainerRuntime({ ...roots, lock, cacheDir: dir, exec });

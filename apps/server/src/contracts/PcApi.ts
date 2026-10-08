@@ -58,6 +58,11 @@ export interface PcGuestInfo {
   readonly mounts: readonly VaultMount[];
   /** Read-only Codex export (`/mnt/codex`). */
   readonly codexPath: string | null;
+  /** Allocated vCPUs and memory, when known. */
+  readonly cpus?: number;
+  readonly memoryMiB?: number;
+  /** The guest OS ("Ubuntu 24.04"), when the PC runs. */
+  readonly osVersion?: string;
 }
 
 export interface Screenshot {
@@ -65,6 +70,10 @@ export interface Screenshot {
   readonly data: Uint8Array;
   readonly w: number;
   readonly h: number;
+  /** The guest screen in pixels (pointer coordinates), when known. */
+  readonly screen?: { readonly w: number; readonly h: number };
+  /** Image pixels per guest pixel (below 1 when the image was scaled down to `maxDim`). */
+  readonly scale?: number;
 }
 
 /** Pointer actions in guest pixels. */
