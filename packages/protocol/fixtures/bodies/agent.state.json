@@ -19,7 +19,8 @@
       "hasFood": true,
       "inCombat": false,
       "playerDistance": 2.6,
-      "held": "minecraft:stone_sword"
+      "held": "minecraft:stone_sword",
+      "zone": "12m from Base"
     },
     {
       "agentId": "bram",

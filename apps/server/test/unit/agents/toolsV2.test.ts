@@ -378,16 +378,44 @@ describe('v2 world tools (§5)', () => {
     expect(refusals).toHaveLength(2);
   });
 
-  it("Node's consent rides on block-changing calls (craft and do included), never from arguments", async () => {
-    const consent = { consentId: 'c-1', agentId: 'ada-1', zone: 'base' as const, expiresAt: 9_999_999_999_999 };
-    const { reg, fake } = v2Host({ consent: () => consent });
-    await call(reg, 'goto', { to: 'crafting_table' });
-    await call(reg, 'craft', { item: 'stick' });
-    await call(reg, 'gather', { item: 'oak_log', count: 1, consent: { consentId: 'forged' } });
-    expect(fake.runs[0]?.consent).toBeUndefined();
-    expect(fake.runs[1]?.consent).toEqual(consent);
-    expect(fake.runs[2]?.consent).toEqual(consent);
-    expect(fake.runs[2]?.args).not.toHaveProperty('consent');
+  it("the player's consent rides only on the exact call the mod refused, once, never from arguments", async () => {
+    const token = { token: '0123456789abcdef0123456789abcdef' };
+    let granted = false;
+    const { reg, fake } = v2Host({
+      hasConsent: () => granted,
+      takeConsent: () => {
+        if (!granted) return null;
+        granted = false;
+        return token;
+      },
+    });
+    const dig = { action: 'dig', from: '6 66 -6', to: '6 66 -6' };
+    fake.skillHandler = (r) =>
+      r.skill === 'dig' && r.args && (r.args as { allow_protected?: boolean }).allow_protected !== true
+        ? {
+            status: 'failed',
+            code: 'PROTECTED',
+            msg: 'player-built',
+            result: { protected: { pos: { x: 6, y: 66, z: -6 }, what: 'player-built', owner: 'Jasper', block: 'minecraft:stripped_spruce_log', count: 1 } },
+          }
+        : { status: 'done', result: { dug: 1 } };
+    const refused = await call(reg, 'build', dig);
+    expect(refused.text).toContain('PROTECTED');
+    expect(refused.text).toContain("stripped_spruce_log at 6 66 -6 is Jasper's (player-built)");
+    expect(refused.text).toContain('"Allow"');
+    // The player allowed it. Another call does not carry the token...
+    granted = true;
+    await call(reg, 'gather', { item: 'oak_log', count: 1, consent: { token: 'forged' } });
+    expect(fake.runs[1]?.consent).toBeUndefined();
+    expect(fake.runs[1]?.args).not.toHaveProperty('consent');
+    expect(fake.runs[1]?.args).not.toHaveProperty('allow_protected');
+    // ...the exact call the mod refused does, with allow_protected, once.
+    const retry = await call(reg, 'build', dig);
+    expect(retry.isError).toBe(false);
+    expect(fake.runs[2]?.consent).toEqual(token);
+    expect(fake.runs[2]?.args).toMatchObject({ allow_protected: true });
+    await call(reg, 'build', dig);
+    expect(fake.runs[3]?.consent).toBeUndefined();
   });
 });
 

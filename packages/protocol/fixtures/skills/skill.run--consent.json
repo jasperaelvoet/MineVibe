@@ -1,0 +1,20 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-41",
+  "jobId": "job-40",
+  "agentId": "ada",
+  "skill": "mine",
+  "args": {
+    "block": "stripped_spruce_log",
+    "count": 1,
+    "near": { "x": 102, "y": 64, "z": -37 },
+    "radius": 2,
+    "allow_protected": true
+  },
+  "waitMs": 20000,
+  "replace": true,
+  "consent": {
+    "token": "3f9c2a7be41d08c65a9e0b7d21c4f8e1"
+  }
+}

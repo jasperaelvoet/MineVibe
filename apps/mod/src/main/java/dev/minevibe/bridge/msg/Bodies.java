@@ -70,7 +70,10 @@ public final class Bodies {
 	/** The running job of a body. */
 	public record BodyJob(String jobId, String skill, @Nullable Double progress) {}
 
-	/** One agent body in {@code agent.state}. {@code seat} is a {@link Seats.SeatTarget}. */
+	/**
+	 * One agent body in {@code agent.state}. {@code seat} is a {@link Seats.SeatTarget}. {@code zone} (W1): where the body
+	 * is relative to the nearest protected zone ({@code in Base}, {@code 12m from Base}), as in the status footer.
+	 */
 	public record AgentBody(
 			String agentId,
 			Types.Vec3 pos,
@@ -86,7 +89,15 @@ public final class Bodies {
 			@Nullable BodyJob job,
 			Seats.@Nullable SeatTarget seat,
 			@Nullable Double playerDistance,
-			@Nullable String held) {}
+			@Nullable String held,
+			@Nullable String zone) {
+		public AgentBody(
+				String agentId, Types.Vec3 pos, String dim, double hp, double maxHp, int food, double saturation, String mode, boolean hasFood,
+				boolean inCombat, @Nullable String reflex, @Nullable BodyJob job, Seats.@Nullable SeatTarget seat, @Nullable Double playerDistance,
+				@Nullable String held) {
+			this(agentId, pos, dim, hp, maxHp, food, saturation, mode, hasFood, inCombat, reflex, job, seat, playerDistance, held, null);
+		}
+	}
 
 	/** M→N, 1 Hz. */
 	public record AgentState(long tick, List<AgentBody> agents) {}
@@ -130,7 +141,8 @@ public final class Bodies {
 			.opt("job", object().req("jobId", JOB_ID).req("skill", Skills.SKILL_NAME).opt("progress", FRACTION))
 			.opt("seat", Seats.SEAT_TARGET)
 			.opt("playerDistance", NON_NEG_NUMBER)
-			.opt("held", ITEM_ID);
+			.opt("held", ITEM_ID)
+			.opt("zone", string(1, 64));
 
 	public static final MessageType<AgentSpawn> AGENT_SPAWN = type("agent.spawn", Direction.NODE_TO_MOD, AgentSpawn.class, object()
 			.req("agentId", AGENT_ID)

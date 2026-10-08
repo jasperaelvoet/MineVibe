@@ -9,7 +9,7 @@
  * tokens): enough for the model to know where it is before it acts, never a second status footer.
  */
 
-import type { AgentBody, BlockPos } from '@minevibe/protocol';
+import type { AgentBody, AgentZone, BlockPos } from '@minevibe/protocol';
 import { ticksToGameTime } from '../../contracts/orgTools.js';
 import { type BaseArea, baseCenter, distanceAndDir, inBase, type Vec3Like } from '../../world/baseArea.js';
 import { escapeShared } from '../envelope.js';
@@ -77,6 +77,18 @@ export function clockText(clockTime: number): string {
   return isNight(clockTime) ? `${text} night` : text;
 }
 
+/**
+ * The body's zone from `agent.state` (protocol §7.4.3: the footer's words, `in Base` or `12m from Base`) as a kind:
+ * `in <zone>` is inside a protected zone (the Base kind; the Base itself goes unnamed so Node's own name is used), any
+ * other text is outside, in the wild. Null without a zone (a mod that does not guard provenance).
+ */
+export function zoneOfBody(zone: string | undefined | null): AgentZone | null {
+  if (!zone) return null;
+  const m = /^in (.+)$/.exec(zone.trim());
+  if (!m?.[1]) return { kind: 'wild' };
+  return m[1] === 'Base' ? { kind: 'base' } : { kind: 'base', name: m[1] };
+}
+
 /** A mod-supplied zone name, made safe for a control line. */
 function zoneName(name: string | undefined): string | null {
   if (!name) return null;
@@ -90,7 +102,7 @@ export function whereText(body: AgentBody, base: BaseArea | null, playerName: st
     const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;
     return `in ${dim}`;
   }
-  const zone = body.zone;
+  const zone = zoneOfBody(body.zone);
   const insideBox = base ? inBase(body.pos, base) : false;
   if (zone?.kind === 'base' || (!zone && insideBox)) {
     return `in ${zoneName(zone?.name) ?? base?.name ?? 'the Base'}`;

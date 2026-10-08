@@ -68,8 +68,21 @@ export class JobRegistry {
     return job;
   }
 
+  #refused: { key: string; at: number } | null = null;
+
+  /** The wire call (its key) the mod refused last with `PROTECTED`: repeating it may carry the player's consent. */
+  noteRefused(key: string): void {
+    this.#refused = { key, at: this.#now() };
+  }
+
+  /** The key of the last refused call, within the mod's token lifetime (10 minutes). */
+  refused(): string | null {
+    const r = this.#refused;
+    return r && this.#now() - r.at < 10 * 60_000 ? r.key : null;
+  }
+
   /** A job ended; it leaves `current` and joins the recent list. */
-  ended(jobId: string, status: EndedJob['status'], rendered: Rendered): EndedJob | null {
+  ended(jobId: string, status: EndedJob['status'], rendered: Rendered, code?: string): EndedJob | null {
     const job = this.#known.get(jobId);
     if (!job) return null;
     if (this.#current?.jobId === jobId) this.#current = null;
@@ -85,6 +98,7 @@ export class JobRegistry {
     };
     this.#recent.unshift(ended);
     this.#recent.length = Math.min(this.#recent.length, RECENT_JOBS);
+    if (code === 'PROTECTED' && job.meta.wire) this.noteRefused(job.meta.wire);
     return ended;
   }
 

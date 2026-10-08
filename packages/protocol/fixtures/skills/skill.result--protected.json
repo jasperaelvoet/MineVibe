@@ -1,0 +1,27 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "id": "m-71",
+  "jobId": "job-39",
+  "agentId": "ada",
+  "status": "failed",
+  "result": {
+    "mined": 0,
+    "protected": {
+      "pos": { "x": 102, "y": 64, "z": -37 },
+      "what": "base",
+      "owner": "Steve",
+      "block": "minecraft:stripped_spruce_log",
+      "zone": "Base",
+      "count": 4,
+      "consentId": "3f9c2a7be41d08c65a9e0b7d21c4f8e1",
+      "hint": "That's part of Steve's base — ask Steve before changing it."
+    },
+    "footer": "HP 20/20 food 18 | day 1 09:14 | 101 64 -35 overworld | in Base | idle (follow) | iron_axe"
+  },
+  "error": {
+    "code": "PROTECTED",
+    "msg": "That's part of Steve's base — ask Steve before changing it. (stripped_spruce_log at 102 64 -37, and 3 more). Nothing was changed. Ask Steve; only if they agree, retry with allow_protected."
+  },
+  "durationMs": 150
+}

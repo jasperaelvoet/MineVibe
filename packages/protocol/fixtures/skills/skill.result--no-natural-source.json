@@ -1,0 +1,49 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "id": "m-72",
+  "jobId": "job-42",
+  "agentId": "ada",
+  "status": "failed",
+  "result": {
+    "collected": 0,
+    "have": 0,
+    "items": {},
+    "trees": 0,
+    "noNaturalSource": {
+      "what": "oak_log",
+      "radius": 24,
+      "candidates": [
+        {
+          "pos": { "x": 108, "y": 64, "z": -30 },
+          "block": "stripped_spruce_log",
+          "distance": 3,
+          "dir": "SE",
+          "why": "protected",
+          "owner": "Steve"
+        },
+        {
+          "pos": { "x": 93, "y": 73, "z": -38 },
+          "block": "oak tree",
+          "distance": 9,
+          "dir": "W",
+          "why": "unreachable"
+        },
+        {
+          "pos": { "x": 131, "y": 66, "z": -71 },
+          "block": "oak tree",
+          "distance": 45,
+          "dir": "NE",
+          "why": "too_far"
+        }
+      ],
+      "hint": "Don't take anything else instead. Tell Steve what you found and ask what to do (another place, or permission)."
+    },
+    "footer": "HP 20/20 food 18 | day 1 09:15 | 101 64 -35 overworld | in Base | idle (follow)"
+  },
+  "error": {
+    "code": "NO_NATURAL_SOURCE",
+    "msg": "No reachable natural oak_log within 24 blocks. Seen: stripped_spruce_log 3m SE at 108 64 -30 (Steve's, not touched); oak tree 9m W at 93 73 -38 (unreachable); oak tree 45m NE at 131 66 -71 (out of range). Don't take anything else instead. Tell Steve what you found and ask what to do (another place, or permission)."
+  },
+  "durationMs": 2300
+}

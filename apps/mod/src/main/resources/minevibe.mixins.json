@@ -7,7 +7,9 @@
 		"agent.PlayerAdvancementsMixin",
 		"agent.PlayerChunkSenderMixin",
 		"agent.PlayerListMixin",
-		"agent.SleepStatusMixin"
+		"agent.SleepStatusMixin",
+		"provenance.BlockItemMixin",
+		"provenance.LevelChunkMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

@@ -26,6 +26,20 @@ import {
   validateSkillArgs,
 } from './SkillApi.js';
 
+/** Skills whose jobs may change protected blocks (they can carry the player's consent). */
+const CONSENT_STEPS: ReadonlySet<string> = new Set([
+  'mine',
+  'collect',
+  'dig',
+  'place',
+  'build',
+  'farm',
+  'use_item',
+  'attack',
+  'container',
+  'craft',
+]);
+
 /** How long one step may run before the macro gives up on it (the mod caps a sequence at 40 min). */
 const STEP_TIMEOUT_MS = 40 * 60_000;
 
@@ -142,6 +156,7 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
   ): Promise<void> {
     const outcomes: StepOutcome[] = [];
     const n = steps.length;
+    let consent = request.consent && (request.args as { allow_protected?: boolean }).allow_protected === true ? request.consent : null;
     let failure: { code: string; msg: string } | null = null;
     for (const [i, step] of steps.entries()) {
       if (macro.cancelled) break;
@@ -151,17 +166,21 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
       const childId = newJobId();
       macro.childId = childId;
       this.#children.set(childId, macro);
+      // The player's single-use consent (W1 token) goes with the first step that changes blocks: separate jobs, unlike
+      // the mod's own sequence, cannot share it.
+      const withConsent = consent !== null && CONSENT_STEPS.has(step.skill);
       let end: JobEnd;
       try {
         const res = await this.#inner.runSkill({
           agentId: macro.agentId,
           skill: step.skill,
-          args: step.args as never,
+          args: (withConsent ? { ...step.args, allow_protected: true } : step.args) as never,
           waitMs: 0,
           replace: true,
           jobId: childId,
-          ...(request.consent ? { consent: request.consent } : {}),
+          ...(withConsent && consent ? { consent } : {}),
         });
+        if (withConsent) consent = null;
         end =
           res.status === 'running'
             ? await this.#inner.awaitJob(childId, STEP_TIMEOUT_MS)

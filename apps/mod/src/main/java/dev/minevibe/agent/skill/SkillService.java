@@ -1,5 +1,6 @@
 package dev.minevibe.agent.skill;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.AgentRole;
@@ -24,6 +25,7 @@ import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
 import dev.minevibe.org.office.OfficeLayout;
 import dev.minevibe.org.office.OfficeService;
+import dev.minevibe.world.provenance.Consents;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -212,15 +214,47 @@ public final class SkillService {
 			// A repeated request for the same job: answer with what is known.
 			return CompletableFuture.completedFuture(existing.outcome == null ? runningReply(existing) : finalReply(existing, existing.outcome));
 		}
-		SkillJob job = SkillFactory.create(req.skill(), req.args() == null ? new JsonObject() : req.args());
+		JsonObject args = req.args() == null ? new JsonObject() : req.args();
+		SkillJob job = SkillFactory.create(req.skill(), args);
 		if (agent.jobs().hasJob() && !req.replace()) {
 			Job busy = agent.jobs().current();
 			throw new BridgeException(Codes.BUSY, agent.getGameProfile().name() + " is busy with " + (busy == null ? "a job" : busy.name()) + " (send replace to cancel it)");
 		}
-		return this.start(agent, req.jobId(), job, Math.max(0, Math.min(MAX_WAIT_MS, req.waitMs())));
+		Consents.Request grant = this.consentFor(agent, args, req.consent());
+		job.protection(allowProtected(args), grant != null);
+		CompletableFuture<Map<String, Object>> reply = this.start(agent, req.jobId(), job, Math.max(0, Math.min(MAX_WAIT_MS, req.waitMs())), grant);
+		return reply;
+	}
+
+	/** {@code args.allow_protected == true}. On its own it changes nothing (W1). */
+	static boolean allowProtected(final JsonObject args) {
+		JsonElement e = args.get("allow_protected");
+		return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean() && e.getAsBoolean();
+	}
+
+	/**
+	 * W1: the player's consent for this job, when {@code args.allow_protected} is set and Node attached a token the mod
+	 * offered to this agent (top-level {@code consent}, which a model's tool input cannot reach). The token is used up.
+	 * A token without {@code allow_protected} is ignored and kept; a bad or expired one is {@code BAD_ARGS}.
+	 */
+	private Consents.@Nullable Request consentFor(final AgentPlayer agent, final JsonObject args, final Skills.@Nullable Consent consent) {
+		if (consent == null || !allowProtected(args)) {
+			return null;
+		}
+		Consents.Request r = Consents.redeem(agent.agentId(), consent.token());
+		if (r == null) {
+			throw Refs.badArgs("the consent token is unknown, expired or for another agent: ask the player again");
+		}
+		return r;
 	}
 
 	private CompletableFuture<Map<String, Object>> start(final AgentPlayer agent, final String jobId, final SkillJob job, final long waitMs) {
+		return this.start(agent, jobId, job, waitMs, null);
+	}
+
+	private CompletableFuture<Map<String, Object>> start(
+		final AgentPlayer agent, final String jobId, final SkillJob job, final long waitMs, final Consents.@Nullable Request grant
+	) {
 		job.bind(jobId);
 		Handle h = new Handle(jobId, agent.agentId(), job, waitMs);
 		CompletableFuture<Map<String, Object>> reply = new CompletableFuture<>();
@@ -228,7 +262,13 @@ public final class SkillService {
 		this.running.put(jobId, h);
 		// A new task overrides walking to a scheduled place.
 		agent.brain().setAttend(null);
-		job.outcome().thenAccept(o -> this.ended(h, o));
+		job.outcome().thenAccept(o -> {
+			Consents.deactivate(h.agentId, jobId);
+			this.ended(h, o);
+		});
+		if (grant != null) {
+			Consents.activate(agent.agentId(), grant, jobId);
+		}
 		agent.jobs().start(job);
 		if (waitMs == 0 && !reply.isDone()) {
 			reply.complete(runningReply(h));

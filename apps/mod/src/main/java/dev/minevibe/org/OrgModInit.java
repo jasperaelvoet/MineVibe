@@ -5,6 +5,8 @@ import dev.minevibe.org.codex.Codexes;
 import dev.minevibe.org.meeting.MeetingSeatProvider;
 import dev.minevibe.org.meeting.MeetingTables;
 import dev.minevibe.org.office.OfficeService;
+import dev.minevibe.org.office.OfficeZone;
+import dev.minevibe.world.provenance.Zones;
 import dev.minevibe.world.MvWorldContent;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -26,6 +28,8 @@ public final class OrgModInit implements ModInitializer {
 		MeetingTables.registerEvents();
 		Codexes.registerEvents();
 		OfficeService.registerEvents();
+		// The starter office is the player's Base: a protected zone (W1).
+		Zones.addProvider(OfficeZone::zones);
 		OrgCommands.register();
 		MeetingSeatProvider meetingSeats = new MeetingSeatProvider();
 		Seats.installMeetingSeats(meetingSeats);

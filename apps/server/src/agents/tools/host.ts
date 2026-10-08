@@ -56,10 +56,13 @@ export interface McHost {
   /** look_around / find showed natural trees (for the scene line). */
   noteTrees?(sighting: TreeSighting): void;
   /**
-   * The player's consent to change protected blocks for this agent, if one is valid (protocol §7.4.3). Only Node mints
-   * it; it is attached to world jobs and never read from tool arguments.
+   * Uses up the player's consent to change protected blocks for this agent, if one is valid (protocol §7.4.3): the
+   * mod's token of a refusal the player allowed (AgentManager notes refusals from every `PROTECTED` job end). Never
+   * read from tool arguments; without it no consent is ever attached.
    */
-  consent?(): SkillConsent | null;
+  takeConsent?(): SkillConsent | null;
+  /** Whether the player allowed a refusal of this agent's and its token waits to be used (v2: the retry carries it). */
+  hasConsent?(): boolean;
   /** Node refused a job itself (`PROTECTED`, the Base): the refusal the player may still allow. */
   noteRefusal?(refusal: Refusal): void;
 
@@ -84,6 +87,8 @@ export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set([
   'build',
   'farm',
   'use_item',
+  'attack',
+  'container',
 ]);
 
 /**

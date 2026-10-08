@@ -74,7 +74,7 @@ import type { CrewRef } from './tools/targets.js';
 import { createPcServer, type PcHost } from './tools/pcServer.js';
 import type { UsageGovernor } from './UsageGovernor.js';
 import type { ConsentLedger } from './world/consent.js';
-import { PerceptionMemory, sceneLine } from './world/scene.js';
+import { PerceptionMemory, sceneLine, zoneOfBody } from './world/scene.js';
 
 /** The persisted crew record of one agent (`worlds/<w>/crew.json`). */
 export interface AgentRecord {
@@ -810,7 +810,7 @@ export class AgentBrain {
       { status: end.status, result, error: end.error, durationMs: end.durationMs },
       { here: body ? body.pos : null, playerName: this.#env.playerName() },
     );
-    this.toolJobs.ended(end.jobId, end.status, rendered);
+    this.toolJobs.ended(end.jobId, end.status, rendered, end.error?.code);
     if (end.status === 'cancelled' && running?.cancelledBy) return null;
     return { ok: end.status === 'done', text: wakeText(end.jobId, rendered, meta.skill === 'sequence') };
   }
@@ -1881,12 +1881,13 @@ export class AgentBrain {
         return {
           here: body ? body.pos : null,
           base: env.base?.() ?? null,
-          zone: body?.zone ?? null,
+          zone: zoneOfBody(body?.zone),
           playerName: env.playerName(),
         };
       },
       noteTrees: (sighting) => this.perception.noteTrees(sighting, env.body(this.agentId)?.pos ?? null),
-      consent: () => env.consents?.active(this.agentId) ?? null,
+      takeConsent: () => env.consents?.take(this.agentId) ?? null,
+      hasConsent: () => (env.consents?.active(this.agentId) ?? null) !== null,
       noteRefusal: (refusal) => env.consents?.noteRefusal(this.agentId, refusal),
       jobs: this.toolJobs,
       crewMember: (ref) => env.crewMember?.(ref) ?? null,
@@ -1940,6 +1941,7 @@ export function statusFooter(body: AgentBody | null, clockTime: number | null): 
   if (clockTime !== null) parts.push(ticksToGameTime(clockTime).replace(/^Day/, 'day'));
   const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;
   parts.push(`${Math.floor(body.pos.x)} ${Math.floor(body.pos.y)} ${Math.floor(body.pos.z)} ${dim}`);
+  if (body.zone) parts.push(body.zone);
   let activity: string;
   if (body.reflex) activity = body.job ? `${body.reflex} (${body.job.skill} paused)` : body.reflex;
   else if (body.job)

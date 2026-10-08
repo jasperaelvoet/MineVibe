@@ -10,7 +10,7 @@
  * instead") started exactly there.
  */
 
-import { type BlockPos, WORLD_GUARD_CODES, type ZoneKind } from '@minevibe/protocol';
+import { type BlockPos, ConsentToken, WORLD_GUARD_CODES, type ZoneKind } from '@minevibe/protocol';
 import {
   asPos,
   type BaseArea,
@@ -34,33 +34,62 @@ export interface Refusal {
   readonly positions: readonly BlockPos[];
   readonly blocks: readonly string[];
   readonly zone: ZoneKind | null;
+  /** How many protected blocks the job met (the mod's `count`), when more than the positions listed. */
+  readonly count?: number | undefined;
+  /**
+   * The mod's consent token for exactly this refusal (`result.protected.consentId`): what Node hands back once the
+   * player allowed it. Absent for refusals Node raised itself (they cannot be allowed until the mod refuses).
+   */
+  readonly consentId?: string | undefined;
 }
 
 function short(id: string): string {
   return id.replace(/^minecraft:/, '');
 }
 
-/** Reads `result.protected` / `result.zone` of a `PROTECTED` failure (tolerant of a mod that sends less). */
+/**
+ * Reads `result.protected` of a `PROTECTED` failure: the mod's `ProtectedDetail` (one block, its owner kind, how many
+ * and the consent token; protocol §7.4.1), or a list of `{ pos, block }` (tolerant of a mod that sends less).
+ */
 export function refusalOf(result: Record<string, unknown> | undefined): Refusal {
   const positions: BlockPos[] = [];
   const blocks: string[] = [];
-  const list = Array.isArray(result?.protected) ? (result?.protected as unknown[]) : [];
-  for (const raw of list.slice(0, 512)) {
-    const item = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-    const pos = asPos(item.pos) ?? asPos(raw);
+  const raw = result?.protected;
+  const detail =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  const list = Array.isArray(raw) ? (raw as unknown[]) : detail ? [detail] : [];
+  for (const entry of list.slice(0, 512)) {
+    const item = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+    const pos = asPos(item.pos) ?? asPos(entry);
     if (!pos) continue;
     positions.push(pos);
     if (typeof item.block === 'string') blocks.push(short(singleLine(item.block, 48)));
   }
   const z = result?.zone;
   const zoneKind = z && typeof z === 'object' ? (z as Record<string, unknown>).kind : z;
-  const zone: ZoneKind | null = zoneKind === 'base' || zoneKind === 'built' ? zoneKind : null;
-  return { positions, blocks, zone };
+  let zone: ZoneKind | null = zoneKind === 'base' || zoneKind === 'built' ? zoneKind : null;
+  if (zone === null && detail) {
+    if (detail.what === 'base') zone = 'base';
+    else if (detail.what === 'player-built') zone = 'built';
+  }
+  const count =
+    typeof detail?.count === 'number' && Number.isInteger(detail.count) && detail.count > positions.length
+      ? detail.count
+      : undefined;
+  const token = detail?.consentId;
+  const consentId = typeof token === 'string' && ConsentToken.safeParse(token).success ? token : undefined;
+  return {
+    positions,
+    blocks,
+    zone,
+    ...(count !== undefined ? { count } : {}),
+    ...(consentId !== undefined ? { consentId } : {}),
+  };
 }
 
 /** "4 blocks (e.g. stripped_spruce_log at 12 64 -30)". */
 function refusalSummary(r: Refusal): string {
-  const n = r.positions.length;
+  const n = Math.max(r.positions.length, r.count ?? 0);
   if (n === 0) return 'those blocks';
   const first = r.positions[0];
   const what = r.blocks[0] ?? 'block';
@@ -93,25 +122,48 @@ export function failureText(input: FailureInput): string {
   const head = `${input.code}: ${msg}`;
   if (input.code === PROTECTED) {
     const r = refusalOf(input.result);
-    const one = r.positions.length === 1;
+    const one = Math.max(r.positions.length, r.count ?? 0) === 1;
     const what =
       r.zone === 'built'
         ? `${one ? 'was' : 'were'} built by ${p}`
         : `${one ? 'is' : 'are'} part of the Base, ${p}'s home`;
     const them = one ? 'it' : 'them';
-    return `${head}. ${refusalSummary(r)} ${what}. A hard stop: never break or take ${them}, don't retry or work around it, and never offer ${them} as a substitute. Gather from nature outside the Base (look_around, find) or ask ${p} what to use instead. Only if ${p} asked for exactly ${one ? 'this block' : 'these blocks'}: ask with AskUserQuestion, an option "Allow: <what it unlocks>" (e.g. "Allow: take ${one ? 'that' : 'those'} ${r.blocks[0] ?? 'Base blocks'}"); only ${p} picking it unlocks ${them}.`;
+    return `${head}. ${refusalSummary(r)} ${what}. A hard stop: never break or take ${them}, don't retry or work around it, and never offer ${them} as a substitute. Gather from nature outside the Base (look_around, find) or ask ${p} what to use instead. Only if ${p} asked for exactly ${one ? 'this block' : 'these blocks'}: ask with AskUserQuestion, an option "Allow: <what it unlocks>" (e.g. "Allow: take ${one ? 'that' : 'those'} ${r.blocks[0] ?? 'Base blocks'}"); only ${p} picking it unlocks ${them}, then retry that job with allow_protected:true.`;
   }
   if (input.code === NO_NATURAL_SOURCE) {
     const what = wanted(input.label);
-    const natural = Array.isArray(input.result?.natural) ? (input.result?.natural as unknown[]) : [];
+    // The mod's NoNaturalSourceDetail (protocol §7.4.1): what it saw and why it could not use it.
+    const detail = input.result?.noNaturalSource;
+    const candidates =
+      detail && typeof detail === 'object' && Array.isArray((detail as Record<string, unknown>).candidates)
+        ? ((detail as Record<string, unknown>).candidates as unknown[])
+        : [];
+    const natural = Array.isArray(input.result?.natural)
+      ? (input.result?.natural as unknown[])
+      : candidates.filter(
+          (c) => c && typeof c === 'object' && (c as Record<string, unknown>).why !== 'protected',
+        );
     const first =
       natural[0] && typeof natural[0] === 'object' ? (natural[0] as Record<string, unknown>) : null;
     const pos = asPos(first?.pos);
-    const seen = pos ? ` The nearest natural one, at ${posText(pos)}, has no path.` : '';
-    const skipped =
-      typeof input.result?.protectedCount === 'number' && input.result.protectedCount > 0
-        ? ` ${input.result.protectedCount} protected ones were left alone.`
-        : '';
+    const why =
+      first?.why === 'too_far'
+        ? 'is too far'
+        : first?.why === 'not_natural'
+          ? 'is no natural one'
+          : 'has no path';
+    const seenWhat =
+      candidates.length > 0 && typeof first?.block === 'string'
+        ? short(singleLine(first.block, 40))
+        : 'natural one';
+    const seen = pos ? ` The nearest ${seenWhat}, at ${posText(pos)}, ${why}.` : '';
+    const protectedCount =
+      typeof input.result?.protectedCount === 'number'
+        ? input.result.protectedCount
+        : candidates.filter(
+            (c) => c && typeof c === 'object' && (c as Record<string, unknown>).why === 'protected',
+          ).length;
+    const skipped = protectedCount > 0 ? ` ${protectedCount} protected ones were left alone.` : '';
     return `${head}.${seen}${skipped} A hard stop: don't substitute another block or a #tag, and never take protected ones. Tell ${p} and ask with AskUserQuestion, e.g. options "Go further for ${what}", "Use something else instead", "Skip".`;
   }
   if ((input.code === 'NOT_FOUND' || input.code === 'UNREACHABLE') && GATHERING.has(input.skill)) {

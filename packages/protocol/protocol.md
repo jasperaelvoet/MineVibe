@@ -532,7 +532,7 @@ records flatten every variant into one record with `@Nullable` fields.
 - `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
-  playerDistance?, held?, zone?: { kind: base|built|wild, name? } }`. Node builds the Digest from it (with the
+  playerDistance?, held?, zone?: string }` (`zone`: `in Base` or `12m from Base`). Node builds the Digest from it (with the
   one-line scene, `zone` included: section 7.4.3), and the status footer of tool results that never reach the mod
   (section 7.4).
 - `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
@@ -548,9 +548,9 @@ records flatten every variant into one record with `@Nullable` fields.
 ### 7.4 skills
 
 - `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error? }`):
-  `{ jobId, agentId, skill, args, waitMs, replace, consent? }` (`consent`: section 7.4.3). The mod starts the job
-  and replies when it ends or when `waitMs` passes, whichever comes first; a job that is still going replies
-  `running` and later sends `skill.result`.
+  `{ jobId, agentId, skill, args, waitMs, replace, consent? }`. `consent: { token }` (W1) is the player's consent to
+  change protected blocks; see "Protection and consent" in section 7.4.2. The mod starts the job and replies when it ends or when
+  `waitMs` passes, whichever comes first; a job that is still going replies `running` and later sends `skill.result`.
   `waitMs` is the tool's `wait_s` × 1000 (default 20 s). The schema allows up to 600 000, but **the mod caps it at
   120 000** (the tools offer `wait_s` ≤ 120), so a longer wait still answers `running` after 2 minutes. A `skill.run`
   repeating a known `jobId` answers that job's current state instead of starting another. Errors: `UNKNOWN_AGENT`,
@@ -568,9 +568,9 @@ records flatten every variant into one record with `@Nullable` fields.
   `report_task`) never reach the mod; `set_mode` is `agent.mode`, `stop` is `skill.cancel`, `sit_at_pc` /
   `stand_up` are `agent.seat` / `agent.unseat`.
 - **Status footer.** Every `result` of a `skill.run` reply or `skill.result`, and every `obs.query` `result`, ends with
-  `footer`: the agent's ~25-token status line, `HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld |
-  collect 12/20 oak_log | iron_sword` (HP, food, game day and time, block position and dimension, what the body does,
-  the held item). **The mod's footer is the source:** Node takes `footer` out of the result the agent reads and
+  `footer`: the agent's ~25-token status line, `HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld | 12m from Base |
+  collect 12/20 oak_log | iron_sword` (HP, food, game day and time, block position and dimension, where that is
+  relative to the nearest protected zone when there is one (`in Base`, W1), what the body does, the held item). **The mod's footer is the source:** Node takes `footer` out of the result the agent reads and
   appends it as the tool result's last line, never adding a second one. Only tool results that never reach the mod
   (Codex, calendar, social and seat tools, a `running` reply without a result) get the same line built by Node from
   the latest `agent.state`. A job summary (`[JOB DONE]`) never repeats the footer.
@@ -580,8 +580,12 @@ records flatten every variant into one record with `@Nullable` fields.
 - `skill.result`: `{ jobId, agentId, status: done|failed|cancelled, result?, error?: { code, msg }, durationMs }`.
 - `obs.query` (request, `ObsQueryResult { result }`): `{ agentId, query, args }`, `query` one of `status`,
   `look_around`, `inventory`, `find`, `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`.
-  Arguments: `find { what, radius?, limit? }`, `recipe { item }`, `recent_events { limit? }`, `job_status { jobId? }`;
-  the others take none. `menu_state` lists the open menu's slots and its button numbers (section 7.4.2).
+  Arguments: `look_around { radius?, detail?: brief|full }`, `find { what, radius?, limit?, filter?:
+  natural|built|any }`, `recipe { item }`, `recent_events { limit? }`, `job_status { jobId? }`; the others take none
+  (`LookAroundArgs`, `FindArgs`). `look_around` answers a scene (section 7.4.2, `LookAroundResult`); `find` labels each
+  block match with its `provenance` (`natural`, `player-built`, `base`, `agent-built`, plus `owner` and `zone`), the
+  natural `tree` a log belongs to, `dir` (compass) and, for the nearest three, `reachable`. `status` carries `zone`
+  (`in Base`, `12m from Base`). `menu_state` lists the open menu's slots and its button numbers (section 7.4.2).
 - A higher reflex (danger, combat, eating, approach, attend) pauses a running job; the job resumes afterwards. Only
   its own time counts toward its `TIMEOUT`.
 
@@ -606,9 +610,9 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 | `TIMEOUT` | The job ran past its limit (counted only while it had control) |
 | `INTERRUPTED` | Cancelled: replaced by another job, `skill.cancel`, or the agent died or left (`msg` says which). Status `cancelled`. |
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `PC_DOWN`, `NO_SEAT` | The end of an `agent.seat` job (section 7.5) |
-| `PROTECTED` | The job would break or replace a block of the Base or one a player placed, and no `consent` covers it (section 7.4.3). Nothing protected was touched. |
-| `NO_NATURAL_SOURCE` | Nothing natural of the requested kind is in reach: only protected blocks of it, or none the agent can path to (section 7.4.3). |
 | `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
+| `PROTECTED` | The job would change a player-built block or one in a protected zone (the Base), a natural block that holds one up or lies under its roof, light fire or pour lava within 5 blocks of one, build inside a zone, knock down a decoration, take from or retune a player's block (flower pot, lectern, repeater...), or take from a chest the player placed. Nothing was changed. `result.protected` is a `ProtectedDetail` (`pos`, `what`: `player-built` or `base`, `owner`, `block`, `zone?`, `count`, `consentId?`, `hint`); `msg` starts with the teaching line ("That's part of Steve's base — ask Steve before changing it.") |
+| `NO_NATURAL_SOURCE` | `mine` / `collect` found nothing natural and reachable within the radius. It never substitutes another block. `result.noNaturalSource` is a `NoNaturalSourceDetail` (`what`, `radius`, `candidates`: up to 8 `{ pos, block, distance, dir, why: unreachable\|too_far\|protected\|not_natural, owner? }`, `hint`); partial counts stay in `result` |
 | `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
 
 #### 7.4.2 Skill conventions beyond the schemas
@@ -622,6 +626,50 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   less presses menu button `-slot - 2`: a merchant's trade offer (then take the result from slot 2), an enchanting
   option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
 - **`smelt.item`** is either what goes in (`raw_iron`) or what should come out (`iron_ingot`).
+- **Natural sources (W1).** `mine`, `collect` and `find{filter:natural}` resolve a block or tag to natural sources:
+  - A `#tag` leaves out building variants: stripped logs, wood, hyphae and planks. Named outright to `mine`
+    (`stripped_spruce_log`) they count, but stay protected; `collect` of one finds nothing in nature (craft it).
+  - Logs come from **natural trees**: a cluster of log blocks touching leaves with `persistent=false` that nobody
+    placed and that touches no building block (planks, glass, doors, stairs, slabs, fences, walls, wool, beds,
+    bricks, cobblestone, chests...). Logs in buildings are never trees, even in a world from before provenance. A tree is felled whole, bottom-up: the nearest one the agent can walk
+    to (a quick A* per tree), stepping into the cut trunk or pillaring up at most 2 blocks (dirt or cobblestone) for
+    high logs and clearing the pillar afterwards; drops are picked up at the stump, and `collect{replant:true}`
+    plants a sapling of the same kind there. `result.trees` counts felled trees, `logsLeftHigh` logs left out of
+    reach.
+  - Protected blocks are never targets. Nothing natural in reach: `NO_NATURAL_SOURCE` (only protected blocks of the
+    named kind: `PROTECTED`; `mine{near}` on a protected block: `PROTECTED` at once).
+- **Protection and consent (W1).** The mod records who placed each block: players, agents (separately) and the
+  starter office (as the `Base`), per chunk and saved with it. A placed block that is broken or washed away loses its
+  mark; crops, saplings and fire are never marked. Protected: player-built blocks, and everything inside a protected
+  zone: the **Base** (the office's box plus a 2-block margin) and named zones (`/mv zone add`). Agents may change
+  blocks agents placed, and natural blocks outside zones.
+  - Every block-changing skill refuses protected blocks with `PROTECTED`: `mine`, `collect`, `dig` (the whole box is
+    checked first), `place` over a protected plant or snow, `build`, `farm` (till, harvest, bone meal), `use_item`
+    with tools that till, strip or burn, buckets and fire charges, `attack` on item frames, paintings and armor
+    stands, and `container{take}` / `menu_click` on a chest the player placed (the office's own chest is the crew's
+    shared supply). Vanilla breaking and item use are refused for agents too, whatever drives them.
+  - A natural block counts as protected when it holds up a protected one (the ground under the player's torch, door
+    or wall, the stone behind their ladder) or is the floor under their roof (the first solid block above, at most 6
+    up, is theirs); the hint says so ("That holds up part of Steve's build (ladder at 3 64 5) — …"). Fire and lava
+    are refused within 5 blocks of a protected block ("Fire or lava there could reach part of Steve's build — …"),
+    and so is placing TNT there.
+    `use_block` / `use_item` refuse right-clicks that take from or retune a protected flower pot, lectern, chiseled
+    bookshelf, shelf, jukebox, decorated pot, cake, candle, repeater, comparator, daylight detector, note block or
+    respawn anchor. `build` refuses walls, roofs and water inside a zone even into air ("Building there changes part
+    of Steve's base — …"); torches are allowed. `hunt` and `attack` never target tamed or name-tagged animals or
+    golems a player built (`attack` on one: `BAD_TARGET`).
+  - `args.allow_protected: true` (on those skills) counts only with a valid top-level `consent: { token }` on the
+    same `skill.run`. The token is the `consentId` of an earlier `PROTECTED` failure of the same agent (32 hex, valid
+    10 minutes, single use); it lets that one job change the blocks in the box of the protected blocks it was offered
+    for. Node attaches it only after the player explicitly agreed, never from tool input: a model cannot authorize
+    itself. A token the mod did not offer to this agent, or an expired one, is `err BAD_ARGS`.
+- **`look_around` scene (W1).** `result.scene` is text the agent reads, most important line first: position, biome,
+  time and cover; the zone (`Inside Base (...)` or `Base 12m SW`); hazards (hostiles with distance and direction,
+  lava, sheer drops, air under water); natural trees by species with trunk position, distance, compass direction
+  and `reachable` / `unreachable` / `far`; what players and agents built nearby (clusters with owner, size and box);
+  the player and the crew; water, exposed ores and crops; the ground. `detail: brief` (default) stays within 900
+  characters, `full` within 2500 (more trees, animals, loose items, workstations). `zone` and `trees` repeat the key
+  facts as data. The status footer names the zone after the position: `| in Base |` or `| 12m from Base |`.
 - **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus
   stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds. Like `mine`, it only breaks natural
   blocks (section 7.4.3).
@@ -650,32 +698,32 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - **Natural by default.** `mine` and `collect` only take natural blocks. A tag (`#minecraft:logs`) means its natural
   members: building variants (stripped logs and wood, planks, and every block placed by someone) never count. A job
   that finds only protected blocks of the kind fails `NO_NATURAL_SOURCE`, never takes a protected one.
-- **`PROTECTED`** (job failure): `result.protected` lists up to 64 refused blocks `{ pos, block, why: base|player_built }`
-  and `result.zone` the zone they belong to (`base` or `built`), so Node can scope a consent to exactly them.
-- **`NO_NATURAL_SOURCE`** (job failure): `result.natural` lists up to 8 natural candidates the agent could not reach
-  `{ pos, block, distance, reachable: false }`, and `result.protectedCount` how many protected blocks of the kind were
-  skipped.
-- **Perception.** `obs.query look_around` adds `zone` (as in `agent.state`) and, per notable block category,
-  `natural: { count, nearest, reachable? }` and `built: { count, nearest }` next to the totals; `find` adds to each block
-  match `natural` (bool), `protected` (bool) and `reachable` (bool, when the path was checked). Node turns these into a
-  scene for the model ("in Base (office) · oak_log 25m NE natural, reachable · stripped_spruce_log 2m N PROTECTED").
-- **Zone.** `agent.state.agents[].zone` is where the body stands: `{ kind: "base", name: "Base (office)" }`, `built`
-  (among player builds outside the Base) or `wild`.
-- **Consent.** `skill.run.consent = { consentId, agentId, positions?: BlockPos[] (≤ 512), zone?: ZoneKind, expiresAt }`
-  lets that one job change exactly `positions` (or, without positions, anything protected in `zone`) until `expiresAt`
-  (epoch ms; Node issues 5 minutes). Node mints it only when the player explicitly allowed it: an answered question
-  card whose chosen option starts with "Allow" and, in its label or description, names what it unlocks (the Base, the
-  house, the pillars, or a refused block id), or a direct chat reply to that agent that is a plain yes naming the same
-  (`yes, take them from the house`). A pronoun alone (`yes, take it`), the Base as a destination (`back to base`) or
-  its furniture is not a permission; such replies need the card. The model can never pass one: tool arguments carry
-  no consent. The mod ignores a consent whose `agentId` is another agent's or that has expired.
-- **Node's own guard** (whatever the mod knows): `dig` / `farm` boxes that overlap the Base (and the torches on its
-  walls), `mine` / `collect` aimed `near` a spot inside it, and `build` blueprints that reach into it are refused
-  `PROTECTED` before they reach the mod. Until the mod guards provenance, Node also refuses a `mine` / `collect` for a
-  `#tag` or for something the Base is built of (planks, stripped logs, cobblestone, bricks, glass, its furniture)
-  whose search (`near` or the agent, `radius` default 24) reaches the Base: today's mod takes the nearest match, which
-  is the Base. **Node treats a mod that sends `zone` in `agent.state` as one that guards provenance**, so a mod must
-  send `zone` only once it enforces the rules above.
+- **`PROTECTED`** and **`NO_NATURAL_SOURCE`** (job failures): `result.protected` is a `ProtectedDetail` and
+  `result.noNaturalSource` a `NoNaturalSourceDetail` (section 7.4.1). Node notes the refusal (its block, zone and
+  `consentId`) so the player can allow exactly that.
+- **Perception.** `obs.query look_around` answers the mod's scene (`result.scene`, plus `zone` and `trees` as data);
+  Node passes the scene text to the model as is and notes the nearest reachable tree for its one-line digest scene.
+  `find` labels each block match with `provenance` (`natural`, `player-built`, `base`, `agent-built`) and, for the
+  nearest three, `reachable`; Node turns these into lines ("oak_log 25m NE natural, reachable · stripped_spruce_log 2m
+  N PROTECTED").
+- **Zone.** `agent.state.agents[].zone` is the footer's words: `in Base` (or `in <zone>`) inside a protected zone,
+  `12m from Base` outside. Node reads `in …` as the Base kind and anything else as the wild.
+- **Consent.** The token is the mod's: a `PROTECTED` failure offers `consentId` (32 hex, 10 minutes, single use,
+  bound to that agent and those blocks). Node keeps the offer and passes it back as `skill.run.consent = { token }`
+  (with `args.allow_protected: true`, which Node sets) only when the player explicitly allowed it: an answered
+  question card whose chosen option starts with "Allow" and, in its label or description, names what it unlocks
+  (the Base, the house, the pillars, or the refused block id), or a direct chat reply to that agent that is a plain
+  yes naming the same (`yes, take them from the house`). A pronoun alone (`yes, take it`), the Base as a destination
+  (`back to base`) or its furniture is not a permission; such replies need the card. The model can never pass one:
+  tool arguments carry no consent. A refusal Node raised itself (below) carries no token, so it can only be allowed
+  after the mod refuses the job itself.
+- **Node's own guard** (only for a mod that sends no `zone`, i.e. guards no provenance): `dig` / `farm` boxes that
+  overlap the Base (and the torches on its walls), `mine` / `collect` aimed `near` a spot inside it, `build`
+  blueprints that reach into it, and `mine` / `collect` for a `#tag` or for something the Base is built of (planks,
+  stripped logs, cobblestone, bricks, glass, its furniture) whose search (`near` or the agent, `radius` default 24)
+  reaches the Base are refused `PROTECTED` before they reach the mod. **Node treats a mod that sends `zone` in
+  `agent.state` as one that guards provenance** and leaves every check to it, so its refusals carry a consent token;
+  a mod must send `zone` only once it enforces the rules above.
 
 ### 7.5 seats
 

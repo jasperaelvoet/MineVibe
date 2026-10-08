@@ -20,6 +20,7 @@ import {
   IdleMode,
   MOD_CAPS,
   type ObsQueryName,
+  type SkillConsent,
 } from '@minevibe/protocol';
 import { z } from 'zod';
 import { isApiError } from '../../contracts/common.js';
@@ -373,14 +374,18 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
     }
   };
 
-  /** The world guard (W2): wire calls that reach the Base never get to the mod without the player's consent. */
+  /**
+   * The world guard (W2): wire calls that reach the Base never get to the mod. Only for a mod that reports no zones: one
+   * that does guards provenance itself and offers a consent token with its refusal (protocol §7.4.3), and a refusal of
+   * Node's own could never be allowed.
+   */
   const guard = (calls: readonly WireCall[]): Out | null => {
     const world = host.world?.() ?? null;
-    if (!world) return null;
+    if (!world || (world.zone !== null && world.zone !== undefined)) return null;
     for (const [i, c] of calls.entries()) {
       const conflict = baseConflict(c.skill, c.args, world.base, {
         here: world.here,
-        modGuards: world.zone !== null && world.zone !== undefined,
+        modGuards: false,
         playerName: host.playerName(),
       });
       if (!conflict) continue;
@@ -396,10 +401,18 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
 
   /** Starts a wire call as a job and answers within ACTION_WAIT_S (§7). */
   const runWire = async (wire: WireCall): Promise<Out> => {
-    const meta = wire.meta;
+    const key = wireKey(wire);
+    const meta: JobMeta = { ...wire.meta, wire: key };
     const refused = guard(wire.skill === 'sequence' ? (meta.steps ?? []).map((s, i) => stepCall(wire, s, i)) : [wire]);
     if (refused) return refused;
-    const consent = CONSENT_SKILLS_V2.has(wire.skill) ? (host.consent?.() ?? null) : null;
+    // The player's consent (§8 PROTECTED): the model repeats the exact call the mod refused, after the player picked an
+    // "Allow" option; Node then attaches the mod's token and asks for it (allow_protected). Never from tool arguments.
+    let consent: SkillConsent | null = null;
+    let args = wire.args;
+    if (CONSENT_SKILLS_V2.has(wire.skill) && host.jobs?.refused() === key && host.hasConsent?.() === true) {
+      consent = host.takeConsent?.() ?? null;
+      if (consent) args = { ...args, allow_protected: true };
+    }
     const previous = host.jobs?.current() ?? null;
     if (previous) host.jobs?.markCancelled('replace');
     const jobId = newJobId();
@@ -411,7 +424,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       res = await host.skills.runSkill({
         agentId: host.agentId,
         skill: wire.skill,
-        args: wire.args as never,
+        args: args as never,
         waitMs: ACTION_WAIT_S * 1000,
         replace: true,
         jobId,
@@ -447,7 +460,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       },
       ctx(),
     );
-    host.jobs?.ended(res.jobId, res.status, rendered);
+    host.jobs?.ended(res.jobId, res.status, rendered, res.error?.code);
     return {
       text: compose(withNote(rendered, replaced), null, meta.skill === 'sequence' ? 900 : 600),
       isError: rendered.isError,
@@ -739,7 +752,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
                 { status: end.status, result, error: end.error, durationMs: end.durationMs },
                 ctx(),
               );
-              jobs?.ended(id, end.status, rendered);
+              jobs?.ended(id, end.status, rendered, end.error?.code);
               return {
                 text: compose(rendered, null, meta.skill === 'sequence' ? 900 : 600),
                 isError: rendered.isError,
@@ -906,6 +919,11 @@ export function progressFor(meta: JobMeta, text: string): string {
   const m = /^(\d+\/\d+)\s+(\S+)$/.exec(flat);
   if (m && meta.want && short(meta.want.item) === m[2]) return m[1] ?? flat;
   return flat;
+}
+
+/** A wire call's identity: the same tool call translates to the same key (the consent retry matches on it). */
+export function wireKey(wire: Pick<WireCall, 'skill' | 'args'>): string {
+  return JSON.stringify([wire.skill, wire.args]);
 }
 
 /** The wire call of `do` step `i` (for the guard; the steps are in the sequence's args). */

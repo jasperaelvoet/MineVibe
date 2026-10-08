@@ -126,6 +126,7 @@ describe('reply fixtures', () => {
   const okFixtures: Record<string, MessageType> = {
     'ok--skill-run': 'skill.run',
     'ok--skill-run-replaced': 'skill.run',
+    'ok--obs-look-around': 'obs.query',
     'ok--agent-spawn': 'agent.spawn',
     'ok--codex-search': 'codex.search',
     'ok--meeting-start': 'meeting.start',

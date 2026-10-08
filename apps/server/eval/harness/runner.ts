@@ -163,7 +163,7 @@ export function jobEndedTextV2(
     { status: end.status, result: splitFooter(end.result).result, error: end.error, durationMs: end.durationMs },
     { here: world.agent.pos, playerName: player },
   );
-  jobs.ended(end.jobId, end.status, rendered);
+  jobs.ended(end.jobId, end.status, rendered, end.error?.code);
   if (end.status === 'cancelled' && cancelledBy) return null;
   return control(
     nonce,

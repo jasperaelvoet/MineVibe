@@ -178,6 +178,8 @@ export interface JobMeta {
   readonly args?: Readonly<Record<string, unknown>> | undefined;
   /** `do` steps, in order. */
   readonly steps?: readonly JobMeta[] | undefined;
+  /** The wire call's key (tools/mcToolsV2.ts `wireKey`): a `PROTECTED` refusal of it may be retried with consent. */
+  readonly wire?: string | undefined;
 }
 
 export type JobState = 'done' | 'failed' | 'cancelled';
