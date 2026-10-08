@@ -51,7 +51,7 @@ public final class BubbleRenderer {
 	/** Extra height above the body included in the frustum test (name tag, icon and up to 8 lines). */
 	private static final double BUBBLE_HEIGHT = 2.6;
 	private static final int LINE_HEIGHT = 10;
-	private static final float SCALE = 0.025f;
+	private static final float SCALE = 0.02f;
 
 	/** One bubble to draw (camera-relative position of its bottom center). */
 	record Draw(double x, double y, double z, List<String> lines, int textColor, int backgroundColor, HeadIcon icon, float alpha) {}
@@ -105,8 +105,8 @@ public final class BubbleRenderer {
 			if (lines.isEmpty() && icon == HeadIcon.NONE) continue;
 			int text = card ? 0xFFFFF4C2 : bubble != null && "bark".equals(bubble.style()) ? 0xFFDDDDDD : 0xFFFFFFFF;
 			int background = card ? 0xC0302810 : 0x90000000;
-			// Above the vanilla name tag (attached at the body's height + 0.5).
-			double y = pos.y + body.getBbHeight() + 0.75;
+			// Just above the vanilla name tag, which spans [height + 0.275, height + 0.5].
+			double y = pos.y + body.getBbHeight() + 0.6;
 			draws.add(new Draw(pos.x - cam.x, y - cam.y, pos.z - cam.z, lines, text, background, icon, alpha));
 		}
 		context.levelState().setData(KEY, List.copyOf(draws));

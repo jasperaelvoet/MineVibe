@@ -33,6 +33,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Player;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,11 +41,10 @@ import org.slf4j.LoggerFactory;
  * Client entrypoint for the in-game UI and messaging (PLAN §6.4, §6.5, §7.8): bubbles and head icons, name-tag model
  * suffixes, AgentScreen, CrewHud, toasts, the Crew log, keys, chat interception and {@code @name} completion.
  *
- * <p>Listed after {@code MineVibeClient} in {@code fabric.mod.json}, so the bridge exists (and has not finished
- * connecting) when the UI group's handlers are registered here: {@code agent.say}, {@code ui.toast},
- * {@code agent.brain}, {@code agent.pending}, {@code chat.append}, {@code crew.state} and {@code brains.state}, all on
- * the client thread into {@link UiState}. ({@code agent.approach} is left to the body side; the UI reads the presenter
- * from the cards' {@code presenting} flag.)
+ * <p>The UI group's bridge handlers ({@code agent.say}, {@code ui.toast}, {@code agent.brain}, {@code agent.pending},
+ * {@code chat.append}, {@code crew.state} and {@code brains.state}, all on the client thread into {@link UiState}) are
+ * registered by {@link #attach}, which {@code MineVibeClient} calls before the bridge starts. ({@code agent.approach}
+ * is left to the body side; the UI reads the presenter from the cards' {@code presenting} flag.)
  */
 public final class UiClientInit implements ClientModInitializer {
 	private static final Logger LOG = LoggerFactory.getLogger("MineVibe/UI");
@@ -85,12 +85,25 @@ public final class UiClientInit implements ClientModInitializer {
 		}));
 
 		BridgeClient bridge = MineVibeBridge.get();
-		if (bridge != null) registerHandlers(bridge);
+		if (bridge != null) attach(bridge);
 		UiDemo.init();
 	}
 
 	private static Identifier id(String path) {
 		return Identifier.fromNamespaceAndPath("minevibe", path);
+	}
+
+	private static @Nullable BridgeClient attached;
+
+	/**
+	 * Registers the UI group's handlers on the bridge, once. {@code MineVibeClient} calls it before
+	 * {@code bridge.start()}: Node pushes the crew right after {@code hello.ok}, which can come before this entrypoint
+	 * runs, and a push without a handler is dropped. The call in {@link #onInitializeClient} is the fallback.
+	 */
+	public static synchronized void attach(BridgeClient bridge) {
+		if (attached == bridge) return;
+		attached = bridge;
+		registerHandlers(bridge);
 	}
 
 	/** The UI group's pushes, applied to {@link UiState} on the client thread. */

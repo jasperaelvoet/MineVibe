@@ -87,7 +87,7 @@ public final class CrewHud {
 		int x = 4;
 		int y = 4;
 		int height = 12 + rows.size() * 10;
-		g.fill(x - 2, y - 2, x + width + 4, y + height, 0x80000000);
+		g.fill(x - 2, y - 2, x + width + 4, y + height, 0xC0101018);
 		g.text(font, head, x, y, online ? 0xFFFFE08A : 0xFFB0B0C8, true);
 		y += 12;
 		for (int i = 0; i < rows.size(); i++) {

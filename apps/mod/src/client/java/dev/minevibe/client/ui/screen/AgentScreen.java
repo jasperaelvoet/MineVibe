@@ -531,7 +531,8 @@ public final class AgentScreen extends Screen {
 			case Ui.PendingCard.QUESTION -> {
 				Ui.CardQuestion q = FrontCards.currentQuestion(card);
 				String chip = q != null && q.header() != null ? " · " + q.header() : "";
-				yield "Question " + FrontCards.progress(card) + chip + (card.parked() ? " (parked)" : "");
+				String progress = card.questions() != null && card.questions().size() > 1 ? " " + FrontCards.progress(card) : "";
+				yield "Question" + progress + chip + (card.parked() ? " (parked)" : "");
 			}
 			case Ui.PendingCard.PLAN -> "Plan" + (card.parked() ? " (parked)" : "");
 			case Ui.PendingCard.HIRE -> "Hire request";
