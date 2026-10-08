@@ -22,7 +22,8 @@
 		],
 		"client": [
 			"dev.minevibe.client.MineVibeClient",
-			"dev.minevibe.client.agent.AgentClientInit"
+			"dev.minevibe.client.agent.AgentClientInit",
+			"dev.minevibe.client.ui.UiClientInit"
 		]
 	},
 	"mixins": [
@@ -33,6 +34,10 @@
 		},
 		{
 			"config": "minevibe.agent.client.mixins.json",
+			"environment": "client"
+		},
+		{
+			"config": "minevibe.ui.client.mixins.json",
 			"environment": "client"
 		}
 	],

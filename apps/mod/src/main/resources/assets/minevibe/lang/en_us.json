@@ -1,4 +1,8 @@
 {
+  "key.category.minevibe.crew": "MineVibe: Crew",
+  "key.minevibe.front_card": "Open waiting card",
+  "key.minevibe.crew_hud": "Toggle crew overview",
+  "key.minevibe.crew_log": "Open crew log",
   "block.minevibe.office_chair": "Office Chair",
   "block.minevibe.grave": "Grave",
   "entity.minevibe.seat": "Seat",
