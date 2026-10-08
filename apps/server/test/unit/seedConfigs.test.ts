@@ -84,10 +84,12 @@ describe('seedConfigs (packaging/seed-configs)', () => {
     ]);
     const dfps = readJson(join(game, 'config', 'dynamic_fps.json')) as {
       idle: { timeout: number; condition: string };
-      states: { unfocused: { frame_rate_target: number } };
+      states: { unfocused: { frame_rate_target: number }; invisible: { frame_rate_target: number } };
       ignore_initial_click: string;
     };
     expect(dfps.states.unfocused.frame_rate_target).toBe(30);
+    // Never 0 (Dynamic FPS's default): BootScreen waits for the loading overlay, which only fades on drawn frames.
+    expect(dfps.states.invisible.frame_rate_target).toBe(1);
     expect(dfps.idle).toEqual({ timeout: 0, condition: 'none' });
     expect(dfps.ignore_initial_click).toBe('disabled');
     expect(readJson(join(game, 'config', 'entityculling.json'))).toEqual({ configVersion: 9 });
