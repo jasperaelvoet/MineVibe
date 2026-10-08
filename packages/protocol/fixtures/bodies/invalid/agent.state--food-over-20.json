@@ -1,0 +1,23 @@
+{
+  "t": "agent.state",
+  "v": 1,
+  "tick": 1,
+  "agents": [
+    {
+      "agentId": "ada",
+      "pos": {
+        "x": 0,
+        "y": 64,
+        "z": 0
+      },
+      "dim": "minecraft:overworld",
+      "hp": 20,
+      "maxHp": 20,
+      "food": 25,
+      "saturation": 5,
+      "mode": "follow",
+      "hasFood": true,
+      "inCombat": false
+    }
+  ]
+}

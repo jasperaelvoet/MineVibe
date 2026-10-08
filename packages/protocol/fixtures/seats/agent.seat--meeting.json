@@ -1,0 +1,12 @@
+{
+  "t": "agent.seat",
+  "v": 1,
+  "id": "n-41",
+  "agentId": "ada",
+  "jobId": "job-41",
+  "seatEpoch": 0,
+  "target": {
+    "kind": "meeting",
+    "meetingId": "mtg-2"
+  }
+}

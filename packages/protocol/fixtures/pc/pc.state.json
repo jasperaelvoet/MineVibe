@@ -1,0 +1,34 @@
+{
+  "t": "pc.state",
+  "v": 1,
+  "pcId": "linux-1",
+  "type": "linux",
+  "name": "linux-1",
+  "status": "running",
+  "progress": null,
+  "detail": null,
+  "slot": 1,
+  "cpus": 2,
+  "memoryMiB": 4096,
+  "diskGiB": 64,
+  "plugged": true,
+  "pinned": true,
+  "wipeOnDeath": false,
+  "mounts": [
+    {
+      "hostPath": "/Users/jasper/Code/foo",
+      "mode": "rw"
+    }
+  ],
+  "occupant": {
+    "kind": "agent",
+    "agentId": "bram"
+  },
+  "reservation": null,
+  "banner": null,
+  "screen": {
+    "w": 1280,
+    "h": 800
+  },
+  "consent": null
+}

@@ -1,0 +1,13 @@
+{
+  "t": "agent.seat",
+  "v": 1,
+  "id": "n-40",
+  "agentId": "bram",
+  "jobId": "job-40",
+  "seatEpoch": 3,
+  "target": {
+    "kind": "pc",
+    "pcId": "linux-1"
+  },
+  "purpose": "Fix the failing test in foo"
+}

@@ -1,0 +1,51 @@
+{
+  "t": "pc.input",
+  "v": 1,
+  "pcId": "linux-1",
+  "seq": 118,
+  "events": [
+    {
+      "k": "move",
+      "x": 640,
+      "y": 400
+    },
+    {
+      "k": "button",
+      "button": "left",
+      "down": true,
+      "x": 640,
+      "y": 400
+    },
+    {
+      "k": "button",
+      "button": "left",
+      "down": false,
+      "x": 640,
+      "y": 400
+    },
+    {
+      "k": "scroll",
+      "dx": 0,
+      "dy": -3,
+      "x": 640,
+      "y": 400
+    },
+    {
+      "k": "text",
+      "text": "ls -la"
+    },
+    {
+      "k": "key",
+      "key": "KEY_ENTER",
+      "down": true
+    },
+    {
+      "k": "key",
+      "key": "KEY_ENTER",
+      "down": false
+    },
+    {
+      "k": "release_all"
+    }
+  ]
+}
