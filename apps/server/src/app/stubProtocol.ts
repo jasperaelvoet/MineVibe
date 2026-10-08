@@ -8,8 +8,8 @@ import { z } from 'zod';
  */
 export const STUB_PROTOCOL_VERSION = 1;
 
-/** Coarse phases of an app launch, for the first-run window. */
-export type AppPhase = 'start' | 'install' | 'seed' | 'launch' | 'launched' | 'connected' | 'exited';
+/** Coarse phases of an app launch, for the first-run window (`pcs`: the game waits for the first-run PC setup). */
+export type AppPhase = 'start' | 'install' | 'seed' | 'pcs' | 'launch' | 'launched' | 'connected' | 'exited';
 
 export interface SelftestCheck {
   readonly name: string;

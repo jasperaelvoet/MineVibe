@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -357,6 +365,36 @@ describe('provisioning', () => {
     await rt.provision();
     expect(order).toEqual(['expand', 'status:old binary', 'stop']);
     expect(readFileSync(join(roots.installRoot, 'bin', 'container'), 'utf8')).toBe(newBin);
+  });
+
+  it('leaves out excluded files and whole excluded folders (the k8s plugin)', async () => {
+    rmSync(join(roots.installRoot, 'bin', 'container'));
+    const pkg = join(dir, 'container.pkg');
+    writeFileSync(pkg, 'the pkg');
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    const lk: ContainerLock = {
+      version: '1.5.0',
+      pkg: { name: 'container.pkg', url: 'https://invalid.example/x', sha256: sha('the pkg') },
+      exclude: ['bin/update-container.sh', 'libexec/container/plugins/k8s'],
+      installRootFiles: { 'bin/container': sha('cli') },
+    };
+    const exec: ExecFn = async (file, args) => {
+      if (file === '/usr/sbin/pkgutil' && args[0] === '--expand-full') {
+        const payload = join(args[2] as string, 'Payload');
+        mkdirSync(join(payload, 'bin'), { recursive: true });
+        mkdirSync(join(payload, 'libexec', 'container', 'plugins', 'k8s', 'bin'), { recursive: true });
+        writeFileSync(join(payload, 'bin', 'container'), 'cli');
+        writeFileSync(join(payload, 'bin', 'update-container.sh'), '#!/bin/sh');
+        writeFileSync(join(payload, 'libexec', 'container', 'plugins', 'k8s', 'bin', 'k8s'), 'k8s');
+        return ok();
+      }
+      return ok('{"status":"unregistered"}', 1);
+    };
+    const rt = new ContainerRuntime({ ...roots, lock: lk, cacheDir: dir, pkgPath: pkg, exec });
+    await rt.provision();
+    expect(readFileSync(join(roots.installRoot, 'bin', 'container'), 'utf8')).toBe('cli');
+    expect(existsSync(join(roots.installRoot, 'bin', 'update-container.sh'))).toBe(false);
+    expect(existsSync(join(roots.installRoot, 'libexec', 'container', 'plugins', 'k8s'))).toBe(false);
   });
 
   it('is a no-op when the install root already matches', async () => {

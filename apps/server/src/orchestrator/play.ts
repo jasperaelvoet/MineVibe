@@ -43,6 +43,33 @@ export type PlayProgressEvent =
   | { readonly phase: 'connected' }
   | { readonly phase: 'exited'; readonly code: number | null; readonly signal: NodeJS.Signals | null };
 
+/** What a {@link PlayHooks} hook gets. */
+export interface PlayHookContext {
+  readonly paths: MineVibePaths;
+  /** Aborted when a stop is requested before the game runs (a quit during the first-run setup). */
+  readonly signal: AbortSignal;
+  readonly logger: Logger;
+}
+
+/**
+ * MineVibe.app's additions around a session (PLAN §9.2/§9.3; `apps/server/src/app/runApp.ts`). `npm run play` uses
+ * none. Each runs at most once.
+ */
+export interface PlayHooks {
+  /**
+   * Once `run/lock` is held, before the bridge starts: the startup reaper, and starting work that runs alongside the
+   * installs (the PC engine and image). A rejection fails the launch.
+   */
+  afterLock?(context: PlayHookContext): Promise<void>;
+  /** After installing and seeding, right before the JVM is spawned; the game waits for it (first-run PC setup). */
+  beforeLaunch?(context: PlayHookContext): Promise<void>;
+  /**
+   * On every way out once `afterLock` ran (the game exited, failed or never started), after the game is gone and
+   * before the bridge stops and the lock is released: stopping the PCs and the engine. A rejection is only logged.
+   */
+  beforeTeardown?(context: PlayHookContext): Promise<void>;
+}
+
 export interface PlayOptions {
   readonly repoRoot: string | null;
   readonly logger: Logger;
@@ -52,6 +79,8 @@ export interface PlayOptions {
   readonly fetch?: FetchLike;
   /** Called at each milestone. */
   readonly onProgress?: (event: PlayProgressEvent) => void;
+  /** MineVibe.app's reaper, PC setup and teardown (see {@link PlayHooks}). */
+  readonly hooks?: PlayHooks;
 }
 
 export interface PlayTimings {
@@ -194,7 +223,14 @@ export async function play(options: PlayOptions): Promise<number> {
   process.once('exit', stopOnExit);
 
   let server: DevServer | null = null;
+  const hooks = options.hooks ?? {};
+  const hookContext: PlayHookContext = { paths, signal: abort.signal, logger: log };
+  let hooked = false;
   try {
+    if (hooks.afterLock) {
+      hooked = true;
+      await hooks.afterLock(hookContext);
+    }
     const settings = await loadLauncherSettings(paths.state, env, (msg) => log.warn(msg));
     const resources = resolveResources(repoRoot, env);
     const lock = await loadModsLock(join(resources, 'mods.lock.json'));
@@ -314,6 +350,10 @@ export async function play(options: PlayOptions): Promise<number> {
       },
       'game ready',
     );
+    if (hooks.beforeLaunch) {
+      await hooks.beforeLaunch(hookContext);
+      signal.throwIfAborted();
+    }
 
     const command = await buildLaunchCommand({
       javaPath: javaResolved.path,
@@ -375,6 +415,11 @@ export async function play(options: PlayOptions): Promise<number> {
   } finally {
     // Only an error path gets here with the game still running: let it save, then make sure it is gone.
     if (child) await stopGame(child);
+    if (hooked && hooks.beforeTeardown) {
+      await hooks
+        .beforeTeardown(hookContext)
+        .catch((err: unknown) => log.warn({ err }, 'teardown hook failed'));
+    }
     process.removeListener('exit', stopOnExit);
     control.onStopRequest = null;
     if (server) await server.stop('quit').catch((err: unknown) => log.warn({ err }, 'bridge stop failed'));

@@ -25,6 +25,16 @@ func envSeconds(_ name: String, _ fallback: Double) -> Double {
 let shutdownGrace = envSeconds("MINEVIBE_STUB_GRACE_S", 60)
 /// How long Node may take to say hello.
 let handshakeTimeout = envSeconds("MINEVIBE_STUB_HANDSHAKE_S", 30)
+/// The stub <-> Node protocol this stub speaks (`STUB_PROTOCOL_VERSION` in apps/server/src/app/stubProtocol.ts).
+let stubProtocolVersion = 1
+
+/// Why Node's hello cannot be trusted (another protocol version), or nil when it can.
+func protocolMismatch(_ hello: [String: Any]) -> String? {
+    let version = hello["v"] as? Int ?? -1
+    if version == stubProtocolVersion { return nil }
+    return "Its server speaks protocol v\(version), its launcher v\(stubProtocolVersion). "
+        + "Download MineVibe again and replace the app."
+}
 
 // MARK: - Log (~/Library/Logs/MineVibe/launcher.log, or $MINEVIBE_HOME/Logs; Node's stderr goes here too)
 
@@ -390,7 +400,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch message["t"] as? String {
         case "hello":
             sawHello = true
-            link?.send(["cmd": "hello", "v": 1, "stub": stubVersion, "pid": Int(getpid())])
+            if let mismatch = protocolMismatch(message) {
+                // A server from another build would misread everything we send: never answer it, just stop it.
+                StubLog.write("protocol mismatch: \(mismatch)")
+                lastError = ("MineVibe is damaged", mismatch)
+                beginShutdown("protocol-mismatch")
+                return
+            }
+            link?.send(["cmd": "hello", "v": stubProtocolVersion, "stub": stubVersion, "pid": Int(getpid())])
         case "progress":
             let work = message["work"] as? Bool ?? false
             if gameReady || (progress == nil && !work) { return }
@@ -497,6 +514,7 @@ enum SelfTest {
         let hello = DispatchSemaphore(value: 0)
         let exited = DispatchSemaphore(value: 0)
         var helloMs = -1
+        var mismatch: String?
         var result: [String: Any]?
         var exitStatus: (Int32, Process.TerminationReason)?
         let link: NodeLink
@@ -508,7 +526,12 @@ enum SelfTest {
                     helloMs = Int(Date().timeIntervalSince(started) * 1000)
                     let version = message["v"] as? Int ?? -1
                     say("hello from node \(message["node"] ?? "?") (server \(message["server"] ?? "?"), protocol v\(version))")
-                    link.send(["cmd": "hello", "v": 1, "stub": stubVersion, "pid": Int(getpid())])
+                    if let problem = protocolMismatch(message) {
+                        mismatch = problem
+                        link.send(["cmd": "shutdown", "reason": "protocol-mismatch"])
+                    } else {
+                        link.send(["cmd": "hello", "v": stubProtocolVersion, "stub": stubVersion, "pid": Int(getpid())])
+                    }
                     hello.signal()
                 case "selftest":
                     result = message
@@ -538,12 +561,16 @@ enum SelfTest {
         }
         return queue.sync {
             var ok = true
+            if let mismatch {
+                say("FAIL protocol: \(mismatch)")
+                ok = false
+            }
             for check in result?["checks"] as? [[String: Any]] ?? [] {
                 let passed = check["ok"] as? Bool ?? false
                 ok = ok && passed
                 say("\(passed ? "ok  " : "FAIL") \(check["name"] ?? "?"): \(check["detail"] ?? "")")
             }
-            if result == nil { say("FAIL: node sent no selftest result"); ok = false }
+            if result == nil && mismatch == nil { say("FAIL: node sent no selftest result"); ok = false }
             if let (status, reason) = exitStatus, status != 0 || reason != .exit {
                 say("FAIL: node exited with \(reason == .exit ? "code" : "signal") \(status)")
                 ok = false

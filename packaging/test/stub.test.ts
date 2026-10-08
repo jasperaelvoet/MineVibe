@@ -38,7 +38,7 @@ record('start ' + process.pid + ' ' + process.execArgv.join(' ') + ' ' + process
 const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
 if (mode !== 'silent') {
   process.stdout.write('this line is not NDJSON\\n');
-  send({ t: 'hello', v: 1, mode: selftest ? 'selftest' : 'app', server: 'fake', node: process.version, pid: process.pid });
+  send({ t: 'hello', v: mode.startsWith('v2') ? 2 : 1, mode: selftest ? 'selftest' : 'app', server: 'fake', node: process.version, pid: process.pid });
 }
 const rl = createInterface({ input: process.stdin });
 rl.on('line', (line) => {
@@ -51,7 +51,7 @@ rl.on('line', (line) => {
     send({ t: 'progress', phase: 'install', work: false, title: 'Checking' });
     send({ t: 'ready' });
   }
-  if (cmd.cmd === 'shutdown' && mode !== 'stubborn') {
+  if (cmd.cmd === 'shutdown' && mode !== 'stubborn' && mode !== 'v2-stubborn') {
     record('exiting');
     process.exit(selftest ? (mode === 'fail' ? 1 : 0) : 130);
   }
@@ -246,6 +246,38 @@ describe.skipIf(!haveSwiftc())('MineVibe stub', () => {
     expect(Date.now() - t).toBeLessThan(10_000);
     expect(b.out()).toContain('no hello from node');
     await until(() => !isAlive(nodePid(silent.nodeLog)));
+  });
+
+  it('--selftest fails when Node speaks another protocol version, and never answers its hello', async () => {
+    const { exe, home, nodeLog } = makeBundle();
+    const run = startStub(exe, ['--selftest'], {
+      MINEVIBE_HOME: home,
+      FAKE_NODE_LOG: nodeLog,
+      FAKE_NODE_MODE: 'v2',
+    });
+    expect(await run.exit).toBe(1);
+    expect(run.out()).toContain('protocol v2');
+    expect(run.out()).toContain('FAIL protocol: Its server speaks protocol v2, its launcher v1.');
+    expect(run.out()).not.toContain('node sent no selftest result');
+    const log = readFileSync(nodeLog, 'utf8');
+    expect(log).toContain('cmd shutdown protocol-mismatch');
+    expect(log).not.toContain('cmd hello');
+  });
+
+  it('app: a Node speaking another protocol version is told to shut down, never answered', async () => {
+    const { exe, home, nodeLog } = makeBundle();
+    // The fake ignores the shutdown, so the stub never reaches its error dialog during the test.
+    const run = startStub(exe, [], {
+      MINEVIBE_HOME: home,
+      FAKE_NODE_LOG: nodeLog,
+      FAKE_NODE_MODE: 'v2-stubborn',
+    });
+    await until(() => readFileSync(nodeLog, 'utf8').includes('cmd shutdown protocol-mismatch'));
+    expect(readFileSync(nodeLog, 'utf8')).not.toContain('cmd hello');
+    expect(readFileSync(join(home, 'Logs', 'launcher.log'), 'utf8')).toContain('protocol mismatch');
+    run.child.kill('SIGKILL');
+    await run.exit;
+    await until(() => !isAlive(nodePid(nodeLog)));
   });
 
   it('app: SIGTERM sends shutdown, Node exits, the stub exits 0 and logs it', async () => {

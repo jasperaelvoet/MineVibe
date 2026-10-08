@@ -1,7 +1,7 @@
 // Assembles dist/MineVibe.app (PLAN §9.1, packaging/README.md). macOS on Apple Silicon only.
 //
 //   npm run build:app [-- --out <dir>] [--identity auto|adhoc|<name or SHA-1>] [--mod-jar <path>]
-//                         [--skip-mod-build] [--skip-server-build] [--cache <dir>]
+//                         [--skip-mod-build] [--skip-server-build] [--cache <dir>] [--channel dev|release]
 //
 // Independent steps run in parallel: the three vendor downloads (sha256-pinned in vendor.lock.json, cached), the
 // server bundle, the mod jar (Gradle) and the Swift stub. Vendor files are copied byte-identically and checked
@@ -17,7 +17,7 @@ import { run, runCommand } from './lib/exec.js';
 import { compareTrees, ensureDownloaded, isMachO, sha256File, snapshotTree, treeSize } from './lib/files.js';
 import { writePlaceholderIconset } from './lib/icon.js';
 import { renderInfoPlist } from './lib/infoPlist.js';
-import { copyProductionPackages, productionPackages } from './lib/prodDeps.js';
+import { copyProductionPackages, productionPackages, releasePrunedFiles } from './lib/prodDeps.js';
 import { chooseIdentity, parseIdentities } from './lib/signing.js';
 import {
   archiveFileName,
@@ -29,6 +29,8 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SWIFTC_ARGS = ['-O', '-parse-as-library', '-target', 'arm64-apple-macos26.0'];
+/** `images/linux-pc`: everything the image build needs, and nothing else (it is the build context). */
+const LINUX_PC_CONTEXT = ['Containerfile', 'minevibe-entrypoint.sh'] as const;
 
 const started = performance.now();
 const say = (message: string) => {
@@ -117,7 +119,8 @@ async function prepareVendors(lock: VendorLock, cache: string, work: string): Pr
     const payload = join(dir, 'Payload');
     await stat(join(payload, 'bin', 'container'));
     // The same install root the PC manager provisions in dev: Apple's update/uninstall scripts are left out.
-    for (const rel of lock.container.exclude) await rm(join(payload, ...rel.split('/')), { force: true });
+    for (const rel of lock.container.exclude)
+      await rm(join(payload, ...rel.split('/')), { recursive: true, force: true });
     return payload;
   })();
   const [nodeBin, jreHome, containerRoot] = await Promise.all([node, jre, container]);
@@ -278,9 +281,14 @@ async function main(): Promise<void> {
         default:
           process.env.MINEVIBE_VENDOR_CACHE ?? join(homedir(), 'Library', 'Caches', 'MineVibe-dev', 'vendor'),
       },
+      // dev: keeps the SDK's own claude (MINEVIBE_CLAUDE=bundled works); release: prunes it (PLAN §9.1).
+      channel: { type: 'string', default: 'dev' },
     },
     strict: true,
   });
+  const channel = values.channel;
+  if (channel !== 'dev' && channel !== 'release')
+    throw new Error(`--channel must be dev or release: ${channel}`);
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('MineVibe.app is built on macOS on Apple Silicon only');
   }
@@ -341,7 +349,9 @@ async function main(): Promise<void> {
       join(server, 'package.json'),
       `${JSON.stringify({ name: 'minevibe-server', version: serverPkg.version, private: true, type: 'module' }, null, 2)}\n`,
     );
-    await copyProductionPackages(repoRoot, packages, server);
+    const pruned = channel === 'release' ? releasePrunedFiles(packages) : [];
+    await copyProductionPackages(repoRoot, packages, server, pruned);
+    if (pruned.length > 0) say(`release: left out ${pruned.join(', ')}`);
 
     // The mod, its lock and the seeded configs (MINEVIBE_RESOURCES).
     const mod = at(BUNDLE_LAYOUT.mod);
@@ -351,6 +361,17 @@ async function main(): Promise<void> {
     const seeds = join(repoRoot, 'packaging', 'seed-configs');
     for (const name of await readdir(seeds)) {
       if (name.endsWith('.json')) await copyFile(join(seeds, name), join(mod, 'seed-configs', name));
+    }
+
+    // The pins the running app checks its read-only container install root against (it never provisions it).
+    await copyFile(join(repoRoot, 'packaging', 'vendor.lock.json'), at(BUNDLE_LAYOUT.vendorLock));
+    // The Linux PC image's build context: built on first run until the GHCR image is published (PLAN §9.3).
+    const linuxPc = at(BUNDLE_LAYOUT.linuxPc);
+    await mkdir(linuxPc, { recursive: true });
+    for (const name of LINUX_PC_CONTEXT) {
+      const src = join(repoRoot, 'images', 'linux-pc', name);
+      await copyFile(src, join(linuxPc, name));
+      await chmod(join(linuxPc, name), (await stat(src)).mode & 0o777);
     }
 
     const legal = join(contents, 'Resources', 'legal');
@@ -371,6 +392,7 @@ async function main(): Promise<void> {
           commit: git.commit,
           built: new Date().toISOString(),
           server: serverPkg.version,
+          channel,
           modJar: basename(modJar),
           vendors: {
             node: lock.node.version,
@@ -428,7 +450,7 @@ async function main(): Promise<void> {
   await rename(app, finalApp);
   await rm(work, { recursive: true, force: true });
   say(
-    `MineVibe.app ${version} (${git.commit}) ready: ${finalApp}, ${mib(await treeSize(finalApp))}, signed ${signedWith}`,
+    `MineVibe.app ${version} (${git.commit}, ${channel}) ready: ${finalApp}, ${mib(await treeSize(finalApp))}, signed ${signedWith}`,
   );
   say(`self-test: ${join(finalApp, 'Contents', 'MacOS', 'MineVibe')} --selftest`);
 }

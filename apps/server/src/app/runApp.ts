@@ -9,14 +9,23 @@ import { type Logger, REDACT_PATHS } from '../log.js';
 import {
   MOD_JAR_ENV,
   type PlayControl,
+  type PlayHooks,
   type PlayOptions,
   play,
   RESOURCES_ENV,
 } from '../orchestrator/play.js';
 import { AlreadyRunningError } from '../orchestrator/runLock.js';
 import { SERVER_VERSION } from '../version.js';
-import { type AppBundleLayout, appBundleLayout, findBundledModJar } from './appLayout.js';
+import { type AppBundleLayout, appBundleLayout, findBundledModJar, readBuildInfo } from './appLayout.js';
+import { type AppPcs, type AppPcsOptions, createAppPcs, type PcPrepOutcome } from './appPcs.js';
 import { countingFetch, LaunchProgress } from './launchProgress.js';
+import {
+  checkPrerequisites,
+  describePrerequisites,
+  type PrereqOptions,
+  type PrereqReport,
+} from './prerequisites.js';
+import { reapStaleRunFiles } from './reaper.js';
 import { type LineWriter, StubChannel } from './StubChannel.js';
 import { runSelftestChecks, type SelftestOptions } from './selftest.js';
 import { type SelftestCheck, STUB_PROTOCOL_VERSION } from './stubProtocol.js';
@@ -42,6 +51,10 @@ export interface RunAppOptions {
   /** Test seams. */
   readonly play?: (options: PlayOptions) => Promise<number>;
   readonly selftest?: (options: SelftestOptions) => Promise<SelftestCheck[]>;
+  /** First-run prerequisites (default {@link checkPrerequisites}). */
+  readonly prerequisites?: (options: PrereqOptions) => Promise<PrereqReport>;
+  /** The Linux PCs (default {@link createAppPcs}); null runs without PCs. */
+  readonly pcs?: ((options: AppPcsOptions) => Promise<AppPcs | null>) | null;
 }
 
 /** Makes stdout the stub channel: the returned writer owns it, and any other stdout write goes to stderr. */
@@ -89,6 +102,71 @@ export function describeFailure(err: unknown): { message: string; detail: string
   return { message: 'MineVibe could not start the game', detail };
 }
 
+/** The dialog for a stub that speaks another protocol version than this Node. */
+function stubMismatch(v: number): { message: string; detail: string } {
+  return {
+    message: 'MineVibe is damaged',
+    detail: `Its launcher speaks protocol v${v}, its server v${STUB_PROTOCOL_VERSION}. Download MineVibe again and replace the app.`,
+  };
+}
+
+/**
+ * The app's {@link PlayHooks} (until the shared runtime takes them over):
+ * - afterLock: the startup reaper's file part, then the PC setup starts in the background (engine from the bundle,
+ *   this instance's orphaned containers, `linux-1`, the image), alongside the game install;
+ * - beforeLaunch: the game waits for the PC setup (on first run the window shows it), then the PCs boot in the
+ *   background;
+ * - beforeTeardown: the PCs and the engine are stopped.
+ */
+export function appHooks(options: {
+  layout: AppBundleLayout | null;
+  repoRoot: string | null;
+  env: Readonly<Record<string, string | undefined>>;
+  log: Logger;
+  progress: LaunchProgress;
+  createPcs: ((options: AppPcsOptions) => Promise<AppPcs | null>) | null;
+}): PlayHooks {
+  const { log, progress } = options;
+  let pcs: AppPcs | null = null;
+  let prepared: Promise<PcPrepOutcome> | null = null;
+  let settled = false;
+  return {
+    async afterLock({ paths, signal }) {
+      await reapStaleRunFiles(paths, { logger: log });
+      if (!options.createPcs) return;
+      pcs = await options.createPcs({
+        paths,
+        layout: options.layout,
+        repoRoot: options.repoRoot,
+        env: options.env,
+        logger: log,
+        onProgress: (event) => progress.onPcs(event),
+      });
+      prepared =
+        pcs?.prepare(signal).finally(() => {
+          settled = true;
+        }) ?? null;
+    },
+    async beforeLaunch() {
+      if (!prepared) return;
+      if (!settled) progress.waitForPcs();
+      const outcome = await prepared;
+      log.info(
+        {
+          engine: outcome.engine,
+          image: outcome.image,
+          ...(outcome.detail ? { detail: outcome.detail } : {}),
+        },
+        'Linux PCs prepared',
+      );
+      void pcs?.boot();
+    },
+    async beforeTeardown() {
+      await pcs?.shutdown();
+    },
+  };
+}
+
 /**
  * `minevibe-server app [--selftest]`: Node's side of MineVibe.app (PLAN §9.2). Says hello on stdout, then
  * - app: runs {@link play} from the bundle (its JRE, mod jar, mods.lock and seed configs), streaming `progress`
@@ -110,7 +188,9 @@ export async function runApp(options: RunAppOptions): Promise<number> {
         : (findRepoRoot(process.cwd()) ?? findRepoRoot(fileURLToPath(new URL('.', import.meta.url))));
   const channel = new StubChannel(options.stdin ?? process.stdin, writeLine);
   channel.on('invalid', (line) => log.warn({ line }, 'ignored a line from the stub'));
-  channel.on('hello', (hello) => log.info({ stub: hello.stub, stubPid: hello.pid }, 'stub connected'));
+  channel.on('hello', (hello) =>
+    log.info({ stub: hello.stub, stubPid: hello.pid, v: hello.v }, 'stub connected'),
+  );
   // Listen before saying hello: the stub may answer (or quit) at once.
   const stopped = new Promise<void>((resolvePromise) => {
     channel.once('shutdown', () => resolvePromise());
@@ -137,6 +217,13 @@ export async function runApp(options: RunAppOptions): Promise<number> {
   if (!selftest) {
     channel.on('shutdown', (reason) => requestStop(`stub:${reason}`));
     channel.on('eof', () => requestStop('stub-gone'));
+    // A stub from another build would misread what Node sends: say so and stop (the stub checks Node's too).
+    channel.on('hello', (hello) => {
+      if (hello.v === STUB_PROTOCOL_VERSION) return;
+      log.error({ stubV: hello.v, nodeV: STUB_PROTOCOL_VERSION }, 'stub protocol mismatch');
+      void channel.send({ t: 'error', ...stubMismatch(hello.v) });
+      requestStop('stub-protocol');
+    });
   }
 
   await channel.send({
@@ -150,8 +237,11 @@ export async function runApp(options: RunAppOptions): Promise<number> {
 
   if (selftest) {
     try {
-      await channel.waitForHello(options.helloTimeoutMs ?? 10_000);
+      const hello = await channel.waitForHello(options.helloTimeoutMs ?? 10_000);
       const checks = await (options.selftest ?? runSelftestChecks)({ layout, repoRoot, env });
+      if (hello.v !== STUB_PROTOCOL_VERSION) {
+        checks.unshift({ name: 'stub protocol', ok: false, detail: stubMismatch(hello.v).detail });
+      }
       const ok = checks.every((c) => c.ok);
       await channel.send({ t: 'selftest', ok, checks });
       log.info({ ok, failed: checks.filter((c) => !c.ok).map((c) => c.name) }, 'self-test done');
@@ -173,6 +263,30 @@ export async function runApp(options: RunAppOptions): Promise<number> {
 
   const progress = new LaunchProgress((message) => void channel.send(message));
   try {
+    // PLAN §9.3 step 1: nothing is installed or started while a prerequisite is missing.
+    const buildInfo = layout ? await readBuildInfo(layout.buildInfo) : null;
+    const report = await (options.prerequisites ?? checkPrerequisites)({
+      env,
+      // Dev builds (and a checkout) may run the SDK's own claude; a release build never does.
+      allowBundled: layout ? buildInfo?.channel === 'dev' : true,
+    });
+    log.info(
+      {
+        ok: report.ok,
+        macos: report.macos,
+        claude: report.claude ? { source: report.claude.source, version: report.claude.version } : null,
+        loggedIn: report.loggedIn,
+        problems: report.problems.map((p) => p.id),
+        channel: buildInfo?.channel ?? (layout ? 'unknown' : 'checkout'),
+      },
+      'prerequisites',
+    );
+    if (!report.ok) {
+      await channel.send({ t: 'error', ...describePrerequisites(report) });
+      await channel.send({ t: 'exit', code: 1 });
+      return 1;
+    }
+
     const playEnv: Record<string, string | undefined> = { ...env };
     if (layout) {
       // Inside the bundle, the bundle's own resources always win over the environment.
@@ -194,6 +308,14 @@ export async function runApp(options: RunAppOptions): Promise<number> {
       env: playEnv,
       fetch,
       onProgress: (event) => progress.onPlay(event),
+      hooks: appHooks({
+        layout,
+        repoRoot,
+        env: playEnv,
+        log,
+        progress,
+        createPcs: options.pcs === undefined ? createAppPcs : options.pcs,
+      }),
     });
     if (code !== 0 && stopReason === null) {
       // The game itself failed (a crash, or killed): say so, or the stub can only report "exit code N".

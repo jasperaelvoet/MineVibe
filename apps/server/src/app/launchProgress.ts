@@ -1,5 +1,6 @@
 import { type FetchLike, formatBytes } from '../launcher/download.js';
 import type { PlayProgressEvent } from '../orchestrator/play.js';
+import type { PcPrepEvent } from './appPcs.js';
 import type { AppPhase, NodeToStub } from './stubProtocol.js';
 
 type ProgressMessage = Extract<NodeToStub, { t: 'progress' }>;
@@ -53,6 +54,21 @@ export function downloadLabel(url: string): string {
   return 'game files';
 }
 
+/** Longest detail line sent to the stub (build output can be long). */
+const MAX_DETAIL = 160;
+
+/** One line of tool output, fit for the window: no control characters or escapes, and at most {@link MAX_DETAIL}. */
+export function cleanDetail(line: string): string {
+  const text = line
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping terminal escapes and control characters
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping terminal escapes and control characters
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > MAX_DETAIL ? `${text.slice(0, MAX_DETAIL - 1)}…` : text;
+}
+
 export interface LaunchProgressOptions {
   /** Minimum gap between byte-count updates (default 250 ms). Phase changes are sent at once. */
   readonly throttleMs?: number;
@@ -75,6 +91,8 @@ export class LaunchProgress {
   #timer: NodeJS.Timeout | null = null;
   #lastSent = 0;
   #ready = false;
+  /** The Linux PC lane (engine, image), shown while the game waits for it ({@link waitForPcs}). */
+  #pc: { title: string; detail?: string } | null = null;
 
   constructor(send: (message: LaunchProgressMessage) => void, options: LaunchProgressOptions = {}) {
     this.#send = send;
@@ -148,6 +166,60 @@ export class LaunchProgress {
         this.#clearTimer();
         break;
     }
+  }
+
+  /**
+   * A PC preparation step (it runs alongside the game install). A first-run step (the kernel download, the image
+   * build) is installation work and opens the stub's window; build output updates the detail, throttled.
+   */
+  onPcs(event: PcPrepEvent): void {
+    switch (event.step) {
+      case 'engine':
+        this.#pc = event.firstRun
+          ? { title: 'Setting up the Linux PC engine', detail: 'Downloading the Linux kernel (first run)…' }
+          : { title: 'Starting the Linux PC engine' };
+        if (event.firstRun) this.#markWork();
+        break;
+      case 'image':
+        if (event.line === undefined) {
+          this.#pc = {
+            title: 'Building the Linux PC image (first run)',
+            detail: 'About 1.2 GB to download; this takes a few minutes…',
+          };
+          this.#markWork();
+        } else {
+          const detail = cleanDetail(event.line);
+          if (!detail) return;
+          this.#pc = { title: this.#pc?.title ?? 'Building the Linux PC image (first run)', detail };
+          if (this.#phase === 'pcs') this.#show(this.#pc);
+          this.#schedule();
+          return;
+        }
+        break;
+      case 'done':
+      case 'unavailable':
+        this.#pc = null;
+        return;
+    }
+    if (this.#phase === 'pcs' && this.#pc) this.#show(this.#pc);
+    this.#flush();
+  }
+
+  /** The game is installed and waits for the PC setup: the window shows the PC lane. */
+  waitForPcs(): void {
+    if (!this.#pc) return;
+    this.#phase = 'pcs';
+    this.#show(this.#pc);
+    this.#flush();
+  }
+
+  #markWork(): void {
+    this.#work = true;
+  }
+
+  #show(lane: { title: string; detail?: string }): void {
+    this.#title = lane.title;
+    this.#detail = lane.detail;
   }
 
   /** Stops pending updates. */
