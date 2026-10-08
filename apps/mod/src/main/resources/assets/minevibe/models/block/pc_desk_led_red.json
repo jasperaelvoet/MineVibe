@@ -1,0 +1,40 @@
+{
+  "textures": {
+    "particle": "minecraft:block/red_concrete",
+    "led": "minecraft:block/red_concrete"
+  },
+  "elements": [
+    {
+      "from": [
+        5,
+        1.2,
+        9.8
+      ],
+      "to": [
+        6.5,
+        1.8,
+        10
+      ],
+      "faces": {
+        "north": {
+          "texture": "#led"
+        },
+        "east": {
+          "texture": "#led"
+        },
+        "south": {
+          "texture": "#led"
+        },
+        "west": {
+          "texture": "#led"
+        },
+        "up": {
+          "texture": "#led"
+        },
+        "down": {
+          "texture": "#led"
+        }
+      }
+    }
+  ]
+}

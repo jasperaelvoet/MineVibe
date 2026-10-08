@@ -20,13 +20,18 @@
 			"dev.minevibe.MineVibeMod",
 			"dev.minevibe.agent.AgentModInit",
 			"dev.minevibe.org.OrgModInit",
-			"dev.minevibe.agent.skill.SkillsModInit"
+			"dev.minevibe.agent.skill.SkillsModInit",
+			"dev.minevibe.pc.PcModInit"
 		],
 		"client": [
 			"dev.minevibe.client.MineVibeClient",
 			"dev.minevibe.client.agent.AgentClientInit",
 			"dev.minevibe.client.ui.UiClientInit",
-			"dev.minevibe.client.org.OrgClientInit"
+			"dev.minevibe.client.org.OrgClientInit",
+			"dev.minevibe.client.pc.PcClientInit"
+		],
+		"frex_flawless_frames": [
+			"dev.minevibe.client.pc.compat.PcFlawlessFrames"
 		]
 	},
 	"mixins": [

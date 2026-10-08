@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "G": "minecraft:glass_pane",
+    "I": "minecraft:iron_ingot",
+    "R": "minecraft:redstone",
+    "O": "minecraft:gold_ingot"
+  },
+  "pattern": [
+    " G ",
+    "ORO",
+    "III"
+  ],
+  "result": {
+    "id": "minevibe:mac_workstation"
+  }
+}
