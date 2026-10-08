@@ -489,31 +489,36 @@ export function failureDetails(
       if (parts.length > 0) out.push(`need: ${parts.join(', ')} per craft`);
     }
   }
-  // M3 / W1: `candidates: [{pos, why, block?}]`; W2 reads `natural: [{pos}]`.
-  const candidates = [...arr(r.candidates), ...arr(r.natural)]
+  // W1: `noNaturalSource: {candidates: [{pos, block, why, owner?}]}`; M3: `candidates`; W2 also read `natural`.
+  const nns = obj(r.noNaturalSource);
+  const candidates = [...arr(nns?.candidates), ...arr(r.candidates), ...arr(r.natural)]
     .map(obj)
     .filter((c): c is Record<string, unknown> => c !== null);
   for (const c of candidates.slice(0, 2)) {
     const pos = asPos(c.pos);
     if (!pos) continue;
     const what = idText(c.what) ?? idText(c.block) ?? 'source';
-    const why = typeof c.why === 'string' ? singleLine(c.why, 60) : 'unreachable';
-    out.push(`seen: ${what} at ${at(pos, ctx.here)}, ${why}`);
+    const why = typeof c.why === 'string' ? singleLine(c.why.replace(/_/g, ' '), 60) : 'unreachable';
+    const owner = gameText(c.owner, 24);
+    out.push(`seen: ${what} at ${at(pos, ctx.here)}, ${why}${owner && why === 'protected' ? ` (${owner}'s)` : ''}`);
   }
   if (code === 'PROTECTED') {
-    const blocks = arr(r.protected)
+    // W1: one `protected` object {pos, what: player-built|base, owner, block, zone?, count}; W2's reading: a list.
+    const blocks = (Array.isArray(r.protected) ? r.protected : [r.protected])
       .map(obj)
       .filter((b): b is Record<string, unknown> => b !== null);
     const first = blocks[0];
     const pos = asPos(first?.pos);
     const owner = gameText(first?.owner, 24);
     const zone = obj(r.zone)?.kind ?? r.zone;
-    const whose = zone === 'base' ? 'part of the Base' : owner ? `${owner}'s (player-built)` : `player-built`;
+    const base = zone === 'base' || first?.what === 'base';
+    const whose = base ? 'part of the Base' : owner ? `${owner}'s (player-built)` : `player-built`;
+    const total = num(first?.count) ?? blocks.length;
     if (pos) {
       const what = idText(first?.block) ?? 'block';
-      const more = blocks.length > 1 ? ` (+${blocks.length - 1} more)` : '';
+      const more = total > 1 ? ` (${total} protected blocks in all)` : '';
       out.push(`${what} at ${posText(pos)} is ${whose}${more}`);
-    } else if (zone === 'base') {
+    } else if (base) {
       out.push('the target is inside the Base');
     }
   }
