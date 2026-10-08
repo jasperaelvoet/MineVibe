@@ -22,6 +22,7 @@ import type { FrameService } from './FrameService.js';
 import { createFolderPicker, type FolderPicker } from './folderPicker.js';
 import { PcGuestApi } from './GuestApi.js';
 import type { InputRouter } from './InputRouter.js';
+import { registryDirFor } from './InstanceRegistry.js';
 import { PcBridgeGlue } from './PcBridgeGlue.js';
 import { PcManager } from './PcManager.js';
 import { SeatBook } from './SeatBook.js';
@@ -40,6 +41,10 @@ import { SpacesdPool } from './SpacesdPool.js';
  * Container roots: MineVibe.app runs the bundle's read-only install root (`appBundleLayout().containerInstallRoot`,
  * never provisioned) with the app root in Application Support; `dev` and `play` use the MineVibe-dev roots
  * (`~/Library/Application Support/MineVibe-dev`), which must stay outside `~/Documents` (PLAN §8.6).
+ *
+ * Every Linux PC mounts the org module's Codex export (`ctx.paths.codexExport`, which CodexStore keeps) read-only at
+ * `/mnt/codex` (PLAN §6.6), and PcManager records this home's instance in `<appRoot>/minevibe-instances/` for
+ * `doctor --clean-orphans`.
  */
 
 export interface PcModuleOptions {
@@ -123,6 +128,7 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
   const layout = ctx.mode === 'app' ? appBundleLayout() : null;
   let driver: PcDriver;
   let diskPath: string;
+  let registryDir: string | null = null;
   if (opts.runtime === 'docker') {
     driver = new DockerDriver();
     diskPath = ctx.paths.state;
@@ -151,6 +157,7 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     });
     driver = new AppleContainerDriver(runtime, { logger: log });
     diskPath = roots.appRoot;
+    registryDir = registryDirFor(roots.appRoot);
   }
   const context = repo ? join(repo, 'images', 'linux-pc') : null;
   const imageBuild =
@@ -164,8 +171,11 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     logger: log,
     diskPath,
     ...(imageBuild ? { imageBuild } : {}),
-    // MineVibe's own data (tokens, worlds, caches) never goes into a PC.
-    vaultForbidden: [ctx.paths.appSupport, ctx.paths.caches, ctx.paths.logs],
+    // The org module's Codex export (CodexStore), read-only at /mnt/codex (PLAN §6.6).
+    codexExport: ctx.paths.codexExport,
+    registryDir,
+    // MineVibe's own data (tokens, worlds, caches, the Codex export) never goes into a PC through the Vault.
+    vaultForbidden: [ctx.paths.appSupport, ctx.paths.caches, ctx.paths.logs, ctx.paths.codexExport],
   });
   const pickFolder = createFolderPicker({ mode: ctx.mode, dialogs: opts.dialogs ?? null, logger: log });
   return { manager, pool, pickFolder, log };

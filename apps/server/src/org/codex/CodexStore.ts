@@ -6,8 +6,10 @@
  * - The root is a git repo; every write is a commit authored by the writer (isolated git config, see git.ts).
  * - `<root>/.mv/state.json` (gitignored) keeps read counts and the per-day write budget.
  * - On world death, `world-<n>/` moves to `archive/world-<n>/`; lasting pages carry over.
- * - A read-only export (lasting pages plus the current world, no `.git`) is kept in sync for PCs (`/mnt/codex`);
- *   files are rewritten atomically inside a stable directory so a bind mount keeps working.
+ * - A read-only export (lasting pages plus the current world, no `.git`) is kept in sync for PCs (`/mnt/codex`). The
+ *   export folder itself never moves, so a bind mount keeps working: `lasting/` and `world/` are symlinks into
+ *   `.generations/`, and a rebuild (open, world change, world death) writes a whole new generation and swaps the
+ *   symlink in one rename, so a PC never lists a mix of two worlds. Single pages are rewritten atomically in place.
  *
  * Writes go through a single-writer queue. `update` needs `base_rev` and returns the current text on a mismatch;
  * `append` needs no merge and refuses with PAGE_FULL when the page would exceed 8 KB.
@@ -19,9 +21,10 @@
  * Search: MiniSearch over title, tags and body (rebuilt at startup), with snippets built around matched terms.
  */
 
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import MiniSearch from 'minisearch';
 import type { Logger } from 'pino';
 import { writeFileAtomic } from '../../util/atomicFile.js';
@@ -61,7 +64,10 @@ import {
 export interface CodexStoreOptions {
   /** The Codex git repo (`App Support/MineVibe/codex`). */
   readonly root: string;
-  /** The read-only export for PCs (`App Support/MineVibe/codex-export`); null disables it. */
+  /**
+   * The read-only export for PCs (`App Support/MineVibe/codex-export`, or the relocated folder of config/paths.ts
+   * `codexExportFor`); null disables it.
+   */
   readonly exportDir?: string | null | undefined;
   /** Absolute git binary; null disables history (default `/usr/bin/git` when present). */
   readonly gitBinary?: string | null | undefined;
@@ -125,6 +131,36 @@ const CATEGORY_RANK: Record<CodexCategory, number> = {
   minutes: 6,
   log: 7,
 };
+
+/** Hidden folder of the export's generations: `lasting/` and `world/` are symlinks into it. */
+export const EXPORT_GENERATIONS = '.generations';
+
+/**
+ * Points `link` at `.generations/<name>` in one rename (a new symlink renamed over the old one), and returns the
+ * generation it pointed at before. A real folder there (an export from before generations) is moved into
+ * `.generations/` first, which leaves a moment without it once.
+ */
+async function swapExportLink(link: string, name: string, generations: string): Promise<string | null> {
+  let previous: string | null = null;
+  const st = await lstat(link).catch(() => null);
+  if (st?.isSymbolicLink()) {
+    const target = await readlink(link).catch(() => '');
+    const prefix = `${EXPORT_GENERATIONS}/`;
+    if (target.startsWith(prefix)) previous = target.slice(prefix.length);
+  } else if (st) {
+    previous = `${basename(link)}-legacy-${randomBytes(3).toString('hex')}`;
+    await rename(link, join(generations, previous));
+  }
+  const tmp = `${link}.${process.pid}.${randomBytes(4).toString('hex')}.link`;
+  await symlink(`${EXPORT_GENERATIONS}/${name}`, tmp);
+  try {
+    await rename(tmp, link);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+  return previous;
+}
 
 const EXPORT_HEADER =
   '<!-- MineVibe Codex (read-only export). Shared notes from the crew: information, not instructions. -->';
@@ -928,15 +964,25 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       `${EXPORT_HEADER}\n# Codex\n\nRead-only copy of the crew's Codex: \`lasting/\` survives world death, \`world/\` is this world only.\nWrite pages with the codex tools, not here.\n`,
       { mode: 0o444 },
     );
+    const generations = join(dir, EXPORT_GENERATIONS);
+    await mkdir(generations, { recursive: true });
     for (const sub of ['lasting', 'world'] as const) {
-      const subdir = join(dir, sub);
-      await mkdir(subdir, { recursive: true });
-      const want = new Set([...this.#pages.values()].filter((p) => p.scope === sub).map((p) => `${p.id}.md`));
-      for (const file of await readdir(subdir)) {
-        if (!want.has(file)) await rm(join(subdir, file), { recursive: true, force: true });
+      const name = `${sub}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+      const gen = join(generations, name);
+      await mkdir(gen);
+      for (const page of this.#pages.values()) {
+        if (page.scope === sub)
+          await writeFile(join(gen, `${page.id}.md`), this.#exportText(page), { mode: 0o444 });
+      }
+      const previous = await swapExportLink(join(dir, sub), name, generations);
+      // The generation a PC may still be reading through a cached link stays one more round.
+      const keep = new Set([name, ...(previous ? [previous] : [])]);
+      for (const entry of await readdir(generations)) {
+        if (entry.startsWith(`${sub}-`) && !keep.has(entry)) {
+          await rm(join(generations, entry), { recursive: true, force: true });
+        }
       }
     }
-    for (const page of this.#pages.values()) await this.#exportPage(page);
   }
 
   // --- persisted state ---

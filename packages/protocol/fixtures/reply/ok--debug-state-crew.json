@@ -1,0 +1,48 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "n-9",
+  "screen": null,
+  "worldId": "world-1",
+  "gen": 1,
+  "inWorld": true,
+  "hardcore": true,
+  "difficulty": "hard",
+  "gameMode": "survival",
+  "allowCommands": false,
+  "paused": false,
+  "serverTicks": 5120,
+  "serverPaused": false,
+  "hp": 20,
+  "dead": false,
+  "pid": 4242,
+  "player": { "x": -78.5, "y": 70, "z": -10.25 },
+  "agents": [
+    {
+      "agentId": "ada1a2b",
+      "handle": "ada",
+      "status": "alive",
+      "brain": "thinking",
+      "headIcon": "THINKING",
+      "bubble": null,
+      "cards": 0,
+      "pos": { "x": -80.5, "y": 70, "z": -12.5 },
+      "atPc": false
+    },
+    {
+      "agentId": "bram3c4d",
+      "handle": "bram",
+      "status": "alive",
+      "brain": "idle",
+      "headIcon": "NONE",
+      "bubble": "Hello, Player.",
+      "cards": 1,
+      "pos": null,
+      "atPc": false
+    }
+  ],
+  "monitors": [
+    { "pcId": "linux-1", "w": 640, "h": 400, "seq": -1, "patches": 0, "ageMs": null, "hash": null },
+    { "pcId": "linux-2", "w": 640, "h": 400, "seq": 12, "patches": 13, "ageMs": 250, "hash": "688368f4" }
+  ]
+}

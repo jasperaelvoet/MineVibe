@@ -8,7 +8,14 @@ import {
   readClaudeVersion,
 } from './agents/claudeBinary.js';
 import { readBridgeFile } from './bridge/bridgeFile.js';
-import { devHome, findRepoRoot, HOME_ENV, playHome, resolvePaths } from './config/paths.js';
+import {
+  codexExportRelocated,
+  devHome,
+  findRepoRoot,
+  HOME_ENV,
+  playHome,
+  resolvePaths,
+} from './config/paths.js';
 import { SERVER_VERSION } from './version.js';
 
 export interface DoctorOptions {
@@ -27,7 +34,10 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** `minevibe-server doctor`: versions and paths, read-only. Never prints tokens. */
+/**
+ * `minevibe-server doctor`: versions and paths, read-only. Never prints tokens. `doctor --clean-orphans` (main.ts,
+ * pcs/orphanCleanup.ts) lists and removes the PC instances of homes that no longer exist.
+ */
 export async function doctorReport(options: DoctorOptions = {}): Promise<string[]> {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
@@ -65,6 +75,10 @@ export async function doctorReport(options: DoctorOptions = {}): Promise<string[
   row('  logs', paths.logs);
   row('  state', paths.state);
   row('  bridge file', paths.bridgeFile);
+  row(
+    '  codex export',
+    `${paths.codexExport}${codexExportRelocated(paths) ? ' (outside the home: PCs cannot mount it there)' : ''}`,
+  );
   const repo = findRepoRoot(cwd);
   if (repo) {
     row('  dev home', `${devHome(repo)} (npm run dev)`);

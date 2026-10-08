@@ -1,9 +1,11 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type { Logger } from 'pino';
 import { writeFileAtomic } from '../util/atomicFile.js';
+import { instanceIdFor, mountSourceProblem, realpathLoose, tccProtectedReason } from '../util/hostPaths.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
 import {
   admit,
@@ -18,7 +20,7 @@ import {
   planBoot,
 } from './Budget.js';
 import { settleWithin } from './deadline.js';
-import { EngineError, realpathLoose } from './drivers/ContainerRuntime.js';
+import { EngineError } from './drivers/ContainerRuntime.js';
 import {
   hasLabels,
   MANAGED_LABEL,
@@ -34,8 +36,10 @@ import {
   type VolumeMount,
 } from './drivers/PcDriver.js';
 import { FrameService, type FrameServiceOptions, type FrameSink } from './FrameService.js';
+import { GUEST_HOME, GUEST_USER } from './guest.js';
 import { freeDiskBytes, freeLoopbackPort, isLoopbackPortFree, readHostFacts } from './host.js';
 import { InputRouter, type InputRouterOptions } from './InputRouter.js';
+import { currentRecord, writeInstanceRecord } from './InstanceRegistry.js';
 import {
   assertPcId,
   clampResources,
@@ -193,6 +197,17 @@ export interface PcManagerOptions {
   instanceId?: string;
   /** Build context for a missing local image (dev fallback, PLAN §9.3). */
   imageBuild?: { contextDir: string; file: string };
+  /**
+   * The Codex export (PLAN §6.6): mounted read-only at {@link CODEX_GUEST_PATH} in every Linux PC, with a
+   * `~/codex` symlink. Null (default) mounts nothing. A folder `container` cannot mount (TCC-protected, or a path
+   * `--mount` cannot carry; `config/paths.ts` relocates such exports) is refused with a warning, and PCs run without it.
+   */
+  codexExport?: string | null;
+  /**
+   * The instance registry folder (`<appRoot>/minevibe-instances`, InstanceRegistry.ts): `init` records which state dir
+   * this instance id belongs to and that this process uses it; `shutdown` clears the process. Null (default): none.
+   */
+  registryDir?: string | null;
   /** Folders a Vault may never touch (MineVibe's own data). */
   vaultForbidden?: string[];
   home?: string;
@@ -236,6 +251,24 @@ export class PcError extends Error {
   }
 }
 
+/** Where the Codex export is mounted in a Linux PC (PLAN §6.6), read-only. */
+export const CODEX_GUEST_PATH = '/mnt/codex';
+
+/** Why the Codex export cannot be bind-mounted into a PC by this driver (or null). */
+export function codexMountProblem(
+  dir: string,
+  driver: Pick<PcDriver, 'kind'>,
+  options: { home?: string; platform?: NodeJS.Platform } = {},
+): string | null {
+  const bad = mountSourceProblem(dir);
+  if (bad) return bad;
+  if (driver.kind === 'apple-container' && (options.platform ?? process.platform) === 'darwin') {
+    const tcc = tccProtectedReason(dir, options.home ?? homedir());
+    if (tcc) return `${tcc} (TCC-protected: the container engine cannot read it)`;
+  }
+  return null;
+}
+
 /** Statuses during which a PC holds (or is about to hold) CPU and RAM. */
 const ACTIVE: ReadonlySet<PcStatus> = new Set([
   'downloading',
@@ -254,10 +287,8 @@ export function isPortConflictError(err: unknown): boolean {
   );
 }
 
-/** The instance id for a state dir: 8 hex chars of sha256(realpath). */
-export function instanceIdFor(stateDir: string): string {
-  return createHash('sha256').update(realpathLoose(stateDir)).digest('hex').slice(0, 8);
-}
+/** The instance id for a state dir: 8 hex chars of sha256(realpath) (util/hostPaths.ts). */
+export { instanceIdFor };
 
 const MAX_MOUNTS = 16;
 const MAX_OVERLAYS_PER_MOUNT = 16;
@@ -317,6 +348,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   #builderHolds = 0;
   #monitorTimer: NodeJS.Timeout | null = null;
   #monitoring = false;
+  /** `bootAll` calls in progress: the monitor leaves strays to them (they adopt or stop them, N7). */
+  #bootAlls = 0;
   readonly #healthFails = new Map<string, number>();
   /** Monitor pass before which a degraded PC is not probed again (N2 backoff). */
   readonly #healthNext = new Map<string, number>();
@@ -330,6 +363,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   #admissionTail: Promise<void> = Promise.resolve();
   /** A note shown with the next `running` status (why the container was recreated). */
   readonly #notes = new Map<string, { reason: PcStatusReason; detail: string }>();
+  /** The Codex export bind-mounted at {@link CODEX_GUEST_PATH}, or null. */
+  readonly #codex: string | null;
 
   constructor(options: PcManagerOptions) {
     super();
@@ -341,6 +376,34 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     this.#label = options.labelValue ?? 'pc';
     this.#now = options.now ?? Date.now;
     this.instanceId = options.instanceId ?? instanceIdFor(options.stateDir);
+    this.#codex = this.#codexSource(options.codexExport ?? null);
+  }
+
+  #codexSource(dir: string | null): string | null {
+    if (!dir) return null;
+    // The real path, like a Vault folder's: what the engine reports for the bind must match the record exactly
+    // (a temp home under /var/folders is /private/var/folders to the engine).
+    const real = realpathLoose(resolve(dir));
+    const why = codexMountProblem(real, this.driver, this.#o.home ? { home: this.#o.home } : {});
+    if (why) {
+      this.#log?.warn(
+        { dir, why },
+        'the Codex export cannot be mounted into PCs; they run without /mnt/codex',
+      );
+      return null;
+    }
+    return real;
+  }
+
+  /** The host folder mounted at {@link CODEX_GUEST_PATH}, or null when PCs get no Codex. */
+  get codexExport(): string | null {
+    return this.#codex;
+  }
+
+  /** Where a PC sees the Codex (`/mnt/codex`), or null when it has none (no export, or not a Linux PC). */
+  codexPathOf(id: string): string | null {
+    const p = this.#file.pcs.find((x) => x.id === id);
+    return this.#codex && p && PC_TYPE_SPECS[p.type].family === 'linux' ? CODEX_GUEST_PATH : null;
   }
 
   protected override onListenerError(event: string, error: unknown): void {
@@ -404,7 +467,26 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.#addRecord(this.#newRecord('linux-1', 'linux', {}));
     }
     for (const p of this.#file.pcs) if (!this.#status.has(p.id)) this.#status.set(p.id, { status: 'off' });
+    await this.#register(true);
     return this.list();
+  }
+
+  /**
+   * Records this instance in the registry (InstanceRegistry.ts): its state dir, and whether this process uses it
+   * (`using`) or let go of it. Best effort: a registry that cannot be written only costs `doctor --clean-orphans` its
+   * knowledge of this home.
+   */
+  async #register(using: boolean): Promise<void> {
+    const dir = this.#o.registryDir;
+    if (!dir) return;
+    try {
+      // The real path, as the instance id hashes it: a home reached through a symlink is never taken for gone when only
+      // the link went.
+      const rec = await currentRecord(this.instanceId, realpathLoose(this.#o.stateDir), this.#label);
+      await writeInstanceRecord(dir, using ? rec : { ...rec, pid: null, started: null });
+    } catch (err) {
+      this.#log?.warn({ err: errText(err), dir }, 'could not write the PC instance registry');
+    }
   }
 
   /**
@@ -1026,6 +1108,12 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     const env: Record<string, string> = {};
     if (overlays.length)
       env.MV_CHOWN_PATHS = overlays.map((o) => overlayTarget(o.mount.host, o.overlay)).join(':');
+    const binds = p.mounts.map((m) => ({ source: m.host, target: m.host, readonly: m.ro }));
+    if (this.#codex && PC_TYPE_SPECS[p.type].family === 'linux') {
+      // The org module may not have written its first export yet: the source must exist for `container create`.
+      await mkdir(this.#codex, { recursive: true });
+      binds.push({ source: this.#codex, target: CODEX_GUEST_PATH, readonly: true });
+    }
     return {
       name: this.containerNameOf(p.id),
       image: this.#imageOf(p),
@@ -1034,7 +1122,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       shmMiB: p.shmMiB,
       hostPort,
       network: this.networkNameOf(p.id),
-      binds: p.mounts.map((m) => ({ source: m.host, target: m.host, readonly: m.ro })),
+      binds,
       volumes: this.#volumes(p, overlays),
       labels: { ...this.#ownerLabels(p.id), 'minevibe.type': p.type },
       ownerLabels: this.#ownerLabels(p.id),
@@ -1218,6 +1306,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * not started (checked under its lock).
    */
   async bootAll(): Promise<{ booted: string[]; refused: string[]; failed: string[] }> {
+    this.#bootAlls++;
+    try {
+      return await this.#bootAll();
+    } finally {
+      this.#bootAlls--;
+    }
+  }
+
+  async #bootAll(): Promise<{ booted: string[]; refused: string[]; failed: string[] }> {
     const booted: string[] = [];
     const failed: string[] = [];
     await this.#inventory();
@@ -1642,8 +1739,43 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       timeoutMs: this.#o.bootTimeoutMs ?? 120_000,
       onProgress: (pct) => booting(pct),
     });
+    await this.#linkCodex(p);
     this.#notes.delete(p.id);
     this.#setStatus(p.id, { status: 'running', ...(note ? { ...note } : {}) });
+  }
+
+  /**
+   * `~/codex` → `/mnt/codex` in the guest (PLAN §6.6), made as the guest user once spacesd serves. The home volume
+   * keeps it. Anything already at `~/codex` (the link from an earlier boot, or a file, folder or link of the user's
+   * own) is left alone. Best effort: a PC whose link failed still runs, and the Codex stays at `/mnt/codex`.
+   */
+  async #linkCodex(p: PcRecord): Promise<void> {
+    if (!this.codexPathOf(p.id)) return;
+    const script = `[ -d ${CODEX_GUEST_PATH} ] || exit 0
+[ -e "$HOME/codex" ] || [ -L "$HOME/codex" ] || ln -s ${CODEX_GUEST_PATH} "$HOME/codex"`;
+    try {
+      const out = await this.pool.call(
+        p.id,
+        (c, signal) =>
+          c.run(
+            {
+              program: 'bash',
+              args: ['-c', script],
+              env: new Map([['HOME', GUEST_HOME]]),
+              user: GUEST_USER,
+              stdin: false,
+              timeoutMs: 5_000,
+            },
+            { signal },
+          ),
+        { retry: false, timeoutMs: 8_000 },
+      );
+      if (!out.exit.success) {
+        this.#log?.warn({ pcId: p.id, code: out.exit.code }, 'could not link ~/codex in the PC');
+      }
+    } catch (err) {
+      this.#log?.debug({ pcId: p.id, err: errText(err) }, 'could not link ~/codex in the PC');
+    }
   }
 
   /** Stops a PC (its container and volumes stay). A failure leaves `error`; the budget still counts a running container. */
@@ -2007,7 +2139,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    *   reason `unresponsive` (degraded: never stopped for it, N2) and is probed less often (every 1, 2,
    *   4 … 16 passes) until it answers again;
    * - a container that runs although its PC is not active (failed boot or stop, a create the Node
-   *   timeout killed) is stopped;
+   *   timeout killed) is stopped, unless a `bootAll` runs (it adopts such a container, or stops it, itself);
    * - the free-disk watchdog (M6): below 20 GiB a `host.disk` warning, below 10 GiB every active PC is
    *   stopped with `error`/`low_disk` (the rootfs is an uncapped 512 GiB sparse image).
    * N1: the container list is only a hint. PCs with an operation in progress, or whose status changed
@@ -2109,9 +2241,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
             });
           }
         }
-      } else if (!ACTIVE.has(st) && running && c && this.#owns(c, p.id)) {
+      } else if (!ACTIVE.has(st) && running && c && this.#owns(c, p.id) && this.#bootAlls === 0) {
+        // A `bootAll` in progress adopts or stops strays itself: stopping one now would only cost it a restart.
         await this.#serialize(p.id, async () => {
-          if (this.#isActive(p.id) || !unchanged()) return;
+          if (this.#isActive(p.id) || !unchanged() || this.#bootAlls > 0) return;
           let fresh: PcContainerInfo | null;
           try {
             fresh = await this.#freshInspect(p);
@@ -2190,6 +2323,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     // N5: viewers are bounded too (FrameService.close waits at most 2 s per its own deadline).
     if (this.#frames) await settleWithin(this.#frames.close(), 3000);
     this.pool.close();
+    // This process no longer uses the instance (its home may be thrown away now; `doctor --clean-orphans`).
+    await settleWithin(this.#register(false), 2000);
     if (options.stopEngine ?? true) {
       const release = Promise.resolve()
         .then(() => this.driver.shutdownEngine())
