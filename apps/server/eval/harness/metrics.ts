@@ -52,6 +52,8 @@ export class StreamMetrics {
   cacheWriteTokens = 0;
   costUsd = 0;
   model: string | null = null;
+  /** Tool results seen in the stream (0 means the stream did not surface them: use the handler records). */
+  toolResults = 0;
   readonly transcript: string[] = [];
   /** Texts of the current turn's assistant messages. */
   turnTexts: string[] = [];
@@ -82,6 +84,7 @@ export class StreamMetrics {
         for (const b of content) {
           const block = b as { type?: string; is_error?: boolean; content?: unknown };
           if (block.type !== 'tool_result') continue;
+          this.toolResults++;
           if (block.is_error === true) this.failedCalls++;
           this.transcript.push(
             `    ${block.is_error === true ? 'x' : '='} ${clip(toolResultText(block.content), 160)}`,

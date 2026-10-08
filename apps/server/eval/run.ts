@@ -2,6 +2,7 @@
  * Tool eval harness CLI (not part of `npm test`):
  *
  *   npm run eval:tools -- --suite mc|pc|all --mode replay|live [--budget N] [--runs N] [--scenario id,id]
+ *   npm run eval:tools -- --report out/a.json,out/b.json      (one summary of saved live runs)
  *
  * - `replay` (default) runs every scenario's scripted good run (must pass) and bad run (must fail) through the real
  *   session wiring with a scripted model: no model calls, deterministic, exits 1 when a script does not behave.
@@ -9,10 +10,12 @@
  *   mc on Haiku 5.5 at xhigh (3 runs each), pc on Opus 5.5 at medium (1 run each), PC runs first, mc runs round-robin.
  *   `--budget` caps model turns across the whole eval (default 40); every run keeps a turn for the runs still to come.
  *
- * Results: a Markdown summary on stdout and every run (checks, metrics, transcript) as JSON in `eval/out/`.
+ * Results: a Markdown summary on stdout and every run (checks, metrics, transcript) as JSON in `eval/out/`, written
+ * after each run. `--first-run N` numbers the runs from N (a baseline run in stages); `--mc-turns` / `--pc-turns` cap
+ * the model turns of one run (the opening message plus [JOB DONE] wakes).
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { agentEnv } from '../src/agents/agentEnv.js';
@@ -36,6 +39,8 @@ export interface CliOptions {
   readonly mcTurns: number;
   readonly pcTurns: number;
   readonly out: string | null;
+  readonly firstRun: number;
+  readonly report: readonly string[];
 }
 
 export function parseCli(argv: readonly string[]): CliOptions {
@@ -50,6 +55,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
       'mc-turns': { type: 'string', default: '3' },
       'pc-turns': { type: 'string', default: '2' },
       out: { type: 'string' },
+      'first-run': { type: 'string', default: '1' },
+      report: { type: 'string' },
     },
     allowPositionals: false,
     strict: true,
@@ -72,6 +79,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
     mcTurns: int('mc-turns', values['mc-turns'], 1),
     pcTurns: int('pc-turns', values['pc-turns'], 1),
     out: values.out ?? null,
+    firstRun: int('first-run', values['first-run'], 1),
+    report: values.report ? values.report.split(',').map((s) => s.trim()) : [],
   };
 }
 
@@ -90,12 +99,12 @@ export interface PlannedRun {
 }
 
 /** Live order: every PC run first, then the mc runs round-robin (run 1 of each, then run 2, ...). */
-export function planLive(scenarios: readonly Scenario[], runs: number | null): PlannedRun[] {
+export function planLive(scenarios: readonly Scenario[], runs: number | null, firstRun = 1): PlannedRun[] {
   const plan: PlannedRun[] = [];
   const pcs = scenarios.filter((s) => s.suite === 'pc');
   const mcs = scenarios.filter((s) => s.suite === 'mc');
-  for (let r = 1; r <= (runs ?? 1); r++) for (const s of pcs) plan.push({ scenario: s, run: r });
-  for (let r = 1; r <= (runs ?? 3); r++) for (const s of mcs) plan.push({ scenario: s, run: r });
+  for (let r = 0; r < (runs ?? 1); r++) for (const s of pcs) plan.push({ scenario: s, run: firstRun + r });
+  for (let r = 0; r < (runs ?? 3); r++) for (const s of mcs) plan.push({ scenario: s, run: firstRun + r });
   return plan;
 }
 
@@ -160,6 +169,7 @@ export async function runLive(
   plan: readonly PlannedRun[],
   cli: CliOptions,
   log: (line: string) => void,
+  onResult: (results: readonly RunResult[]) => void = () => {},
 ): Promise<RunResult[]> {
   const claude = await resolveClaudeBinary({
     versionEnv: agentEnv({ version: SERVER_VERSION }),
@@ -190,6 +200,7 @@ export async function runLive(
         log,
       });
       results.push(r);
+      onResult(results);
       log(
         `  ${r.success ? 'PASS' : 'FAIL'} ${r.toolCalls} calls, ${r.failedCalls} failed, ${r.turns} turns, ${(r.wallMs / 1000).toFixed(1)} s, stop ${r.stop}`,
       );
@@ -208,10 +219,20 @@ function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
+/** The summary of saved live results (JSON arrays of RunResult). */
+export function report(files: readonly string[]): string {
+  const results = files.flatMap((f) => JSON.parse(readFileSync(f, 'utf8')) as RunResult[]);
+  return `## Summary\n\n${formatTable(summarize(results))}\n\n## Runs\n\n${formatRuns(results)}`;
+}
+
 async function main(): Promise<number> {
   const cli = parseCli(process.argv.slice(2));
-  const scenarios = selectScenarios(cli.suite, cli.scenarios);
   const log = (line: string) => process.stdout.write(`${line}\n`);
+  if (cli.report.length > 0) {
+    log(report(cli.report));
+    return 0;
+  }
+  const scenarios = selectScenarios(cli.suite, cli.scenarios);
   const outDir = join(import.meta.dirname, 'out');
   mkdirSync(outDir, { recursive: true });
   const outFile = cli.out ?? join(outDir, `${cli.mode}-${cli.suite}-${stamp()}.json`);
@@ -235,8 +256,10 @@ async function main(): Promise<number> {
     return bad.length === 0 ? 0 : 1;
   }
 
-  const plan = planLive(scenarios, cli.runs);
-  const results = await runLive(plan, cli, log);
+  const plan = planLive(scenarios, cli.runs, cli.firstRun);
+  const results = await runLive(plan, cli, log, (sofar) =>
+    writeFileSync(outFile, `${JSON.stringify(sofar, null, 2)}\n`),
+  );
   writeFileSync(outFile, `${JSON.stringify(results, null, 2)}\n`);
   log(
     `\n## Summary\n\n${formatTable(summarize(results))}\n\n## Runs\n\n${formatRuns(results)}\n\nDetails: ${outFile}`,

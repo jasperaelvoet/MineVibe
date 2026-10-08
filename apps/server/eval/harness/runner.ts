@@ -534,7 +534,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     turns,
     apiTurns: metrics.apiTurns,
     toolCalls: metrics.toolCalls,
-    failedCalls: metrics.failedCalls,
+    // The stream's tool results are the model's view; without them, count what the gate and handlers saw.
+    failedCalls:
+      metrics.toolResults > 0 ? metrics.failedCalls : calls.filter((c) => c.isError).length + denials.length,
     deniedCalls: denials.length,
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,
