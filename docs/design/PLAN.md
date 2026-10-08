@@ -509,6 +509,17 @@ Bubbles show the speaker, and the other attendees turn to look at whoever is tal
 - **Team.** Agents share a scoreboard team with `CollisionRule.NEVER` against the player, so they never push or block doorways.
 - **Friendly fire** from the player to agents, and between agents, is cancelled. Damage from mobs, lava and falls is real.
 - **`die()`:** inventory into a `GraveBlockEntity` with a sign, `memory.md` into a Diary book, vanilla death message, emit `agent.died`, disconnect, delete playerdata. The fake player never sends a respawn, so the hardcore spectator logic never runs.
+  - A dead body is never handed out as the agent (it waits one tick for removal); if the server stops in that tick, `SERVER_STOPPING` removes it before players are saved, and dead agents' leftover playerdata, stats and advancements are swept at every start and stop.
+- **No client, so the server settles what a client would** (S1, review fixes):
+  - `teleport()` clears `isChangingDimension` after a change of dimension (Carpet's pattern); otherwise the agent stays invulnerable and never uses a portal again.
+  - The End exit portal's credits are counted as seen (`showEndCredits` override) instead of removing the body until a `PERFORM_RESPAWN` that never comes; the portal then takes the agent home. Carpet's own answer, `PERFORM_RESPAWN`, would make `PlayerList#respawn` replace the `AgentPlayer` with a plain `ServerPlayer` in 26.3.
+  - `TIME_SINCE_REST` is reset every tick: agents never sleep, and `PhantomSpawner` iterates every player.
+- **Agents count as real players (decided after S1).**
+  - **Kept:** each agent holds a player chunk ticket, loads and simulates the chunks around it, and counts for mob spawning, exactly as a human would. That is survival-realistic: a miner in a cave meets monsters, a farmer's fields grow while the player is away. The cost is bounded by the crew cap (4) and the agents' view distance of 2.
+  - **Kept:** agents show on the locator bar (they are players with a waypoint transmit range). It is the cheapest way to find your crew.
+  - **Kept:** agents earn advancements (their files go with their playerdata when they die).
+  - **Suppressed:** advancement announcements in chat for agents (`PlayerAdvancementsMixin`), because the chat is the player's channel to the crew.
+  - **Suppressed:** agents' names in `usercache.json` (`PlayerListMixin`), which lives in the game directory and outlives every world.
 
 ### 7.2 Pathfinding
 - **Tier 1 (M2):** vanilla `PathFinder(new WalkNodeEvaluator(), 4000)` with a never-added proxy `PathfinderMob` [U S1], in 40-block waypoints.

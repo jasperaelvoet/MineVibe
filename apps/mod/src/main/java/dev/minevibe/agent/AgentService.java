@@ -52,6 +52,7 @@ import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.StandingSignBlock;
 import net.minecraft.world.level.block.entity.SignBlockEntity;
 import net.minecraft.world.level.block.entity.SignText;
@@ -118,14 +119,26 @@ public final class AgentService {
 
 	static void registerEvents() {
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+			AgentService service = get(server);
+			// A crash between an agent's death and its removal leaves its playerdata behind; it must never load.
+			service.sweepDeadPlayerFiles();
 			// GameTest worlds are scratch worlds; leftovers from an earlier run must not come back.
 			if (System.getProperty("fabric-api.gametest") == null) {
-				get(server).restoreAll();
+				service.restoreAll();
+			}
+		});
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			AgentService service = current;
+			if (service != null && service.server == server) {
+				// A death in the last tick before the stop: remove the body now, before the server saves every
+				// player (it would write the dead agent's playerdata, stats and advancements back).
+				service.runAllPending();
 			}
 		});
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			synchronized (AgentService.class) {
 				if (current != null && current.server == server) {
+					current.sweepDeadPlayerFiles();
 					current = null;
 				}
 			}
@@ -164,9 +177,10 @@ public final class AgentService {
 
 	// ---------------------------------------------------------------- queries
 
+	/** The living body of {@code agentId}; never a dead one that is still waiting to be removed. */
 	public @Nullable AgentPlayer agent(final String agentId) {
 		AgentPlayer agent = this.agents.get(agentId);
-		return agent != null && !agent.isRemoved() ? agent : null;
+		return agent != null && !agent.isRemoved() && !agent.isAgentDead() ? agent : null;
 	}
 
 	public @Nullable AgentPlayer agentByName(final String name) {
@@ -373,6 +387,24 @@ public final class AgentService {
 		return server.getWorldPath(LevelResource.PLAYER_DATA_DIR).resolve(uuid + ".dat");
 	}
 
+	/** Runs every pending task now, due or not (the server is stopping: there is no next tick). */
+	public void runAllPending() {
+		List<Pending> all = List.copyOf(this.pending);
+		this.pending.clear();
+		for (Pending p : all) {
+			p.task().run();
+		}
+	}
+
+	/** Deletes the playerdata, stats and advancements of every agent the crew list marks dead. Idempotent. */
+	public void sweepDeadPlayerFiles() {
+		for (AgentRegistry.Entry entry : this.registry.all()) {
+			if (!entry.alive()) {
+				this.deletePlayerFiles(uuidFor(entry.id()));
+			}
+		}
+	}
+
 	private void runPending() {
 		if (this.pending.isEmpty()) {
 			return;
@@ -432,7 +464,7 @@ public final class AgentService {
 	}
 
 	/** First replaceable block at the feet or up to 4 above, then within 3 blocks around. */
-	static @Nullable BlockPos findGravePos(final ServerLevel level, final BlockPos feet) {
+	public static @Nullable BlockPos findGravePos(final ServerLevel level, final BlockPos feet) {
 		if (feet.getY() < level.getMinY()) {
 			return null;
 		}
@@ -453,7 +485,11 @@ public final class AgentService {
 		return null;
 	}
 
-	private static boolean canHoldGrave(final ServerLevel level, final BlockPos p) {
+	/**
+	 * Air, a replaceable block (grass, snow, fire, a fluid) or a pure fluid block. Not "any block holding a fluid":
+	 * waterlogged stairs, slabs or fences are real blocks, and {@code setBlock} would delete them without drops.
+	 */
+	static boolean canHoldGrave(final ServerLevel level, final BlockPos p) {
 		if (p.getY() <= level.getMinY() || p.getY() >= level.getMaxY()) {
 			return false;
 		}
@@ -461,7 +497,7 @@ public final class AgentService {
 		if (state.hasBlockEntity()) {
 			return false;
 		}
-		return state.isAir() || state.canBeReplaced() || !level.getFluidState(p).isEmpty() || state.is(BlockTags.FIRE);
+		return state.isAir() || state.canBeReplaced() || state.getBlock() instanceof LiquidBlock || state.is(BlockTags.FIRE);
 	}
 
 	/** Called at the end of {@link AgentPlayer#die}. The body leaves the world on the next tick. */

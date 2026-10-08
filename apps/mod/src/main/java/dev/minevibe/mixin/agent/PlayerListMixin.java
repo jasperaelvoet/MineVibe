@@ -15,13 +15,16 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.server.players.NameAndId;
 import net.minecraft.server.players.PlayerList;
+import net.minecraft.server.players.UserNameToIdResolver;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Agents get an {@link AgentNetHandler} instead of the vanilla game listener, and their arrival is not
- * announced in chat ("Ada joined the game").
+ * Agents get an {@link AgentNetHandler} instead of the vanilla game listener, their arrival is not announced in chat
+ * ("Ada joined the game"), and their names never go into {@code usercache.json} (it lives in the game directory and
+ * outlives every world and its crew).
  */
 @Mixin(PlayerList.class)
 public abstract class PlayerListMixin {
@@ -50,6 +53,20 @@ public abstract class PlayerListMixin {
 		final PlayerList self,
 		final Component message,
 		final boolean overlay,
+		final Connection connection,
+		final ServerPlayer player,
+		final CommonListenerCookie cookie
+	) {
+		return !(player instanceof AgentPlayer);
+	}
+
+	@WrapWithCondition(
+		method = "placeNewPlayer",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/server/players/UserNameToIdResolver;add(Lnet/minecraft/server/players/NameAndId;)V")
+	)
+	private boolean minevibe$keepAgentsOutOfTheUserCache(
+		final UserNameToIdResolver cache,
+		final NameAndId nameAndId,
 		final Connection connection,
 		final ServerPlayer player,
 		final CommonListenerCookie cookie

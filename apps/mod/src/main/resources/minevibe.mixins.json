@@ -4,6 +4,7 @@
 	"compatibilityLevel": "JAVA_25",
 	"mixins": [
 		"agent.ClientboundPlayerInfoUpdatePacketMixin",
+		"agent.PlayerAdvancementsMixin",
 		"agent.PlayerChunkSenderMixin",
 		"agent.PlayerListMixin",
 		"agent.SleepStatusMixin"

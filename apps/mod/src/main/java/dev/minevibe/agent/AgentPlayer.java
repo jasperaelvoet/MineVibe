@@ -15,7 +15,10 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.stats.Stats;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.level.portal.TeleportTransition;
+import org.jspecify.annotations.Nullable;
 
 /**
  * An agent's body: a server-side fake {@link ServerPlayer} with real health, hunger, inventory, menus
@@ -27,6 +30,10 @@ import net.minecraft.world.damagesource.DamageSource;
  *
  * <p>Agents are server-authoritative ({@link #isClientAuthoritative()} is false), like vanilla's GameTest
  * mock players: the server simulates their movement and fall damage.
+ *
+ * <p>No client means no client confirmations: what a client would acknowledge (a dimension change, the End
+ * credits) is settled here, and the "time since rest" statistic is kept at zero (agents never sleep, and phantoms
+ * spawn for every player whose statistic says they have not slept for three days).
  */
 public class AgentPlayer extends ServerPlayer {
 	private final String agentId;
@@ -109,6 +116,9 @@ public class AgentPlayer extends ServerPlayer {
 			super.tick();
 			this.doTick();
 		}
+		// doTick() counts TIME_SINCE_REST up for everyone not in a bed. PhantomSpawner iterates all players, agents
+		// included, so on HARD an agent that "never slept" would bring phantoms to the base every night.
+		this.resetStat(Stats.CUSTOM.get(Stats.TIME_SINCE_REST));
 		long dt = System.nanoTime() - t0;
 		this.tickNanosTotal += dt;
 		this.tickSamples++;
@@ -149,6 +159,33 @@ public class AgentPlayer extends ServerPlayer {
 	@Override
 	public String getIpAddress() {
 		return "127.0.0.1";
+	}
+
+	/**
+	 * Like Carpet's {@code EntityPlayerMPFake#teleport}: after a change of dimension the server waits for the client
+	 * to accept the teleport ({@code handleAcceptTeleportPacket}) before it clears {@code isChangingDimension}. An
+	 * agent has no client, so without this it stays "changing dimension" for good: invulnerable to everything
+	 * ({@code isInvulnerableTo}) and never able to use a portal again ({@code processPortalCooldown} is skipped).
+	 */
+	@Override
+	public @Nullable ServerPlayer teleport(final TeleportTransition transition) {
+		ServerPlayer result = super.teleport(transition);
+		if (this.isChangingDimension()) {
+			this.hasChangedDimension();
+		}
+		return result;
+	}
+
+	/**
+	 * The End exit portal calls this the first time a player walks in: vanilla takes the player out of the world and
+	 * waits for the client to finish the credits and send {@code PERFORM_RESPAWN}. An agent would wait forever, out
+	 * of the world. Carpet answers with {@code PERFORM_RESPAWN} itself, but in 26.3 {@code PlayerList#respawn} would
+	 * then replace the body with a plain {@code ServerPlayer}; so the agent simply counts the credits as seen and
+	 * stays. The portal takes it home on its next tick, through {@link #teleport} like any other portal.
+	 */
+	@Override
+	public void showEndCredits() {
+		this.seenCredits = true;
 	}
 
 	@Override
