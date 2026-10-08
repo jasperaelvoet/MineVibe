@@ -196,6 +196,15 @@ function clockDay(ticks: number): number {
   return Math.floor(ticks / 24_000) + 1;
 }
 
+/**
+ * USER DECISION 2026-10-08 (no automatic plan mode): Plan-first is only on when the player turned it on. Records saved
+ * before the decision carry the old role default (on for CEO and Engineer) without `planFirstByPlayer`; they load off.
+ */
+export function migratePlanFirst(record: AgentRecord): AgentRecord {
+  if (record.planFirst && record.planFirstByPlayer !== true) record.planFirst = false;
+  return record;
+}
+
 export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi {
   readonly #o: AgentManagerOptions;
   readonly #log: Logger;
@@ -334,7 +343,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   async #loadCrew(): Promise<AgentRecord[]> {
     try {
       const parsed = JSON.parse(await readFile(this.#crewFile(), 'utf8')) as Partial<CrewFile>;
-      return Array.isArray(parsed.records) ? parsed.records : [];
+      return Array.isArray(parsed.records) ? parsed.records.map(migratePlanFirst) : [];
     } catch {
       return [];
     }
@@ -645,7 +654,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       sessionStarted: false,
       nonce: newNonce(),
       autonomy: 'listen',
-      planFirst: input.role === 'ceo' || input.role === 'engineer',
+      // USER DECISION 2026-10-08: no automatic plan mode. Plan-first is off for every role; only the player's toggle
+      // in AgentScreen turns it on for one agent.
+      planFirst: false,
       pingInstead: false,
     };
   }
@@ -1682,6 +1693,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         return { echo: `${record.name} was dismissed` };
       case 'plan_first':
         record.planFirst = command.on ?? !record.planFirst;
+        // USER DECISION 2026-10-08: remembers that this value is the player's choice (see migratePlanFirst).
+        record.planFirstByPlayer = true;
         break;
       case 'ping_instead':
         record.pingInstead = command.on ?? !record.pingInstead;

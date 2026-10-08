@@ -17,6 +17,8 @@
     "f": "node src/f-swap.mjs",
     "h": "node src/h-concurrent.mjs",
     "i": "node src/i-pending.mjs",
+    "j": "node src/j-bypass.mjs",
+    "j:order": "node src/j-bypass.mjs order",
     "summary": "node src/summarize.mjs"
   },
   "dependencies": {

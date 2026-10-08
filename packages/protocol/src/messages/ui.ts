@@ -177,14 +177,17 @@ export const AgentPending = defineMessage('agent.pending', {
 
 /**
  * N→M. ApproachQueue (PLAN §6.4): `present` walks the agent to 2.5 blocks from the player (reflex 40);
- * `queue` waits 5-7 blocks behind showing "?"; `ping` stays put (toast, CrewHud "?", off-screen arrow);
- * `release` ends approaching (pendingId null).
+ * `present_seated` (USER DECISION 2026-10-08) keeps a seated agent in its chair: it turns toward the player who is
+ * near, shows the card-mode bubble and chimes once, and never dismounts; `queue` waits 5-7 blocks behind showing "?";
+ * `ping` stays put (toast, CrewHud "?", off-screen arrow); `release` ends approaching (pendingId null).
  */
 export const AgentApproach = defineMessage('agent.approach', {
   agentId: AgentId,
   pendingId: PendingId.nullable(),
-  role: z.enum(['present', 'queue', 'ping', 'release']),
-}).describe('Tells an agent to present a card to the player, queue, ping, or stop.');
+  role: z.enum(['present', 'present_seated', 'queue', 'ping', 'release']),
+}).describe(
+  'Tells an agent to present a card to the player (walking over or from its chair), queue, ping, or stop.',
+);
 
 /** N→M. Appends one line to an agent's transcript. */
 export const ChatAppend = defineMessage('chat.append', {
@@ -329,7 +332,8 @@ export const uiMessages = {
     schema: AgentApproach,
     direction: 'node_to_mod',
     group: 'ui',
-    summary: 'ApproachQueue: present a card, queue behind the player, ping, or release.',
+    summary:
+      'ApproachQueue: present a card (walking over or from the chair), queue behind the player, ping, or release.',
   },
   'chat.append': {
     schema: ChatAppend,

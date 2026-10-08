@@ -524,6 +524,8 @@ public final class SkillService {
 		}
 		ReflexBrain.ApproachRole role = switch (a.role()) {
 			case "present" -> ReflexBrain.ApproachRole.PRESENT;
+			// USER DECISION 2026-10-08: seated, player near: present from the chair, never dismount.
+			case "present_seated" -> ReflexBrain.ApproachRole.PRESENT_SEATED;
 			case "queue" -> ReflexBrain.ApproachRole.QUEUE;
 			case "ping" -> ReflexBrain.ApproachRole.PING;
 			default -> ReflexBrain.ApproachRole.RELEASE;

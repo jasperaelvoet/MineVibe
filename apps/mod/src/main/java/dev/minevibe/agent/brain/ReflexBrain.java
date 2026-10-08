@@ -21,12 +21,14 @@ import org.jspecify.annotations.Nullable;
  * reflex above the job wants control and there is no job, the idle mode runs (priority 10).
  *
  * <p>Priorities: Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, ProtectPlayer 80, SelfDefense 70, Eat 60,
- * FeedPlayer 55, ShareFood 50, UnseatToSurvive 47, UnseatToFight 45, Approach 40, Attend 38, Job 35, Shelter 30,
+ * FeedPlayer 55, ShareFood 50, UnseatToSurvive 47, UnseatToFight 45, Approach 40 (walking; SeatedPresent 40 from the
+ * chair), Attend 38, Job 35, Shelter 30,
  * Pickup 25, idle mode 10 (follow, stay, guard, wander).
  *
  * <p>While the agent sits (a PC or meeting chair, or any vehicle) only reflexes at 45 and above may run, and the ones
  * that would only protect or feed others or fight back at good health ({@link Reflex#allowedWhileSeated}) wait: a seated agent
- * stands up to fight at priority 45, once its HP is below half.
+ * stands up to fight at priority 45, once its HP is below half. The one exception is a reflex that acts from the chair
+ * and never stands up ({@link Reflex#staysSeated}): the seated presenter at 40 (USER DECISION 2026-10-08).
  */
 public final class ReflexBrain {
 	public static final int JOB_PRIORITY = 35;
@@ -36,6 +38,11 @@ public final class ReflexBrain {
 	/** {@code agent.approach} roles (PLAN 6.4). */
 	public enum ApproachRole {
 		PRESENT,
+		/**
+		 * USER DECISION 2026-10-08: a seated agent whose player is near presents from its chair (turns toward the player,
+		 * chimes once) and never dismounts ({@code SeatedPresentReflex}).
+		 */
+		PRESENT_SEATED,
 		QUEUE,
 		PING,
 		RELEASE
@@ -80,6 +87,7 @@ public final class ReflexBrain {
 		this.reflexes.add(new UnseatToSurviveReflex());
 		this.reflexes.add(new UnseatToFightReflex());
 		this.reflexes.add(new ApproachReflex());
+		this.reflexes.add(new SeatedPresentReflex());
 		this.reflexes.add(new AttendReflex());
 		this.reflexes.add(new ShelterReflex());
 		this.reflexes.add(new PickupReflex());
@@ -247,9 +255,10 @@ public final class ReflexBrain {
 			if (hasJob && reflex.priority() <= JOB_PRIORITY) {
 				break;
 			}
-			if (seated && reflex.priority() < SEATED_PRIORITY) {
-				// Seated (at a PC, a meeting or in a vehicle): only survival reflexes may stand the agent up.
-				break;
+			if (seated && reflex.priority() < SEATED_PRIORITY && !reflex.staysSeated()) {
+				// Seated (at a PC, a meeting or in a vehicle): only survival reflexes may stand the agent up. Reflexes that act
+				// from the chair without standing (the seated presenter, USER DECISION 2026-10-08) still get their turn.
+				continue;
 			}
 			if (seated && !reflex.allowedWhileSeated()) {
 				continue;

@@ -7,7 +7,13 @@ import { EngineError } from '../../src/pcs/drivers/ContainerRuntime.js';
 import type { ExecFn } from '../../src/pcs/drivers/exec.js';
 import { cleanPickedPath, createFolderPicker, OSASCRIPT_ARGS } from '../../src/pcs/folderPicker.js';
 import { PcError, type PcRecord, type PcView } from '../../src/pcs/PcManager.js';
-import { decommissionedInfo, toBridgeError, toPcInfo, toWireBudget } from '../../src/pcs/pcWire.js';
+import {
+  decommissionedInfo,
+  seatBanner,
+  toBridgeError,
+  toPcInfo,
+  toWireBudget,
+} from '../../src/pcs/pcWire.js';
 import { SeatBook, seatTag, tagAgent } from '../../src/pcs/SeatBook.js';
 
 const view: PcView = {
@@ -93,6 +99,27 @@ describe('pc.state (PcInfo)', () => {
     expect(
       toPcInfo({ ...view, type: 'windows' }, rec, { seat: new SeatBook().get('x'), diskGiB: 1 }),
     ).toBeNull();
+  });
+
+  it('shows "BRB: asking <player>" while the agent walked over to ask (away reservation only)', () => {
+    const away = { occupant: null, reservation: { agentId: 'bram', kind: 'away' as const } };
+    expect(seatBanner(away, 'Jasper', 'bram')).toBe('BRB: asking Jasper');
+    expect(seatBanner(away, null, 'bram')).toBe('BRB: asking the player');
+    // An away reservation of a meeting pull (no pc.unseat{away}) shows nothing.
+    expect(seatBanner(away, 'Jasper', null)).toBeNull();
+    expect(
+      seatBanner({ occupant: null, reservation: { agentId: 'bram', kind: 'coming' } }, 'Jasper', 'bram'),
+    ).toBeNull();
+    expect(
+      seatBanner(
+        { occupant: { kind: 'agent', agentId: 'bram', seatEpoch: 1 }, reservation: null },
+        'Jasper',
+        'bram',
+      ),
+    ).toBeNull();
+    const info = toPcInfo(view, rec, { seat: away, diskGiB: 68, banner: seatBanner(away, 'Jasper', 'bram') });
+    expect(info?.banner).toBe('BRB: asking Jasper');
+    expect(PcInfo.safeParse(info).success).toBe(true);
   });
 });
 

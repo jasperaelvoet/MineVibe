@@ -12,9 +12,20 @@
  * - Later: `@ada later`, the Later key or walking away parks the card. It stays answerable; the agent returns after
  *   10 min, or when the player is idle within 16 blocks. A card auto-parks after 2 min without an answer or after
  *   2 min of player AFK.
- * - Seated agents ping by default ("? for Jasper" on the monitor). They walk over (`away_from_seat`) only when the
- *   player is within 24 blocks, not seated and not in combat; the chair stays reserved. After the answer they walk
- *   back and sit. The reservation expires after 3 min away; the card is kept.
+ * - Seated agents (USER DECISION 2026-10-08):
+ *   - Player NEAR (within `seatedNearBlocks`, 8 by default; same dimension): the agent STAYS SEATED and presents from
+ *     the chair (`present_seated`: it turns toward the player, shows the card-mode bubble and chimes once; it never
+ *     dismounts). Held in combat. Once presenting from the chair it keeps doing so until the player walks away
+ *     (`walkAwayBlocks`), which parks the card.
+ *   - Player NOT near: it stands up and walks over (`walk_from_seat`, SeatFSM `away_from_seat`: the chair stays
+ *     reserved, the model stays Opus), asks, then walks back and sits with no model swap. The reservation expires
+ *     after 3 min away; the card is kept.
+ *   - Unless walking isn't sensible: night outside a lit area, a path over 48 blocks or one that needs digging,
+ *     another dimension, the player in combat or inside a PC screen, or the agent's "Ping instead of walking over"
+ *     setting. Then it pings from the chair (the PC border strip when the player is in a PC screen); an agent already
+ *     walking over goes back to its chair and pings (combat only holds it). A pinging seated agent switches to
+ *     presenting from the chair as soon as the player walks up to it.
+ *   - Wandering agents keep walking to the player (one presenter at a time, as above).
  * - A running meeting wins: attendees do not approach; their cards are raised at the table during the floor.
  */
 
@@ -78,7 +89,12 @@ export interface ApproachSnapshot {
 export type PresentMode =
   /** Walk to 2.5 blocks from the player, face, wave, chime once. */
   | 'approach'
-  /** Seated agent walks over (away_from_seat); chair reserved. */
+  /**
+   * USER DECISION 2026-10-08: a seated agent with the player near stays in its chair, turns toward the player, shows
+   * the card-mode bubble and chimes once. Never dismounts (`agent.approach{role: present_seated}`).
+   */
+  | 'present_seated'
+  /** Seated agent, player not near: walks over (away_from_seat); chair reserved. */
   | 'walk_from_seat'
   /** Toast, CrewHud "?" and an off-screen arrow (or the PC border strip). */
   | 'ping'
@@ -94,8 +110,11 @@ export type PingReason =
   | 'dimension'
   | 'pc_screen'
   | 'setting'
+  /** No longer produced (USER DECISION 2026-10-08: seated agents present from the chair or walk over). */
   | 'seated'
-  | 'no_path';
+  | 'no_path'
+  /** A seated agent does not walk over to a player in combat (USER DECISION 2026-10-08); wanderers hold instead. */
+  | 'combat';
 
 export interface Presentation {
   readonly agentId: string;
@@ -110,10 +129,19 @@ export interface ApproachState {
   readonly parked: ReadonlyArray<{ agentId: string; cardId: string; returnAt: number }>;
 }
 
+/**
+ * How a presenter brings its card in person: `walk` to the player (`agent.approach{present}`), or present from the
+ * chair it sits in (`seat`, `agent.approach{present_seated}`; USER DECISION 2026-10-08).
+ */
+export type ApproachHow = 'walk' | 'seat';
+
 /** Effects; every method is optional. */
 export interface ApproachEffects {
-  /** `agent.approach{agentId, pendingId | null}`: walk to the player with this card, or stop. */
-  approach?(agentId: string, cardId: string | null): void;
+  /**
+   * `agent.approach{agentId, pendingId | null}`: present this card (walking over, or from the chair when `how` is
+   * `seat`), or stop (`cardId` null).
+   */
+  approach?(agentId: string, cardId: string | null, how?: ApproachHow): void;
   /** Ping fallback (toast, CrewHud "?", off-screen arrow, or the PC border strip). */
   ping?(agentId: string, cardId: string, reason: PingReason): void;
   /** Seat actions for seated agents: reserve the chair and walk over, walk back and sit, or the reservation ended. */
@@ -130,7 +158,11 @@ export interface ApproachLimits {
   readonly afkParkMs: number;
   readonly parkReturnMs: number;
   readonly idleReturnBlocks: number;
-  readonly seatedWalkBlocks: number;
+  /**
+   * USER DECISION 2026-10-08: a seated agent presents from its chair when the player is within this distance (same
+   * dimension); farther away it walks over. Configurable here (the mod's card-mode bubble reaches about 9 blocks).
+   */
+  readonly seatedNearBlocks: number;
   readonly awayReservationMs: number;
   /** The player "walked away" once this far from a presenter that had reached them. */
   readonly walkAwayBlocks: number;
@@ -146,7 +178,7 @@ export const DEFAULT_APPROACH_LIMITS: ApproachLimits = {
   afkParkMs: 2 * 60_000,
   parkReturnMs: 10 * 60_000,
   idleReturnBlocks: 16,
-  seatedWalkBlocks: 24,
+  seatedNearBlocks: 8,
   awayReservationMs: 3 * 60_000,
   walkAwayBlocks: 16,
   arrivedBlocks: 4,
@@ -166,8 +198,10 @@ interface Current {
   shownMs: number;
   lastTickAt: number;
   reachedPlayer: boolean;
-  /** `agent.approach` with this card is in force. */
-  approachSent: boolean;
+  /** The `agent.approach` with this card in force: walking over, presenting from the chair, or none. */
+  approachSent: ApproachHow | null;
+  /** Presented from the chair at some point (USER DECISION 2026-10-08): it stays there until the player walks away. */
+  fromChair: boolean;
 }
 
 const BLOCKING: ReadonlySet<CardKind> = new Set(['question', 'plan']);
@@ -365,6 +399,7 @@ export class ApproachQueue {
   }
 
   #endPresentation(cur: Current, why: 'answered' | 'parked'): void {
+    // A seated presenter (`present_seated`) simply stops facing the player; it never left its chair.
     if (cur.approachSent) this.#fx.approach?.(cur.agentId, null);
     if (this.#away.has(cur.agentId)) {
       // An answered (or parked) seated agent walks back and sits, with no model swap.
@@ -386,11 +421,22 @@ export class ApproachQueue {
     return p.idle ?? now - p.lastInputAt >= this.#limits.idleInputMs;
   }
 
-  /** How this agent should bring its card right now. */
+  /** Why walking over isn't sensible right now (night, far, digging, no path), or null. */
+  #walkBlocked(a: AgentView, snap: ApproachSnapshot): PingReason | null {
+    const p = snap.player;
+    if (snap.isNight && !(a.inLitArea === true && p.inLitArea === true)) return 'night';
+    if (a.pathNeedsDigging) return 'digging';
+    if (a.pathBlocks === null) return 'no_path';
+    if (a.pathBlocks > this.#limits.farPathBlocks) return 'far';
+    return null;
+  }
+
+  /** How this agent should bring its card right now (`cur`: its presentation so far, if it is the presenter). */
   #modeFor(
     agentId: string,
     snap: ApproachSnapshot | null,
     now: number,
+    cur: Current | null = null,
   ): { mode: PresentMode; reason?: PingReason } {
     if (!snap) return { mode: 'ping', reason: 'no_path' };
     if (snap.meetingAttendees?.includes(agentId)) return { mode: 'meeting' };
@@ -398,33 +444,37 @@ export class ApproachQueue {
     const a = snap.agents[agentId];
     const combat = this.#playerInCombat(p, now);
     const pref = this.#pingPref.get(agentId) === true;
-    if (a?.seated || this.#away.has(agentId)) {
-      if (this.#away.has(agentId)) return combat ? { mode: 'hold' } : { mode: 'walk_from_seat' };
-      const d = distance(a?.pos ?? null, p.pos);
-      const sameDim = a?.dimension === p.dimension;
-      if (
-        !pref &&
-        sameDim &&
-        d !== null &&
-        d <= this.#limits.seatedWalkBlocks &&
-        !p.seated &&
-        !combat &&
-        !p.inPcScreen
-      ) {
-        return { mode: 'walk_from_seat' };
+    if (this.#away.has(agentId)) {
+      // USER DECISION 2026-10-08: already walking over from its chair. A fight only holds it; when walking stops
+      // making sense it goes back to the chair and pings from there (#apply sends it back).
+      if (combat) return { mode: 'hold' };
+      if (p.inPcScreen) return { mode: 'ping', reason: 'pc_screen' };
+      if (!a || a.dimension !== p.dimension) return { mode: 'ping', reason: 'dimension' };
+      const blocked = this.#walkBlocked(a, snap);
+      if (blocked !== null && blocked !== 'no_path') return { mode: 'ping', reason: blocked };
+      return { mode: 'walk_from_seat' };
+    }
+    if (a?.seated) {
+      // USER DECISION 2026-10-08: near → present from the chair (never dismount); not near → walk over, unless
+      // walking isn't sensible → ping.
+      if (p.inPcScreen) return { mode: 'ping', reason: 'pc_screen' };
+      const d = distance(a.pos, p.pos);
+      const nearLimit = cur?.fromChair ? this.#limits.walkAwayBlocks : this.#limits.seatedNearBlocks;
+      if (a.dimension === p.dimension && d !== null && d <= nearLimit) {
+        return combat ? { mode: 'hold' } : { mode: 'present_seated' };
       }
-      return { mode: 'ping', reason: p.inPcScreen ? 'pc_screen' : pref ? 'setting' : 'seated' };
+      if (pref) return { mode: 'ping', reason: 'setting' };
+      if (a.dimension !== p.dimension) return { mode: 'ping', reason: 'dimension' };
+      if (combat) return { mode: 'ping', reason: 'combat' };
+      const blocked = this.#walkBlocked(a, snap);
+      return blocked !== null ? { mode: 'ping', reason: blocked } : { mode: 'walk_from_seat' };
     }
     if (combat) return { mode: 'hold' };
     if (pref) return { mode: 'ping', reason: 'setting' };
     if (!a || a.dimension !== p.dimension) return { mode: 'ping', reason: 'dimension' };
     if (p.inPcScreen) return { mode: 'ping', reason: 'pc_screen' };
-    if (snap.isNight && !(a.inLitArea === true && p.inLitArea === true))
-      return { mode: 'ping', reason: 'night' };
-    if (a.pathNeedsDigging) return { mode: 'ping', reason: 'digging' };
-    if (a.pathBlocks === null) return { mode: 'ping', reason: 'no_path' };
-    if (a.pathBlocks > this.#limits.farPathBlocks) return { mode: 'ping', reason: 'far' };
-    return { mode: 'approach' };
+    const blocked = this.#walkBlocked(a, snap);
+    return blocked !== null ? { mode: 'ping', reason: blocked } : { mode: 'approach' };
   }
 
   #evaluate(): void {
@@ -479,12 +529,13 @@ export class ApproachQueue {
           if (d !== null && d <= this.#limits.arrivedBlocks) cur.reachedPlayer = true;
           walkedAway = cur.reachedPlayer && (d === null || d > this.#limits.walkAwayBlocks);
         }
-        const next = this.#modeFor(cur.agentId, snap, now);
+        const next = this.#modeFor(cur.agentId, snap, now, cur);
         if (next.mode === 'meeting') {
           // The meeting wins: the card is raised at the table instead, and the presenter slot goes to someone
           // else. The card stays queued (not parked) and is presented again after the meeting.
           this.#current = null;
           if (cur.approachSent) this.#fx.approach?.(cur.agentId, null);
+          cur.approachSent = null;
         } else if (cur.shownMs >= this.#limits.autoParkMs || afk || walkedAway) {
           this.#park(card);
         } else if (next.mode !== cur.mode || next.reason !== cur.reason) {
@@ -511,7 +562,8 @@ export class ApproachQueue {
           shownMs: 0,
           lastTickAt: now,
           reachedPlayer: false,
-          approachSent: false,
+          approachSent: null,
+          fromChair: false,
         };
         this.#current = next;
         this.#apply(next, this.#modeFor(agentId, snap, now));
@@ -530,23 +582,40 @@ export class ApproachQueue {
           this.#away.set(cur.agentId, this.#clock.now());
           this.#fx.seat?.(cur.agentId, 'reserve_and_walk');
         }
-        if (!cur.approachSent) {
-          cur.approachSent = true;
-          this.#fx.approach?.(cur.agentId, cur.cardId);
-        }
+        this.#sendApproach(cur, 'walk');
+        break;
+      case 'present_seated':
+        // USER DECISION 2026-10-08: the player is with the agent; it stays seated until the player walks away.
+        cur.fromChair = true;
+        cur.reachedPlayer = true;
+        this.#sendApproach(cur, 'seat');
         break;
       case 'ping':
       case 'meeting':
         if (cur.approachSent) {
-          cur.approachSent = false;
+          cur.approachSent = null;
           this.#fx.approach?.(cur.agentId, null);
         }
-        if (next.mode === 'ping') this.#fx.ping?.(cur.agentId, cur.cardId, next.reason ?? 'far');
+        if (next.mode === 'ping') {
+          if (this.#away.has(cur.agentId)) {
+            // USER DECISION 2026-10-08: walking over stopped making sense: back to the chair, ping from there.
+            this.#away.delete(cur.agentId);
+            this.#fx.seat?.(cur.agentId, 'return');
+          }
+          this.#fx.ping?.(cur.agentId, cur.cardId, next.reason ?? 'far');
+        }
         break;
       case 'hold':
         // The mod's ApproachPlayer reflex holds by itself in combat; the card and chime wait.
         break;
     }
+  }
+
+  /** `agent.approach` with the presenter's card, walking over or from the chair, unless already in force. */
+  #sendApproach(cur: Current, how: ApproachHow): void {
+    if (cur.approachSent === how) return;
+    cur.approachSent = how;
+    this.#fx.approach?.(cur.agentId, cur.cardId, how);
   }
 
   #pushState(): void {

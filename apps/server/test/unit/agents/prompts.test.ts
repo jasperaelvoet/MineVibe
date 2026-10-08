@@ -284,7 +284,9 @@ describe('session options (PLAN §6.1 as amended by S2/S3)', () => {
       pathToClaudeCodeExecutable: '/Users/j/.local/bin/claude',
       settingSources: [],
       strictMcpConfig: true,
-      permissionMode: 'default',
+      // USER DECISION 2026-10-08: agents always run in bypassPermissions; ToolGate is the sandbox guard.
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
       cwd: '/data/worlds/w1/agents/ada/home',
       persistSession: true,
       sessionId: '00000000-0000-4000-8000-000000000000',
@@ -298,6 +300,9 @@ describe('session options (PLAN §6.1 as amended by S2/S3)', () => {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: 'PERSONA' },
     });
     expect(o.tools).not.toContain('TodoWrite');
+    // USER DECISION 2026-10-08: agents cannot put themselves into plan mode; ExitPlanMode stays for plan-first.
+    expect(o.tools).not.toContain('EnterPlanMode');
+    expect(o.tools).toContain('ExitPlanMode');
     expect(o).not.toHaveProperty('allowedTools');
     expect(o).not.toHaveProperty('resume');
     expect(Object.keys(o.mcpServers ?? {})).toEqual(['mc', 'pc']);

@@ -16,7 +16,7 @@ function harness() {
   const q = new ApproachQueue({
     clock,
     effects: {
-      approach: (a, c) => log.push(`approach ${a} ${c ?? 'null'}`),
+      approach: (a, c, how) => log.push(`approach ${a} ${c ?? 'null'}${how === 'seat' ? ' seat' : ''}`),
       ping: (a, c, r) => log.push(`ping ${a} ${c} ${r}`),
       seat: (a, action) => log.push(`seat ${a} ${action}`),
       parked: (a, c) => log.push(`parked ${a} ${c}`),
@@ -246,29 +246,161 @@ describe('ApproachQueue', () => {
     expect(h.q.state().parked.map((p) => p.cardId)).toEqual(['q1']);
   });
 
-  it('seated agents ping by default and walk over only when the player is close, standing and safe', async () => {
-    const h = harness();
-    h.update({ agents: { bram: { seated: true, pos: { x: 40, y: 64, z: 0 } } } });
-    h.q.enqueue(h.card('q1', 'bram', 'question', 0));
-    expect(h.q.presenter).toMatchObject({ mode: 'ping', reason: 'seated' });
-    // The player sits at a PC nearby: still a ping.
-    h.update({
-      player: { seated: true, inPcScreen: true },
-      agents: { bram: { pos: { x: 10, y: 64, z: 0 } } },
+  // USER DECISION 2026-10-08: seated agents ask from the chair when the player is near (8 blocks, configurable), walk
+  // over when the player is not near, and ping when walking isn't sensible.
+  describe('seated agents (USER DECISION 2026-10-08)', () => {
+    it('player near: presents from the chair (never stands up) until the player walks away', () => {
+      const h = harness();
+      h.update({ agents: { bram: { seated: true, pos: { x: 5, y: 64, z: 0 } } } });
+      h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+      expect(h.q.presenter).toMatchObject({ agentId: 'bram', cardId: 'q1', mode: 'present_seated' });
+      expect(h.q.isAway('bram')).toBe(false);
+      expect(h.log).toEqual(['approach bram q1 seat']);
+      // The player steps back to 12 blocks: still presenting from the chair (it does not stand up and follow).
+      h.update({ player: { pos: { x: -7, y: 64, z: 0 } } });
+      expect(h.q.presenter?.mode).toBe('present_seated');
+      // Walking away (over 16 blocks) parks the card; the agent never left its chair.
+      h.update({ player: { pos: { x: -20, y: 64, z: 0 } } });
+      expect(h.q.presenter).toBeNull();
+      expect(h.log).toEqual(['approach bram q1 seat', 'parked bram q1', 'approach bram null']);
+      expect(h.log.some((l) => l.startsWith('seat '))).toBe(false);
     });
-    expect(h.q.presenter).toMatchObject({ mode: 'ping', reason: 'pc_screen' });
-    // Standing within 24 blocks: Bram reserves the chair and walks over.
-    h.update({ player: { seated: false, inPcScreen: false } });
-    expect(h.q.presenter?.mode).toBe('walk_from_seat');
-    expect(h.q.isAway('bram')).toBe(true);
-    expect(h.log.slice(-2)).toEqual(['seat bram reserve_and_walk', 'approach bram q1']);
-    // Once away it stays away (the SeatFSM says away_from_seat, not seated).
-    h.update({ agents: { bram: { seated: false } } });
-    expect(h.q.presenter?.mode).toBe('walk_from_seat');
-    // Answered: walk back and sit, no swap.
-    h.q.resolve('q1');
-    expect(h.log.slice(-2)).toEqual(['approach bram null', 'seat bram return']);
-    expect(h.q.isAway('bram')).toBe(false);
+
+    it('player near: answered from the chair, no seat effects at all', () => {
+      const h = harness();
+      h.update({ agents: { bram: { seated: true, pos: { x: 3, y: 64, z: 4 } } } });
+      h.q.enqueue(h.card('p1', 'bram', 'plan', 0));
+      expect(h.q.presenter?.mode).toBe('present_seated');
+      h.q.resolve('p1');
+      expect(h.log).toEqual(['approach bram p1 seat', 'approach bram null']);
+    });
+
+    it('the near distance is configurable', () => {
+      const h = harness();
+      const q = new ApproachQueue({ clock: h.clock, limits: { seatedNearBlocks: 12 } });
+      q.update({
+        player: {
+          pos: { x: 0, y: 64, z: 0 },
+          dimension: 'overworld',
+          hostileNearby: false,
+          lastDamageAt: null,
+          inPcScreen: false,
+          seated: false,
+          lastInputAt: h.clock.now(),
+        },
+        isNight: false,
+        agents: { bram: h.agent(10, { seated: true }) },
+      });
+      q.enqueue(h.card('q1', 'bram', 'question', 0));
+      expect(q.presenter?.mode).toBe('present_seated');
+    });
+
+    it('player not near: walks over (chair reserved), asks, then walks back and sits', () => {
+      const h = harness();
+      h.update({ agents: { bram: { seated: true, pos: { x: 20, y: 64, z: 0 }, pathBlocks: 22 } } });
+      h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+      expect(h.q.presenter?.mode).toBe('walk_from_seat');
+      expect(h.q.isAway('bram')).toBe(true);
+      expect(h.log).toEqual(['seat bram reserve_and_walk', 'approach bram q1']);
+      // Once away it stays away (the SeatFSM says away_from_seat, not seated), even when it reaches the player.
+      h.update({ agents: { bram: { seated: false, pos: { x: 2, y: 64, z: 0 } } } });
+      expect(h.q.presenter?.mode).toBe('walk_from_seat');
+      // Answered: walk back and sit, no swap.
+      h.q.resolve('q1');
+      expect(h.log.slice(-2)).toEqual(['approach bram null', 'seat bram return']);
+      expect(h.q.isAway('bram')).toBe(false);
+    });
+
+    it("pings instead of walking when walking isn't sensible", () => {
+      const far = { seated: true, pos: { x: 20, y: 64, z: 0 } };
+      const cases: Array<[Parameters<ReturnType<typeof harness>['update']>[0], string]> = [
+        [{ isNight: true, agents: { bram: { ...far, inLitArea: false } } }, 'night'],
+        [{ agents: { bram: { ...far, pathBlocks: 60 } } }, 'far'],
+        [{ agents: { bram: { ...far, pathNeedsDigging: true } } }, 'digging'],
+        [{ agents: { bram: { ...far, dimension: 'the_nether' } } }, 'dimension'],
+        [{ player: { hostileNearby: true }, agents: { bram: far } }, 'combat'],
+        [{ player: { inPcScreen: true, seated: true }, agents: { bram: far } }, 'pc_screen'],
+        // The player at the PC next to Bram: still the border strip, not the chair presentation.
+        [
+          {
+            player: { inPcScreen: true, seated: true },
+            agents: { bram: { ...far, pos: { x: 2, y: 64, z: 0 } } },
+          },
+          'pc_screen',
+        ],
+      ];
+      for (const [patch, reason] of cases) {
+        const h = harness();
+        h.update(patch);
+        h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+        expect(h.q.presenter, reason).toMatchObject({ mode: 'ping', reason });
+        expect(h.log, reason).toEqual([`ping bram q1 ${reason}`]);
+        expect(h.q.isAway('bram'), reason).toBe(false);
+      }
+      // "Ping instead of walking over" pings when the player is not near ...
+      const pref = harness();
+      pref.update({ agents: { bram: far } });
+      pref.q.setPingPreference('bram', true);
+      pref.q.enqueue(pref.card('q1', 'bram', 'question', 0));
+      expect(pref.q.presenter).toMatchObject({ mode: 'ping', reason: 'setting' });
+      // ... but presenting from the chair involves no walking, so a player who comes over still gets it.
+      pref.update({ player: { pos: { x: 17, y: 64, z: 0 } } });
+      expect(pref.q.presenter?.mode).toBe('present_seated');
+    });
+
+    it('a pinging seated agent switches to presenting from the chair when the player walks up', () => {
+      const h = harness();
+      h.update({
+        isNight: true,
+        agents: { bram: { seated: true, pos: { x: 30, y: 64, z: 0 }, inLitArea: false } },
+      });
+      h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+      expect(h.q.presenter).toMatchObject({ mode: 'ping', reason: 'night' });
+      h.update({ player: { pos: { x: 25, y: 64, z: 0 } } });
+      expect(h.q.presenter?.mode).toBe('present_seated');
+      expect(h.log).toEqual(['ping bram q1 night', 'approach bram q1 seat']);
+      expect(h.q.isAway('bram')).toBe(false);
+    });
+
+    it('a seated agent near a player in combat holds, then presents from the chair', async () => {
+      const h = harness();
+      h.update({
+        player: { hostileNearby: true },
+        agents: { bram: { seated: true, pos: { x: 4, y: 64, z: 0 } } },
+      });
+      h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+      expect(h.q.presenter?.mode).toBe('hold');
+      expect(h.log).toEqual([]);
+      await h.tick(1000, { player: { hostileNearby: false } });
+      expect(h.q.presenter?.mode).toBe('present_seated');
+      expect(h.log).toEqual(['approach bram q1 seat']);
+    });
+
+    it('an agent walking over goes back to its chair and pings when walking stops making sense', () => {
+      const h = harness();
+      h.update({ agents: { bram: { seated: true, pos: { x: 20, y: 64, z: 0 } } } });
+      h.q.enqueue(h.card('q1', 'bram', 'question', 0));
+      h.update({ agents: { bram: { seated: false, pos: { x: 15, y: 64, z: 0 } } } });
+      expect(h.q.presenter?.mode).toBe('walk_from_seat');
+      // The player sits down at a PC: back to the chair, ping in the border strip.
+      h.update({ player: { inPcScreen: true, seated: true } });
+      expect(h.q.presenter).toMatchObject({ mode: 'ping', reason: 'pc_screen' });
+      expect(h.q.isAway('bram')).toBe(false);
+      expect(h.log).toEqual([
+        'seat bram reserve_and_walk',
+        'approach bram q1',
+        'approach bram null',
+        'seat bram return',
+        'ping bram q1 pc_screen',
+      ]);
+      // Seated again; the player gets up next to Bram's chair: presented from the chair.
+      h.update({
+        player: { inPcScreen: false, seated: false, pos: { x: 17, y: 64, z: 0 } },
+        agents: { bram: { seated: true, pos: { x: 20, y: 64, z: 0 } } },
+      });
+      expect(h.q.presenter?.mode).toBe('present_seated');
+      expect(h.log.at(-1)).toBe('approach bram q1 seat');
+    });
   });
 
   it('returns a seated agent to its chair when its card parks', () => {

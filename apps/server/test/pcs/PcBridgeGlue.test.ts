@@ -225,9 +225,14 @@ describe('input and seats', () => {
     expect(states(t.bridge).at(-1)).toMatchObject({
       occupant: null,
       reservation: { agentId: 'ada', kind: 'away' },
+      banner: 'BRB: asking the player',
     });
     expect(t.killed).toEqual([]);
     t.bridge.fire('pc.seat', { pcId: 'linux-1', occupant: { kind: 'agent', agentId: 'ada' }, seatEpoch: 4 });
+    expect(states(t.bridge).at(-1)).toMatchObject({
+      occupant: { kind: 'agent', agentId: 'ada' },
+      banner: null,
+    });
     t.bridge.fire('pc.unseat', {
       pcId: 'linux-1',
       occupant: { kind: 'agent', agentId: 'ada' },

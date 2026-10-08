@@ -74,7 +74,9 @@ user's `claude` binary.
   Codex, Calendar) and `pc` (screen, input, shell and file tools inside a PC). Claude Code's built-in shell
   and file tools are disabled or aliased onto `pc`.
 - **ToolGate** is a `PreToolUse` hook that decides, fail-closed, which tools an agent may use in its current
-  state (wandering, seated, plan mode).
+  state (wandering, seated, plan mode). Agents run in Claude Code's `bypassPermissions` mode, so there are no
+  permission prompts and ToolGate is the sandbox guard: it allows or denies every game, PC and web tool call
+  explicitly. Agents can't enter plan mode themselves; only the player's Plan-first toggle starts it.
 - **InteractionBroker** turns `AskUserQuestion`, `ExitPlanMode` and hires into cards the player answers in
   game (see [Answering cards](/MineVibe/playing/#answering-cards)).
 - **SeatFSM** tracks walking to a chair, sitting, standing and being kicked. The model swap (Haiku 5.5 at

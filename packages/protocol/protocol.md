@@ -434,7 +434,7 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `agent.say` | ui | N→M |  | Speech bubble above an agent. |
 | `agent.brain` | ui | N→M |  | Model suffix, brain status icon, last activity and toggles of one agent. |
 | `agent.pending` | ui | N→M |  | Replaces an agent's pending cards (questions, plans, hires, calendar approvals). |
-| `agent.approach` | ui | N→M |  | ApproachQueue: present a card, queue behind the player, ping, or release. |
+| `agent.approach` | ui | N→M |  | ApproachQueue: present a card (walking over or from the chair), queue behind the player, ping, or release. |
 | `chat.append` | ui | N→M |  | Appends a line to an agent's transcript (AgentScreen, Crew log). |
 | `chat.history` | ui | M→N | `ChatHistoryResult` | Request: a page of an agent's transcript. |
 | `chat.send` | ui | M→N | `ChatSendResult` | Request: player chat line or AgentScreen reply; Node routes it. |
@@ -661,7 +661,10 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   options: [{ label, description? }], multiSelect }], answers }`, `plan { plan }`, `hire { role, name, handle,
   reason, firstTask }`, or `calendar { eventId, summary }` (an agent-created recurring event or meeting waiting for
   approval).
-- `agent.approach`: `{ agentId, pendingId|null, role: present|queue|ping|release }` (PLAN §6.4).
+- `agent.approach`: `{ agentId, pendingId|null, role: present|present_seated|queue|ping|release }` (PLAN §6.4).
+  `present_seated` (USER DECISION 2026-10-08): a seated agent whose player is near stays in its chair, turns toward
+  the player, shows the card-mode bubble and chimes once; it never dismounts. `present` walks over (for a seated agent,
+  after Node's `agent.unseat{away, keepReservation}`).
 - `chat.append`: `{ agentId, entry: ChatEntry }`; `ChatEntry = { seq, at, kind:
   player|agent|activity|card|answer|tell|system, text, fromAgentId?, cardId? }`. `chat.history` (request,
   `ChatHistoryResult { entries, more }`): `{ agentId, beforeSeq?, limit }`.

@@ -29,6 +29,7 @@ import { AgentSession, type SwapResult } from './AgentSession.js';
 import type { BrainScheduler, Grant, WakePriority } from './BrainScheduler.js';
 import type { ResolvedClaude } from './claudeBinary.js';
 import {
+  AGENT_PERMISSION_MODE,
   type BrainProfile,
   BUBBLE_MAX_CHARS,
   CONTEXT_GUARD_RATIO,
@@ -83,6 +84,11 @@ export interface AgentRecord {
   nonce: string;
   autonomy: Autonomy;
   planFirst: boolean;
+  /**
+   * The player set `planFirst` with the AgentScreen toggle. USER DECISION 2026-10-08: Plan-first is only on when the
+   * player turned it on, so a record saved under the old role default (on for CEO and Engineer) loads with it off.
+   */
+  planFirstByPlayer?: boolean | undefined;
   pingInstead: boolean;
   diedDay?: number | undefined;
   cause?: string | undefined;
@@ -308,7 +314,8 @@ export class AgentBrain {
   #seq = 0;
   #grant: Grant | null = null;
   #acquiring: WakePriority | null = null;
-  #trackedMode: PermissionMode = 'default';
+  /** USER DECISION 2026-10-08: sessions run in bypassPermissions; `plan` only for a plan-first PC session. */
+  #trackedMode: PermissionMode = AGENT_PERMISSION_MODE;
   #status: BrainStatus = 'idle';
   #offline = false;
   #assertionsFailed: readonly string[] | null = null;
@@ -503,7 +510,6 @@ export class AgentBrain {
           agentId: this.agentId,
           store: env.pending,
           plans: this.plans,
-          canEnterPlan: () => this.fsm.hasPcAccess,
           seatEpoch: () => this.fsm.epoch,
           playerName: () => env.playerName(),
           now: () => env.now(),
@@ -513,9 +519,6 @@ export class AgentBrain {
             setPermissionMode: async (mode) => {
               this.#trackedMode = mode;
               await this.#session?.setPermissionMode(mode);
-            },
-            trackMode: (mode) => {
-              this.#trackedMode = mode;
             },
           },
         }),
@@ -543,7 +546,7 @@ export class AgentBrain {
       },
     );
     this.#session = session;
-    this.#trackedMode = 'default';
+    this.#trackedMode = AGENT_PERMISSION_MODE;
     session.start();
     for (const text of options.contexts ?? []) this.context(text);
     for (const item of this.#contexts.splice(0)) session.send(item, { shouldQuery: false });
@@ -770,8 +773,13 @@ export class AgentBrain {
     this.#env.toolObserved?.(this, o);
     this.#turn.calls++;
     if (o.effort) this.#lastEffort = o.effort;
-    if (o.permissionMode === 'plan' || o.permissionMode === 'default') {
-      // The CLI's own view wins (e.g. after ExitPlanMode it switched itself).
+    if (
+      o.permissionMode === 'plan' ||
+      o.permissionMode === 'default' ||
+      o.permissionMode === AGENT_PERMISSION_MODE
+    ) {
+      // The CLI's own view wins (e.g. after ExitPlanMode it switched itself). USER DECISION 2026-10-08: the normal
+      // mode is bypassPermissions, which must be tracked too (or a stale 'plan' would outlive an approved plan).
       this.#trackedMode = o.permissionMode;
     }
     const pc = pcToolName(o.toolName);
@@ -1153,11 +1161,12 @@ export class AgentBrain {
         if (this.record.planFirst && this.#trackedMode !== 'plan') await this.#setMode('plan');
         this.bark(BARKS.satAtPc);
       }
-      if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== 'default')
-        await this.#setMode('default');
+      // USER DECISION 2026-10-08: leaving a PC (or a plan) returns to bypassPermissions, never 'default'.
+      if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== AGENT_PERMISSION_MODE)
+        await this.#setMode(AGENT_PERMISSION_MODE);
       // Pulled from a PC into a meeting: no plan mode at the table (it comes back with the PC).
       if (this.fsm.snapshot.kind === 'meeting' && this.#trackedMode === 'plan')
-        await this.#setMode('default');
+        await this.#setMode(AGENT_PERMISSION_MODE);
       const t = this.fsm.boundary();
       if (t?.to === 'seated') await this.#queueKickoff(t.snapshot);
       if (t?.to === 'wandering') this.plans.clear();
@@ -1597,7 +1606,8 @@ export class AgentBrain {
           // A turn waiting on the player's answer keeps waiting (its card is raised at the table); any other turn
           // stops at its next tool boundary.
           if (this.#session?.inTurn && this.#waitingCards.size === 0) await this.#session.interrupt();
-          else if (!this.#session?.inTurn && this.#trackedMode !== 'default') await this.#setMode('default');
+          else if (!this.#session?.inTurn && this.#trackedMode !== AGENT_PERMISSION_MODE)
+            await this.#setMode(AGENT_PERMISSION_MODE);
         }
       } else if (s.kind === 'meeting' && s.state !== 'wandering') {
         // Another meeting's chair: leave it first.

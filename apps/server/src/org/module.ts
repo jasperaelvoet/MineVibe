@@ -39,7 +39,7 @@ import {
 import type { CrewApi } from '../contracts/CrewApi.js';
 import { ApiError, PLAYER } from '../contracts/common.js';
 import type { CreateOrgModule, CrewHooks, OrgModule, RuntimeContext } from '../orchestrator/modules.js';
-import type { ApproachState, PingReason } from './approach/ApproachQueue.js';
+import type { ApproachHow, ApproachState, PingReason } from './approach/ApproachQueue.js';
 import type { CalendarApprovalCard } from './calendar/CalendarService.js';
 import { type OrgClock, systemClock } from './clock.js';
 import { OrgContractApi } from './contractApi.js';
@@ -182,6 +182,7 @@ const PING_WHY: Readonly<Record<PingReason, string>> = {
   setting: 'pings instead of walking over',
   seated: 'busy at a PC',
   no_path: 'no path to you',
+  combat: 'you are in a fight',
 };
 
 type ApproachRole = PayloadOf<'agent.approach'>['role'];
@@ -283,7 +284,7 @@ export class OrgModuleImpl implements OrgModule {
         say: (agentId, text) => this.#say(agentId, text),
       },
       approachEffects: {
-        approach: (agentId, cardId) => this.#onApproach(agentId, cardId),
+        approach: (agentId, cardId, how) => this.#onApproach(agentId, cardId, how),
         ping: (agentId, cardId, reason) => this.#onPing(agentId, cardId, reason),
         seat: (agentId, action) => this.#onSeat(agentId, action),
         parked: (_agentId, cardId) => this.#setCardFlags(cardId, { parked: true, presenting: false }),
@@ -767,9 +768,10 @@ export class OrgModuleImpl implements OrgModule {
     this.#send('agent.approach', { agentId, pendingId: role === 'release' ? null : pendingId, role });
   }
 
-  #onApproach(agentId: string, cardId: string | null): void {
+  #onApproach(agentId: string, cardId: string | null, how: ApproachHow = 'walk'): void {
     if (cardId) {
-      this.#sendApproach(agentId, cardId, 'present');
+      // USER DECISION 2026-10-08: a seated agent with the player near presents from its chair (never dismounts).
+      this.#sendApproach(agentId, cardId, how === 'seat' ? 'present_seated' : 'present');
       return;
     }
     // A presenter that switches to a ping stops walking; the ping that follows replaces the role.

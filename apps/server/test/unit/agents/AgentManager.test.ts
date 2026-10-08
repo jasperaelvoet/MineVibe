@@ -66,7 +66,8 @@ describe('AgentManager: world lifecycle', () => {
     expect(q.options).toMatchObject({
       model: 'claude-haiku-5-5',
       settings: { effortLevel: 'xhigh' },
-      permissionMode: 'default',
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
       settingSources: [],
       persistSession: true,
       cwd: join(h.dir, 'worlds', 'w1', 'agents', ceo?.agentId ?? '', 'home'),

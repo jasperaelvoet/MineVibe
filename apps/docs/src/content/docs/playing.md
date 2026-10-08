@@ -179,12 +179,14 @@ You can answer in chat, in the agent's AgentScreen, or with **G**. In chat, the 
 Out-of-range numbers, and several numbers on a single-choice question, are rejected right in the chat box
 and not sent. The echo shows how your answer was read: `You → Ada: Q1 = 2 (Spruce)`.
 
-**Plan first.** Agents that write code start in plan mode by default (a per-agent toggle): they look around,
-then show you a plan card. Nothing on the PC changes until you approve.
+**Plan first.** Agents never switch themselves into plan mode. Plan-first is a per-agent toggle in the
+AgentScreen and it is **off** for every role: turn it on for an agent when you want a plan before any change.
+That agent then starts its next PC session in plan mode: it looks around, then shows you a plan card, and
+nothing on the PC changes until you approve. After you approve, it simply carries on with the work.
 
 ## Agents come to you
 
-When an agent has a question, a plan or a hire for you, it **walks over**:
+When an agent that is walking around has a question, a plan or a hire for you, it **walks over**:
 
 - **One presenter at a time.** The most urgent card goes first, otherwise the oldest. The presenter stops
   about 2.5 blocks from you, faces you, waves and chimes once. Others wait quietly 5 to 7 blocks behind you,
@@ -199,9 +201,15 @@ When an agent has a question, a plan or a hire for you, it **walks over**:
 - **Later.** Say `@ada later`, press the Later key on the card, or just walk away. The card is **parked**:
   you can still answer it with `@ada` or G, and the agent goes back to work and returns after 10 minutes, or
   when you are idle nearby. Cards park automatically after 2 minutes without an answer.
-- **Seated agents ping by default.** Their monitor shows a "?" banner. They only walk over when you are
-  within 24 blocks, not seated and not fighting. While they are away the chair stays reserved for 3 minutes
-  and the monitor says "BRB". Each agent has a "Ping instead of walking over" setting.
+- **Agents at a PC ask from their chair when you are near.** If you are within 8 blocks, a seated agent
+  stays seated: it turns toward you from its chair, its bubble shows the card and it chimes once. It never
+  gets up for that. If you walk away, the card is parked.
+- **Otherwise a seated agent walks over.** It gets up, comes to you, asks, then walks back and sits down
+  again (no model switch). The chair stays reserved for 3 minutes and the monitor says "BRB: asking" you.
+- **A seated agent pings instead** when walking over makes no sense: at night outside a lit area, when the
+  path is longer than 48 blocks or needs digging, when you are in another dimension, when you are fighting,
+  or when you are at a PC (then the card shows in the screen's border strip). Walk up to an agent that is
+  pinging and it asks you from its chair. Each agent also has a "Ping instead of walking over" setting.
 
 ## The Codex
 

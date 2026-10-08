@@ -35,7 +35,8 @@ async function world(options: { planFirst?: boolean; harness?: Parameters<typeof
   q.init();
   q.result();
   await h.until(() => h?.manager.brain(id)?.status === 'idle', 'idle');
-  if (!options.planFirst) await h.manager.command(id, { cmd: 'plan_first', on: false });
+  // USER DECISION 2026-10-08: Plan-first is off by default; only the player's toggle turns it on.
+  if (options.planFirst) await h.manager.command(id, { cmd: 'plan_first', on: true });
   return { w: h, id, q };
 }
 
@@ -138,13 +139,13 @@ describe('turn boundaries', () => {
     await q.callTool('mcp__mc__stand_up', {});
     q.result();
     await w.until(() => w.manager.brain(id)?.fsm.state === 'wandering', 'wandering');
-    expect(modeCalls(q)).toEqual(['plan', 'default']);
+    expect(modeCalls(q)).toEqual(['plan', 'bypassPermissions']);
     await wake(w, q, 'one more thing');
     await sit(w, q, id);
     q.result();
     await w.until(() => w.texts(q).filter((t) => t.includes('KICKOFF')).length === 2, 'second kickoff');
     expect(flagCalls(q)).toHaveLength(1);
-    expect(modeCalls(q)).toEqual(['plan', 'default', 'plan']);
+    expect(modeCalls(q)).toEqual(['plan', 'bypassPermissions', 'plan']);
     expect(w.manager.brain(id)?.trackedMode).toBe('plan');
     expect(
       await q.callTool('mcp__pc__write', { file_path: '/Users/jasper/Code/foo/a.ts', content: 'x' }),
