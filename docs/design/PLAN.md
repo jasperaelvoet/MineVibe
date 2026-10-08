@@ -73,7 +73,7 @@ MineVibe.app
          ├─ ChatRouter (@mentions) · CodexStore (markdown + git) · CalendarService (game/real clocks) · MeetingRunner
          ├─ PcManager: AppleContainerDriver · LumeMacDriver · DockerDriver(fallback) · Budget · Vault
          │     SpacesdPool (@trycua/cua embedded().spacesd) · FrameService · InputRouter
-         ├─ Launcher: JRE · MC 26.3 + Fabric (xmcl) · mods.lock (Modrinth sha512) · options.txt
+         ├─ Launcher: JRE · MC 26.3 + Fabric (@xmcl 6.1.2/2.15.1 + own downloader) · mods.lock (sha512) · options.txt
          └─ spawn Runtime/jre/bin/MineVibe (renamed java) -XstartOnFirstThread …
               MC 26.3 + Fabric + minevibe mod  ═════════════════════╝ (BridgeClient: JSON + MVF1 binary frames)
               client: BootScreen, MineVibeMenu, AgentScreen, PcControlScreen, PcConfigScreen, GameOver, HUD, bubbles, monitors
@@ -121,7 +121,7 @@ Runtime data, under `~/Library/Application Support/MineVibe/`:
 | `codex-export/` | read-only export mounted into PCs | rebuilt |
 | `calendar/` | `lasting.json` (real-clock events) | lasting |
 | `worlds/<id>/` | `calendar.json` (game-clock events), `agents/<id>/{home/, memory.md, chat.jsonl, pending.json}` | per world |
-| `game/` | Minecraft install, mods, `saves/`, `saves/_graveyard/` | — |
+| `game/` | Minecraft install, mods, `mods-quarantine/` (jars MineVibe did not place), `saves/`, `saves/_graveyard/` | — |
 | `container/`, `lume/` | runtime app roots | — |
 
 Also `~/Library/Caches/MineVibe/` and `~/Library/Logs/MineVibe/`.
@@ -131,7 +131,9 @@ Nothing is ever written inside the .app bundle, because that would break its sig
 ## 5. Wire protocol (mod ⇄ Node)
 - **Transport.** The bridge listens on `127.0.0.1:<random>/v1`. The token goes in `run/bridge.json` (0600); the JVM only gets `-Dminevibe.bridgeFile=…`.
 - **Auth.** The mod sends `Authorization: Bearer`. The server rejects any `Origin` header and any non-loopback peer.
-- **Reconnects.** On reconnect, `hello` triggers a full state resync from Node.
+- **Reconnects.** On reconnect, `hello` triggers a full state resync from Node. `hello` is built from a snapshot the client tick publishes, never from game state on a bridge thread.
+- **Requests that must arrive** are re-sent until acknowledged: `player.died` and `world.state{closed}` (protocol §6.4-6.6). Node may answer `ok {"ignored": true}`.
+- **Stale bridge files.** `run/bridge.json` carries Node's pid; the mod never connects (never sends the token) while that pid is not running. Dev tokens are fresh on every `npm run dev` start.
 - **Envelope.** `{"t":type,"v":1,"id"?,"re"?,…}` with `ok` / `err{code,msg}` replies.
 - **Message groups** (the full catalog lives in `packages/protocol`):
 
@@ -147,15 +149,15 @@ Nothing is ever written inside the .app bundle, because that would break its sig
   | Calendar | `calendar.state` (push), `calendar.put/cancel` (from CalendarScreen), `calendar.fired{eventId, occurrence}` |
   | Meetings | `meeting.state{id, phase: gathering \| open \| updates \| floor \| wrapup \| done, attendees, speaker}`, `meeting.start/end` |
   | PCs | `pc.state`, `budget.state`, `pc.view`, `pc.input` (batched ≤60 Hz), `pc.config`, `pc.action`, `pc.consent`, `host.pickFolder` |
-  | debug | E2E builds only |
+  | debug | E2E builds only: `debug.state`, `debug.kill_player`, `debug.open_menu`, `debug.click_begin` (dotted lowercase with snake_case words, like every type; protocol §6.13) |
 
 - **Binary frames `MVF1`.** A 32-byte big-endian header (`kind`, `codec` 1=JPEG / 2=RGBA8 / 3=BGRA8, flags, pcSlot, seq, w, h, dirty rect, len), then the payload.
   - At most 2 unacked frames per PC; the latest frame wins.
   - Frames are skipped when `bufferedAmount > 8 MB`. Control messages are never dropped.
 - **Java threading.**
   - Listener: call `request(1)` on **every** `onText`/`onBinary` invocation, partial fragments included, and copy each part into a pooled direct buffer.
-  - Routing: server-world messages go through `server.execute`, UI messages through `Minecraft.getInstance().execute`, and frames through a 2-thread decoder.
-  - Sending: one sender thread drains a queue, since only one send can be in flight.
+  - Routing: server-world messages go through `server.execute` (only while the integrated server runs; a task that `execute` would run inline because the server stopped answers `NO_SERVER`), UI messages through the mod's own task queue, drained every client tick (`Minecraft#disconnect` drops vanilla's queue), and frames through a 2-thread decoder.
+  - Sending: one sender thread drains a queue, since only one send can be in flight. A frame the JDK refuses to encode (malformed UTF-16) fails only that message; strings are clipped on code points and lone surrogates replaced before encoding.
 
 ## 6. Agent runtime (`apps/server/src/agents`)
 
@@ -660,13 +662,14 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 
 ### 7.9 Boot and hardcore reset
 - **Booting.** `GuiSetScreenMixin` replaces `TitleScreen` and `DisconnectedScreen` with **BootScreen**. BootScreen waits for `world.open`, then calls `openWorld`, or `createFreshLevel(…HARD, hardcore=true…)` if the world doesn't exist. Quick Play is not used, because it errors on a missing world.
+  - BootScreen never waits on a single message: it says `hello` again every 5 s while nothing arrives, and a failed open or create (vanilla falls back to a screen without starting a server) clears the "loading" state, so the next `world.open` is acted on. "Already loading" requires a running integrated server and is capped at 120 s.
 - **Never pausing.** The Esc menu is non-pausing. `options.txt` gets `pauseOnLostFocus:false` plus the onboarding keys. Game args: `--disableMultiplayer` only. Chat stays enabled because it's the reply channel, but it's intercepted client-side. `/` commands are dev-only: `allowCommands` is false in release worlds.
 - **Player death:**
   1. Node **durably marks the world dead** and allocates the next world id before doing anything else.
   2. The mod writes a dead marker into the world data and re-sends `player.died` until Node acks it.
   3. `DeathScreen` is replaced by **GameOverScreen**, showing the world number, day, cause of death, crew fates and Vault commit counts.
   4. **Last words.** The CEO gets one async turn, hard-capped at 8 s, run off the scheduler, and skipped when usage is Tired or Asleep. The other agents get scripted barks. Then every session is closed and archived.
-  5. **[Begin World #N+1]**: disconnect, the old save moves to `saves/_graveyard/` (last 5 kept), then `createFreshLevel`.
+  5. **[Begin World #N+1]**: disconnect (the integrated server saves and stops), then `world.state{closed}` is re-sent until Node acknowledges it. Node durably moves to the next world, moves the old save to `saves/_graveyard/` (last 5 kept) and sends `world.open`; BootScreen then runs `createFreshLevel` with Node's seed. **The mod never creates the next world on its own**, so a lost message can never leave Node on the dead world while the game plays a new one; Node also treats the mod showing up in the allocated next world (`hello{in_world}`, `world.state`, `player.died`) as the missing `closed`.
   6. `OfficeBuilder` runs, and a new CEO arrives with the Chronicle greeting. The lasting Codex and real-clock calendar events carry over.
 - **Crash recovery.** If the app quits or crashes on the Game Over screen, the next launch sees the dead marker and goes straight to GameOver, then the new world.
 - **Timings:** death → GameOver in under 3 s; [Begin] click → standing in the new world in under 20 s. The button enables after `world.next`, or after 10 s with a locally built summary.
@@ -791,11 +794,12 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 
 ### 9.2 Processes and lifelines
 - The stub talks to Node over stdin/stdout NDJSON: progress, a folder-picker request, shutdown. EOF on the pipe triggers Node teardown.
-- Node keeps a stdin pipe to the JVM, and the mod watches its parent: if Node dies, the mod saves the world and quits.
+- Node keeps a stdin pipe to the JVM, and the mod watches its parent: if Node dies, the mod saves the world and quits. Whenever Node exits, it sends the JVM SIGTERM (its shutdown hook saves the world), never SIGKILL; SIGKILL only follows a 30 s grace period or a repeated stop request.
 - **Quit paths:**
   - Minecraft closes → Node aborts the queries, stops the PCs and services, and exits → the stub exits.
   - Logout or SIGTERM → the stub sends `shutdown`; there is a 60 s grace period, then SIGKILL.
-- **Startup reaper:** a single-instance flock, kill stale PIDs, stop orphaned `mv-*` containers and VMs, and `launchctl bootout` a wedged apiserver.
+- **Startup reaper:** a single-instance lock, kill stale PIDs, stop orphaned `mv-*` containers and VMs, and `launchctl bootout` a wedged apiserver.
+  - **The lock (M1):** `run/lock` holds `{pid, started, nonce}` (`started` = `ps -o lstart`), created with O_EXCL. A pid that now belongs to a later process (reuse after a reboot) is stale. A stale lock is removed only by the holder of a short `mkdir` guard, after re-reading exactly the content it judged stale, so racing starters never both win. `npm run dev` and `npm run play` each take the lock of their own home.
 - **PATH.** Nothing relies on the LaunchServices PATH. Every tool path is absolute: claude, git, and the bundled binaries.
 
 ### 9.3 First run
@@ -815,10 +819,12 @@ macOS PCs download later, from inside the game, after a consent modal that shows
 ```bash
 npm run dev
 ```
-This starts Node on fixed port 47800 with `.dev-token`. Then start the game:
+This starts Node on fixed port 47800 with a fresh token, written only to `<repo>/.minevibe-dev/run/bridge.json` (the mod re-reads it before every connection attempt, so a running game follows a restarted dev server). Then start the game:
 ```bash
 cd apps/mod && ./gradlew runClient
 ```
+- `runClient` reads `npm run dev`'s bridge file only. `npm run play` keeps everything in `<repo>/.minevibe-dev/play/` (its own lock, bridge file, world record and game install), so the two never share state; `MINEVIBE_HOME` overrides either, and then the run lock refuses a second process on the same home.
+- Both scripts start Node directly (`node --conditions=source --import tsx …`), not through the `tsx` CLI, whose signal relay SIGKILLs a child that does not confirm a signal within 30 ms. A terminal Ctrl+C therefore runs the normal shutdown: the game gets SIGTERM and saves, `run/lock` and `run/bridge.json` are removed. A repeat within 2 s (the same Ctrl+C delivered by the process group and by npm) is ignored.
 `MINEVIBE_PC_RUNTIME=docker|container` selects the PC driver. `MINEVIBE_CLAUDE=bundled` lets dev use the SDK's own binary.
 
 ## 10. Performance mod stack (Modrinth, pinned by version id and sha512 in `packaging/mods.lock.json`)
@@ -844,6 +850,9 @@ cd apps/mod && ./gradlew runClient
 - **Excluded:** ModernFix (no Fabric build for 26.x), Krypton (no singleplayer benefit, and risky with fake connections), Very Many Players, Async, ServerCore.
 - **Installer:**
   - One `GET /v2/versions?ids=[…]` call; use the `primary` file only; verify size and sha512; content-addressed cache; descriptive User-Agent; never rehost the jars.
+  - **Fabric itself is pinned too** (`fabric.libraries`: fabric-loader, sponge-mixin and the asm jars, size + sha512; there is no intermediary on 26.x). Fabric's launcher profile gives no checksum for the loader, so nothing fetched from Fabric's servers at install time is trusted; a profile library that is not pinned is refused, and the pinned jars are re-hashed every launch.
+  - `game/mods/` holds exactly the locked set plus the MineVibe jar. Any other jar is moved to `game/mods-quarantine/<time>-<name>` (a stray copy of a locked mod would crash Fabric with a duplicate mod id).
+  - **Launcher libraries (S8):** `@xmcl/installer` 6.1.2 and `@xmcl/core` 2.15.1 (`@xmcl/unzip` 2.1.2), exact: the newer releases are mis-published on npm. xmcl resolves versions, writes the Fabric profile and builds the command line; every file is downloaded by MineVibe's own downloader on Node's `fetch` (xmcl's crashes the process with undici 7.30). The Fabric version id is xmcl's `26.3-fabric0.19.5`, not the official installer's `fabric-loader-0.19.5-26.3`.
   - Sodium (Polyform Shield) and Entity Culling (custom license) forbid rehosting.
 - **Seeded configs** (merged, never clobbered):
   - `dynamic_fps.json`: unfocused 30 fps, no idle timeout, `ignore_initial_click` disabled.
@@ -860,14 +869,14 @@ cd apps/mod && ./gradlew runClient
 
 ## 11. Public repo, CI, docs, releases, licensing
 - **Repo.** `jasperaelvoet/MineVibe`, public, MIT. Includes NOTICE (vendored Carpet code, MIT), `THIRD_PARTY_NOTICES.md`, CONTRIBUTING and SECURITY.md (the Vault threat model).
-  - Never committed: tokens, worlds, `.dev-token`, vendor binaries.
+  - Never committed: tokens, worlds, `.minevibe-dev/`, vendor binaries.
   - **The repo is created and pushed only after the user confirms.**
 - **`ci.yml`** (pull requests and pushes to main):
 
   | Job | Runner | What it runs |
   |---|---|---|
   | `server` | ubuntu | Node 24: `npm ci`, biome lint, `tsc --noEmit`, vitest (unit, contract, bridgeSim with the scripted brain, zero tokens) |
-  | `mod` | ubuntu-24.04 | `actions/setup-java@v6` (Temurin 25): `./gradlew build`. With `fabricApi { configureTests { createSourceSet = true; enableGameTests = true; enableClientGameTests = true; eula = true } }`, `check` already depends on `runGameTest` (headless server GameTests). |
+  | `mod` | ubuntu-24.04 | `actions/setup-java@v6` (Temurin 25): `./gradlew build`. With `fabricApi { configureTests { createSourceSet = true; enableGameTests = true; enableClientGameTests = true; eula = … } }`, `check` already depends on `runGameTest` (headless server GameTests). **The EULA is never assumed:** `eula` and both GameTest tasks follow `-Pminevibe.acceptMinecraftEula=true` (or a gitignored `minevibe.local.properties`); without it the GameTests are skipped and `./gradlew build` still passes. CI runs them only if the repo owner decides to pass the flag. |
   | `mod-client` | ubuntu-24.04 (xvfb preinstalled) | `runProductionClientGameTest` with `useXVFB`. Fabric's runner expects tests to end on TitleScreen, so with `-Dfabric.client.gametest` the TitleScreen → BootScreen redirect is disabled. Tests drive BootScreen against an in-JVM fake bridge and end by closing the world. Covers Esc not pausing, death leading to a new world, chat interception, and the screens. "Never shows TitleScreen" is covered by a mixin unit test plus the S7/E2E recording. Allowed to fail until stable. |
   | `docs` | ubuntu | Starlight build plus link check |
   | `pc-image` (pushes to main) | ubuntu-24.04 | Build `images/linux-pc` (arm64) from the pinned cua base and push it to `ghcr.io/jasperaelvoet/minevibe-linux-pc`; record the digest |
@@ -948,10 +957,11 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 3. **GameTests:**
    - Server (`runGameTest`, run by `./gradlew build`): paths, doors, mining, crafting, smelting, containers, eat, defend, feed, share-food, seat single occupancy, kick, death leaves a grave, friendly fire, approach the player and follow them, meeting table seats 6 with single occupancy, a scheduled task makes the agent walk to its location.
    - Client: boot, no pause, death to a new world.
+   - **Notes (M1):** the GameTest world has natural monster spawning off (agents are players, so every test agent would let monsters spawn around it; tests spawn their own mobs). Agent restore-on-load is skipped under GameTests (scratch worlds). Structure SNBT palettes use `id{prop:value}`. Per-tick probes use `startSequence().thenExecuteFor(...)`, not `onEachTick`. Implemented so far: S1's 19 agent tests plus `AgentLifecycleGameTests` (dimension change, End exit, phantoms, quiet advancements, usercache, graves, dead bodies); client: the agent skin/tab-list/reload test and "nothing opened from the MineVibe menu pauses". Boot/death/new world on the client is covered by the S7 harness against the real dev server rather than by a client GameTest.
 4. **Brainless integration:** `bridgeSim` plus the scripted brain cover jobs, cards, hires, kick ordering, world reset, worker restart and reconnect. Runs in CI.
 5. **PC driver tests** (`npm run test:pcs`, local): create, health, frames, input, spawn in a mount, host sees the file, overlays, budget refusal, reimage keeps the Vault, guest cannot reach host loopback.
 6. **Live SDK smoke** (`npm run test:live`, small subscription usage): init assertions, haiku→opus→haiku swap, aliases, AskUserQuestion and ExitPlanMode round-trips, `rate_limit_event` capture.
-7. **E2E scenario** (`MINEVIBE_E2E=1`, recorded with `screencapture -v`): boot → agent → `@ada` chat → the agent approaches and asks → answer in chat → player seat → frame-hash change → agent sit and swap → kick → scheduled task fires → "Start meeting now" gathers the crew and minutes appear in the Codex → `debug.killPlayer` → World #N+1 with the same PCs and the lasting Codex → quit → no orphans.
+7. **E2E scenario** (`MINEVIBE_E2E=1`, recorded with `screencapture -v`): boot → agent → `@ada` chat → the agent approaches and asks → answer in chat → player seat → frame-hash change → agent sit and swap → kick → scheduled task fires → "Start meeting now" gathers the crew and minutes appear in the Codex → `debug.kill_player` → World #N+1 with the same PCs and the lasting Codex → quit → no orphans.
 8. **Soak** (2 h, 3 agents, one seated on a real repo):
    - < 60 non-seated turns per hour, no starvation.
    - JVM < 8 GB, Node < 1 GB, each claude < 1 GB.
@@ -974,3 +984,6 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 | S2 SDK routing and auth | 2026-10-08 | PASS with one change | Subscription auth works with the allowlist env and no keychain prompt; `toolAliases` route to `pc__*` (hooks see the alias target). The **plan text arrives via Write, not `input.plan`**, hence PlanCapture. Remove TodoWrite; no `allowedTools` for mc/pc. See `spikes/s2-s3-sdk/result.md`. |
 | S3 model and effort | 2026-10-08 | PASS | `applyFlagSettings` at turn boundaries swaps haiku/xhigh ⇄ opus/medium in under 100 ms. The prompt cache on the subscription lasts 1 h, and a canUseTool held for 180 s is fine. |
 | S5 Apple container PC | 2026-10-08 | PASS with changes | See §8.6. TCC placement, `--mount …,readonly`, volume seeding, SERVING readiness, self-drawn cursor, cpu+1, disk caps. Follow-up S5b: IPv6/UDP isolation, per-PC networks, Time Machine. `spikes/s5-container/result.md`. |
+| S1 fake player | 2026-10-08 | PASS | Carpet-style `AgentPlayer` on 26.3: role skins, hidden from the tab list, 51 blocks of `path_course` in 301 ticks (3.4 blocks/s, 2 plans, swim, 2-block drop), door opened and closed, log mined in 9 ticks (vanilla 10), creeper back-off to 8.3 blocks, lava escape, seat single occupancy, grave + no respawn, restore across reload. **4 agents cost 0.034-0.062 ms per agent tick** (target 0.5); A* 1.0-1.3 ms per 40-block segment warm. `NavProxyMob` kept. 26.3 facts: seat type must be saveable, 60-tick spawn invulnerability, client-authoritative movement, fake connections don't tick, chunk sending stalls without acks (API_MAP §7). Review fixes: dimension change and End exit, phantoms, graves, dead bodies; agents stay real players (§7.1). 26 GameTests. See `spikes/s1-fake-player/result.md`. |
+| S7 boot and reset | 2026-10-08 | PASS | Never shows TitleScreen; the Esc menu never pauses (60 server ticks in 3 s); death -> Game Over in 20-52 ms (budget 3 s); Begin -> standing in the new world in 2.4-4.1 s (budget 20 s); `SIGKILL` on Game Over relaunches straight into Game Over, then the next world; the dead marker covers a death Node never heard of; parent exit -> saved and gone in 1.3-1.6 s. Quick Play fallback not needed. After the review, Begin waits for Node (closed re-sent until acked, then Node's `world.open`); a Node restart right after Begin still lands in the next world (6.9-7.2 s). Harness `node spikes/s7-boot/run.mjs`: 32/32 checks. See `spikes/s7-boot/result.md`. |
+| S8 launcher | 2026-10-08 | PASS | `npm run play` from an empty home: Java 25 runtime, MC 26.3, Fabric 0.19.5 and the 11 locked mods (sha512) installed in parallel, game spawned after 15.5 s (~706 MiB); re-run verifies everything in 92 ms with no network. OpenGL forced, `-XstartOnFirstThread` from the version JSON, all 11 mods + minevibe loaded, no orphans on any stop path. `@xmcl/installer` 6.1.2 / `@xmcl/core` 2.15.1 pinned (newer releases are mis-published), own downloader, version id `26.3-fabric0.19.5` (§10). Review: own home `.minevibe-dev/play`, Fabric profile pinned by sha512, unmanaged jars quarantined, SIGTERM on exit, Ctrl+C clean (process-group SIGINT -> exit in 1.5 s, world saved, lock and bridge file removed). See `spikes/s8-launcher/result.md`. |

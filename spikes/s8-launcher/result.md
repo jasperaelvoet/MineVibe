@@ -185,3 +185,21 @@ notes. Mod Menu's Modrinth dependency `eXts2L7r` (Text Placeholder API) is bundl
   Mojang is picked up only after deleting `runtime/`.
 - `dist/main.mjs` grew to 4.3 MB because the bundle includes `@xmcl/installer` (Forge/Optifine code, an HTML parser,
   undici) even though only a few functions are used.
+
+## Update after the M1 review (2026-10-08)
+
+- **Own home:** `npm run play` uses `<repo>/.minevibe-dev/play` (it shared `run/bridge.json` and the world record with
+  `npm run dev` before). `npm run dev` takes the run lock of its own home too.
+- **Run lock:** `{pid, started, nonce}`; a pid that now belongs to a later process is stale; takeover is guarded and
+  verified, so racing starters cannot both win.
+- **Quitting:** whenever Node exits, the JVM gets SIGTERM (its shutdown hook saves the world), never SIGKILL. The
+  scripts run Node directly with the `tsx` loader instead of the `tsx` CLI and its signal relay.
+- **Fabric pinned:** every library of the Fabric profile, the loader included, is pinned by size and sha512 in
+  `mods.lock.json` (see the superseded note in "xmcl findings" 5). Unmanaged jars in `game/mods` are quarantined.
+
+Smoke from an empty `MINEVIBE_HOME` (2026-10-08): `npm run play` installed everything (Java 7.96 s, Minecraft +
+Fabric 16.0 s, mods 0.8 s in parallel) and stood in hardcore World #1 after 31 s. A process-group SIGINT (what Ctrl+C
+sends) ended npm (exit 130), Node and the JVM in 1.5 s; `level.dat`, playerdata and region files were written after
+the signal, and `run/lock` and `run/bridge.json` were gone. A second run from the same home verified the install in
+94 ms (pinned Fabric jars re-hashed), moved a stray `stray-copy.jar` to `game/mods-quarantine/`, reopened World #1
+and quit the same way.

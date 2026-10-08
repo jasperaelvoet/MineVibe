@@ -164,3 +164,21 @@ chunk tickets and mob spawning.
 - **ProtectPlayer is coarse.** It protects the follow target and other agents within 12 blocks. The
   follow target is set by `/mv agent spawn` (the command source) or by tests. It will come from Node
   later.
+
+## Update after the M1 review (2026-10-08)
+
+The open issues above were decided, and review findings on agent bodies fixed (PLAN 7.1):
+
+- **Agents stay real players**: chunk tickets, mob spawning around them, the locator bar and advancements are kept
+  (survival-realistic; the crew cap bounds the cost). Their advancement announcements are no longer broadcast, and
+  their names stay out of `usercache.json`.
+- **Dimension changes**: `AgentPlayer#teleport` clears `isChangingDimension` (Carpet's pattern); before, an agent that
+  went through a portal stayed invulnerable for good and could never use a portal again. The End exit portal no longer
+  removes an agent forever: `showEndCredits` counts the credits as seen and the portal takes it home.
+- **No phantoms**: `TIME_SINCE_REST` is reset every tick (agents never sleep; `PhantomSpawner` counts every player).
+- **Graves** no longer replace waterlogged stairs, slabs or fences (they hold a fluid but are real blocks).
+- **Dead bodies**: `AgentService#agent` never returns a dead body waiting for removal; removal runs at server stop if
+  the death was in the last tick, and dead agents' leftover files are swept at every start and stop.
+- **GameTests**: 7 new (`AgentLifecycleGameTests`), 26 in total, all failing without the fixes. The GameTest world now
+  has natural monster spawning off: with more agents spawned side by side, a natural creeper or zombie walked into
+  `agent_paths50blocks` in 2 of 10 runs.
