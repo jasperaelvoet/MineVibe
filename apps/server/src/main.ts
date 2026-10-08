@@ -15,6 +15,7 @@ Usage: minevibe-server <command>
 Commands:
   dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; a fresh token in run/bridge.json every run)
+            --scripted-crew  run a scripted, zero-token crew (Ada, Bram) to exercise the in-game UI
   doctor    Print versions and paths
   play      Install or verify Java, Minecraft, Fabric and the mods, then launch the game
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev/play; bridge on a random port)
@@ -33,7 +34,7 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
-async function runDev(): Promise<number> {
+async function runDev(args: readonly string[] = []): Promise<number> {
   const repoRoot = findRepoRoot(process.cwd()) ?? findRepoRoot(fileURLToPath(new URL('.', import.meta.url)));
   if (!repoRoot) {
     process.stderr.write('dev must run inside a MineVibe checkout (no workspace root found)\n');
@@ -65,6 +66,7 @@ async function runDev(): Promise<number> {
       logger: log,
       port: parsePort(process.env.MINEVIBE_BRIDGE_PORT),
       ...(process.env.MINEVIBE_PLAYER_NAME ? { playerName: process.env.MINEVIBE_PLAYER_NAME } : {}),
+      ...(args.includes('--scripted-crew') ? { scriptedCrew: true } : {}),
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
@@ -131,7 +133,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const [command = 'help'] = argv;
   switch (command) {
     case 'dev':
-      return runDev();
+      return runDev(argv.slice(1));
     case 'doctor':
       process.stdout.write(`${(await doctorReport()).join('\n')}\n`);
       return 0;

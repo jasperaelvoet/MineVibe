@@ -14,6 +14,8 @@ import {
   type MineVibePaths,
   resolvePaths,
 } from '../config/paths.js';
+import { ScriptedCrew } from '../ui/ScriptedCrew.js';
+import { UiHub } from '../ui/UiHub.js';
 import { SERVER_VERSION } from '../version.js';
 import { CurrentWorldStore } from '../world/currentWorld.js';
 import { buryWorldSave, GRAVEYARD_KEEP } from '../world/graveyard.js';
@@ -23,6 +25,8 @@ import { WorldLifecycle } from '../world/WorldLifecycle.js';
 export const SAVES_DIR_ENV = 'MINEVIBE_SAVES_DIR';
 /** `1`/`true` turns on E2E mode (the `debug.*` helpers). */
 export const E2E_ENV = 'MINEVIBE_E2E';
+/** `1`/`true` runs the scripted dev crew (same as `npm run dev -- --scripted-crew`). */
+export const SCRIPTED_CREW_ENV = 'MINEVIBE_SCRIPTED_CREW';
 
 export interface DevServerOptions {
   /** The monorepo checkout (holds, by default, `.minevibe-dev/`). */
@@ -53,6 +57,13 @@ export interface DevServerOptions {
   readonly graveyardKeep?: number;
   /** E2E mode: exposes {@link DevServer.debug}. Default: `$MINEVIBE_E2E` is `1` or `true`. */
   readonly e2e?: boolean;
+  /**
+   * Run the scripted crew (zero tokens, canned replies) behind the UiHub, so the in-game UI can be exercised without
+   * Claude. Default: `$MINEVIBE_SCRIPTED_CREW` is `1` or `true`.
+   */
+  readonly scriptedCrew?: boolean;
+  /** Reply delay of the scripted crew (default 1200 ms). */
+  readonly scriptedReplyDelayMs?: number;
 }
 
 /** E2E helpers that drive the mod's `debug.*` handlers (the game must run with `-Dminevibe.e2e=true`). */
@@ -73,6 +84,10 @@ export interface DevServer {
   readonly savesDir: string;
   /** Non-null in E2E mode. */
   readonly debug: DevDebug | null;
+  /** The UI hub, when a crew runs behind it (the scripted crew). */
+  readonly ui: UiHub | null;
+  /** The scripted crew, when enabled. */
+  readonly scriptedCrew: ScriptedCrew | null;
   stop(reason?: string): Promise<void>;
 }
 
@@ -155,16 +170,35 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     },
   });
 
-  // M1 has no crew yet: chat is routed (and validated) against an empty roster, and nothing is delivered.
-  const chatLog = log.child({ component: 'chat' });
-  bridge.handle(
-    'chat.send',
-    createChatSendHandler(
-      new ChatRouter(),
-      () => ({ playerName: lifecycle.playerName, crew: [], cards: new Map(), meeting: null }),
-      (route) => chatLog.info({ scope: route.scope, deliveries: route.deliveries.length }, route.echo),
-    ),
-  );
+  const scripted = options.scriptedCrew ?? envFlag(env[SCRIPTED_CREW_ENV]);
+  let ui: UiHub | null = null;
+  let scriptedCrew: ScriptedCrew | null = null;
+  if (scripted) {
+    // The scripted crew answers chat, cards and AgentScreen commands with canned zero-token behaviour.
+    const uiLog = log.child({ component: 'ui' });
+    let hub: UiHub | null = null;
+    scriptedCrew = new ScriptedCrew({
+      logger: log.child({ component: 'scripted-crew' }),
+      bridge,
+      playerName: () => lifecycle.playerName,
+      onBrains: (summary) => hub?.setBrains(summary),
+      ...(options.scriptedReplyDelayMs !== undefined ? { replyDelayMs: options.scriptedReplyDelayMs } : {}),
+    });
+    hub = new UiHub({ bridge, crew: scriptedCrew, logger: uiLog }).start();
+    hub.setBrains(scriptedCrew.brainsSummary());
+    ui = hub;
+  } else {
+    // M1 has no crew yet: chat is routed (and validated) against an empty roster, and nothing is delivered.
+    const chatLog = log.child({ component: 'chat' });
+    bridge.handle(
+      'chat.send',
+      createChatSendHandler(
+        new ChatRouter(),
+        () => ({ playerName: lifecycle.playerName, crew: [], cards: new Map(), meeting: null }),
+        (route) => chatLog.info({ scope: route.scope, deliveries: route.deliveries.length }, route.echo),
+      ),
+    );
+  }
 
   const port = await bridge.start();
   await writeBridgeFile(paths.bridgeFile, { port, token, pid: process.pid });
@@ -175,6 +209,7 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
       home: paths.appSupport,
       savesDir,
       e2e,
+      scriptedCrew: scripted,
       world: store.current.worldId,
     },
     'dev server ready',
@@ -189,8 +224,12 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     store,
     savesDir,
     debug: e2e ? createDebug(bridge) : null,
+    ui,
+    scriptedCrew,
     stop(reason = 'quit') {
       stopping ??= (async () => {
+        ui?.dispose();
+        scriptedCrew?.dispose();
         lifecycle.dispose();
         await bridge.close(reason);
         await removeBridgeFile(paths.bridgeFile, process.pid);
