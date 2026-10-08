@@ -57,6 +57,19 @@ class UiStateTest {
 	}
 
 	@Test
+	void transcriptsOfAgentsNoLongerInTheCrewAreDropped() {
+		state.applyChat(new Ui.ChatAppend("bram", new Ui.ChatEntry(1, 1, "agent", "hi", null, null)));
+		state.applyChat(new Ui.ChatAppend("cleo", new Ui.ChatEntry(1, 1, "agent", "bye", null, null)));
+		// A later crew list (same world): dead members stay listed and keep their lines.
+		state.applyCrew(parse(Bodies.CREW_STATE, "bodies", "crew.state.json"));
+		assertEquals(1, state.transcript("cleo").size());
+		// The next world's crew: the old transcripts go with it.
+		state.applyCrew(new Bodies.CrewState(List.of(new Messages.CrewMember("dora", "dora", "Dora", "ceo", true, "alive"))));
+		assertTrue(state.crewLog().isEmpty());
+		assertEquals(0, state.transcript("bram").size());
+	}
+
+	@Test
 	void brainAndCardsFromFixtures() {
 		long before = state.revision();
 		state.applyBrain(parse(Ui.AGENT_BRAIN, "ui", "agent.brain.json"));

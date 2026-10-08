@@ -86,6 +86,8 @@ public final class UiState {
 		byUuid.clear();
 		for (AgentView v : agents.values()) byUuid.put(v.uuid(), v.agentId());
 		bubbles.keySet().retainAll(agents.keySet());
+		// The crew list keeps dead and dismissed members; anyone missing from it belongs to an earlier world.
+		transcripts.keySet().retainAll(agents.keySet());
 		changed();
 	}
 

@@ -98,7 +98,12 @@ public final class UiKeys {
 		CompletableFuture<String> reply = UiActions.answerFront(presenter, n);
 		if (reply == null) {
 			var card = presenter.frontCard();
-			mc.gui.setScreen(new AgentScreen(presenter.agentId(), card == null ? null : card.id()));
+			String agentId = presenter.agentId();
+			String cardId = card == null ? null : card.id();
+			// After this key event: opened now, the screen would also receive the key's character (Alt+2 types into it).
+			UiActions.runOnClient(() -> {
+				if (mc.gui.screen() == null) mc.gui.setScreen(new AgentScreen(agentId, cardId));
+			});
 			return true;
 		}
 		reply.whenComplete((echo, err) -> {

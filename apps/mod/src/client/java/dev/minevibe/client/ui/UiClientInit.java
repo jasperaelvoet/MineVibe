@@ -53,6 +53,7 @@ public final class UiClientInit implements ClientModInitializer {
 	public void onInitializeClient() {
 		UiKeys.register();
 		ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+			UiActions.drainClientTasks();
 			AgentEntities.tick(mc);
 			UiKeys.tick(mc);
 			UiDemo.tick(mc);
@@ -79,7 +80,8 @@ public final class UiClientInit implements ClientModInitializer {
 			}
 		});
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> ChatCompletions.onJoin(handler.player));
-		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> mc.execute(() -> {
+		// Our own queue: Minecraft#disconnect drops the tasks queued with mc.execute.
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> UiActions.runOnClient(() -> {
 			UiState.get().clearTransient();
 			ChatHint.clear();
 		}));

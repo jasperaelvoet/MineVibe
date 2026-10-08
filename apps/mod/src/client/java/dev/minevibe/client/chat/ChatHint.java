@@ -13,8 +13,16 @@ public final class ChatHint {
 	private static @Nullable String hint;
 
 	public static void show(String forLine, String text) {
-		line = forLine.trim();
+		line = normalize(forLine);
 		hint = text;
+	}
+
+	/**
+	 * How lines are compared: trimmed with whitespace runs collapsed, the way {@code ChatScreen#normalizeChatMessage}
+	 * normalises a line before sending it. The refused line is the normalised one, while the box keeps what was typed.
+	 */
+	static String normalize(String text) {
+		return text.trim().replaceAll("\\s+", " ");
 	}
 
 	public static void clear() {
@@ -26,7 +34,7 @@ public final class ChatHint {
 	public static @Nullable String current(String boxValue) {
 		String l = line;
 		if (l == null || hint == null) return null;
-		if (!boxValue.trim().equals(l)) {
+		if (!normalize(boxValue).equals(l)) {
 			clear();
 			return null;
 		}

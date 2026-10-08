@@ -10,23 +10,55 @@ import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.bridge.protocol.Messages;
 import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
+import dev.minevibe.bridge.TaskQueue;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
-import net.minecraft.client.Minecraft;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
  * The UI's requests to Node (PLAN §6.4, §7.8), shared by the chat interceptor, AgentScreen, the G card and Alt+1-4.
  * Each returns a future that completes <b>on the client thread</b> with the echo line ("You → Ada: Q1 = 2 (Spruce)")
- * or fails with a {@link BridgeException} whose message is the hint to show.
+ * or fails with a {@link BridgeException} whose message is the hint to show. Both outcomes are handed over through
+ * {@link #drainClientTasks()}, which {@code UiClientInit} runs every client tick.
  */
 public final class UiActions {
 	private UiActions() {}
 
-	/** Results are handed back on the client thread. */
+	/**
+	 * Client-thread continuations of UI requests. A queue of our own, drained every client tick, rather than
+	 * {@code Minecraft#execute}: {@code Minecraft#disconnect} drops vanilla's queue (PLAN §5 "Java threading").
+	 */
+	private static final TaskQueue CLIENT = new TaskQueue();
+
+	/** Client thread, every tick: runs the replies (and other UI work) that arrived since the last tick. */
+	public static int drainClientTasks() {
+		return CLIENT.drain();
+	}
+
+	/** Runs {@code task} on the client thread at the end of the current (or next) client tick. */
+	public static void runOnClient(Runnable task) {
+		CLIENT.execute(task);
+	}
+
 	private static Executor client() {
-		return Minecraft.getInstance();
+		return CLIENT;
+	}
+
+	/**
+	 * Hands a reply to the client thread, successful or not. ({@code thenApplyAsync} is not enough: a failed reply
+	 * skips the executor and completes the dependent future on the thread that failed it, a bridge or timer thread,
+	 * where screens and {@link UiState} must not be touched.)
+	 */
+	static <T, R> CompletableFuture<R> onClient(CompletableFuture<T> reply, Function<? super T, ? extends R> map) {
+		return reply.handleAsync(
+				(value, err) -> {
+					if (err != null) throw err instanceof CompletionException ce ? ce : new CompletionException(err);
+					return map.apply(value);
+				},
+				client());
 	}
 
 	/** A raw chat line ({@code to: "all"}): Node parses its leading {@code @mentions}. */
@@ -56,7 +88,16 @@ public final class UiActions {
 
 	public static CompletableFuture<String> hire(String pendingId, boolean approve, @Nullable String note) {
 		return echo(UiTransport.current().request(
-				Ui.HIRE_DECISION, new Ui.HireDecision(pendingId, approve ? "approve" : "decline", approve ? null : blankToNull(note))));
+				Ui.HIRE_DECISION, new Ui.HireDecision(pendingId, approve ? "approve" : "decline", approve ? null : note(note))));
+	}
+
+	/** Hire and calendar decline notes are limited to this many characters by the protocol. */
+	public static final int NOTE_MAX_LENGTH = 500;
+
+	/** A decline note as the protocol takes it: trimmed, at most {@value #NOTE_MAX_LENGTH} characters, null when blank. */
+	public static @Nullable String note(@Nullable String note) {
+		String n = blankToNull(note);
+		return n == null || n.length() <= NOTE_MAX_LENGTH ? n : n.substring(0, NOTE_MAX_LENGTH);
 	}
 
 	public static CompletableFuture<String> command(String agentId, String cmd, @Nullable Boolean on, @Nullable String level) {
@@ -65,15 +106,13 @@ public final class UiActions {
 
 	/** A page of an agent's transcript; the page is also merged into {@link UiState}. */
 	public static CompletableFuture<Ui.ChatHistoryResult> history(String agentId, @Nullable Long beforeSeq, int limit) {
-		return UiTransport.current()
-				.request(Ui.CHAT_HISTORY, new Ui.ChatHistory(agentId, beforeSeq, limit))
-				.thenApplyAsync(json -> {
-					List<String> problems = Ui.CHAT_HISTORY_RESULT.validate(json);
-					if (!problems.isEmpty()) throw new BridgeException(Codes.BAD_MESSAGE, "chat.history reply: " + problems.getFirst());
-					Ui.ChatHistoryResult page = ProtocolCodec.GSON.fromJson(json, Ui.ChatHistoryResult.class);
-					UiState.get().applyHistory(agentId, page);
-					return page;
-				}, client());
+		return onClient(UiTransport.current().request(Ui.CHAT_HISTORY, new Ui.ChatHistory(agentId, beforeSeq, limit)), json -> {
+			List<String> problems = Ui.CHAT_HISTORY_RESULT.validate(json);
+			if (!problems.isEmpty()) throw new BridgeException(Codes.BAD_MESSAGE, "chat.history reply: " + problems.getFirst());
+			Ui.ChatHistoryResult page = ProtocolCodec.GSON.fromJson(json, Ui.ChatHistoryResult.class);
+			UiState.get().applyHistory(agentId, page);
+			return page;
+		});
 	}
 
 	/**
@@ -108,7 +147,7 @@ public final class UiActions {
 	}
 
 	private static CompletableFuture<String> echo(CompletableFuture<JsonObject> reply) {
-		return reply.thenApplyAsync(UiActions::echoOf, client());
+		return onClient(reply, UiActions::echoOf);
 	}
 
 	static String echoOf(JsonObject result) {

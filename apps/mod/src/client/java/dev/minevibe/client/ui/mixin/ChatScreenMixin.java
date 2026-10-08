@@ -36,6 +36,14 @@ public abstract class ChatScreenMixin {
 		return original.call(message);
 	}
 
+	/** A refusal left over from a line sent some other way (another mod calling sendChat) must not keep this box open. */
+	@Inject(
+			method = "keyPressed",
+			at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/screens/ChatScreen;handleChatInput(Ljava/lang/String;Z)V"))
+	private void minevibe$forgetStaleRefusal(KeyEvent event, CallbackInfoReturnable<Boolean> cir) {
+		ChatInterceptor.consumeKeepOpen();
+	}
+
 	@Inject(
 			method = "keyPressed",
 			at = @At(

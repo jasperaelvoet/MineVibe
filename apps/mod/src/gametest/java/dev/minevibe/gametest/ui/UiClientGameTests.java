@@ -26,6 +26,7 @@ import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
@@ -42,7 +43,9 @@ import net.minecraft.world.phys.Vec3;
  *       closes; the echo lands in the chat log;</li>
  *   <li>{@code @name} completions reach the client through the integrated server;</li>
  *   <li>Alt+2 with the crosshair on the presenter answers its front question with option 2;</li>
- *   <li>right-clicking the agent opens AgentScreen (screenshot {@code minevibe-ui-agentscreen}).</li>
+ *   <li>right-clicking the agent opens AgentScreen (screenshot {@code minevibe-ui-agentscreen});</li>
+ *   <li>a failing {@code chat.history} is asked once, not again on every rebuild;</li>
+ *   <li>pushes about other agents, bubbles and toasts leave the AgentScreen's focused box and its text alone.</li>
  * </ol>
  * Run with {@code ./gradlew runClientGameTest} (opens a window).
  */
@@ -172,6 +175,31 @@ public final class UiClientGameTests implements FabricClientGameTest {
 				}
 			});
 			context.takeScreenshot("minevibe-ui-agentscreen");
+
+			// 6. A failed chat.history (this fake's reply is not a history page) is asked once, not in a loop.
+			context.waitTicks(20);
+			context.runOnClient(client -> {
+				long history = transport.sent.stream().filter("chat.history"::equals).count();
+				if (history != 1) throw new AssertionError("chat.history sent " + history + " times");
+			});
+
+			// 7. Pushes about other agents, bubbles and toasts do not rebuild the screen: the box keeps focus and text.
+			context.getInput().typeChars("hello");
+			context.runOnClient(client -> {
+				UiState state = UiState.get();
+				state.applyBrain(new Ui.AgentBrain("bram", "haiku", "thinking", "Digging", "listen", false, false));
+				state.applySay(new Messages.AgentSay("bram", "Found iron!", null, "speech", 5_000));
+				state.addToast("Bram found iron", "info", "bram", 1);
+			});
+			context.waitTicks(5);
+			context.getInput().typeChars(" world");
+			context.runOnClient(client -> {
+				if (!(client.gui.screen() instanceof AgentScreen screen)) throw new AssertionError("screen " + client.gui.screen());
+				if (!(screen.getFocused() instanceof EditBox box) || !box.getValue().equals("hello world")) {
+					throw new AssertionError("focus " + screen.getFocused()
+							+ (screen.getFocused() instanceof EditBox b ? " holds '" + b.getValue() + "'" : ""));
+				}
+			});
 			context.setScreen(() -> null);
 
 			singleplayer.getServer().runOnServer(server -> {

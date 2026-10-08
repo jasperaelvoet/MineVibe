@@ -40,7 +40,11 @@ import org.jspecify.annotations.Nullable;
  *   <li><b>Commands</b> (top): Follow, Stay, Stop, Kick (seated agents, with a confirmation), Plan-first, Dismiss
  *       (with a confirmation).</li>
  * </ul>
- * The game keeps running underneath (non-pausing). The screen refreshes whenever {@link UiState} changes.
+ * The game keeps running underneath (non-pausing). Text and the transcript are drawn from {@link UiState} every
+ * frame; the widgets are rebuilt only when what they show changes (another card or question, the Plan-first toggle,
+ * Kick appearing), so pushes about other agents never take the focus or the cursor out of a box being typed in. The
+ * card on show stays the same card across pushes until it is resolved, so picks and drafts always go to the card they
+ * were made for.
  */
 public final class AgentScreen extends Screen {
 	private static final int PAD = 8;
@@ -48,9 +52,16 @@ public final class AgentScreen extends Screen {
 	private static final int HISTORY_PAGE = 50;
 
 	private final String agentId;
-	private @Nullable String focusCardId;
-	private long seenRevision = -1;
-	private int cardIndex;
+	/** The card on show (null: the front card). */
+	private @Nullable String shownCardId;
+	/** Card id and question index the picks and the card draft belong to. */
+	private @Nullable String draftCardKey;
+	/** What the current widgets were built for ({@link #layoutKey()}). */
+	private String builtKey = "";
+	/** The first history page was asked for (once per screen: a failure must not turn into a request loop). */
+	private boolean historyRequested;
+	/** Keep the focus in the card's text box across a rebuild. */
+	private boolean focusCardBox;
 	private final TreeSet<Integer> multiPicks = new TreeSet<>();
 	private int transcriptScroll;
 	private int cardScroll;
@@ -76,7 +87,7 @@ public final class AgentScreen extends Screen {
 	public AgentScreen(String agentId, @Nullable String focusCardId) {
 		super(Component.literal("Agent"));
 		this.agentId = agentId;
-		this.focusCardId = focusCardId;
+		this.shownCardId = focusCardId;
 	}
 
 	public String agentId() {
@@ -101,23 +112,58 @@ public final class AgentScreen extends Screen {
 		return out;
 	}
 
-	private Ui.@Nullable PendingCard shownCard() {
+	/**
+	 * The card on show: the same card as before while it is pending (pushes may reorder the cards), else the front card.
+	 * When the card or its current question changes, the picks and the card draft are dropped: they were made for the
+	 * previous one.
+	 */
+	Ui.@Nullable PendingCard shownCard() {
 		List<Ui.PendingCard> cards = orderedCards();
-		if (cards.isEmpty()) return null;
-		if (focusCardId != null) {
-			for (int i = 0; i < cards.size(); i++) {
-				if (cards.get(i).id().equals(focusCardId)) cardIndex = i;
-			}
-			focusCardId = null;
+		Ui.PendingCard card = cards.isEmpty() ? null : cards.get(Math.max(0, indexOf(cards, shownCardId)));
+		shownCardId = card == null ? null : card.id();
+		String key = card == null ? null : card.id() + "#" + FrontCards.questionIndex(card);
+		if (draftCardKey != null && !draftCardKey.equals(key)) {
+			multiPicks.clear();
+			cardDraft = "";
+			if (cardText != null) cardText.setValue("");
 		}
-		cardIndex = Math.floorMod(cardIndex, cards.size());
-		return cards.get(cardIndex);
+		draftCardKey = key;
+		return card;
+	}
+
+	private static int indexOf(List<Ui.PendingCard> cards, @Nullable String id) {
+		if (id == null) return -1;
+		for (int i = 0; i < cards.size(); i++) {
+			if (cards.get(i).id().equals(id)) return i;
+		}
+		return -1;
+	}
+
+	/** The position (0-based) of the card on show among the agent's cards. */
+	private int shownIndex(List<Ui.PendingCard> cards) {
+		return Math.max(0, indexOf(cards, shownCardId));
+	}
+
+	/**
+	 * Everything the widgets depend on. Another agent's push, a bubble or a toast leaves it unchanged, so the screen
+	 * does not rebuild (and the box being typed in keeps its focus and cursor).
+	 */
+	String layoutKey() {
+		AgentView a = agent();
+		Ui.PendingCard card = shownCard();
+		Transcript t = UiState.get().transcript(agentId);
+		Player body = minecraft != null && minecraft.level != null && a != null ? AgentEntities.body(minecraft.level, a) : null;
+		return (a == null ? "?" : a.name() + "|" + a.planFirst())
+				+ "|" + (body != null && AgentEntities.onSeat(body))
+				+ "|" + (card == null ? "-" : card.id() + "#" + FrontCards.questionIndex(card) + "#" + card.parked())
+				+ "|" + orderedCards().size()
+				+ "|" + (t.moreOlder() && t.historyLoaded())
+				+ "|" + multiPicks;
 	}
 
 	@Override
 	protected void init() {
 		AgentView a = agent();
-		seenRevision = UiState.get().revision();
 		Ui.PendingCard card = shownCard();
 		split = card != null ? (int) (width * 0.56) : width - PAD;
 		contentTop = 38;
@@ -163,8 +209,23 @@ public final class AgentScreen extends Screen {
 
 		cardText = null;
 		if (card != null) initCard(card);
-		setInitialFocus(message);
-		if (!transcript.historyLoaded() && !loadingHistory) loadHistory(null);
+		builtKey = layoutKey();
+		requestHistoryOnce();
+	}
+
+	/** Asks for the newest history page once per screen, as soon as MineVibe is connected. */
+	private void requestHistoryOnce() {
+		if (historyRequested || UiState.get().transcript(agentId).historyLoaded() || !UiTransport.current().connected()) return;
+		historyRequested = true;
+		loadHistory(null);
+	}
+
+	/** The message box, or the card's text box when that one had the focus before a rebuild. */
+	@Override
+	protected void setInitialFocus() {
+		EditBox box = focusCardBox && cardText != null ? cardText : message;
+		focusCardBox = false;
+		if (box != null) setInitialFocus(box);
 	}
 
 	private int commandButton(int x, int y, String label, String cmd) {
@@ -241,15 +302,15 @@ public final class AgentScreen extends Screen {
 				button(px, y, bw, "Hire " + card.name(), b -> decideHire(card, true));
 				button(px + bw + 2, y, bw, "Decline", b -> decideHire(card, false));
 				y -= ROW + 2;
-				cardText = textBox(px, y, pw, "Note (optional)…");
+				cardText = textBox(px, y, pw, "Note (optional)…", UiActions.NOTE_MAX_LENGTH);
 				y -= 2;
 			}
 			case Ui.PendingCard.CALENDAR -> {
 				int bw = (pw - 2) / 2;
 				button(px, y, bw, "Approve", b -> answer(card, new Ui.CardAnswer("approve", null, null, null)));
-				button(px + bw + 2, y, bw, "Decline", b -> answer(card, new Ui.CardAnswer("decline", null, null, blankToNull(cardDraft))));
+				button(px + bw + 2, y, bw, "Decline", b -> answer(card, new Ui.CardAnswer("decline", null, null, UiActions.note(cardDraft))));
 				y -= ROW + 2;
-				cardText = textBox(px, y, pw, "Note (optional)…");
+				cardText = textBox(px, y, pw, "Note (optional)…", UiActions.NOTE_MAX_LENGTH);
 				y -= 2;
 			}
 			default -> {
@@ -259,8 +320,12 @@ public final class AgentScreen extends Screen {
 	}
 
 	private EditBox textBox(int x, int y, int w, String hint) {
+		return textBox(x, y, w, hint, Ui.CHAT_MAX_LENGTH);
+	}
+
+	private EditBox textBox(int x, int y, int w, String hint, int maxLength) {
 		EditBox box = new EditBox(font, x, y, w, ROW, Component.literal(hint));
-		box.setMaxLength(Ui.CHAT_MAX_LENGTH);
+		box.setMaxLength(maxLength);
 		box.setHint(Component.literal(hint).withStyle(ChatFormatting.DARK_GRAY));
 		box.setValue(cardDraft);
 		box.setResponder(v -> cardDraft = v);
@@ -286,9 +351,9 @@ public final class AgentScreen extends Screen {
 	}
 
 	private void pageCard(int delta) {
-		cardIndex += delta;
-		multiPicks.clear();
-		cardDraft = "";
+		List<Ui.PendingCard> cards = orderedCards();
+		if (cards.isEmpty()) return;
+		shownCardId = cards.get(Math.floorMod(shownIndex(cards) + delta, cards.size())).id();
 		rebuild();
 	}
 
@@ -390,8 +455,9 @@ public final class AgentScreen extends Screen {
 	}
 
 	private void loadOlder() {
-		Long oldest = UiState.get().transcript(agentId).oldestSeq();
-		if (oldest != null && !loadingHistory) loadHistory(oldest);
+		Transcript transcript = UiState.get().transcript(agentId);
+		Long oldest = transcript.oldestSeq();
+		if (oldest != null && transcript.moreOlder() && !loadingHistory) loadHistory(oldest);
 	}
 
 	private void setStatus(String text, int color) {
@@ -400,7 +466,9 @@ public final class AgentScreen extends Screen {
 	}
 
 	private void rebuild() {
-		if (minecraft.gui.screen() == this) rebuildWidgets();
+		if (minecraft.gui.screen() != this) return;
+		focusCardBox = cardText != null && cardText.isFocused();
+		rebuildWidgets();
 	}
 
 	// ---------------------------------------------------------------------------------------------
@@ -409,7 +477,8 @@ public final class AgentScreen extends Screen {
 
 	@Override
 	public void tick() {
-		if (UiState.get().revision() != seenRevision) rebuild();
+		if (!layoutKey().equals(builtKey)) rebuild();
+		requestHistoryOnce();
 	}
 
 	@Override
@@ -486,6 +555,7 @@ public final class AgentScreen extends Screen {
 			int px = split + 2;
 			g.fill(px - 2, contentTop - 2, width - PAD + 2, contentBottom + 2, 0x90201810);
 			List<Ui.PendingCard> cards = orderedCards();
+			int cardIndex = shownIndex(cards);
 			String head = cardHeading(card) + (cards.size() > 1 ? "  (" + (cardIndex + 1) + "/" + cards.size() + ")" : "");
 			g.text(font, head, px + 2, contentTop, 0xFFFFD84A, true);
 			List<FormattedCharSequence> body = font.split(Component.literal(cardBody(card)), width - PAD - px - 6);
@@ -604,10 +674,6 @@ public final class AgentScreen extends Screen {
 		lineCacheRevision = revision;
 		lineCacheWidth = widthPx;
 		return out;
-	}
-
-	private static @Nullable String blankToNull(String s) {
-		return s.isBlank() ? null : s.trim();
 	}
 
 	@Override
