@@ -67,12 +67,18 @@ public final class SeatJob extends SkillJob {
 			return this.seated(agent);
 		}
 		if (agent.isPassenger()) {
+			if (SeatTarget.MEETING.equals(this.target.kind()) && agent.getVehicle() instanceof SeatEntity) {
+				// Pulled into a meeting from its seat (PLAN 6.3 edge "meeting"): the PC's pc.unseat says so, not "stand".
+				agent.brain().noteStand("meeting");
+			}
 			agent.stopRiding();
 		}
 		if (level.dimension() != this.chair.dim()) {
 			return this.fail("UNREACHABLE", "the chair is in " + this.chair.dim().identifier());
 		}
-		if (!(level.getBlockState(this.chair.pos()).getBlock() instanceof OfficeChairBlock)) {
+		// A chair far away (its desk's chunk unloaded) is checked once the walk brings it into range, never by loading
+		// its chunk from here.
+		if (level.isLoaded(this.chair.pos()) && !(level.getBlockState(this.chair.pos()).getBlock() instanceof OfficeChairBlock)) {
 			return this.fail("NO_SEAT", "no chair at " + this.chair.pos().toShortString());
 		}
 		if (SeatTarget.PC.equals(this.target.kind())) {

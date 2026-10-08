@@ -57,8 +57,10 @@ import org.jspecify.annotations.Nullable;
  *       the first PC's desk and chair into slot 1, bound to {@code linux-1} (PLAN §7.5), and that slot then carries
  *       the {@code pcId}; without a placer the slots stay empty for whoever places PCs later.</li>
  *   <li><b>Desks in the way.</b> A {@code pc_desk} inside the footprint (rebuilding with {@code /mv office build})
- *       is removed through the placer first ({@link WorkstationPlacer#removeQuietly}): no item drop, and the PC is
- *       not unplugged. Overwriting it like any other block would break it with both side effects.</li>
+ *       is cleared through the placer first ({@link WorkstationPlacer#clearDesk}), never overwritten like any other
+ *       block: the desk of the PC that goes back into slot 1 leaves quietly (no item drop, its PC stays plugged), any
+ *       other desk as if the player broke it (its item drops and its PC is unplugged), so no PC loses its desk without
+ *       a trace.</li>
  * </ul>
  */
 public final class OfficeBuilder {
@@ -91,10 +93,12 @@ public final class OfficeBuilder {
 		@Nullable String place(ServerLevel level, BlockPos origin, Direction facing);
 
 		/**
-		 * Removes the desk a block at {@code pos} belongs to, without dropping its item or unplugging its PC. Returns
-		 * false when {@code pos} is not part of a desk. The office calls it for every cell it is about to overwrite.
+		 * Clears the desk a block at {@code pos} belongs to out of the office's way. Returns false when {@code pos} is
+		 * not part of a desk. The office calls it for every cell it is about to overwrite, before building. The desk of
+		 * the PC {@link #place} puts back should leave quietly (no item drop, no unplug: it is back in a moment); any
+		 * other desk should go as if broken, so its PC's item is not lost.
 		 */
-		default boolean removeQuietly(final ServerLevel level, final BlockPos pos) {
+		default boolean clearDesk(final ServerLevel level, final BlockPos pos) {
 			return false;
 		}
 	}
@@ -154,7 +158,7 @@ public final class OfficeBuilder {
 	 * installed one. GameTests that run side by side use it, so no test swaps the global placer under another.
 	 */
 	public static OfficeLayout build(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
-		// 0. Desks in the footprint leave quietly (overwriting a desk part breaks the whole desk with side effects).
+		// 0. Desks in the footprint go first, through the placer (overwriting a desk part would break it uncontrolled).
 		clearDesks(level, origin, placer);
 		// 1. Foundation, floor, walls, roof. The roof goes on before the room is cleared, so nothing falls in.
 		for (int x = 0; x < OfficePlan.WIDTH; x++) {
@@ -290,7 +294,7 @@ public final class OfficeBuilder {
 		}
 	}
 
-	/** Removes every desk with a block in the office's footprint or porch (any height up to the roof), quietly. */
+	/** Clears every desk with a block in the office's footprint or porch (any height up to the roof) through the placer. */
 	private static void clearDesks(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
 		if (placer == null) {
 			return;
@@ -303,7 +307,7 @@ public final class OfficeBuilder {
 				}
 				for (int y = 0; y <= OfficePlan.ROOF; y++) {
 					try {
-						if (placer.removeQuietly(level, at(origin, x, y, z))) {
+						if (placer.clearDesk(level, at(origin, x, y, z))) {
 							removed++;
 						}
 					} catch (RuntimeException e) {

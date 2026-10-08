@@ -26,7 +26,9 @@ import org.slf4j.LoggerFactory;
  * {@link #onStatusChanged}, which hops onto it.
  *
  * <ul>
- *   <li>Desks register when their block entity loads or is bound, and unregister when it unloads or is removed.</li>
+ *   <li>Desks register when their block entity loads or is bound, and unregister when it unloads or is removed. A desk
+ *       whose chunk unloads (not removed) is remembered for the rest of the session: agents far from it can still be
+ *       sent to its chair ({@link #chairOf}), and the walk loads it again. Removing the desk forgets it.</li>
  *   <li>Every server tick, each human player's vehicle is checked: riding the {@link SeatEntity} of a PC chair sends
  *       {@code pc.seat{occupant: player}}; leaving it sends {@code pc.unseat} with the reason noted by
  *       {@link #standUp} (default {@code stand}, {@code death} for a dead player, {@code world_end} on stop).</li>
@@ -58,6 +60,11 @@ public final class PcRegistry {
 
 	private static final Map<String, GlobalPos> DESKS = new HashMap<>();
 	private static final Map<GlobalPos, String> CHAIRS = new HashMap<>();
+	/** Desks seen this session whose chunk has unloaded since (never removed): pcId to the desk and its chair. */
+	private static final Map<String, Remembered> UNLOADED = new HashMap<>();
+
+	/** Where an unloaded desk and its chair are. */
+	private record Remembered(GlobalPos desk, GlobalPos chair) {}
 	/** Human players seated at a PC: player UUID to pcId. */
 	private static final Map<UUID, String> SEATED = new HashMap<>();
 	/** Why a player is about to stand (set just before the dismount). */
@@ -77,6 +84,7 @@ public final class PcRegistry {
 			return;
 		}
 		GlobalPos desk = GlobalPos.of(level.dimension(), be.getBlockPos());
+		UNLOADED.remove(pcId);
 		GlobalPos previous = DESKS.put(pcId, desk);
 		if (previous != null && !previous.equals(desk)) {
 			LOG.warn("PC {} has desks at {} and {}; the newer one wins", pcId, previous, desk);
@@ -87,13 +95,37 @@ public final class PcRegistry {
 		}
 	}
 
+	/** The desk is gone (removed, or unbound from its PC): forgotten, also as an unloaded desk. */
 	public static void unregisterDesk(final ServerLevel level, final PcBlockEntity be) {
 		GlobalPos desk = GlobalPos.of(level.dimension(), be.getBlockPos());
 		DESKS.values().removeIf(desk::equals);
+		UNLOADED.values().removeIf(r -> r.desk().equals(desk));
 		BlockPos seat = be.seatPos();
 		if (seat != null) {
 			CHAIRS.remove(GlobalPos.of(level.dimension(), seat));
 		}
+	}
+
+	/**
+	 * The desk's block entity is unloading ({@code BLOCK_ENTITY_UNLOAD}). That event also follows a removal, which has
+	 * already unregistered the desk ({@code preRemoveSideEffects}); a desk still registered here, still standing when
+	 * its chunk can be looked at, is only leaving memory with its chunk: remember where its chair is.
+	 */
+	public static void unloadDesk(final ServerLevel level, final PcBlockEntity be) {
+		String pcId = be.pcId();
+		GlobalPos desk = GlobalPos.of(level.dimension(), be.getBlockPos());
+		BlockPos seat = be.seatPos();
+		boolean registered = pcId != null && desk.equals(DESKS.get(pcId));
+		unregisterDesk(level, be);
+		if (!registered || seat == null) {
+			return;
+		}
+		// Never loads anything: the chunk as it is now, if it is still reachable at all.
+		net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkSource().getChunkNow(desk.pos().getX() >> 4, desk.pos().getZ() >> 4);
+		if (chunk != null && !(chunk.getBlockState(desk.pos()).getBlock() instanceof PcDeskBlock)) {
+			return; // removed without side effects (flag 256): not a desk any more
+		}
+		UNLOADED.put(pcId, new Remembered(desk, GlobalPos.of(level.dimension(), seat)));
 	}
 
 	/** The monitor block of {@code pcId}'s desk, if one is loaded. */
@@ -101,11 +133,25 @@ public final class PcRegistry {
 		return DESKS.get(pcId);
 	}
 
-	/** The chair of {@code pcId}'s desk, if one is loaded. */
+	/** The monitor block of {@code pcId}'s desk, loaded or seen this session in a chunk that has unloaded since. */
+	public static @Nullable GlobalPos knownDeskOf(final String pcId) {
+		GlobalPos desk = DESKS.get(pcId);
+		if (desk != null) {
+			return desk;
+		}
+		Remembered r = UNLOADED.get(pcId);
+		return r == null ? null : r.desk();
+	}
+
+	/**
+	 * The chair of {@code pcId}'s desk: a loaded desk's, else the one remembered from a desk whose chunk unloaded this
+	 * session (the agent walks there and the chunk loads again), else null.
+	 */
 	public static @Nullable GlobalPos chairOf(final MinecraftServer server, final String pcId) {
 		GlobalPos desk = DESKS.get(pcId);
 		if (desk == null) {
-			return null;
+			Remembered r = UNLOADED.get(pcId);
+			return r == null ? null : r.chair();
 		}
 		ServerLevel level = server.getLevel(desk.dimension());
 		if (level != null && level.getBlockEntity(desk.pos()) instanceof PcBlockEntity be && be.seatPos() != null) {
@@ -130,9 +176,11 @@ public final class PcRegistry {
 		return null;
 	}
 
-	/** Every PC with a loaded desk. */
+	/** Every PC with a desk in this world: loaded, or seen this session in a chunk that has unloaded since. */
 	public static java.util.Set<String> pcIds() {
-		return java.util.Set.copyOf(DESKS.keySet());
+		java.util.Set<String> ids = new java.util.HashSet<>(DESKS.keySet());
+		ids.addAll(UNLOADED.keySet());
+		return java.util.Set.copyOf(ids);
 	}
 
 	// -----------------------------------------------------------------------------------------
@@ -247,6 +295,7 @@ public final class PcRegistry {
 	public static void reset() {
 		DESKS.clear();
 		CHAIRS.clear();
+		UNLOADED.clear();
 		SEATED.clear();
 		UNSEAT_REASONS.clear();
 		PENDING_LEDS.clear();

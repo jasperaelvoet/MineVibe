@@ -106,10 +106,17 @@ SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47
     to what `PcStates` holds;
   - `kick(server, pcId)` calls `agent.brain().noteStand("kick")` before dismounting, so the seat bookkeeping
     sends `pc.unseat{kick}` and a `kicked` event (urgency 2); it steps the agent aside and blocks a re-sit at
-    that PC for 30 s (also after Node's own `agent.unseat{kick}`). "Kick Bram and sit?" (right-clicking an
-    occupied PC chair) runs `kickAndSit`;
-  - the player sitting down on a chair kept for an agent ends that reservation;
+    that PC for 30 s. Node's own `agent.unseat{kick}` (the Kick buttons) steps the agent aside and starts the
+    same cooldown. "Kick Bram and sit?" (right-clicking an occupied PC chair) runs `kickAndSit`. A meeting seat
+    is never kicked;
+  - the player sitting down on a chair kept for an agent ends that reservation. For an agent away asking the
+    player (`away`) that is `pc.unseat{player_took}`, sent before the player's `pc.seat` (Node's SeatFSM leaves
+    `away_from_seat` on it); an agent walking there (`coming`) gets `OCCUPIED_BY_PLAYER` from its seat job;
+  - a desk whose chunk unloads is remembered for the session (`pc.PcRegistry.chairOf`), so `agent.seat` far
+    from the office walks there instead of answering `PC_UNKNOWN`; removing the desk forgets it;
   - `pcIds` also lists PCs that only a reservation names, so the once-a-second sweep still sees them.
+  An agent seated at a PC and sent to a meeting chair (`agent.seat{meeting}`) leaves the PC with
+  `pc.unseat{meeting}`.
   Meeting seats are never PC seats: `pc.PcRegistry.pcSeatedAt`, PcControlScreen and the head icon check the
   seat entity's kind, which is synced to clients and follows the chair.
 - **Meeting chairs**: `OrgModInit` installs `org.meeting.MeetingSeatProvider` with

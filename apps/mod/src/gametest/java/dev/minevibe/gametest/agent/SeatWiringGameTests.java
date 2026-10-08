@@ -57,10 +57,12 @@ import net.minecraft.world.phys.AABB;
 
 /**
  * GameTests for the mod-side wiring between the PC blocks, the org blocks and the skill layer (integration track I2):
- * the starter office puts a desk bound to {@code linux-1} into its first slot (and rebuilds without drops); an agent
- * reaches a real desk's chair through {@code agent.seat} / {@code sit_at_pc} with {@code pc.seat} reported; meeting
- * chairs come from the meeting tables, one per walker, and never count as PC seats; a kick is reported as such and
- * blocks a re-sit for 30 s.
+ * the starter office puts a desk bound to {@code linux-1} into its first slot (rebuilds without drops, and hands
+ * another PC's desk in its way back as its item); an agent reaches a real desk's chair through {@code agent.seat} /
+ * {@code sit_at_pc} with {@code pc.seat} reported, also while the desk's chunk is unloaded; meeting chairs come from
+ * the meeting tables, one per walker, never count as PC seats, and pulling a PC-seated agent into a meeting reports
+ * {@code meeting}; a kick (the mod's or Node's) is reported as such, steps the agent aside and blocks a re-sit for
+ * 30 s; the player taking an away agent's kept chair is reported as {@code player_took}.
  *
  * <p>Each test runs in a batch of its own (an empty environment per test): the PC registry, {@code linux-1}'s single
  * desk and the seat cap are shared by the whole server.
@@ -82,14 +84,26 @@ public final class SeatWiringGameTests {
 		ServerLevel level = helper.getLevel();
 		helper.assertTrue(OfficeBuilder.workstationPlacer() instanceof OfficeWorkstation, "PcModInit installed the office workstation placer");
 		// One PC has one desk: a linux-1 desk an earlier office left in this world would keep the slot empty.
-		GlobalPos leftover = dev.minevibe.pc.PcRegistry.deskOf(OfficeWorkstation.FIRST_PC_ID);
+		GlobalPos leftover = dev.minevibe.pc.PcRegistry.knownDeskOf(OfficeWorkstation.FIRST_PC_ID);
 		if (leftover != null && level.getServer().getLevel(leftover.dimension()) instanceof ServerLevel there) {
 			PcWorkstation.removeQuietly(there, leftover.pos());
 		}
 		BlockPos origin = helper.absolutePos(new BlockPos(1, 1, 1));
+		AABB area = new AABB(origin).inflate(20);
+		// Another PC's desk where the office goes: it must not vanish with its PC (no item, still plugged, no desk).
+		String foreign = "gt-" + Long.toString(ThreadLocalRandom.current().nextLong(36L * 36 * 36 * 36 * 36), 36);
+		BlockPos foreignDesk = origin.offset(8, 1, 6);
+		helper.assertTrue(PcWorkstation.canPlace(level, foreignDesk, Direction.NORTH), "room for another desk inside the footprint");
+		helper.assertTrue(PcWorkstation.place(level, foreignDesk, Direction.NORTH, "linux", foreign) != null, "another PC's desk placed");
 		OfficeLayout layout = OfficeBuilder.build(level, origin);
 		OfficeLayout.Slot slot = layout.firstSlot(OfficeLayout.WORKSTATION);
 		onTestEnd(helper, () -> PcWorkstation.removeQuietly(level, slot.pos()));
+		List<ItemEntity> handedBack = level.getEntitiesOfClass(ItemEntity.class, area,
+			i -> i.getItem().is(PcContent.LINUX_WORKSTATION) && foreign.equals(i.getItem().get(PcContent.PC_ID)));
+		helper.assertTrue(handedBack.size() == 1 && handedBack.getFirst().getItem().getCount() == 1,
+			"the other PC's desk broke like a player broke it: its bound item dropped once (" + handedBack + ")");
+		same(helper, dev.minevibe.pc.PcRegistry.knownDeskOf(foreign), null, "the other PC has no desk any more");
+		handedBack.forEach(ItemEntity::discard);
 
 		same(helper, slot.pcId(), OfficeWorkstation.FIRST_PC_ID, "slot 1 names linux-1");
 		same(helper, layout.slotsOf(OfficeLayout.WORKSTATION).get(1).pcId(), null, "slot 2 stays free");
@@ -126,7 +140,6 @@ public final class SeatWiringGameTests {
 		OfficeLayout again = OfficeBuilder.build(level, origin);
 		same(helper, again, layout, "the same layout");
 		helper.assertTrue(level.getBlockEntity(monitor) instanceof PcBlockEntity be && OfficeWorkstation.FIRST_PC_ID.equals(be.pcId()), "still linux-1");
-		AABB area = new AABB(origin).inflate(20);
 		helper.runAfterDelay(2, () -> {
 			List<ItemEntity> drops = level.getEntitiesOfClass(ItemEntity.class, area,
 				i -> i.getItem().is(PcContent.LINUX_WORKSTATION) || i.getItem().is(PcContent.MAC_WORKSTATION));
@@ -182,6 +195,15 @@ public final class SeatWiringGameTests {
 		ServerLevel level = helper.getLevel();
 		String pcId = desk(helper, new BlockPos(9, 1, 9), Direction.NORTH);
 		BlockPos chair = PcDeskBlock.chairPos(helper.absolutePos(new BlockPos(9, 1, 9)), Direction.NORTH);
+		PcRegistry.Chair deskChair = new PcRegistry.Chair(level.dimension(), chair);
+		// The desk's chunk unloads (everyone is far away): the agents can still be sent to its chair, not PC_UNKNOWN.
+		PcBlockEntity monitor = (PcBlockEntity)level.getBlockEntity(PcDeskBlock.monitorPos(helper.absolutePos(new BlockPos(9, 1, 9))));
+		dev.minevibe.pc.PcRegistry.unloadDesk(level, monitor);
+		same(helper, dev.minevibe.pc.PcRegistry.deskOf(pcId), null, "not loaded any more");
+		same(helper, Seats.pcs().chair(level.getServer(), pcId), deskChair, "the chair of an unloaded desk is remembered");
+		helper.assertTrue(Seats.pcs().pcIds(level.getServer()).contains(pcId), "an unloaded desk's PC is still listed");
+		dev.minevibe.pc.PcRegistry.registerDesk(level, monitor);
+		same(helper, Seats.pcs().chair(level.getServer(), pcId), deskChair, "loaded again");
 		// pc.state reaches the seat registry through PcStates (one handler per type: PcBridge owns pc.state).
 		PcStates.put(info(pcId, "booting"));
 		same(helper, Seats.pcs().status(pcId), "booting", "status from pc.state");
@@ -212,11 +234,28 @@ public final class SeatWiringGameTests {
 				helper.assertTrue(dev.minevibe.pc.PcRegistry.seatedPc(agent.getUUID()) == null, "agents are not reported as the player");
 				JsonObject pcs = (JsonObject)service.obs(new Skills.ObsQuery(agent.agentId(), "list_pcs", new JsonObject())).get("result");
 				helper.assertTrue(listed(pcs, pcId, agent.agentId()), "list_pcs shows the desk with its occupant: " + pcs);
+				// A table links the chair while the agent sits (a meeting seat now): the seat follows, and no kick applies.
+				BlockState pcChair = level.getBlockState(chair);
+				level.setBlockAndUpdate(chair, pcChair.setValue(OfficeChairBlock.KIND, SeatKind.MEETING));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(agent.getVehicle() instanceof SeatEntity seat && seat.kind() == SeatKind.MEETING, "the seat follows its chair"))
+			.thenExecute(() -> {
+				same(helper, dev.minevibe.pc.PcRegistry.pcSeatedAt(agent), null, "a meeting seat is no PC seat");
+				same(helper, PcSeatRegistry.INSTANCE.kick(level.getServer(), pcId), null, "nobody is kicked off a meeting seat");
+				helper.assertTrue(agent.isPassenger(), "still sitting");
+				level.setBlockAndUpdate(chair, level.getBlockState(chair).setValue(OfficeChairBlock.KIND, SeatKind.PC));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(agent.getVehicle() instanceof SeatEntity seat && seat.isPcSeat(), "a PC seat again"))
+			.thenExecute(() -> {
 				service.unseat(new AgentUnseat(agent.agentId(), 5, "stand", false));
 				var unseats = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, s -> s.pcId().equals(pcId));
 				helper.assertTrue(unseats.size() == 1 && "stand".equals(unseats.getFirst().reason()), "pc.unseat stand: " + unseats);
 				helper.assertFalse(agent.isPassenger(), "stood up");
 				helper.assertTrue(recorder(helper).invalid(agent.agentId()).isEmpty(), "every message matched the protocol");
+				// Removing the desk forgets it, also as an unloaded desk (the unload event that follows a removal).
+				PcWorkstation.removeQuietly(level, helper.absolutePos(new BlockPos(9, 1, 9)));
+				dev.minevibe.pc.PcRegistry.unloadDesk(level, monitor);
+				same(helper, Seats.pcs().chair(level.getServer(), pcId), null, "a removed desk is not remembered");
 			})
 			.thenSucceed();
 	}
@@ -265,6 +304,19 @@ public final class SeatWiringGameTests {
 			})
 			.thenWaitUntil(() -> helper.assertTrue(service.seated(agent.agentId()) != null, "seated again after the cooldown"))
 			.thenExecute(() -> {
+				// The Kick buttons go through Node, which answers agent.unseat{kick}: same effect as the mod's own kick.
+				service.unseat(new AgentUnseat(agent.agentId(), 4, "kick", false));
+				helper.assertFalse(agent.isPassenger(), "dismounted by Node's kick");
+				helper.assertTrue(agent.blockPosition().distManhattan(chair) <= 3 && !agent.blockPosition().equals(chair),
+					"Node's kick steps the agent aside too: " + agent.blockPosition());
+				var unseats = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, s -> s.pcId().equals(pcId) && "kick".equals(s.reason()));
+				same(helper, unseats.size(), 2, "pc.unseat{kick} for Node's kick");
+				helper.assertTrue(PcSeatRegistry.INSTANCE.resitCooldownSeconds(agent.agentId(), pcId) > 0, "Node's kick starts the cooldown too");
+				now.addAndGet((PcSeatRegistry.RESIT_COOLDOWN_SECONDS + 1) * 1_000_000_000L);
+				service.seat(new AgentSeat(agent.agentId(), jobId("sit"), 5, SeatTarget.pc(pcId), null));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(agent.agentId()) != null, "seated again after Node's kick"))
+			.thenExecute(() -> {
 				// "Kick Bram and sit?": the player takes the chair in one go.
 				player.set(spawnHumanStandIn(helper, 8, 1, 6));
 				helper.assertTrue(PcSeatRegistry.INSTANCE.kickAndSit(player.get(), chair), "the player sits");
@@ -281,7 +333,13 @@ public final class SeatWiringGameTests {
 			.thenWaitUntil(() -> helper.assertTrue(dev.minevibe.pc.PcRegistry.seatedPc(player.get().getUUID()) == null, "the player stood up"))
 			.thenExecute(() -> helper.assertTrue(OfficeChairBlock.trySit(level, chair, player.get()), "the player takes the reserved chair"))
 			.thenWaitUntil(() -> helper.assertTrue(Seats.pcs().reservation(pcId) == null, "the reservation ended: " + Seats.pcs().reservation(pcId)))
-			.thenExecute(() -> helper.assertTrue(recorder(helper).invalid(agent.agentId()).isEmpty(), "every message matched the protocol"))
+			.thenExecute(() -> {
+				// Node's SeatFSM only leaves away_from_seat on pc.unseat{player_took} (else the answered agent "comes back").
+				var took = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, s -> s.pcId().equals(pcId) && "player_took".equals(s.reason()));
+				helper.assertTrue(took.size() == 1 && agent.agentId().equals(took.getFirst().occupant().agentId()) && !took.getFirst().reserved(),
+					"pc.unseat{player_took} for the away agent: " + took);
+				helper.assertTrue(recorder(helper).invalid(agent.agentId()).isEmpty(), "every message matched the protocol");
+			})
 			.thenSucceed();
 	}
 
@@ -300,6 +358,7 @@ public final class SeatWiringGameTests {
 		AgentPlayer bram = spawnAgent(helper, "Bram", AgentRole.MINER, 11, 1, 3);
 		AgentPlayer cleo = spawnAgent(helper, "Cleo", AgentRole.FARMER, 5, 1, 2);
 		SkillService service = service(helper);
+		AtomicReference<String> pc = new AtomicReference<>();
 		String jobA = jobId("meet");
 		String jobB = jobId("meet");
 		service.seat(new AgentSeat(ada.agentId(), jobA, 1, SeatTarget.meeting("m-standup"), null));
@@ -329,11 +388,10 @@ public final class SeatWiringGameTests {
 						"no pc.seat for a meeting chair");
 				}
 				// Meeting seats never count toward maxSeated (2): a third agent may still sit at a PC.
-				String pcId = desk(helper, new BlockPos(2, 1, 12), Direction.EAST);
-				PcStates.put(info(pcId, "running"));
-				Map<String, Object> reply = service.seat(new AgentSeat(cleo.agentId(), jobId("pc"), 2, SeatTarget.pc(pcId), null));
+				pc.set(desk(helper, new BlockPos(2, 1, 12), Direction.EAST));
+				PcStates.put(info(pc.get(), "running"));
+				Map<String, Object> reply = service.seat(new AgentSeat(cleo.agentId(), jobId("pc"), 2, SeatTarget.pc(pc.get()), null));
 				same(helper, reply.get("status"), "running", "a PC seat beside two meeting seats is not over the cap");
-				cleo.jobs().cancel("test");
 				// A repeated request for a seated attendee keeps its chair (its claim holds while it sits).
 				BlockPos before = ((SeatEntity)bram.getVehicle()).chairPos();
 				service.seat(new AgentSeat(bram.agentId(), jobId("meet"), 1, SeatTarget.meeting("m-standup"), null));
@@ -341,6 +399,20 @@ public final class SeatWiringGameTests {
 				service.unseat(new AgentUnseat(ada.agentId(), 1, "stand", false));
 				helper.assertTrue(recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, s -> ada.agentId().equals(s.occupant().agentId())).isEmpty(),
 					"standing up from a meeting chair sends no pc.unseat");
+			})
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(cleo.agentId()) != null && SeatTarget.PC.equals(service.seated(cleo.agentId()).target().kind()),
+				"Cleo sits at the PC"))
+			.thenExecute(() -> {
+				// Pulled into the meeting from the PC (Ada's chair is free again): the PC is left for "meeting", not "stand".
+				service.seat(new AgentSeat(cleo.agentId(), jobId("meet"), 3, SeatTarget.meeting("m-standup"), null));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(cleo.agentId()) != null && SeatTarget.MEETING.equals(service.seated(cleo.agentId()).target().kind()),
+				"Cleo sits at the meeting table"))
+			.thenExecute(() -> {
+				var left = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, s -> s.pcId().equals(pc.get()));
+				helper.assertTrue(left.size() == 1 && "meeting".equals(left.getFirst().reason()) && cleo.agentId().equals(left.getFirst().occupant().agentId()),
+					"pc.unseat{meeting} for the PC Cleo left: " + left);
+				helper.assertTrue(recorder(helper).invalid(cleo.agentId()).isEmpty(), "every message matched the protocol");
 			})
 			.thenSucceed();
 	}

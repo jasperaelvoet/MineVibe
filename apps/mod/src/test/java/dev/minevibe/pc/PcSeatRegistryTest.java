@@ -63,9 +63,20 @@ class PcSeatRegistryTest {
 	void thePlayerTakingAKeptChairEndsTheReservation() {
 		PcSeatRegistry registry = new PcSeatRegistry();
 		registry.reserve("linux-1", "bram", PcRegistry.Reservation.AWAY);
-		registry.playerSat("linux-2");
+		assertNull(registry.playerSat("linux-2"), "nobody's chair");
 		assertEquals("bram", registry.reservation("linux-1").agentId(), "another PC's chair: kept");
-		registry.playerSat("linux-1");
+		// Bram is away asking: Node must hear that the player took his chair (pc.unseat{player_took}).
+		assertEquals("bram", registry.playerSat("linux-1"), "the away agent lost its PC");
+		assertNull(registry.reservation("linux-1"));
+		assertNull(registry.playerSat("linux-1"), "nothing left to take");
+	}
+
+	@Test
+	void thePlayerTakingAChairAnAgentWalksToOnlyEndsTheReservation() {
+		PcSeatRegistry registry = new PcSeatRegistry();
+		registry.reserve("linux-1", "ada", PcRegistry.Reservation.COMING);
+		// Ada is not seated anywhere yet: her seat job fails with OCCUPIED_BY_PLAYER, no pc.unseat.
+		assertNull(registry.playerSat("linux-1"));
 		assertNull(registry.reservation("linux-1"));
 	}
 

@@ -701,6 +701,10 @@ public final class SkillService {
 		if (agent.getVehicle() instanceof dev.minevibe.world.seat.SeatEntity) {
 			agent.brain().noteStand(reason);
 			agent.stopRiding();
+			if ("kick".equals(reason) && s != null && agent.level().dimension() == s.dim()) {
+				// Node's kick (the Kick buttons): off the chair the player is about to take, like the mod's own kick.
+				Seats.stepAside(agent.level(), s.chair(), agent);
+			}
 		}
 		if (s == null || s.target().pcId() == null) {
 			return;

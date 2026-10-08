@@ -54,7 +54,8 @@ public final class PcModInit implements ModInitializer {
 		});
 		ServerBlockEntityEvents.BLOCK_ENTITY_UNLOAD.register((be, level) -> {
 			if (be instanceof PcBlockEntity desk) {
-				PcRegistry.unregisterDesk(level, desk);
+				// A desk leaving with its chunk is remembered (agents can still be sent to it); a removed one is not.
+				PcRegistry.unloadDesk(level, desk);
 			}
 		});
 		PcStates.addListener(info -> PcRegistry.onStatusChanged(server, info.pcId()));
