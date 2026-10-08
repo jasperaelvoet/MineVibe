@@ -5,6 +5,10 @@
   "key.minevibe.crew_log": "Open crew log",
   "block.minevibe.office_chair": "Office Chair",
   "block.minevibe.grave": "Grave",
+  "block.minevibe.codex": "Codex",
+  "block.minevibe.wall_calendar": "Wall Calendar",
+  "block.minevibe.meeting_table": "Meeting Table",
+  "item.minevibe.calendar": "Calendar",
   "entity.minevibe.seat": "Seat",
   "entity.minevibe.nav_proxy": "Navigation Proxy"
 }

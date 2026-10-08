@@ -345,6 +345,16 @@ public final class Org {
 			.req("snippet", string(0, 400))
 			.req("score", NON_NEG_NUMBER), 0, 50));
 
+	/** The {@code ok} result of {@code codex.get}: one page with its body and history. */
+	public static final Schema.Obj CODEX_GET_RESULT = object().req("page", object().extend(PAGE_META)
+			.req("body", string(0, CODEX_BODY_MAX))
+			.req("links", array(CODEX_ID, 0, 64))
+			.req("history", array(object()
+					.req("rev", REV)
+					.req("at", EPOCH_MS)
+					.req("author", AUTHOR)
+					.req("summary", string(1, 200)), 0, 50)));
+
 	public static final Schema.Obj CODEX_PUT_RESULT = object().req("pageId", CODEX_ID).req("rev", REV);
 	public static final Schema.Obj CALENDAR_PUT_RESULT = object().req("eventId", EVENT_ID);
 	public static final Schema.Obj MEETING_START_RESULT = object()

@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "condition": {
+        "type": "minecraft:survives_explosion"
+      },
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "minevibe:wall_calendar"
+        }
+      ],
+      "rolls": 1
+    }
+  ],
+  "random_sequence": "minevibe:blocks/wall_calendar"
+}

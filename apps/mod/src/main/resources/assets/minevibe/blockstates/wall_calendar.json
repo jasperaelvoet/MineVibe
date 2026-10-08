@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "minevibe:block/wall_calendar"
+    },
+    "facing=east": {
+      "model": "minevibe:block/wall_calendar",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "minevibe:block/wall_calendar",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "minevibe:block/wall_calendar",
+      "y": 270
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "B": "minecraft:bookshelf",
+    "Q": "minecraft:writable_book",
+    "A": "minecraft:amethyst_shard"
+  },
+  "pattern": [
+    "BAB",
+    "BQB"
+  ],
+  "result": {
+    "id": "minevibe:codex"
+  }
+}
