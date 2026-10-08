@@ -45,6 +45,7 @@ import type { PcApi } from '../contracts/PcApi.js';
 import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
 import { writeFileAtomic } from '../util/atomicFile.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
+import { type BaseArea, baseAreaOf, type OfficeLayout } from '../world/baseArea.js';
 import { AgentBrain, type AgentRecord, type BrainEnv } from './AgentBrain.js';
 import { BrainScheduler } from './BrainScheduler.js';
 import { BrainSupervisor, type SupervisorOptions } from './BrainSupervisor.js';
@@ -70,6 +71,8 @@ import { sanitizeDisplayName } from './prompts/persona.js';
 import { type QueryFactory, type SDKResultMessage, sdkQueryFactory } from './sdk.js';
 import { TranscriptStore } from './TranscriptStore.js';
 import { UsageGovernor } from './UsageGovernor.js';
+import { ConsentLedger, type GrantVerdict, grantScope } from './world/consent.js';
+import { PROTECTED, refusalOf } from './world/guard.js';
 
 /** First names for agents (handles derive from them). */
 export const AGENT_NAMES = [
@@ -208,6 +211,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   readonly transcripts: TranscriptStore;
   readonly chronicle: Chronicle;
   readonly handoffs: HandoffNotes;
+  /** Consents to change protected blocks (protocol §7.4.3): only the player's explicit answers mint them. */
+  readonly consents: ConsentLedger;
   #memory: MemoryStore;
   readonly #chatRouter = new ChatRouter();
   readonly #chatInbox: ChatInbox;
@@ -219,6 +224,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   readonly #bodies = new Map<string, AgentBody>();
   readonly #occupants = new Map<string, string>();
   #clockTime: number | null = null;
+  /** The starter office of the world it came with (`world.state.office`): the Base. */
+  #office: { readonly worldId: string; readonly layout: OfficeLayout } | null = null;
   #dawnNewcomer = false;
   #autonomyTimer: NodeJS.Timeout | null = null;
   #rulesRevs = new Map<string, string>();
@@ -253,6 +260,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.#memory = new MemoryStore((agentId) => join(this.#agentDir(agentId), 'memory.md'));
     this.chronicle = new Chronicle(join(options.stateDir, 'chronicle.json'));
     this.handoffs = new HandoffNotes(join(options.stateDir, 'vault-handoffs'));
+    this.consents = new ConsentLedger({ now: this.#now });
     this.#chatInbox = new ChatInbox(options.chatDebounceMs ?? 2_000);
 
     this.#off.push(
@@ -278,6 +286,10 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       }),
       this.transcripts.on('append', (agentId, entry) => {
         this.emit('chat', { agentId, entry });
+      }),
+      this.pending.on('resolved', (card, outcome) => {
+        if (card.kind !== 'question' || outcome.kind !== 'answered') return;
+        this.#consentVerdict(card.agentId, this.consents.fromCard(card.agentId, card, outcome.answers));
       }),
       options.skills.on('result', (end) => this.#onJobEnd(end)),
       options.org.on('codexIndex', (index) => void this.#onCodexIndex(index)),
@@ -375,6 +387,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         [...this.#brains.values()].filter((b) => b.agentId !== agentId && b.fsm.holdsPcSeat).length,
       body: (agentId) => this.#bodies.get(agentId) ?? null,
       clockTime: () => this.#clockTime,
+      base: () => this.base(),
+      consents: this.consents,
       tell: (from, to, text) => this.#tell(from, to, text),
       requestHire: (from, req) => this.#requestHire(from, req),
       taskReported: (from, report) => {
@@ -698,6 +712,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
             ceo: true,
             chronicle: chronicle || undefined,
             codexSurvived: this.#world.gen > 1,
+            base: this.base(),
           }),
         },
       ],
@@ -776,6 +791,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.#brains.clear();
     this.#bodies.clear();
     this.#occupants.clear();
+    this.consents.clear();
     this.#records = [];
     this.#world = null;
     this.#dawnNewcomer = false;
@@ -809,6 +825,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   // ---------------------------------------------------------------------------------------------------------------
 
   onWorldState(msg: PayloadOf<'world.state'>): void {
+    if (msg.office) this.#office = { worldId: msg.worldId, layout: msg.office };
     if (msg.clockTime === undefined) return;
     const prev = this.#clockTime;
     this.#clockTime = msg.clockTime;
@@ -831,6 +848,46 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
 
   onAgentState(msg: PayloadOf<'agent.state'>): void {
     for (const body of msg.agents) this.#bodies.set(body.agentId, body);
+  }
+
+  /** The Base of the open world (its starter office), or null before the mod reported one. */
+  base(): BaseArea | null {
+    const office = this.#office;
+    if (!office || (this.#world && office.worldId !== this.#world.worldId)) return null;
+    return baseAreaOf(office.layout);
+  }
+
+  /**
+   * A player answer was read for consent (protocol §7.4.3). A grant is announced to the player (toast) and to the
+   * agent (context, so its retry knows); an unclear one only tells the player how to grant it.
+   */
+  #consentVerdict(agentId: string, verdict: GrantVerdict): string | null {
+    const brain = this.#brains.get(agentId);
+    const name = brain?.record.name ?? 'The agent';
+    if (verdict.kind === 'none') return null;
+    if (verdict.kind === 'unclear') return `not a permission: ${verdict.reason}`;
+    const grant = verdict.grant;
+    const scope = grantScope(grant);
+    const minutes = Math.max(1, Math.round((grant.expiresAt - this.#now()) / 60_000));
+    this.#log.info(
+      { agentId, consentId: grant.consentId, via: grant.via, positions: grant.positions?.length ?? 0 },
+      'consent issued',
+    );
+    this.emit('toast', {
+      text: `${name} may change ${scope} for ${minutes} min (you allowed it)`,
+      kind: 'info',
+      agentId,
+    });
+    if (brain) {
+      brain.context(
+        control(
+          brain.record.nonce,
+          'CONSENT',
+          `${this.#o.playerName()} allowed you to change the ${scope} you were refused, for ${minutes} min. Retry that same job now; nothing else protected is unlocked.`,
+        ),
+      );
+    }
+    return `permission: ${name} may change ${scope} for ${minutes} min`;
   }
 
   onAgentEvent(msg: PayloadOf<'agent.event'>): void {
@@ -865,6 +922,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     record.status = 'dead';
     record.diedDay = msg.day;
     record.cause = msg.cause;
+    this.consents.clear(record.agentId);
     const brain = this.#brains.get(record.agentId);
     if (brain) {
       await brain.resetSeat('death').catch(() => {});
@@ -929,6 +987,14 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #onJobEnd(end: JobEnd): void {
     const brain = this.#brains.get(end.agentId);
     if (!brain) return;
+    if (end.status === 'failed' && end.error?.code === PROTECTED) {
+      const refusal = refusalOf(end.result);
+      const zone = this.#bodies.get(end.agentId)?.zone?.kind;
+      this.consents.noteRefusal(end.agentId, {
+        ...refusal,
+        zone: refusal.zone ?? (zone === 'base' || zone === 'built' ? zone : null),
+      });
+    }
     const label = brain.jobLabel(end.jobId);
     if (label === undefined) return;
     if (label.startsWith('sit at ')) {
@@ -1203,6 +1269,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
             ceo: false,
             hiredBy: ceo?.name ?? 'the CEO',
             firstTask: card.firstTask,
+            base: this.base(),
           }),
         },
       ],
@@ -1404,6 +1471,14 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     }
     if (route.command === 'meeting.end' && ctx.meeting) {
       await this.#o.org.meeting.end(PLAYER, ctx.meeting.meetingId);
+    }
+    // A direct reply to one agent may grant the consent it asked for (protocol §7.4.3); card answers go through the
+    // card path (PendingStore `resolved`), never here.
+    const direct = route.deliveries.filter((d) => d.mode === 'wake' || d.mode === 'context');
+    const only = direct[0];
+    if (route.scope === 'direct' && !route.answer && direct.length === 1 && only) {
+      const note = this.#consentVerdict(only.agentId, this.consents.fromChat(only.agentId, route.body));
+      if (note) echo = `${echo} (${note})`;
     }
     const chatMode = delivery.mode ?? (delivery.to === 'all' ? 'chat' : 'reply');
     const immediate = chatMode === 'interrupt';
@@ -1703,6 +1778,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   async #dismiss(record: AgentRecord): Promise<void> {
     const brain = this.#brains.get(record.agentId);
     record.status = 'dismissed';
+    this.consents.clear(record.agentId);
     if (brain) {
       const s = brain.fsm.snapshot;
       if (brain.fsm.holdsPcSeat) {

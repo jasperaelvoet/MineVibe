@@ -127,6 +127,79 @@ describe('skill args', () => {
   });
 });
 
+describe('the world guard (§7.4.3)', () => {
+  const run = {
+    t: 'skill.run',
+    v: 1,
+    id: 'n-1',
+    jobId: 'job-1',
+    agentId: 'ada1f3c',
+    skill: 'mine',
+    args: { block: 'stripped_spruce_log', count: 1 },
+    waitMs: 20_000,
+    replace: true,
+  } as const;
+
+  it('skill.run carries an optional consent scoped to positions or a zone', () => {
+    expect(safeParseMessage(run).status).toBe('ok');
+    const consent = {
+      consentId: 'consent-0123456789abcdef',
+      agentId: 'ada1f3c',
+      positions: [{ x: 12, y: 65, z: 0 }],
+      expiresAt: 1_791_453_900_000,
+    };
+    const ok = safeParseMessage({ ...run, consent });
+    expect(ok.status).toBe('ok');
+    expect(ok.status === 'ok' ? (ok.message as { consent?: unknown }).consent : null).toEqual(consent);
+    expect(
+      safeParseMessage({ ...run, consent: { ...consent, positions: undefined, zone: 'base' } }).status,
+    ).toBe('ok');
+    // Neither positions nor zone, or a zone that does not exist: invalid.
+    expect(safeParseMessage({ ...run, consent: { ...consent, positions: undefined } }).status).toBe(
+      'invalid',
+    );
+    expect(safeParseMessage({ ...run, consent: { ...consent, zone: 'everywhere' } }).status).toBe('invalid');
+    // createMessage keeps it on the wire (zod would strip an unknown key).
+    expect(createMessage('skill.run', { ...run, consent } as never)).toMatchObject({ consent });
+  });
+
+  it('agent.state bodies carry an optional zone', () => {
+    const body = {
+      agentId: 'ada1f3c',
+      pos: { x: 6.5, y: 65, z: 5.5 },
+      dim: 'minecraft:overworld',
+      hp: 20,
+      maxHp: 20,
+      food: 18,
+      saturation: 4,
+      mode: 'follow',
+      hasFood: true,
+      inCombat: false,
+    };
+    const state = (zone: unknown) => ({ t: 'agent.state', v: 1, tick: 1, agents: [{ ...body, zone }] });
+    const parsed = safeParseMessage(state({ kind: 'base', name: 'Base (office)' }));
+    expect(parsed.status).toBe('ok');
+    expect(
+      parsed.status === 'ok' ? (parsed.message as { agents: { zone?: unknown }[] }).agents[0]?.zone : null,
+    ).toEqual({ kind: 'base', name: 'Base (office)' });
+    expect(safeParseMessage(state({ kind: 'wild' })).status).toBe('ok');
+    expect(safeParseMessage(state({ kind: 'castle' })).status).toBe('invalid');
+    expect(safeParseMessage({ t: 'agent.state', v: 1, tick: 1, agents: [body] }).status).toBe('ok');
+  });
+
+  it('protocol.md documents the codes, the zone and the consent', () => {
+    for (const word of [
+      'PROTECTED',
+      'NO_NATURAL_SOURCE',
+      '#### 7.4.3',
+      'consent?',
+      'zone?: { kind: base|built|wild',
+    ]) {
+      expect(protocolMd, word).toContain(word);
+    }
+  });
+});
+
 describe('payload rules', () => {
   it('agent.cmd toggles need on', () => {
     const base = { t: 'agent.cmd', v: 1, id: 'm-1', agentId: 'ada' } as const;

@@ -525,8 +525,9 @@ records flatten every variant into one record with `@Nullable` fields.
 - `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
-  playerDistance?, held? }`. Node builds the Digest from it, and the status footer of tool results that never reach
-  the mod (section 7.4).
+  playerDistance?, held?, zone?: { kind: base|built|wild, name? } }`. Node builds the Digest from it (with the
+  one-line scene, `zone` included: section 7.4.3), and the status footer of tool results that never reach the mod
+  (section 7.4).
 - `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
   `killed`, `reflex`, `stuck`, `unseated`, `kicked`, `player_low_hp`, `dimension_changed`, `arrived`,
   `approach_blocked` (`data.why`: `combat|night|far|dimension|pc_screen`, so ApproachQueue falls back to a ping),
@@ -540,8 +541,9 @@ records flatten every variant into one record with `@Nullable` fields.
 ### 7.4 skills
 
 - `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error? }`):
-  `{ jobId, agentId, skill, args, waitMs, replace }`. The mod starts the job and replies when it ends or when
-  `waitMs` passes, whichever comes first; a job that is still going replies `running` and later sends `skill.result`.
+  `{ jobId, agentId, skill, args, waitMs, replace, consent? }` (`consent`: section 7.4.3). The mod starts the job
+  and replies when it ends or when `waitMs` passes, whichever comes first; a job that is still going replies
+  `running` and later sends `skill.result`.
   `waitMs` is the tool's `wait_s` × 1000 (default 20 s). The schema allows up to 600 000, but **the mod caps it at
   120 000** (the tools offer `wait_s` ≤ 120), so a longer wait still answers `running` after 2 minutes. A `skill.run`
   repeating a known `jobId` answers that job's current state instead of starting another. Errors: `UNKNOWN_AGENT`,
@@ -601,6 +603,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 | `TIMEOUT` | The job ran past its limit (counted only while it had control) |
 | `INTERRUPTED` | Cancelled: replaced by another job, `skill.cancel`, or the agent died or left (`msg` says which). Status `cancelled`. |
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `PC_DOWN`, `NO_SEAT` | The end of an `agent.seat` job (section 7.5) |
+| `PROTECTED` | The job would break or replace a block of the Base or one a player placed, and no `consent` covers it (section 7.4.3). Nothing protected was touched. |
+| `NO_NATURAL_SOURCE` | Nothing natural of the requested kind is in reach: only protected blocks of it, or none the agent can path to (section 7.4.3). |
 | `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
 | `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
 
@@ -616,7 +620,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
 - **`smelt.item`** is either what goes in (`raw_iron`) or what should come out (`iron_ingot`).
 - **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus
-  stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds.
+  stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds. Like `mine`, it only breaks natural
+  blocks (section 7.4.3).
 - **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
   north at rotation 0, roof), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks
   ahead at foot level), `stairs_down` (8 steps down, ahead), `farm_plot` (water in the middle, 9×9 tilled and
@@ -629,6 +634,36 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   ids whose lowercase form matches `[a-z][a-z0-9_]{0,15}` (a subset of `AgentId`) and refuses others with
   `BAD_ARGS`. No body exists for such an id, so `skill.run` and `obs.query` for it answer `UNKNOWN_AGENT`. Node mints
   every agent id inside that rule: the handle plus 4 hex digits (`ada1f3c`), at most 16 characters.
+
+#### 7.4.3 The world guard: natural blocks, protected blocks, consent
+
+Agents gather from nature and never wreck the player's home. The mod knows each block's provenance (placed by a player
+or by OfficeBuilder, or natural) and where the **Base** is (the starter office and its grounds). Node teaches the model
+these rules (persona, tool descriptions, failure texts) and only it can lift them, per block, with the player's consent.
+
+- **Protected blocks.** Every block of the Base, and every block a player placed anywhere. `mine`, `collect`, `dig`,
+  `farm` (tilling, harvesting placed crops is fine), `place` and `build` never break or replace one; containers in the
+  Base stay usable (`container`, `use_block`).
+- **Natural by default.** `mine` and `collect` only take natural blocks. A tag (`#minecraft:logs`) means its natural
+  members: building variants (stripped logs and wood, planks, and every block placed by someone) never count. A job
+  that finds only protected blocks of the kind fails `NO_NATURAL_SOURCE`, never takes a protected one.
+- **`PROTECTED`** (job failure): `result.protected` lists up to 64 refused blocks `{ pos, block, why: base|player_built }`
+  and `result.zone` the zone they belong to (`base` or `built`), so Node can scope a consent to exactly them.
+- **`NO_NATURAL_SOURCE`** (job failure): `result.natural` lists up to 8 natural candidates the agent could not reach
+  `{ pos, block, distance, reachable: false }`, and `result.protectedCount` how many protected blocks of the kind were
+  skipped.
+- **Perception.** `obs.query look_around` adds `zone` (as in `agent.state`) and, per notable block category,
+  `natural: { count, nearest, reachable? }` and `built: { count, nearest }` next to the totals; `find` adds to each block
+  match `natural` (bool), `protected` (bool) and `reachable` (bool, when the path was checked). Node turns these into a
+  scene for the model ("in Base (office) · oak_log 25m NE natural, reachable · stripped_spruce_log 2m N PROTECTED").
+- **Zone.** `agent.state.agents[].zone` is where the body stands: `{ kind: "base", name: "Base (office)" }`, `built`
+  (among player builds outside the Base) or `wild`.
+- **Consent.** `skill.run.consent = { consentId, agentId, positions?: BlockPos[] (≤ 512), zone?: ZoneKind, expiresAt }`
+  lets that one job change exactly `positions` (or, without positions, anything protected in `zone`) until `expiresAt`
+  (epoch ms; Node issues 5 minutes). Node mints it only when the player explicitly allowed it: an answered question
+  card whose chosen option starts with "Allow", or a direct chat reply to that agent that is a plain yes. Ambiguous
+  replies need the card. The model can never pass one: tool arguments carry no consent. The mod ignores a consent
+  whose `agentId` is another agent's or that has expired.
 
 ### 7.5 seats
 

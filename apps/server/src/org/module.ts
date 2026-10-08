@@ -224,6 +224,11 @@ export class OrgModuleImpl implements OrgModule {
   #pendingNotice: string | null = null;
   /** The "Ping instead of walking over" settings passed to the ApproachQueue. */
   readonly #pingPrefs = new Map<string, boolean>();
+  /**
+   * The starter office per world, as the mod reported it (once, in a `ready`). Kept across the view's world reset,
+   * which can run after the report arrived (the crew opens the world first).
+   */
+  readonly #offices = new Map<string, NonNullable<PayloadOf<'world.state'>['office']>>();
 
   // Cards and the ApproachQueue
   /** Cards the queue knows, by card id. */
@@ -383,7 +388,19 @@ export class OrgModuleImpl implements OrgModule {
       this.#sawPlayer = false;
     }
     await this.services.openWorld(worldId);
+    const office = this.#offices.get(worldId);
+    if (office) {
+      if (!this.view.office) this.view.setOffice(office);
+      this.#ensureBasePage(worldId, office);
+    }
     this.#deliverNotice();
+  }
+
+  /** The world-scope Codex page "Base (office)" (protocol §7.4.3), written once per world by MineVibe. */
+  #ensureBasePage(worldId: string, office: NonNullable<PayloadOf<'world.state'>['office']>): void {
+    this.services
+      .ensureBasePage(worldId, office, this.#playerName)
+      .catch((err: unknown) => this.#log.warn({ err, worldId }, 'Base page failed'));
   }
 
   async onWorldEnded(worldId: string): Promise<void> {
@@ -398,6 +415,7 @@ export class OrgModuleImpl implements OrgModule {
     this.services.approach.clear();
     this.#pulled.clear();
     const ended = await this.services.worldEnded(worldId);
+    this.#offices.delete(worldId);
     this.#pendingNotice = ended.notice;
     this.view.resetWorld();
     this.#lastClock = null;
@@ -575,8 +593,12 @@ export class OrgModuleImpl implements OrgModule {
 
   #onWorldState(m: PayloadOf<'world.state'>): void {
     const current = this.services.calendar.worldId;
+    if (m.office) this.#offices.set(m.worldId, m.office);
     if (current !== null && m.worldId !== current) return; // a late push from the previous world
-    if (m.office) this.view.setOffice(m.office);
+    if (m.office) {
+      this.view.setOffice(m.office);
+      if (this.services.codex.worldId === m.worldId) this.#ensureBasePage(m.worldId, m.office);
+    }
     const now = this.#clock.now();
     if (m.player) {
       this.#sawPlayer = true;

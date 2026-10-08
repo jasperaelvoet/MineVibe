@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   AgentId,
   AgentRole,
+  AgentZone,
   BarkKey,
   BlockPos,
   CrewMember,
@@ -51,6 +52,8 @@ export const AgentBody = z.object({
   playerDistance: z.number().min(0).optional(),
   /** Main-hand item. */
   held: ItemId.optional(),
+  /** Where the body stands: the Base, among player builds, or the wild (§7.4.3). Node puts it in the scene line. */
+  zone: AgentZone.optional(),
 });
 export type AgentBody = z.infer<typeof AgentBody>;
 

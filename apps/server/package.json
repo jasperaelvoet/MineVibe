@@ -16,7 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --conditions=source --import tsx src/main.ts dev",
     "doctor": "node --conditions=source --import tsx src/main.ts doctor",
-    "play": "node --conditions=source --import tsx src/main.ts play"
+    "play": "node --conditions=source --import tsx src/main.ts play",
+    "eval:world": "node --conditions=source --import tsx scripts/eval-world.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.293",

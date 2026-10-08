@@ -13,7 +13,7 @@ import {
   rosterContext,
   welcomeMessage,
 } from '../../../src/agents/prompts/kickoff.js';
-import { personaPrompt, sanitizeDisplayName } from '../../../src/agents/prompts/persona.js';
+import { personaPrompt, sanitizeDisplayName, worldPrimer } from '../../../src/agents/prompts/persona.js';
 import { buildSessionOptions } from '../../../src/agents/sessionOptions.js';
 
 const tmp: string[] = [];
@@ -98,6 +98,24 @@ describe('persona (stable system prompt)', () => {
     expect(() => personaPrompt({ ...base, handle: 'A d a' })).toThrow();
     expect(() => personaPrompt({ ...base, nonce: 'x' })).toThrow();
   });
+
+  it('carries the world primer: the Base is home, gather from nature, ask instead of substituting', () => {
+    const p = personaPrompt({ ...base, role: 'miner', ceo: false });
+    expect(p).toContain('## The world');
+    expect(p).toContain(
+      "The Base (the office you start in) is Jasper's home. Never break, replace or take blocks",
+    );
+    expect(p).toContain('mcp__mc__mine and mcp__mc__collect only take natural blocks');
+    expect(p).toContain('call mcp__mc__look_around (or mcp__mc__find)');
+    expect(p).toContain(
+      'ask Jasper with AskUserQuestion (options such as "Go further", "Use oak planks instead", "Skip")',
+    );
+    expect(p).toContain('PROTECTED and NO_NATURAL_SOURCE failures are hard stops');
+    expect(p).toContain('an option whose label starts with "Allow"');
+    expect(worldPrimer('Jasper').join('\n').length).toBeLessThan(1_400);
+    // Stable: the primer has no per-world or per-turn values (the prompt cache stays warm).
+    expect(personaPrompt({ ...base, role: 'miner', ceo: false })).toBe(p);
+  });
 });
 
 describe('kickoff and welcome messages', () => {
@@ -154,6 +172,34 @@ describe('kickoff and welcome messages', () => {
     expect(ceo).toContain('World #3');
     expect(ceo).toContain('Codex survived');
     expect(ceo).toContain('kind="chronicle"');
+    expect(ceo).not.toContain('Base');
+    const BASE = {
+      name: 'Base (office)',
+      min: { x: 0, y: 64, z: 0 },
+      max: { x: 12, y: 69, z: 9 },
+      door: { x: 6, y: 65, z: 9 },
+      floorY: 64,
+    };
+    const fresh = welcomeMessage({
+      nonce: 'abc123',
+      playerName: 'Jasper',
+      worldGen: 1,
+      ceo: true,
+      base: BASE,
+    });
+    expect(fresh).toContain(
+      'The Base (office) is Jasper\'s home (Codex page "Base (office)", door at 6 65 9). Never break or take its blocks or anything Jasper builds',
+    );
+    expect(
+      welcomeMessage({
+        nonce: 'abc123',
+        playerName: 'Jasper',
+        worldGen: 1,
+        ceo: false,
+        hiredBy: 'Ada',
+        base: BASE,
+      }),
+    ).toContain('Codex page "Base (office)"');
     expect(restartNotice('abc123', 'linux-1', 3 * 3_600_000)).toBe(
       '[MV:abc123 RESTARTED] The app restarted. The world was paused for 3h 0m. You are no longer seated at linux-1.',
     );

@@ -775,7 +775,11 @@ describe('org module: Codex through the bridge and the agent tools', () => {
     await call(h.bridge, 'codex.delete', { pageId: 'house-rules', baseRev: '0000002' });
     expect(await rejectCode(h.bridge.call('codex.get', { pageId: 'house-rules' }))).toBe('CODEX_NOT_FOUND');
     await h.clock.advance(0);
-    expect(h.bridge.pushed('codex.index').at(-1)).toEqual({ pages: [], truncated: false });
+    // Only MineVibe's own "Base (office)" page (written when the office was reported) is left.
+    expect(h.bridge.pushed('codex.index').at(-1)).toEqual({
+      pages: [expect.objectContaining({ id: 'base-office', category: 'places', scope: 'world' })],
+      truncated: false,
+    });
     expect(h.events.some((e) => e.type === 'codexIndex')).toBe(true);
   });
 
@@ -866,6 +870,60 @@ describe('org module: world lifecycle', () => {
     expect(h.mod.view.clockTime).toBeNull();
     h.bridge.fire('world.state', { worldId: 'world-2', phase: 'ready', clockTime: 100 });
     expect(h.mod.view.clockTime).toBe(100);
+  });
+
+  it('writes the world-scope "Base (office)" places page once, from the reported office', async () => {
+    const h = await harness();
+    const office = h.mod.view.office;
+    if (!office) throw new Error('no office');
+    // The office report at setup already wrote it; asking again is the same page.
+    expect(await h.mod.services.ensureBasePage('world-1', office, 'Jasper')).toBe('base-office');
+    h.worldState(gameTicksAt(2, 10), { office });
+    expect(await h.mod.services.ensureBasePage('world-1', office, 'Jasper')).toBe('base-office');
+    const bases = h.mod.services.codex
+      .list({ category: 'places' })
+      .filter((p) => p.title === 'Base (office)');
+    expect(bases).toHaveLength(1);
+    const page = h.mod.services.codex.get('base-office', { count: false });
+    expect(page).toMatchObject({
+      scope: 'world',
+      category: 'places',
+      authorKind: 'system',
+      tags: ['base', 'office', 'home'],
+      coords: { x: 6, y: 64, z: -1, dim: OVERWORLD },
+    });
+    expect(page?.body).toMatch(/^The Base is Jasper's home/);
+    // The door is the page's first coordinate triple: goto{place} and calendar locations walk there.
+    expect(page?.body).toContain('Door (the porch in front of it): 6, 64, -1');
+    expect(page?.body).toContain('- PC workstation (linux-1): 2 64 8');
+    expect(page?.body).toContain('Never break, replace or take blocks of the Base');
+    expect(h.mod.placeOf('Base (office)')).toEqual({ pos: { x: 6, y: 64, z: -1 }, dim: OVERWORLD });
+    const read = await h.mod.orgApi.tools.codexRead('ada-1', { id: 'base-office' });
+    expect(read.ok).toBe(true);
+    expect(read.text).toContain('Base (office)');
+  });
+
+  it('an office reported before the next world opens still gets its page and its slots', async () => {
+    const h = await harness();
+    await h.mod.onWorldEnded('world-1');
+    const office = {
+      origin: { x: 100, y: 70, z: 100 },
+      slots: [
+        { kind: 'meeting_table' as const, pos: { x: 106, y: 71, z: 104 } },
+        { kind: 'door' as const, pos: { x: 106, y: 71, z: 109 } },
+      ],
+    };
+    // The crew opens a fresh world first, so the office arrives before the org hears onWorldOpen.
+    h.bridge.fire('world.state', { worldId: 'world-2', phase: 'ready', clockTime: 100, office });
+    expect(h.mod.services.codex.get('base-office', { count: false })).toBeNull();
+    await h.mod.onWorldOpen('world-2', true);
+    expect(h.mod.view.slot('meeting_table')).toEqual({ pos: { x: 106, y: 71, z: 104 }, dim: OVERWORLD });
+    expect(await h.mod.services.ensureBasePage('world-2', office, 'Jasper')).toBe('base-office');
+    expect(h.mod.services.codex.get('base-office', { count: false })?.coords).toMatchObject({
+      x: 106,
+      y: 71,
+      z: 109,
+    });
   });
 });
 
