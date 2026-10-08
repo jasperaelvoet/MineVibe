@@ -3,9 +3,10 @@ title: Development
 description: Repository layout, the dev loop, tests, spikes, CI, and the Minecraft EULA rule for GameTests.
 ---
 
-:::caution[Early days]
-The repository is at milestone M0: the monorepo scaffold, CI, these docs and the spikes. Commands below
-that belong to later milestones are marked as such.
+:::caution[Pre-alpha]
+Milestones M0 and M1 are done, and the parts of M2 to M8 and M10 are built on their own (see the status table on
+the [home page](/MineVibe/#status)); they are being composed into one runtime now. Commands below that are not
+there yet are marked as such.
 :::
 
 ## Repository layout
@@ -14,17 +15,18 @@ that belong to later milestones are marked as such.
 MineVibe/
 ├─ package.json          npm workspaces, .nvmrc (24), biome.json, LICENSE (MIT), NOTICE, THIRD_PARTY_NOTICES.md
 ├─ apps/server/          TypeScript orchestrator → esbuild dist/main.mjs; vitest
-│   src/{main.ts, orchestrator/, launcher/, bridge/, agents/{tools/,prompts/}, pcs/{drivers/}, world/, config/}
-│   test/{unit, contract, sim/bridgeSim.ts (fake mod), scripted brain}
+│   src/{main.ts, orchestrator/, launcher/, bridge/, world/, agents/, ui/, org/, pcs/, app/, contracts/, config/}
+│   test/{unit, contract, pcs, live, helpers}
 ├─ apps/mod/             Fabric mod: Gradle 9.7.1 wrapper, Loom 1.18.3, Java 25, package dev.minevibe
-│   src/{main,client,gametest}/java/dev/minevibe/… + resources (fabric.mod.json, mixins, assets, data)
+│   src/{main,client,gametest,test}/… + resources (fabric.mod.json, mixins, assets, data)
+│   docs/                API_MAP_26.3.md (verified 26.3 APIs), SKILLS.md (the skill layer)
 ├─ apps/launcher-mac/    MineVibe.swift (the stub, built with swiftc), Info.plist, entitlements
 ├─ apps/docs/            this site (Astro Starlight)
-├─ packages/protocol/    protocol.md, zod schemas, fixtures/*.json (round-tripped by vitest and JUnit)
-├─ images/linux-pc/      Containerfile: the pinned cua Linux image plus tmux, ripgrep, git, build-essential
+├─ packages/protocol/    protocol.md, zod schemas, fixtures/<group>/*.json (parsed by vitest and JUnit)
+├─ images/linux-pc/      Containerfile: the pinned cua Linux image plus tmux and ripgrep, and the boot hook
 ├─ packaging/            build-app.ts, vendor.lock.json, mods.lock.json, seed configs
-├─ spikes/s0…s9/         throwaway spike code, plus a result.md each
-├─ docs/design/          the plan, the full design, fact-checks and critiques
+├─ spikes/s0…s8/         throwaway spike code, plus a result.md each
+├─ docs/design/          the plan (PLAN.md), the full design, fact-checks, critiques, and DEBT.md
 └─ .github/              workflows (ci, docs, release), issue templates, dependabot
 ```
 
@@ -42,28 +44,64 @@ MineVibe/
 
 ## Dev loop
 
+There are two ways to run MineVibe from a checkout. Both start Node directly (`node --import tsx`, no wrapper
+process), so a Ctrl+C in the terminal runs the normal shutdown: the game gets SIGTERM and saves the world, and
+`run/lock` and `run/bridge.json` are removed.
+
+**`npm run dev`** is for working on the mod: Node runs the bridge, and you start Minecraft from Gradle.
+
 ```sh
-npm install                       # once, at the repository root
-npm run dev                       # Node orchestrator on the fixed port 47800 (a fresh token every run)
+npm install                          # once, at the repository root
+npm run dev                          # Node: the bridge on the fixed port 47800, a fresh token every run
 cd apps/mod && ./gradlew runClient   # in a second terminal: Minecraft with the mod, connected to Node
 ```
 
-Useful environment variables:
+- Add `-- --scripted-crew` (or set `MINEVIBE_SCRIPTED_CREW=1`) to get a scripted, zero-token crew (Ada and Bram)
+  that answers chat, cards and AgentScreen commands, so the in-game UI can be exercised without Claude.
+- `runClient` keeps the game in `apps/mod/run/`, with dev worlds that allow commands (the `/mv` dev commands in
+  [`apps/mod/docs/SKILLS.md`](https://github.com/jasperaelvoet/MineVibe/blob/main/apps/mod/docs/SKILLS.md)).
+  Dead worlds move to `apps/mod/run/saves/_graveyard/` (the last 5 are kept). A move that a crash interrupted is
+  finished on the next start.
+
+**`npm run play`** runs MineVibe the way the app will, without the Swift stub: it installs or verifies Java 25,
+Minecraft 26.3, Fabric and the locked mods (sha1 and sha512) in its own game directory, seeds the configs, and
+launches the game on a random bridge port. A re-run with everything in place only re-checks the files, with no
+network, and launches at once.
+
+### Data homes
+
+The two never share state:
+
+| | `npm run dev` | `npm run play` |
+| --- | --- | --- |
+| Data home | `<repo>/.minevibe-dev/` | `<repo>/.minevibe-dev/play/` |
+| Bridge file | `.minevibe-dev/run/bridge.json` (what `runClient` reads) | `.minevibe-dev/play/run/bridge.json` |
+| Run lock | `.minevibe-dev/run/lock` | `.minevibe-dev/play/run/lock` |
+| World record | `.minevibe-dev/state/current-world.json` | `.minevibe-dev/play/state/current-world.json` |
+| Game install and saves | `apps/mod/run/` (Gradle's) | `.minevibe-dev/play/game/` |
+
+`.minevibe-dev/` is gitignored, and every checkout (worktrees too) has its own. `MINEVIBE_HOME` replaces the data
+home of either command; the run lock then refuses a second process on the same home ("MineVibe is already running",
+see [Troubleshooting](/MineVibe/troubleshooting/#running-from-source)). PC container roots are the exception:
+they live under `~/Library/Application Support/MineVibe-dev/`, outside the repository, because Apple `container`
+fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~/Downloads`).
+
+### Environment variables
 
 | Variable | Effect |
 | --- | --- |
+| `MINEVIBE_HOME` | Replaces the data home (see above) |
+| `MINEVIBE_BRIDGE_PORT` | The dev server's port (default 47800) |
+| `MINEVIBE_SCRIPTED_CREW=1` | The scripted crew, as `--scripted-crew` |
+| `MINEVIBE_E2E=true` | E2E mode: the `debug.*` helpers. Set it for both `npm run dev` and `./gradlew runClient` (the game reads only `true`). |
+| `MINEVIBE_SAVES_DIR` | Where the dev server looks for saves to bury (default `apps/mod/run/saves`) |
+| `MINEVIBE_PLAYER_NAME` | The offline player name |
 | `MINEVIBE_PC_RUNTIME=docker` or `container` | Picks the Linux PC driver. Docker (OrbStack, Colima) is the development and CI fallback. |
 | `MINEVIBE_CLAUDE=bundled` | Development only: use the Claude Agent SDK's own `claude` binary instead of yours. Release builds never ship it. |
+| `MINEVIBE_LOG_LEVEL`, `MINEVIBE_LOG_JSON=1` | Log level, and JSON logs instead of the pretty terminal format |
 
-`npm run play` (milestone M1) installs Minecraft 26.3, Fabric and the mods into a clean game directory and
-launches the game the way the app will, without the Swift stub.
-
-- **Separate data.** `npm run dev` keeps its data in `.minevibe-dev/` (its `run/bridge.json` is what
-  `./gradlew runClient` reads), `npm run play` in `.minevibe-dev/play/`. Each takes the run lock of its own
-  folder, so two of the same kind (or both with one `MINEVIBE_HOME`) refuse to run at once.
-- **Ctrl+C.** Both scripts run Node directly (with the `tsx` loader, no wrapper process), so a Ctrl+C in the
-  terminal runs the normal shutdown: the game gets SIGTERM and saves the world, and `run/lock` and
-  `run/bridge.json` are removed.
+`node --conditions=source --import tsx apps/server/src/main.ts help` lists the server's commands (`dev`, `play`,
+`app`, `doctor`).
 
 ## Tests
 
@@ -71,32 +109,59 @@ launches the game the way the app will, without the Swift stub.
 | --- | --- | --- |
 | `npm run lint` | Biome | CI and local |
 | `npm run typecheck` | `tsc --noEmit` in every workspace | CI and local |
-| `npm test` | vitest: unit tests, protocol contract tests, and the brainless integration suite (`bridgeSim`, a fake mod, plus a scripted brain). Uses zero tokens. | CI and local |
-| `cd apps/mod && ./gradlew build` | JUnit (protocol fixtures, key map, JPEG decode, fragmented WebSocket receive) and, only with the EULA flag, the server GameTests | CI and local |
-| `npm run test:pcs` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation | Local only |
+| `npm test` | vitest in every workspace: unit tests, the protocol fixtures, contract tests against a fake mod over a real socket, the agent runtime with a fake SDK, the org services, the packaging tests (on macOS they compile the Swift stub). Uses zero tokens. | CI and local |
+| `cd apps/mod && ./gradlew build` | JUnit (protocol fixtures, key map, JPEG decode, fragmented WebSocket receive, ...) and, only with the EULA accepted, the server GameTests | CI and local |
+| `cd apps/mod && ./gradlew runClientGameTest` | Client GameTests (screens, UI), with the EULA accepted. Opens a game window. | Local |
+| `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation | Local only |
 | `npm run test:live` | A small live smoke test of the Claude Agent SDK. **Uses a little of your subscription quota.** | Local only |
-| `MINEVIBE_E2E=1` scenario | The recorded end-to-end run, from boot to a new world | Local only |
+| `node spikes/s7-boot/run.mjs` | The end-to-end scenario (E2E mode): boot, death, Begin, a Node restart, a kill on Game Over | Local only |
 
 The last three need this Mac, real VMs or a Claude subscription, so they never run in CI.
 
 ### GameTests and the Minecraft EULA
 
-Server GameTests (and, later, client GameTests) start a real Minecraft server, and running one requires
-accepting the [Minecraft EULA](https://aka.ms/MinecraftEULA). The build **never accepts it for you**: by
-default `./gradlew build` skips the GameTests. If you have read the EULA and accept it, opt in explicitly:
+Server and client GameTests start a real Minecraft, and running one requires accepting the
+[Minecraft EULA](https://aka.ms/MinecraftEULA). The build **never accepts it for you**: by default
+`./gradlew build` skips the GameTests. If you have read the EULA and accept it, opt in explicitly, either per
+command:
 
 ```sh
 cd apps/mod
 ./gradlew build -Pminevibe.acceptMinecraftEula=true
 ```
 
-CI runs without the flag until the maintainer accepts the EULA for the project's CI runs.
+or once per checkout, in a gitignored `apps/mod/minevibe.local.properties`:
+
+```properties
+# I have read and accept the Minecraft EULA (https://aka.ms/MinecraftEULA).
+minevibe.acceptMinecraftEula=true
+```
+
+The file belongs to one checkout: a fresh clone or a new git worktree has none, so its GameTests are skipped until
+you add (or copy) one. The maintainer accepted the EULA for this repository's CI, which passes the flag in the
+`mod` job; forks don't inherit that.
+
+### Linting inside a git worktree
+
+`biome.json` excludes `.claude/` (`"!!**/.claude"`), so that the agent worktrees under `.claude/worktrees/` are
+never linted from the main checkout. The flip side: inside such a worktree, `npm run lint` reports success
+**without checking a single file**. Lint there with a copy of the config that drops that one entry. Biome resolves
+`files.includes` relative to the config file, so the copy has to sit at the worktree's root:
+
+```sh
+sed '/"!!\*\*\/.claude"/d; s/"!\*\*\/.astro",/"!**\/.astro"/' biome.json > biome.worktree.json
+npx biome check --config-path=./biome.worktree.json apps/server packages
+rm biome.worktree.json
+```
+
+Or patch `biome.json` the same way for the run and don't commit the change.
 
 ## Spikes
 
-Before milestone M1, each risky assumption gets a throwaway **spike** in `spikes/sN/`. Every spike ends with
-a `result.md` that records what was measured, and the design is updated before M1 starts. Spike code is never
-imported by the apps.
+Before milestone M1, each risky assumption got a throwaway **spike** in `spikes/sN/`. Every spike ends with
+a `result.md` that records what was measured, and the design was updated from it (the results log is
+Appendix A of `docs/design/PLAN.md`). Spike code is never imported by the apps. S6 (Lume) still comes before
+milestone M9; the packaging checks of S9 became the app shell and its CI job.
 
 | Spike | Proves |
 | --- | --- |
@@ -118,11 +183,11 @@ The order is S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6
 | Job | Runs | Status |
 | --- | --- | --- |
 | `server` | `npm ci`, lint, typecheck, `npm test` on Node 24 | Active |
-| `mod` | `./gradlew build` with Temurin 25 (GameTests skipped until the EULA is accepted) | Active |
+| `mod` | `./gradlew build` with Temurin 25, server GameTests included (the maintainer accepted the EULA for CI) | Active |
 | `docs` | Builds this site; the build fails on broken internal links | Active |
-| `mod-client` | Client GameTests under Xvfb | Disabled until M1 |
-| `pc-image` | Builds and publishes `ghcr.io/jasperaelvoet/minevibe-linux-pc` | Disabled until `images/linux-pc` exists |
-| `app` | Builds and self-tests `MineVibe.app` on macOS 26 | Disabled until the Swift stub exists (M10) |
+| `app` | Compiles the Swift stub, assembles `dist/MineVibe.app` from `vendor.lock.json`, verifies its signature, runs the `--selftest` handshake | Active (macOS 26) |
+| `mod-client` | Client GameTests under Xvfb | Disabled: the tests exist, the job is not switched on yet |
+| `pc-image` | Builds and publishes `ghcr.io/jasperaelvoet/minevibe-linux-pc` | Disabled until publishing to GHCR is approved |
 
 `docs.yml` publishes this site to GitHub Pages from `main`. `release.yml` stays disabled until Microsoft
 sign-in ships, because public binaries need it.

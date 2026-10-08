@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../../src/log.js';
 import { type DevServer, startDevServer } from '../../src/orchestrator/devServer.js';
+import { CurrentWorldStore } from '../../src/world/currentWorld.js';
 import { ModClient } from '../helpers/modClient.js';
 
 const dirs: string[] = [];
@@ -29,6 +30,25 @@ async function connect(port: number, token: string): Promise<ModClient> {
   const c = await ModClient.connect(port, token);
   clients.push(c);
   return c;
+}
+
+/** Connects and resolves once the server has taken the connection (so it can send to it), with no fixed sleep. */
+async function connectSeen(server: DevServer, token: string): Promise<ModClient> {
+  const seen = new Promise<void>((resolve) => server.bridge.once('connected', () => resolve()));
+  const c = await connect(server.port, token);
+  await seen;
+  return c;
+}
+
+let barrierSeq = 0;
+/**
+ * Waits until Node has worked through everything the mod sent before: a `chat.send` request, answered in order on
+ * the same socket. Whatever Node sent before that answer has arrived by then.
+ */
+async function barrier(mod: ModClient): Promise<void> {
+  const id = `barrier-${++barrierSeq}`;
+  mod.send({ t: 'chat.send', v: 1, id, to: 'all', text: 'barrier' });
+  await mod.next('ok', (m) => m.re === id);
 }
 
 afterEach(async () => {
@@ -208,7 +228,7 @@ describe('dev server', () => {
     const again = await connect(server.port, token);
     again.send({ ...hello, id: 'm-2', phase: 'in_world', worldId: 'world-2' });
     expect(await again.next('hello.ok')).toMatchObject({ re: 'm-2', world: { id: 'world-2', gen: 2 } });
-    await new Promise((r) => setTimeout(r, 30));
+    await barrier(again);
     expect(again.messages.some((m) => m.t === 'world.open' || m.t === 'world.next')).toBe(false);
     expect(server.store.current).toMatchObject({ worldId: 'world-2', gen: 2, status: 'alive' });
     expect(existsSync(join(saves, '_graveyard', 'world-1', 'level.dat'))).toBe(true);
@@ -292,6 +312,38 @@ describe('dev server', () => {
     expect(readFileSync(join(saves, '_graveyard', 'world-1', 'level.dat'), 'utf8')).toBe('x');
   });
 
+  it('buries a dead save on the next start when a crash came between the advance and the burial', async () => {
+    const first = await start();
+    const saves = join(first.repo, 'apps', 'mod', 'run', 'saves');
+    mkdirSync(join(saves, 'world-1'), { recursive: true });
+    writeFileSync(join(saves, 'world-1', 'level.dat'), 'x');
+    await first.server.stop();
+    // What a crash right after the durable advance leaves: world-2 current, world-1 still listed as unburied.
+    const crashed = new CurrentWorldStore(join(first.server.paths.state, 'current-world.json'));
+    await crashed.load();
+    await crashed.markDead('world-1', { cause: 'fell', day: 1, ticksAlive: 10 });
+    await crashed.advanceFrom('world-1');
+
+    const again = await startDevServer({
+      repoRoot: first.repo,
+      logger: silentLogger(),
+      port: 0,
+      env: {},
+      heartbeatMs: 0,
+    });
+    servers.push(again);
+    await again.lifecycle.whenRecovered();
+    expect(existsSync(join(saves, 'world-1'))).toBe(false);
+    expect(readFileSync(join(saves, '_graveyard', 'world-1', 'level.dat'), 'utf8')).toBe('x');
+    expect(again.store.current).toEqual({
+      v: 1,
+      worldId: 'world-2',
+      gen: 2,
+      status: 'alive',
+      created: false,
+    });
+  });
+
   it('drives the mod debug handlers in E2E mode only', async () => {
     const plain = await start();
     expect(plain.server.debug).toBeNull();
@@ -308,8 +360,7 @@ describe('dev server', () => {
     servers.push(server);
     const debug = server.debug;
     if (!debug) throw new Error('expected E2E debug helpers');
-    const mod = await connect(server.port, JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token);
-    await new Promise((r) => setTimeout(r, 10));
+    const mod = await connectSeen(server, JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token);
 
     const pending = debug.state();
     const req = await mod.next('debug.state');
@@ -346,7 +397,7 @@ describe('dev server', () => {
     mod.send(hello);
     await mod.next('world.open');
     mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready' });
-    await new Promise((r) => setTimeout(r, 30));
+    await vi.waitFor(() => expect(server.store.current).toMatchObject({ worldId: 'world-1', created: true }));
 
     const again = await connect(server.port, token);
     again.send({ ...hello, id: 'm-2', phase: 'in_world', worldId: 'world-1' });
@@ -382,8 +433,7 @@ describe('dev server', () => {
 
   it('removes its bridge file on stop and tells the mod', async () => {
     const { server, token } = await start();
-    const mod = await connect(server.port, token);
-    await new Promise((r) => setTimeout(r, 10));
+    const mod = await connectSeen(server, token);
     const bridgeFile = server.paths.bridgeFile;
     await server.stop();
     expect(existsSync(bridgeFile)).toBe(false);

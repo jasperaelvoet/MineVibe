@@ -12,9 +12,10 @@ Code agents lives there with you. They keep you and each other alive, talk in bu
 sit down at in-game PCs that are real Linux containers and macOS VMs, to work on your real projects.
 
 > [!WARNING]
-> **Status: pre-alpha, under construction.** MineVibe is at milestone M0 (foundations and spikes). Nothing is
-> playable yet and there are no releases. The docs describe the approved design; unbuilt features are marked
-> as planned.
+> **Status: pre-alpha, under construction.** There are no releases. From source you can boot straight into a
+> hardcore world, die into the next one and meet a scripted crew; the agent brains, PCs, Codex, Calendar,
+> meetings and the app shell are built separately and are being wired into one running app. The
+> [docs](https://jasperaelvoet.github.io/MineVibe/#status) say what is built and what is planned.
 
 ## How it works
 

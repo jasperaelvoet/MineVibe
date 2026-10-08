@@ -7,6 +7,11 @@ description: What you need to run MineVibe, and what the first run downloads.
 There is no MineVibe release yet. Until Microsoft sign-in ships, MineVibe is **source-only**: you build and
 run it yourself from the repository (see [Development](/MineVibe/development/)). This page describes the
 planned first-run experience of `MineVibe.app`.
+
+**What works from source today:** `npm run play` already does steps 2, 3 and 6 below (Minecraft, Fabric and the
+mods, checked by sha1 and sha512, plus the seeded configs) and drops you into a fresh hardcore world with its
+starter office. `npm run build:app` assembles a local `MineVibe.app` bundle. The first-run window's prerequisite
+check (step 1), starting the `container` system and pulling the PC image (steps 4 and 5) are being built.
 :::
 
 ## Requirements

@@ -3,13 +3,34 @@ title: Troubleshooting
 description: Fixes for an outdated claude CLI, a container engine that won't start, the macOS Local Network prompt, and other common problems.
 ---
 
-:::note[Planned behaviour]
-MineVibe is pre-alpha. The messages and recovery paths below are the planned ones; this page will grow with
-real reports once there is something to run.
+:::note[Mostly planned behaviour]
+MineVibe is pre-alpha. [Running from source](#running-from-source) covers what you can hit today; the rest of
+the messages and recovery paths below are the planned ones, and this page will grow with real reports.
 :::
 
 Logs are in `~/Library/Logs/MineVibe/`. Include them (with anything private removed) when you open an
 [issue](https://github.com/jasperaelvoet/MineVibe/issues).
+
+## Running from source
+
+### "MineVibe is already running (pid ...)"
+
+`npm run dev` and `npm run play` each take a single-instance lock, `run/lock`, in their own data folder
+(`.minevibe-dev/` and `.minevibe-dev/play/`, or `MINEVIBE_HOME`). A second one on the same folder refuses to start
+and names the process that holds the lock.
+
+- Stop that process (Ctrl+C in its terminal runs a clean shutdown and removes the lock), or give the second one
+  its own folder with `MINEVIBE_HOME`.
+- A lock left behind by a process that no longer runs is taken over automatically. So is one whose pid now belongs
+  to a different process (after a reboot): the lock records the owner's start time, in UTC, and compares it.
+- A lock written within the last 2 seconds counts as taken while its process exists, because its owner is still
+  starting up.
+
+### The game says "Waiting for MineVibe…"
+
+`./gradlew runClient` connects to the dev server through `.minevibe-dev/run/bridge.json`. Start `npm run dev`
+first, in the same checkout. The game re-reads the file before every attempt, so it also reconnects after you
+restart the dev server. It never connects while the file's `pid` is not running.
 
 ## claude is too old or not logged in
 

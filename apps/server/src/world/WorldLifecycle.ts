@@ -13,6 +13,11 @@ export interface WorldLifecycleOptions {
   /**
    * Called once a dead world was closed by the mod and Node moved on to the next one, before the next
    * world's `world.open` is sent (the dev server buries the old save here). Errors are logged, not fatal.
+   *
+   * **Must be idempotent.** The move to the next world is saved first, with the dead world listed as `unburied`
+   * in the same write; the entry is cleared only after this hook succeeds. If Node stops before that (a crash,
+   * or the hook threw), the hook runs again for that world when the next WorldLifecycle starts (DEBT N3). On such
+   * a retry `next` is the world that followed `dead`, as far as the record still knows it.
    */
   readonly onWorldEnded?: (dead: CurrentWorldRecord, next: CurrentWorldRecord) => void | Promise<void>;
 }
@@ -26,6 +31,10 @@ export interface WorldLifecycleOptions {
  * mod can re-send it), or when the mod shows that it is already in the allocated next world (`hello{in_world}`,
  * `world.state{loading|ready}` or `player.died` for that world): a lost `closed` can never leave Node on the
  * dead world while the mod plays the next one.
+ *
+ * World endings are durable: a dead world Node moved past stays listed as `unburied` in the world record until the
+ * `onWorldEnded` hook succeeded for it, and the constructor retries the listed ones (see {@link whenRecovered}).
+ * The store must be loaded before construction.
  */
 export class WorldLifecycle {
   readonly #bridge: BridgeServer;
@@ -36,6 +45,9 @@ export class WorldLifecycle {
   #playerName: string;
   #lastPhase: string | null = null;
   readonly #unsubscribe: Array<() => void> = [];
+  /** World endings run one at a time, in order: retries from the last run first, then new ones. */
+  #endings: Promise<void> = Promise.resolve();
+  readonly #recovered: Promise<void>;
 
   constructor(options: WorldLifecycleOptions) {
     this.#bridge = options.bridge;
@@ -44,6 +56,8 @@ export class WorldLifecycle {
     this.#serverVersion = options.serverVersion;
     this.#playerName = options.playerName;
     this.#onWorldEnded = options.onWorldEnded;
+    // Read now, so an unloaded store throws here instead of rejecting `whenRecovered()` unobserved.
+    this.#recovered = this.#retryUnburied(this.#store.unburied);
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
@@ -57,6 +71,15 @@ export class WorldLifecycle {
 
   get playerName(): string {
     return this.#playerName;
+  }
+
+  /**
+   * Settles once the world endings a previous run left unfinished (`unburied` in the record when this lifecycle
+   * started) were retried. Never rejects: a hook that fails again is logged, and its world stays listed for the
+   * next start.
+   */
+  whenRecovered(): Promise<void> {
+    return this.#recovered;
   }
 
   dispose(): void {
@@ -174,13 +197,52 @@ export class WorldLifecycle {
     return true;
   }
 
-  async #worldEnded(dead: CurrentWorldRecord, next: CurrentWorldRecord): Promise<void> {
-    if (!this.#onWorldEnded) return;
-    try {
-      await this.#onWorldEnded(dead, next);
-    } catch (err) {
-      this.#log.error({ err, worldId: dead.worldId }, 'world-ended hook failed');
-    }
+  /**
+   * Deals with the end of `dead` (the hook), then clears it from the record's `unburied` list. Endings run one at a
+   * time. A failing hook leaves the world listed, so the next start tries again.
+   */
+  #worldEnded(dead: CurrentWorldRecord, next: CurrentWorldRecord): Promise<void> {
+    const run = this.#endings.then(async () => {
+      try {
+        await this.#onWorldEnded?.(dead, next);
+      } catch (err) {
+        this.#log.error(
+          { err, worldId: dead.worldId },
+          'world-ended hook failed; it runs again at the next start',
+        );
+        return;
+      }
+      try {
+        await this.#store.markBuried(dead.worldId);
+      } catch (err) {
+        this.#log.error({ err, worldId: dead.worldId }, 'could not record that a dead world was dealt with');
+      }
+    });
+    this.#endings = run;
+    return run;
+  }
+
+  /**
+   * Retries the world endings a previous run did not finish (it stopped between the advance and the hook). They
+   * are all queued at once, oldest first, so they run before any ending of this run.
+   */
+  async #retryUnburied(unburied: readonly CurrentWorldRecord[]): Promise<void> {
+    const retries = unburied.map((dead) => {
+      this.#log.warn(
+        { worldId: dead.worldId, next: dead.next?.worldId },
+        'finishing the end of a dead world that the last run left unfinished',
+      );
+      return this.#worldEnded(dead, this.#successorOf(dead));
+    });
+    await Promise.all(retries);
+  }
+
+  /** The world that followed `dead`: the current one when it still is, else what the record knows of it. */
+  #successorOf(dead: CurrentWorldRecord): CurrentWorldRecord {
+    const rec = this.#store.current;
+    if (!dead.next || rec.worldId === dead.next.worldId) return rec;
+    // Node moved past that one too, so it died as well (only dead worlds are advanced past).
+    return { v: 1, worldId: dead.next.worldId, gen: dead.next.gen, status: 'dead', created: true };
   }
 
   #helloOk(rec: CurrentWorldRecord): PayloadOf<'hello.ok'> {

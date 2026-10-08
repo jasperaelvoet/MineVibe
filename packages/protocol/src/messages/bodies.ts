@@ -110,7 +110,10 @@ export const AgentSpawn = defineMessage('agent.spawn', {
   ceo: z.boolean(),
   /** Skin key from the mod's role-skin table; absent = the role's skin. */
   skin: z.string().min(1).max(64).optional(),
-  /** Absent = the office door (or world spawn without an office). Ignored when a save is restored. */
+  /**
+   * Where the body appears, and its home (Shelter at dusk). Node passes the office `door` slot; absent = next to the
+   * player (or world spawn). Ignored when a save is restored.
+   */
   at: SpawnAt.optional(),
   restore: z.boolean(),
   mode: IdleMode,
