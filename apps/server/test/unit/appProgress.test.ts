@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  cleanDetail,
   countingFetch,
   downloadLabel,
   LaunchProgress,
@@ -139,6 +140,98 @@ describe('LaunchProgress', () => {
     vi.advanceTimersByTime(1000);
     expect(sent.filter((m) => m.t === 'ready')).toHaveLength(1);
     expect(sent.at(-1)).toEqual({ t: 'ready' });
+  });
+
+  it('a warm PC engine is no installation work; a first-run engine and an image build are', () => {
+    const { sent, progress } = collect(0);
+    progress.onPlay({ phase: 'install', state: 'start' });
+    progress.onPcs({ step: 'engine', firstRun: false });
+    progress.onPcs({ step: 'done' });
+    progress.onPlay({ phase: 'install', state: 'done' });
+    progress.waitForPcs(); // nothing to wait for: no phase change
+    expect(sent.every((m) => m.t !== 'progress' || (!m.work && m.phase !== 'pcs'))).toBe(true);
+
+    const first = collect(0);
+    first.progress.onPlay({ phase: 'install', state: 'start' });
+    first.progress.onPcs({ step: 'engine', firstRun: true });
+    // The game install keeps the window's text; the PC lane only flags the work.
+    expect(first.sent.at(-1)).toMatchObject({
+      phase: 'install',
+      work: true,
+      title: 'Checking the game files',
+    });
+    first.progress.onPlay({ phase: 'install', state: 'done' });
+    first.progress.waitForPcs();
+    expect(first.sent.at(-1)).toMatchObject({
+      phase: 'pcs',
+      work: true,
+      title: 'Setting up the Linux PC engine',
+      detail: 'Downloading the Linux kernel (first run)…',
+    });
+    first.progress.onPcs({ step: 'image' });
+    expect(first.sent.at(-1)).toMatchObject({
+      phase: 'pcs',
+      title: 'Building the Linux PC image (first run)',
+    });
+    first.progress.onPlay({ phase: 'launch' });
+    expect(first.sent.at(-1)).toMatchObject({ phase: 'launch', work: true, title: 'Starting Minecraft' });
+    first.progress.dispose();
+  });
+
+  it('a first-run PC step alone does not make the game files look like a download', () => {
+    const { sent, progress } = collect(0);
+    progress.onPcs({ step: 'engine', firstRun: true });
+    progress.onPlay({ phase: 'install', state: 'start' });
+    expect(sent.at(-1)).toMatchObject({ phase: 'install', work: true, title: 'Checking the game files' });
+    progress.onPlay({ phase: 'install', state: 'done' });
+    expect(sent.at(-1)).toMatchObject({ title: 'Game files ready' });
+    expect(sent.at(-1)).not.toHaveProperty('detail');
+
+    const both = collect(0);
+    both.progress.onPcs({ step: 'engine', firstRun: true });
+    both.progress.onPlay({ phase: 'install', state: 'start' });
+    both.progress.request('https://cdn.modrinth.com/data/x.jar');
+    expect(both.sent.at(-1)).toMatchObject({
+      work: true,
+      title: 'Downloading Minecraft, Fabric and mods',
+      detail: 'Fetching mods…',
+    });
+    progress.dispose();
+    both.progress.dispose();
+  });
+
+  it('shows the latest build line, cleaned and throttled, while the game waits for the image', () => {
+    vi.useFakeTimers();
+    const { sent, progress } = collect(250);
+    progress.onPlay({ phase: 'install', state: 'start' });
+    progress.onPcs({ step: 'image' });
+    progress.onPlay({ phase: 'install', state: 'done' });
+    progress.waitForPcs();
+    const before = sent.length;
+    progress.onPcs({ step: 'image', line: '#5 [2/5] RUN apt-get update' });
+    progress.onPcs({
+      step: 'image',
+      line: '\u001b[1m#5 12.3 Get:1 http://ports.ubuntu.com noble InRelease\u001b[0m',
+    });
+    progress.onPcs({ step: 'image', line: '   ' }); // nothing to show
+    expect(sent.length).toBe(before);
+    vi.advanceTimersByTime(300);
+    expect(sent.length).toBe(before + 1);
+    expect(sent.at(-1)).toMatchObject({
+      phase: 'pcs',
+      title: 'Building the Linux PC image (first run)',
+      detail: '#5 12.3 Get:1 http://ports.ubuntu.com noble InRelease',
+    });
+    progress.onPcs({ step: 'unavailable', reason: 'engine down' });
+    progress.onPcs({ step: 'image', line: 'late' }); // the lane is gone: the title falls back, nothing breaks
+    progress.dispose();
+  });
+
+  it('cleans tool output for the window', () => {
+    expect(cleanDetail('\u001b[32mok\u001b[0m\tdone\r\n')).toBe('ok done');
+    const long = cleanDetail('x'.repeat(500));
+    expect(long).toHaveLength(160);
+    expect(long.endsWith('…')).toBe(true);
   });
 
   it('sends no progress after ready (a late download must not reopen the window)', () => {

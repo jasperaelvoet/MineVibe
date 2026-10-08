@@ -12,7 +12,8 @@ jobs:
     name: Build and publish MineVibe.app
     # Binary releases stay disabled until Microsoft sign-in ships (PLAN §2).
     # Public binaries need Microsoft sign-in with a Mojang-approved app ID; until then MineVibe is
-    # source-only. The steps below are the intended shape (PLAN §11) and are wired up in M10/M11.
+    # source-only. The steps below are the intended shape (PLAN §11); Developer ID signing and notarization
+    # arrive in M11.
     if: false
     runs-on: macos-26
     timeout-minutes: 60
@@ -23,22 +24,40 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
       APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      # TODO(M11): import the Developer ID certificate into a temporary keychain and name it here.
+      MINEVIBE_SIGN_IDENTITY: adhoc
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Vendor download cache (Node, Temurin, Apple container)
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/MineVibe-dev/vendor
+          key: vendor-${{ hashFiles('packaging/vendor.lock.json') }}
       - run: npm ci
-      - name: Build MineVibe.app
-        run: npm run build:app # TODO(M11): Developer ID identity (--identity), Java and the vendor cache as in ci.yml
+      # The release channel prunes the SDK's own claude: players run their own `claude` (PLAN §2, §9.1).
+      - name: Build MineVibe.app (release channel)
+        run: npm run build:app -- --channel release --identity "$MINEVIBE_SIGN_IDENTITY"
+      - name: Verify signature
+        run: codesign --verify --deep --strict --verbose=2 dist/MineVibe.app
+      - name: Self-test (stub to Node handshake, bundle checks, no game)
+        run: dist/MineVibe.app/Contents/MacOS/MineVibe --selftest
       - name: Notarize
         if: env.APPLE_TEAM_ID != '' && env.APPLE_NOTARY_KEY_ID != ''
         run: npm run notarize:app # TODO(M11): xcrun notarytool submit --wait, then xcrun stapler staple
-      - name: Zip
-        run: ditto -c -k --keepParent dist/MineVibe.app "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip"
+      - name: Zip (ditto keeps symlinks, modes and the signature)
+        run: ditto -c -k --keepParent dist/MineVibe.app "dist/MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,5 +65,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "MineVibe $GITHUB_REF_NAME" \
             --generate-notes \
-            "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip" \
+            "dist/MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip" \
             THIRD_PARTY_NOTICES.md

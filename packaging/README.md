@@ -23,6 +23,7 @@ provisions itself.
 | `--skip-mod-build` | off | Take the newest jar in `apps/mod/build/libs` without running `./gradlew jar`. |
 | `--skip-server-build` | off | Use `apps/server/dist` as it is. |
 | `--cache <dir>` | `~/Library/Caches/MineVibe-dev/vendor` (`MINEVIBE_VENDOR_CACHE`) | Vendor download cache. |
+| `--channel dev\|release` | `dev` | Written to `build-info.json`. `dev` keeps the Agent SDK's own `claude` (about 236 MB), so `MINEVIBE_CLAUDE=bundled` works; `release` leaves it out and the app accepts only the player's own `claude` (`release.yml`). |
 
 The independent steps run in parallel: the three vendor downloads and extractions, the server bundle, the list of
 the server's production packages, `./gradlew jar`, and `swiftc`. The bundle is then assembled, checked, signed and
@@ -35,23 +36,31 @@ verified, and only then moved to `dist/MineVibe.app`, so a failed build never le
 | `MacOS/MineVibe` | The Swift stub, `apps/launcher-mac/MineVibe.swift`, built with `xcrun swiftc -O -parse-as-library -target arm64-apple-macos26.0`. The only thing we sign. |
 | `MacOS/node` | Official Node `bin/node` from `vendor.lock.json`, byte-identical (Node.js Foundation's signature, team HX7739G8FX). |
 | `Runtime/jre/` | Temurin JRE `Contents/Home`, byte-identical (Eclipse Adoptium's signatures, team JCDTMS22B4). `bin/MineVibe` is a byte-identical copy of `bin/java`, so the Dock shows "MineVibe". |
-| `Runtime/container/` | Apple `container` 1.5.0 install root (`bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*`), the pkg payload byte for byte without the `exclude`d update/uninstall scripts (Apple's signatures, team UPBK2H6LZM). It holds exactly the lock's `installRootFiles`, so the PC manager's `isProvisioned()` accepts it and never writes into the bundle. Pass it as `--install-root` / `CONTAINER_INSTALL_ROOT`. |
+| `Runtime/container/` | Apple `container` 1.5.0 install root (`bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*`), the pkg payload byte for byte without what the lock `exclude`s: the update/uninstall scripts and the `k8s` plugin (Apple's signatures, team UPBK2H6LZM). It holds exactly the lock's `installRootFiles`. The app passes it as `--install-root` / `CONTAINER_INSTALL_ROOT`, checks it against `Resources/vendor.lock.json` at every start and never provisions (writes) it. |
 | `Resources/server/` | `dist/main.mjs` (+ source map and legal notices), a `package.json`, and the server's production `node_modules` copied byte for byte from the installed workspace (`npm ls --omit=dev`). |
 | `Resources/mod/` | `minevibe-<version>.jar`, `mods.lock.json`, `seed-configs/*.json` (this folder is `MINEVIBE_RESOURCES` for the launcher). |
+| `Resources/vendor.lock.json` | A copy of `packaging/vendor.lock.json`: the pins the running app checks `Runtime/container` against. |
+| `Resources/linux-pc/` | `images/linux-pc` (`Containerfile`, `minevibe-entrypoint.sh`): the build context of the Linux PC image, built on first run with `container build` until the GHCR image is published (PLAN §9.3). |
 | `Resources/MineVibe.icns` | Placeholder icon, generated (`lib/icon.ts`). |
-| `Resources/build-info.json` | Version, build number, commit, vendor versions. |
+| `Resources/build-info.json` | Version, build number, commit, channel (`dev`/`release`), vendor versions. |
 | `Resources/legal/` | LICENSE, NOTICE, THIRD_PARTY_NOTICES.md. |
 
 `apps/server/src/app/appLayout.ts` (`BUNDLE_LAYOUT`) is the single source of these paths for both the build and the
 running server.
 
-**Deviation from PLAN §9.1: `container` lives in `Runtime/`, not `Helpers/`.** codesign treats every file under
+**Why `container` lives in `Runtime/`, not `Helpers/` (PLAN §9.1).** codesign treats every file under
 `Contents/Helpers` as code that must carry a signature. The `container` install root also holds Apple's unsigned
-data files (`config.toml`, `k8s/resources/kindnet.yaml`, the `machine-apiserver` shell scripts), so signing the
+data files (`config.toml`, the `machine-apiserver` shell scripts), so signing the
 bundle fails with "code object is not signed at all" unless we re-sign Apple's files, which would break the
 byte-identical rule. Under `Runtime/` they are sealed as resources, Apple's Mach-O signatures stay untouched, and
 `codesign --verify --deep --strict` passes. The TCC rule (§8.6) is about the folder the app sits in, not the
 subfolder, so `/Applications/MineVibe.app/Contents/Runtime/container` is fine.
+
+**The `k8s` plugin is left out** (61 MB, 2026-10-08). It is a CLI-only plugin (`container k8s`, a local Kubernetes
+helper; its `config.toml` declares no service), MineVibe never runs it, and a bundle without it was verified end to
+end: `system start` (first start, kernel download), `container build` of the Linux PC image, and `create`/`start` of
+`linux-1` up to spacesd SERVING. `vendor.lock.json` lists it under `exclude`, so `npm run dev`'s provisioned install
+root leaves it out too.
 
 ## Verification during the build
 
@@ -92,6 +101,10 @@ mkdir -p "$T" && rm -rf "$T/MineVibe.app" && ditto dist/MineVibe.app "$T/MineVib
 open -n --env MINEVIBE_HOME="$T/home" "$T/MineVibe.app"     # MINEVIBE_HOME keeps the data out of your real App Support
 ```
 
+Useful variables for a test launch: `MINEVIBE_CLAUDE=bundled` (dev builds only: the SDK's own claude, when yours is
+older than 2.1.293), `MINEVIBE_PC_RUNTIME=off` (no Linux PCs at all), `MINEVIBE_CONTAINER_APP_ROOT` (another
+`container` app root, outside `~/Documents`).
+
 `--selftest` skips the location check (it reports it) and starts no game, so it runs from `dist/` too.
 
 Logs: `~/Library/Logs/MineVibe/` (or `$MINEVIBE_HOME/Logs/`): `launcher.log` (the stub, plus Node's stderr),
@@ -106,7 +119,7 @@ stdout write in Node is redirected to stderr), the stub writes to Node's stdin.
 | Direction | Message | Meaning |
 |---|---|---|
 | Node → stub | `{"t":"hello","v":1,"mode","server","node","pid"}` | First line. The stub answers with its own hello. |
-| Node → stub | `{"t":"progress","phase","work","title","detail?","fraction?","bytes"}` | Launch milestones. The stub opens its small window only once `work` is true (something is being downloaded); a normal launch shows no window. |
+| Node → stub | `{"t":"progress","phase","work","title","detail?","fraction?","bytes"}` | Launch milestones (`phase` `pcs`: the game waits for the first-run Linux PC setup). The stub opens its small window only once `work` is true (something is being downloaded or built: the game files, the `container` kernel, the PC image); a normal launch shows no window. |
 | Node → stub | `{"t":"ready"}` | The game connected to the bridge: the window closes. |
 | Node → stub | `{"t":"pickFolder","id","title?","message?","prompt?","startIn?"}` | Show the native folder picker. |
 | Node → stub | `{"t":"error","message","detail?"}` | Shown in a dialog if Node then exits with an error. |
@@ -115,9 +128,26 @@ stdout write in Node is redirected to stderr), the stub writes to Node's stdin.
 | stub → Node | `{"cmd":"shutdown","reason"}` | Quit Apple Event (logout, restart), SIGTERM/SIGINT/SIGHUP, the window's Quit button. |
 | stub → Node | `{"cmd":"pickFolder.result","id","path"\|null}` | The picked folder (absolute) or null. |
 
+Both sides check the other's `v` in the hello. A stub that gets another version never answers it: it sends
+`shutdown` and shows "MineVibe is damaged" (the self-test fails). Node, given a stub hello of another version, sends
+that `error` and stops.
+
 The schemas are in `apps/server/src/app/stubProtocol.ts`; Node's side is `apps/server/src/app/runApp.ts`
 (`minevibe-server app [--selftest]`). Nothing in the server calls `pickFolder` yet: `StubChannel` implements
 `HostDialogs.pickFolder()` for the PC manager's `host.pickFolder` once the protocol has it.
+
+**What Node does at launch (PLAN §9.2, §9.3).** `runApp` first checks the prerequisites
+(`app/prerequisites.ts`: Apple silicon, macOS 26 or later, the player's `claude` at 2.1.293 or later and logged in,
+via `claude auth status`); a problem ends the launch with a dialog whose detail is a one-line instruction such as
+"Run `claude update` in Terminal". Then `play` runs with the app's hooks: under `run/lock`, the startup reaper removes
+a crashed run's `run/bridge.json` (`app/reaper.ts`) and the Linux PC setup starts next to the game install
+(`app/appPcs.ts`): the engine from `Runtime/container` (never provisioned; a stale or wedged apiserver of ours is
+restarted or booted out, someone else's is never touched), this home's orphaned PC containers stopped
+(`PcManager.reconcile`, instance-labelled), `linux-1` created, and on first run the image built from
+`Resources/linux-pc` (then `builder stop` and `builder delete`). The game waits for that while it is first-run work the
+window shows (the kernel download, the image build), else at most 30 s; the PCs boot in the background, never after a
+quit, and quitting stops them and the engine (only when it is ours and no other MineVibe holds a lease on it). A PC
+failure never stops the game: the PCs show `engine_down` or `error`.
 
 **Lifelines and quitting (PLAN §9.2).**
 

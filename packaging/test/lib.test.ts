@@ -20,7 +20,7 @@ import { readContainerLock } from '../../apps/server/src/pcs/drivers/ContainerRu
 import { compareTrees, ensureDownloaded, isMachO } from '../lib/files.js';
 import { encodePng, ICONSET, placeholderIcon } from '../lib/icon.js';
 import { plistBool, plistString, renderInfoPlist } from '../lib/infoPlist.js';
-import { copyProductionPackages, productionPackages } from '../lib/prodDeps.js';
+import { copyProductionPackages, productionPackages, releasePrunedFiles } from '../lib/prodDeps.js';
 import { chooseIdentity, parseIdentities } from '../lib/signing.js';
 import { archiveFileName, checkInstallRoot, VendorLock } from '../lib/vendorLock.js';
 
@@ -84,6 +84,24 @@ describe('vendor.lock.json', () => {
     expect(bad((l) => (l.node.archive = 'pkg'))).toBe(false);
     expect(bad((l) => (l.node.teamId = 'nope'))).toBe(false);
     expect(bad((l) => delete l.container.installRootFiles['bin/container'])).toBe(false);
+  });
+
+  it('leaves the k8s plugin out of the install root (bundle and dev provisioning alike)', () => {
+    const lock = VendorLock.parse(real);
+    expect(lock.container.exclude).toContain('libexec/container/plugins/k8s');
+    expect(Object.keys(lock.container.installRootFiles).filter((f) => f.includes('/k8s/'))).toEqual([]);
+    // What `system start` needs stays: the apiserver, and the core-images, network, runtime and machine plugins.
+    for (const plugin of [
+      'container-core-images',
+      'container-network-vmnet',
+      'container-runtime-linux',
+      'machine-apiserver',
+    ]) {
+      expect(lock.container.installRootFiles[`libexec/container/plugins/${plugin}/bin/${plugin}`]).toMatch(
+        /^[0-9a-f]{64}$/,
+      );
+    }
+    expect(lock.container.installRootFiles['bin/container-apiserver']).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('checks an install root against installRootFiles: hashes, missing and extra files', () => {
@@ -296,6 +314,29 @@ describe('server production node_modules', () => {
   it('refuses a production package that is not under the root node_modules (it would be left out)', () => {
     const ls = ['/repo', '/repo/node_modules/ws', '/repo/apps/server/node_modules/zod', ''].join('\n');
     expect(() => productionPackages(ls, '/repo')).toThrow(/apps\/server\/node_modules\/zod/);
+  });
+
+  it('release builds prune the SDK claude only', async () => {
+    expect(
+      releasePrunedFiles([
+        '@anthropic-ai/claude-agent-sdk',
+        '@anthropic-ai/claude-agent-sdk-darwin-arm64',
+        '@anthropic-ai/sdk',
+        'ws',
+      ]),
+    ).toEqual(['@anthropic-ai/claude-agent-sdk-darwin-arm64/claude']);
+    const root = tmp();
+    const pkg = join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk-darwin-arm64');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), '{}');
+    writeFileSync(join(pkg, 'claude'), 'big binary');
+    const dest = tmp();
+    await copyProductionPackages(root, ['@anthropic-ai/claude-agent-sdk-darwin-arm64'], dest, [
+      '@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
+    ]);
+    const copied = join(dest, 'node_modules', '@anthropic-ai', 'claude-agent-sdk-darwin-arm64');
+    expect(existsSync(join(copied, 'package.json'))).toBe(true);
+    expect(existsSync(join(copied, 'claude'))).toBe(false);
   });
 
   it('copies each package byte for byte without its nested node_modules wholesale', async () => {

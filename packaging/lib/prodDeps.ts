@@ -25,16 +25,30 @@ export function productionPackages(lsOutput: string, repoRoot: string): string[]
   return [...out].sort();
 }
 
+/** The Agent SDK's platform packages (`@anthropic-ai/claude-agent-sdk-darwin-arm64`), which carry its own claude. */
+const SDK_PLATFORM_PACKAGE = /^@anthropic-ai\/claude-agent-sdk-[a-z0-9]+-[a-z0-9]+$/;
+
+/**
+ * Files a release build leaves out, relative to `node_modules` (PLAN §9.1): the SDK's own `claude` binary (about
+ * 236 MB). Release builds run the user's own claude only; a dev build keeps it for `MINEVIBE_CLAUDE=bundled`.
+ */
+export function releasePrunedFiles(packages: readonly string[]): string[] {
+  return packages.filter((rel) => SDK_PLATFORM_PACKAGE.test(rel)).map((rel) => `${rel}/claude`);
+}
+
 /**
  * Copies each package into `<dest>/node_modules/<rel>` byte for byte (modes, symlinks and timestamps kept). A
  * package's own `node_modules` is not copied wholesale: its nested production packages are listed (and copied)
- * on their own, so dev-only leftovers never ride along.
+ * on their own, so dev-only leftovers never ride along. `prune` lists files (relative to `node_modules`) to leave
+ * out.
  */
 export async function copyProductionPackages(
   repoRoot: string,
   packages: readonly string[],
   dest: string,
+  prune: readonly string[] = [],
 ): Promise<void> {
+  const pruned = new Set(prune.map((rel) => join(repoRoot, 'node_modules', ...rel.split('/'))));
   for (const rel of packages) {
     const src = join(repoRoot, 'node_modules', ...rel.split('/'));
     const target = join(dest, 'node_modules', ...rel.split('/'));
@@ -45,7 +59,7 @@ export async function copyProductionPackages(
       preserveTimestamps: true,
       errorOnExist: true,
       force: false,
-      filter: (path) => !(basename(path) === 'node_modules' && dirname(path) === src),
+      filter: (path) => !(basename(path) === 'node_modules' && dirname(path) === src) && !pruned.has(path),
     });
   }
 }

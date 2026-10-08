@@ -404,7 +404,9 @@ export class ContainerRuntime {
       if (ex.code !== 0) throw new CliError('pkgutil --expand-full', ex);
       const payload = await findPayload(expanded);
       if (!payload) throw new Error('container pkg: no Payload/bin/container inside');
-      for (const rel of this.lock.exclude ?? []) await rm(join(payload, rel), { force: true });
+      // Entries may be folders (a whole plugin MineVibe does not ship, such as k8s).
+      for (const rel of this.lock.exclude ?? [])
+        await rm(join(payload, rel), { recursive: true, force: true });
       for (const [rel, want] of Object.entries(this.lock.installRootFiles ?? {})) {
         const got = await sha256File(join(payload, rel)).catch(() => 'missing');
         if (got !== want) throw new Error(`container pkg: ${rel} sha256 ${got} != lock ${want}`);

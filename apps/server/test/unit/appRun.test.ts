@@ -1,14 +1,20 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appBundleLayout, BUNDLE_LAYOUT, findBundledModJar } from '../../src/app/appLayout.js';
-import { describeFailure, runApp } from '../../src/app/runApp.js';
+import type { AppPcs, PcPrepEvent, PcPrepOutcome } from '../../src/app/appPcs.js';
+import { LaunchProgress, type LaunchProgressMessage } from '../../src/app/launchProgress.js';
+import type { PrereqOptions, PrereqReport } from '../../src/app/prerequisites.js';
+import { appHooks, describeFailure, runApp } from '../../src/app/runApp.js';
 import type { LineWriter } from '../../src/app/StubChannel.js';
 import { runSelftestChecks } from '../../src/app/selftest.js';
 import type { NodeToStub } from '../../src/app/stubProtocol.js';
+import { writeBridgeFile } from '../../src/bridge/bridgeFile.js';
+import { resolvePaths } from '../../src/config/paths.js';
 import { silentLogger } from '../../src/log.js';
 import { MOD_JAR_ENV, type PlayOptions, RESOURCES_ENV } from '../../src/orchestrator/play.js';
 import { AlreadyRunningError } from '../../src/orchestrator/runLock.js';
@@ -41,8 +47,23 @@ function stubSide() {
   return { stdin, sent, writeLine, command, until };
 }
 
-/** A fake bundle: `<dir>/MineVibe.app/Contents/...` with a mod jar, the lock, seed configs, JRE and container bins. */
-function fakeBundle(): string {
+const PREREQS_OK: PrereqReport = {
+  ok: true,
+  problems: [],
+  macos: '26.1',
+  claude: { source: 'user', path: '/x/claude', version: '2.1.293' },
+  loggedIn: true,
+};
+const prereqsOk = async () => PREREQS_OK;
+const platformOk = { appleSilicon: async () => true, macosVersion: async () => '26.1' };
+
+/**
+ * A fake bundle: `<dir>/MineVibe.app/Contents/...` with a mod jar, the lock, seed configs, JRE, the container install
+ * root with a vendor.lock.json pinning it, and the Linux PC build context.
+ */
+function fakeBundle(
+  buildInfo: Record<string, unknown> = { commit: 'abc1234', built: '2026-10-08T00:00:00Z' },
+): string {
   const bundle = join(tmp(), 'MineVibe.app');
   const at = (rel: string) => join(bundle, ...rel.split('/'));
   mkdirSync(join(at(BUNDLE_LAYOUT.mod), 'seed-configs'), { recursive: true });
@@ -56,6 +77,7 @@ function fakeBundle(): string {
     join(at(BUNDLE_LAYOUT.mod), 'mods.lock.json'),
   );
   writeFileSync(join(at(BUNDLE_LAYOUT.mod), 'seed-configs', 'dynamic_fps.json'), '{}');
+  const pins: Record<string, string> = {};
   for (const rel of [
     'bin/container',
     'bin/container-apiserver',
@@ -64,16 +86,32 @@ function fakeBundle(): string {
   ]) {
     const p = join(at(BUNDLE_LAYOUT.container), ...rel.split('/'));
     mkdirSync(join(p, '..'), { recursive: true });
-    writeFileSync(p, '#!/bin/sh\n');
+    const body = `#!/bin/sh\n# ${rel}\n`;
+    writeFileSync(p, body);
     chmodSync(p, 0o755);
+    pins[rel] = createHash('sha256').update(body).digest('hex');
   }
+  writeFileSync(
+    at(BUNDLE_LAYOUT.vendorLock),
+    JSON.stringify({
+      container: {
+        version: '1.5.0',
+        pkg: { name: 'c.pkg', url: 'https://invalid.example/c.pkg', sha256: 'a'.repeat(64) },
+        installRootFiles: pins,
+      },
+    }),
+  );
+  mkdirSync(at(BUNDLE_LAYOUT.linuxPc), { recursive: true });
+  writeFileSync(
+    join(at(BUNDLE_LAYOUT.linuxPc), 'Containerfile'),
+    'FROM ghcr.io/trycua/linux:24.04@sha256:abc\n',
+  );
+  writeFileSync(join(at(BUNDLE_LAYOUT.linuxPc), 'minevibe-entrypoint.sh'), '#!/bin/sh\n');
+  chmodSync(join(at(BUNDLE_LAYOUT.linuxPc), 'minevibe-entrypoint.sh'), 0o755);
   mkdirSync(join(at(BUNDLE_LAYOUT.jre), 'bin'), { recursive: true });
   writeFileSync(join(at(BUNDLE_LAYOUT.jre), 'bin', 'MineVibe'), '');
   mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true });
-  writeFileSync(
-    at(BUNDLE_LAYOUT.buildInfo),
-    JSON.stringify({ commit: 'abc1234', built: '2026-10-08T00:00:00Z' }),
-  );
+  writeFileSync(at(BUNDLE_LAYOUT.buildInfo), JSON.stringify(buildInfo));
   return bundle;
 }
 
@@ -88,6 +126,8 @@ describe('appBundleLayout', () => {
       jreHome: '/Applications/MineVibe.app/Contents/Runtime/jre',
       containerInstallRoot: '/Applications/MineVibe.app/Contents/Runtime/container',
       buildInfo: '/Applications/MineVibe.app/Contents/Resources/build-info.json',
+      vendorLock: '/Applications/MineVibe.app/Contents/Resources/vendor.lock.json',
+      linuxPcContext: '/Applications/MineVibe.app/Contents/Resources/linux-pc',
     });
   });
 
@@ -120,13 +160,28 @@ describe('selftest checks', () => {
       env: { MINEVIBE_HOME: '/tmp/mv-home' },
       bundledJava: () => join(bundle, 'Contents', 'Runtime', 'jre', 'bin', 'MineVibe'),
       probe: async () => ({ version: '25.0.4.1', major: 25 }),
+      ...platformOk,
     });
     const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
     expect(Object.keys(byName).sort()).toEqual(
-      ['container', 'data', 'java', 'mod jar', 'mods.lock', 'node', 'seed configs', 'server'].sort(),
+      [
+        'container',
+        'data',
+        'java',
+        'linux-pc image',
+        'mod jar',
+        'mods.lock',
+        'node',
+        'platform',
+        'seed configs',
+        'server',
+      ].sort(),
     );
     expect(checks.filter((c) => !c.ok)).toEqual([]);
     expect(byName.server?.detail).toContain('abc1234');
+    expect(byName.server?.detail).toContain('dev');
+    expect(byName.container?.detail).toMatch(/^1\.5\.0, 4 files as pinned/);
+    expect(byName.platform?.detail).toBe('Apple silicon, macOS 26.1');
     expect(byName.data?.detail).toBe('/tmp/mv-home');
   });
 
@@ -135,16 +190,55 @@ describe('selftest checks', () => {
     const layout = appBundleLayout(join(bundle, 'Contents', 'MacOS', 'node'));
     writeFileSync(join(bundle, 'Contents', 'Resources', 'mod', 'minevibe-0.1.0.jar'), 'not a zip');
     rmSync(join(bundle, 'Contents', 'Runtime', 'container', 'bin', 'container'));
-    const noJava = await runSelftestChecks({ layout, repoRoot: null, bundledJava: () => null });
+    const noJava = await runSelftestChecks({
+      layout,
+      repoRoot: null,
+      bundledJava: () => null,
+      ...platformOk,
+    });
     const failed = noJava.filter((c) => !c.ok).map((c) => c.name);
     expect(failed.sort()).toEqual(['container', 'java', 'mod jar']);
+    expect(noJava.find((c) => c.name === 'container')?.detail).toContain('bin/container: missing');
     const wrongJava = await runSelftestChecks({
       layout,
       repoRoot: null,
       bundledJava: () => '/x/java',
       probe: async () => ({ version: '21.0.1', major: 21 }),
+      appleSilicon: async () => false,
+      macosVersion: async () => '15.6',
     });
     expect(wrongJava.find((c) => c.name === 'java')).toMatchObject({ ok: false });
+    expect(wrongJava.find((c) => c.name === 'platform')).toMatchObject({ ok: false });
+  });
+
+  it('fails on a container plugin the lock leaves out (k8s) and an unpinned image base', async () => {
+    const bundle = fakeBundle();
+    const layout = appBundleLayout(join(bundle, 'Contents', 'MacOS', 'node'));
+    const k8s = join(
+      bundle,
+      'Contents',
+      'Runtime',
+      'container',
+      'libexec',
+      'container',
+      'plugins',
+      'k8s',
+      'bin',
+    );
+    mkdirSync(k8s, { recursive: true });
+    writeFileSync(join(k8s, 'k8s'), 'k8s');
+    writeFileSync(join(bundle, 'Contents', 'Resources', 'linux-pc', 'Containerfile'), 'FROM ubuntu:24.04\n');
+    const checks = await runSelftestChecks({
+      layout,
+      repoRoot: null,
+      bundledJava: () => '/x/java',
+      probe: async () => ({ version: '25.0.4.1', major: 25 }),
+      ...platformOk,
+    });
+    expect(checks.find((c) => c.name === 'container')?.detail).toContain(
+      'libexec/container/plugins/k8s/bin/k8s: not in vendor.lock.json',
+    );
+    expect(checks.find((c) => c.name === 'linux-pc image')).toMatchObject({ ok: false });
   });
 });
 
@@ -236,6 +330,8 @@ describe('runApp (app mode)', () => {
     const fake = fakePlay(stoppable);
     const result = runApp({
       argv: [],
+      prerequisites: prereqsOk,
+      pcs: null,
       stdin: stub.stdin,
       writeLine: stub.writeLine,
       logger: silentLogger(),
@@ -261,6 +357,8 @@ describe('runApp (app mode)', () => {
     const stub = stubSide();
     const result = runApp({
       argv: [],
+      prerequisites: prereqsOk,
+      pcs: null,
       stdin: stub.stdin,
       writeLine: stub.writeLine,
       logger: silentLogger(),
@@ -282,6 +380,8 @@ describe('runApp (app mode)', () => {
     });
     const result = runApp({
       argv: [],
+      prerequisites: prereqsOk,
+      pcs: null,
       stdin: stub.stdin,
       writeLine: stub.writeLine,
       logger: silentLogger(),
@@ -304,6 +404,8 @@ describe('runApp (app mode)', () => {
     const stub = stubSide();
     const result = runApp({
       argv: [],
+      prerequisites: prereqsOk,
+      pcs: null,
       stdin: stub.stdin,
       writeLine: stub.writeLine,
       logger: silentLogger(),
@@ -327,6 +429,8 @@ describe('runApp (app mode)', () => {
     await expect(
       runApp({
         argv: [],
+        prerequisites: prereqsOk,
+        pcs: null,
         stdin: crashed.stdin,
         writeLine: crashed.writeLine,
         logger: silentLogger(),
@@ -346,6 +450,8 @@ describe('runApp (app mode)', () => {
     await expect(
       runApp({
         argv: [],
+        prerequisites: prereqsOk,
+        pcs: null,
         stdin: clean.stdin,
         writeLine: clean.writeLine,
         logger: silentLogger(),
@@ -365,6 +471,8 @@ describe('runApp (app mode)', () => {
     const stub = stubSide();
     const result = runApp({
       argv: [],
+      prerequisites: prereqsOk,
+      pcs: null,
       stdin: stub.stdin,
       writeLine: stub.writeLine,
       logger: silentLogger(),
@@ -376,6 +484,316 @@ describe('runApp (app mode)', () => {
     expect(stub.sent.find((m) => m.t === 'error')).toMatchObject({
       detail: expect.stringContaining('mod jar'),
     });
+  });
+});
+
+describe('runApp prerequisites, protocol and hooks', () => {
+  it('stops before anything starts when a prerequisite is missing, with a one-line instruction', async () => {
+    const stub = stubSide();
+    let played = false;
+    const result = runApp({
+      argv: [],
+      stdin: stub.stdin,
+      writeLine: stub.writeLine,
+      logger: silentLogger(),
+      layout: null,
+      repoRoot: '/repo',
+      handleSignals: false,
+      pcs: null,
+      prerequisites: async () => ({
+        ...PREREQS_OK,
+        ok: false,
+        claude: null,
+        problems: [
+          {
+            id: 'claude',
+            message: 'Claude Code 2.1.284 is too old',
+            instruction: 'Run `claude update` in Terminal, then open MineVibe again.',
+          },
+        ],
+      }),
+      play: async () => {
+        played = true;
+        return 0;
+      },
+    });
+    await expect(result).resolves.toBe(1);
+    expect(played).toBe(false);
+    expect(stub.sent.find((m) => m.t === 'error')).toEqual({
+      t: 'error',
+      message: 'Claude Code 2.1.284 is too old',
+      detail: 'Run `claude update` in Terminal, then open MineVibe again.',
+    });
+    expect(stub.sent.at(-1)).toEqual({ t: 'exit', code: 1 });
+  });
+
+  it('lets only dev builds (and a checkout) run the SDK claude', async () => {
+    const seen: boolean[] = [];
+    const record = async (o: PrereqOptions) => {
+      seen.push(o.allowBundled);
+      return PREREQS_OK;
+    };
+    for (const layout of [
+      appBundleLayout(join(fakeBundle({ channel: 'dev' }), 'Contents', 'MacOS', 'node')),
+      appBundleLayout(join(fakeBundle({ channel: 'release' }), 'Contents', 'MacOS', 'node')),
+      appBundleLayout(join(fakeBundle({}), 'Contents', 'MacOS', 'node')), // before channels: dev
+      null,
+    ]) {
+      const stub = stubSide();
+      await runApp({
+        argv: [],
+        stdin: stub.stdin,
+        writeLine: stub.writeLine,
+        logger: silentLogger(),
+        layout,
+        repoRoot: layout ? null : '/repo',
+        handleSignals: false,
+        pcs: null,
+        prerequisites: record,
+        play: async () => 0,
+      });
+    }
+    expect(seen).toEqual([true, false, true, true]);
+    // An unreadable build-info.json is the strict side.
+    const bundle = fakeBundle();
+    writeFileSync(join(bundle, 'Contents', 'Resources', 'build-info.json'), '{');
+    const stub = stubSide();
+    await runApp({
+      argv: [],
+      stdin: stub.stdin,
+      writeLine: stub.writeLine,
+      logger: silentLogger(),
+      layout: appBundleLayout(join(bundle, 'Contents', 'MacOS', 'node')),
+      handleSignals: false,
+      pcs: null,
+      prerequisites: record,
+      play: async () => 0,
+    });
+    expect(seen.at(-1)).toBe(false);
+  });
+
+  it('stops when the stub speaks another protocol version (app), and fails the self-test', async () => {
+    const stub = stubSide();
+    const fake = (options: PlayOptions) =>
+      new Promise<number>((resolve) => {
+        if (options.control)
+          options.control.onStopRequest = (reason) => resolve(reason === 'stub-protocol' ? 130 : 2);
+      });
+    const result = runApp({
+      argv: [],
+      stdin: stub.stdin,
+      writeLine: stub.writeLine,
+      logger: silentLogger(),
+      layout: null,
+      repoRoot: '/repo',
+      handleSignals: false,
+      prerequisites: prereqsOk,
+      pcs: null,
+      play: fake,
+    });
+    await stub.until((m) => m.some((x) => x.t === 'hello'));
+    stub.command({ cmd: 'hello', v: 2, stub: 'future', pid: 1 });
+    await expect(result).resolves.toBe(130);
+    expect(stub.sent.find((m) => m.t === 'error')).toMatchObject({
+      message: 'MineVibe is damaged',
+      detail: expect.stringContaining('launcher speaks protocol v2, its server v1'),
+    });
+
+    const self = stubSide();
+    const selftest = runApp({
+      argv: ['--selftest'],
+      stdin: self.stdin,
+      writeLine: self.writeLine,
+      logger: silentLogger(),
+      layout: null,
+      repoRoot: null,
+      selftest: async () => [{ name: 'node', ok: true, detail: 'v24' }],
+    });
+    self.command({ cmd: 'hello', v: 7, stub: 'future', pid: 1 });
+    await self.until((m) => m.some((x) => x.t === 'selftest'));
+    expect(self.sent.find((m) => m.t === 'selftest')).toMatchObject({
+      ok: false,
+      checks: [
+        { name: 'stub protocol', ok: false },
+        { name: 'node', ok: true },
+      ],
+    });
+    self.stdin.end();
+    await expect(selftest).resolves.toBe(1);
+  });
+
+  it('hands play the app hooks', async () => {
+    const stub = stubSide();
+    const calls: PlayOptions[] = [];
+    await runApp({
+      argv: [],
+      stdin: stub.stdin,
+      writeLine: stub.writeLine,
+      logger: silentLogger(),
+      layout: null,
+      repoRoot: '/repo',
+      handleSignals: false,
+      prerequisites: prereqsOk,
+      pcs: null,
+      play: async (o) => {
+        calls.push(o);
+        return 0;
+      },
+    });
+    expect(Object.keys(calls[0]?.hooks ?? {}).sort()).toEqual([
+      'afterLock',
+      'beforeLaunch',
+      'beforeTeardown',
+    ]);
+  });
+});
+
+describe('appHooks', () => {
+  /** A stand-in for AppPcs: prepare resolves when the test says so. */
+  function fakePcs() {
+    const log: string[] = [];
+    let finish: (o: PcPrepOutcome) => void = () => {};
+    const pcs = {
+      prepare(signal?: AbortSignal) {
+        log.push(`prepare aborted=${signal?.aborted}`);
+        return new Promise<PcPrepOutcome>((r) => {
+          finish = r;
+        });
+      },
+      async boot() {
+        log.push('boot');
+      },
+      async shutdown() {
+        log.push('shutdown');
+      },
+    } as unknown as AppPcs;
+    return { pcs, log, finish: (o: PcPrepOutcome) => finish(o) };
+  }
+
+  function setup(createPcs: Parameters<typeof appHooks>[0]['createPcs'], warmWaitMs?: number) {
+    const sent: LaunchProgressMessage[] = [];
+    const progress = new LaunchProgress((m) => sent.push(m), { throttleMs: 0 });
+    const home = join(tmp(), 'home');
+    const paths = resolvePaths({ env: { MINEVIBE_HOME: home } });
+    mkdirSync(paths.run, { recursive: true });
+    const hooks = appHooks({
+      layout: null,
+      repoRoot: '/repo',
+      env: {},
+      log: silentLogger(),
+      progress,
+      createPcs,
+      ...(warmWaitMs !== undefined ? { warmWaitMs } : {}),
+    });
+    const quit = new AbortController();
+    const context = { paths, signal: quit.signal, logger: silentLogger() };
+    return { hooks, context, paths, sent, progress, quit };
+  }
+
+  it('afterLock reaps a stale bridge file and starts the PC setup without waiting for it', async () => {
+    const fake = fakePcs();
+    let created: unknown;
+    const { hooks, context, paths } = setup(async (o) => {
+      created = o;
+      return fake.pcs;
+    });
+    await writeBridgeFile(paths.bridgeFile, { port: 4000, token: 'b'.repeat(32), pid: 999_999 });
+    await hooks.afterLock?.(context);
+    expect(existsSync(paths.bridgeFile)).toBe(false);
+    expect(created).toMatchObject({ paths, layout: null, repoRoot: '/repo' });
+    expect(fake.log).toEqual(['prepare aborted=false']); // started, not awaited
+  });
+
+  it('beforeLaunch shows the PC lane while the game waits, then boots the PCs; teardown stops them', async () => {
+    const fake = fakePcs();
+    const { hooks, context, sent, progress } = setup(async (o) => {
+      o.onProgress?.({ step: 'image' } satisfies PcPrepEvent);
+      return fake.pcs;
+    });
+    await hooks.afterLock?.(context);
+    let launched = false;
+    const waiting = hooks.beforeLaunch?.(context).then(() => {
+      launched = true;
+    });
+    await tick();
+    expect(launched).toBe(false);
+    expect(sent.at(-1)).toMatchObject({
+      t: 'progress',
+      phase: 'pcs',
+      work: true,
+      title: 'Building the Linux PC image (first run)',
+    });
+    fake.finish({ engine: 'up', image: 'built' });
+    await waiting;
+    expect(fake.log).toEqual(['prepare aborted=false', 'boot']);
+    await hooks.beforeTeardown?.(context);
+    expect(fake.log.at(-1)).toBe('shutdown');
+    progress.dispose();
+  });
+
+  it('without PCs the hooks only reap', async () => {
+    const { hooks, context } = setup(null);
+    await hooks.afterLock?.(context);
+    await hooks.beforeLaunch?.(context);
+    await hooks.beforeTeardown?.(context);
+  });
+
+  it('a warm launch holds the game only so long for a slow PC setup; the PCs boot once it is done', async () => {
+    const fake = fakePcs();
+    const { hooks, context } = setup(async () => fake.pcs, 30);
+    await hooks.afterLock?.(context);
+    const t0 = Date.now();
+    await hooks.beforeLaunch?.(context); // the setup never finished: the game goes ahead
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(25);
+    expect(fake.log).toEqual(['prepare aborted=false']);
+    fake.finish({ engine: 'up', image: 'present' });
+    await tick();
+    expect(fake.log).toEqual(['prepare aborted=false', 'boot']);
+  });
+
+  it('first-run work (the kernel download, the image build) holds the game until it is done', async () => {
+    const fake = fakePcs();
+    const { hooks, context } = setup(async (o) => {
+      o.onProgress?.({ step: 'engine', firstRun: true });
+      return fake.pcs;
+    }, 10);
+    await hooks.afterLock?.(context);
+    let launched = false;
+    const waiting = hooks.beforeLaunch?.(context).then(() => {
+      launched = true;
+    });
+    await tick(60);
+    expect(launched).toBe(false);
+    fake.finish({ engine: 'up', image: 'built' });
+    await waiting;
+    expect(fake.log).toEqual(['prepare aborted=false', 'boot']);
+  });
+
+  it('a quit stops the wait at once, and nothing boots even when the setup finishes later', async () => {
+    const fake = fakePcs();
+    const { hooks, context, quit } = setup(async (o) => {
+      o.onProgress?.({ step: 'image' });
+      return fake.pcs;
+    });
+    await hooks.afterLock?.(context);
+    const waiting = hooks.beforeLaunch?.(context);
+    await tick();
+    quit.abort();
+    await waiting;
+    fake.finish({ engine: 'up', image: 'failed' });
+    await tick();
+    expect(fake.log).toEqual(['prepare aborted=false']);
+    await hooks.beforeTeardown?.(context);
+    expect(fake.log.at(-1)).toBe('shutdown');
+  });
+
+  it('a PC setup that cannot be created never fails the launch', async () => {
+    const { hooks, context } = setup(async () => {
+      throw new Error('EACCES: permission denied, mkdir');
+    });
+    await expect(hooks.afterLock?.(context)).resolves.toBeUndefined();
+    await expect(hooks.beforeLaunch?.(context)).resolves.toBeUndefined();
+    await hooks.beforeTeardown?.(context);
   });
 });
 

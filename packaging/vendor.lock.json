@@ -37,7 +37,7 @@
     },
     "signer": "Developer ID Installer: Apple Inc. - Containerization (UPBK2H6LZM)",
     "teamId": "UPBK2H6LZM",
-    "exclude": ["bin/uninstall-container.sh", "bin/update-container.sh"],
+    "exclude": ["bin/uninstall-container.sh", "bin/update-container.sh", "libexec/container/plugins/k8s"],
     "installRootFiles": {
       "bin/container": "8cc619377e8978a0ce9f22a3e864dcd4445f2bc38fb64c5197bb69a1bab42463",
       "bin/container-apiserver": "0d05388259e73b63f84680968fa5fa39feeef4219cce45c5655d29d3172a63b9",
@@ -47,9 +47,6 @@
       "libexec/container/plugins/container-network-vmnet/config.toml": "7ec0d522dcf9c9bc78b1e0843916bd0a98cfec45ef5b35f04fb8407ecda3db3e",
       "libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux": "e8bee184cc1f6b53982f9cc4ecb02085ebe238b8834112f71f8972c0d488511a",
       "libexec/container/plugins/container-runtime-linux/config.toml": "d609af652f3e0224cb7f0cef315f873081506d010d2d1a8ff33508980e3427a7",
-      "libexec/container/plugins/k8s/bin/k8s": "67242bebdc0e1b175cc69005e77a69450a054caca7cba9ef281269f4f1960d98",
-      "libexec/container/plugins/k8s/config.toml": "4b190947dd6fdadb9463b0210d19c25b1d086ddff00a0685027d29e99facab95",
-      "libexec/container/plugins/k8s/resources/kindnet.yaml": "9bb5cbeb75c07664b438a6dd3bb8f038e024cdebca3d945c5d02da5f2f2f781a",
       "libexec/container/plugins/machine-apiserver/bin/machine-apiserver": "1d3f53f6979d92d0bb9f343cc16782bad9a4b23bb380619f4b0d87d9d6df449c",
       "libexec/container/plugins/machine-apiserver/config.toml": "819edb0d3c20517e8a56e11a9623b3804c6821d3920da3fa66d989f766103b6a",
       "libexec/container/plugins/machine-apiserver/resources/create-user.sh": "bdbb3ceef02861b2b270ac403aa32320db6f23a0042dfde24c6a1275eca82f7b",

@@ -47,7 +47,11 @@ export const VendorLock = z.object({
     /** The first certificate of `pkgutil --check-signature`. */
     signer: z.string().min(1),
     teamId: TeamId,
-    /** Payload files left out of the install root (Apple's update and uninstall scripts). */
+    /**
+     * Payload files or folders left out of the install root: Apple's update and uninstall scripts, and the `k8s`
+     * plugin (61 MB; a CLI-only Kubernetes helper MineVibe never runs, and `system start`, `build` and `run` work
+     * without it).
+     */
     exclude: z.array(ArchivePath).default([]),
     /** Every file of the install root with its sha256: the bundled copy must hold exactly these. */
     installRootFiles: z.record(ArchivePath, Sha256).refine((files) => 'bin/container' in files, {
