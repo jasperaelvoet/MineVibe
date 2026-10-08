@@ -86,6 +86,30 @@ public final class MonitorTextures {
 		return at == 0 ? Long.MAX_VALUE : System.nanoTime() - at;
 	}
 
+	/**
+	 * Every frame held, for the E2E {@code debug.state} snapshot: {@code pcId}, {@code w}, {@code h}, {@code seq},
+	 * {@code patches}, {@code ageMs} and {@code hash} (CRC32 of the pixels, hex).
+	 */
+	public static java.util.List<Map<String, Object>> debugSnapshot() {
+		java.util.List<Map<String, Object>> out = new java.util.ArrayList<>();
+		for (Map.Entry<String, Entry> en : new java.util.TreeMap<>(ENTRIES).entrySet()) {
+			MonitorFrame f = en.getValue().frame;
+			int[] wh = f.size();
+			long crc = f.contentCrc();
+			long at = f.lastPatchNanos();
+			Map<String, Object> m = new java.util.LinkedHashMap<>();
+			m.put("pcId", en.getKey());
+			m.put("w", wh == null ? 0 : wh[0]);
+			m.put("h", wh == null ? 0 : wh[1]);
+			m.put("seq", f.seq());
+			m.put("patches", f.patches());
+			m.put("ageMs", at == 0 ? null : Math.max(0, (System.nanoTime() - at) / 1_000_000));
+			m.put("hash", crc < 0 ? null : String.format("%08x", crc));
+			out.add(m);
+		}
+		return out;
+	}
+
 	/** Render thread: frees one PC's texture and frame. */
 	public static void release(final String pcId) {
 		Entry e = ENTRIES.remove(pcId);

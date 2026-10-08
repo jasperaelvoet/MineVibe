@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AgentId, NonNegInt, WorldId } from './common.js';
+import { AgentId, JsonObject, NonNegInt, WorldId } from './common.js';
 import { type CatalogEntry, defineMessage } from './define.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -11,6 +11,45 @@ import { type CatalogEntry, defineMessage } from './define.js';
 export const DebugState = defineMessage('debug.state', {}).describe(
   'E2E: snapshot of the client (screen, world, pause state, server ticks, player health).',
 );
+
+/** A position in blocks (E2E snapshots). */
+export const DebugPos = z.object({ x: z.number(), y: z.number(), z: z.number() });
+
+/** One agent as the client shows it (`debug.state`). */
+export const DebugAgent = z.object({
+  agentId: AgentId,
+  handle: z.string().min(1).max(32),
+  status: z.string().min(1).max(32),
+  /** Brain status from `agent.brain` (`idle`, `thinking`, ...). */
+  brain: z.string().min(1).max(32),
+  /** The head icon the client draws (`NONE`, `QUESTION`, `THINKING`, `SEATED`, ...). */
+  headIcon: z.string().min(1).max(32),
+  /** The live bubble's text, null when none is shown. */
+  bubble: z.string().max(4000).nullable(),
+  /** Open pending cards. */
+  cards: NonNegInt,
+  /** The body's position, null when the body is not loaded on the client. */
+  pos: DebugPos.nullable(),
+  /** The body rides a PC seat. */
+  atPc: z.boolean(),
+});
+export type DebugAgent = z.infer<typeof DebugAgent>;
+
+/** One PC monitor frame on the client (`debug.state`). */
+export const DebugMonitor = z.object({
+  pcId: z.string().min(1).max(64),
+  w: NonNegInt,
+  h: NonNegInt,
+  /** Sequence number of the last frame patched in, -1 before the first. */
+  seq: z.number().int().min(-1),
+  /** Rects patched in so far. */
+  patches: NonNegInt,
+  /** Milliseconds since the last patch, null before the first. */
+  ageMs: NonNegInt.nullable(),
+  /** CRC32 of the frame's pixels (hex), null before the first frame. */
+  hash: z.string().max(16).nullable(),
+});
+export type DebugMonitor = z.infer<typeof DebugMonitor>;
 
 /** Keys of the `ok` reply to `debug.state`. */
 export const DebugStateResult = z.object({
@@ -38,6 +77,12 @@ export const DebugStateResult = z.object({
   dead: z.boolean().nullable(),
   /** Game JVM process id (lets the E2E harness kill the client). */
   pid: NonNegInt,
+  /** The local player's position, null outside a world (newer mods only). */
+  player: DebugPos.nullable().optional(),
+  /** The crew as the client shows it: body position, live bubble and head icon (newer mods only). */
+  agents: z.array(DebugAgent).max(64).optional(),
+  /** Every PC monitor frame the client holds (newer mods only). */
+  monitors: z.array(DebugMonitor).max(64).optional(),
 });
 export type DebugStateResult = z.infer<typeof DebugStateResult>;
 
@@ -63,6 +108,37 @@ export const DebugKillAgent = defineMessage('debug.kill_agent', { agentId: Agent
 export const DebugSetClock = defineMessage('debug.set_clock', { clockTime: NonNegInt }).describe(
   'E2E: set the overworld clock time.',
 );
+
+/**
+ * N→M request. Submits a chat line as the player would (the chat interceptor's path: the local mention check, then
+ * `chat.send`). The `ok` reply carries {@link DebugChatResult}.
+ */
+export const DebugChat = defineMessage('debug.chat', { text: z.string().min(1).max(2000) }).describe(
+  'E2E: submit a chat line as the player.',
+);
+
+/** Keys of the `ok` reply to `debug.chat`. */
+export const DebugChatResult = z.object({
+  /** The line went out as `chat.send` (false: the local check refused it, see `hint`). */
+  sent: z.boolean(),
+  hint: z.string().max(500).nullable(),
+});
+export type DebugChatResult = z.infer<typeof DebugChatResult>;
+
+/**
+ * N→M request. Makes the mod's UI send one mod-to-Node request (`agent.cmd`, `calendar.put`, `pending.answer`, ...)
+ * through its own transport, as a screen would. The `ok` reply carries Node's result keys as `reply`; Node's `err`
+ * comes back as this request's `err`.
+ */
+export const DebugUiRequest = defineMessage('debug.ui_request', {
+  /** The request's message type (`type`, since `t` is the envelope's). */
+  type: z.string().min(1).max(64),
+  payload: JsonObject,
+}).describe('E2E: send a UI request to Node as the mod.');
+
+/** Keys of the `ok` reply to `debug.ui_request`. */
+export const DebugUiRequestResult = z.object({ reply: JsonObject });
+export type DebugUiRequestResult = z.infer<typeof DebugUiRequestResult>;
 
 export const debugMessages = {
   'debug.state': {
@@ -101,5 +177,20 @@ export const debugMessages = {
     direction: 'node_to_mod',
     group: 'debug',
     summary: 'E2E only: set the overworld clock time (request).',
+  },
+  'debug.chat': {
+    schema: DebugChat,
+    direction: 'node_to_mod',
+    group: 'debug',
+    summary: 'E2E only: submit a chat line as the player (request; reply carries DebugChatResult).',
+    reply: DebugChatResult,
+  },
+  'debug.ui_request': {
+    schema: DebugUiRequest,
+    direction: 'node_to_mod',
+    group: 'debug',
+    summary:
+      'E2E only: send a mod-to-Node UI request as the mod (request; reply carries DebugUiRequestResult).',
+    reply: DebugUiRequestResult,
   },
 } as const satisfies Record<string, CatalogEntry>;

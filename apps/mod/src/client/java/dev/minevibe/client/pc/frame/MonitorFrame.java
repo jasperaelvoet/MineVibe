@@ -191,4 +191,19 @@ public final class MonitorFrame {
 			this.lock.unlock();
 		}
 	}
+
+	/** CRC32 of the pixels, or -1 before the first frame (E2E snapshots: a changed screen changes it). */
+	public long contentCrc() {
+		this.lock.lock();
+		try {
+			if (this.size == 0) {
+				return -1;
+			}
+			java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+			crc.update(this.pixels.duplicate().clear());
+			return crc.getValue();
+		} finally {
+			this.lock.unlock();
+		}
+	}
 }

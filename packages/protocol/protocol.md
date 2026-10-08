@@ -471,6 +471,8 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `debug.click_begin` | debug | N→M |  | E2E only: press Begin on the Game Over screen (request). |
 | `debug.kill_agent` | debug | N→M |  | E2E only: kill an agent body (request). |
 | `debug.set_clock` | debug | N→M |  | E2E only: set the overworld clock time (request). |
+| `debug.chat` | debug | N→M | `DebugChatResult` | E2E only: submit a chat line as the player (request; reply carries DebugChatResult). |
+| `debug.ui_request` | debug | N→M | `DebugUiRequestResult` | E2E only: send a mod-to-Node UI request as the mod (request; reply carries DebugUiRequestResult). |
 | `ok` | reply | both |  | Success reply to a request. |
 | `err` | reply | both |  | Failure reply to a request. |
 
@@ -743,6 +745,15 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 |---|---|---|
 | `debug.kill_agent` | integrated server | `{}`; `err UNKNOWN_AGENT` |
 | `debug.set_clock` | integrated server | `{}` after setting the overworld clock to `clockTime` |
+| `debug.chat` | client thread | `{ sent, hint }`: `{ text }` goes through the chat interceptor exactly as a typed line (the local mention check, then `chat.send`); `sent: false` with the hint when the local check refused it |
+| `debug.ui_request` | the bridge (the reply waits for Node) | `{ reply }`: `{ type, payload }` is sent to Node as the UI would send it (any mod-to-Node request: `agent.cmd`, `calendar.put`, `pending.answer`, ...); Node's `err` is returned as this request's `err` (`BAD_ARGS` for an unknown or Node-to-mod type) |
+
+`DebugStateResult` gains three optional keys from newer mods: `player` (`{ x, y, z }` or null), `agents` (the crew as
+the client shows it: `agentId`, `handle`, `status`, `brain`, `headIcon`, the live `bubble` text or null, open
+`cards`, the body's `pos` or null, `atPc`) and `monitors` (each PC frame the client holds: `pcId`, `w`, `h`, `seq`,
+`patches`, `ageMs`, and `hash`, a CRC32 of the pixels).
+
+Fixtures: `debug.chat.json`, `debug.ui_request.json`.
 
 ## 8. Binary frames: `MVF1` (N→M)
 

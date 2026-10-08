@@ -4,7 +4,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../../src/log.js';
-import { MOD_JAR_ENV, type PlayHookContext, play, RESOURCES_ENV } from '../../src/orchestrator/play.js';
+import {
+  e2eJvmArgs,
+  MOD_JAR_ENV,
+  type PlayHookContext,
+  play,
+  RESOURCES_ENV,
+} from '../../src/orchestrator/play.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..', '..');
 
@@ -100,5 +106,12 @@ describe('play hooks (MineVibe.app)', () => {
     ).rejects.toThrow('reaper failed');
     expect(order).toEqual(['afterLock', 'beforeTeardown']);
     expect(existsSync(join(h, 'run', 'lock'))).toBe(false);
+  });
+});
+
+describe('E2E mode (MINEVIBE_E2E=1 npm run play)', () => {
+  it('turns on the game debug handlers with the system property the mod reads', () => {
+    expect(e2eJvmArgs(true)).toEqual(['-Dminevibe.e2e=true']);
+    expect(e2eJvmArgs(false)).toEqual([]);
   });
 });

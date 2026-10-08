@@ -86,6 +86,8 @@ export interface PlayOptions {
   readonly runtime?: Pick<RuntimeOptions, 'modules' | 'agents' | 'crew'>;
   /** MineVibe.app's reaper, PC setup and teardown (see {@link PlayHooks}). */
   readonly hooks?: PlayHooks;
+  /** Called once the composed runtime runs, before the installs (the E2E harness drives the game through it). */
+  readonly onRuntime?: (runtime: Runtime) => void;
 }
 
 export interface PlayTimings {
@@ -139,6 +141,14 @@ async function resolveModJar(
   if (srcTime > jarTime)
     log.warn({ jar }, 'apps/mod/src is newer than the mod jar; rebuild with ./gradlew build');
   return jar;
+}
+
+/**
+ * JVM arguments for E2E mode: the game's `debug.*` handlers are on only with `-Dminevibe.e2e=true` (the mod reads the
+ * system property, never the environment), so `MINEVIBE_E2E=1 npm run play` passes it on.
+ */
+export function e2eJvmArgs(e2e: boolean): string[] {
+  return e2e ? ['-Dminevibe.e2e=true'] : [];
 }
 
 /** Sends SIGTERM (the JVM's shutdown hook saves the world), then SIGKILL if it is still running after `graceMs`. */
@@ -264,6 +274,7 @@ export async function play(options: PlayOptions): Promise<number> {
     });
     mark('bridge', t);
     server.bridge.once('connected', () => progress({ phase: 'connected' }));
+    options.onRuntime?.(server);
 
     // Installs run in parallel; the first failure aborts the rest.
     progress({ phase: 'install', state: 'start' });
@@ -378,6 +389,7 @@ export async function play(options: PlayOptions): Promise<number> {
       bridgeFile: paths.bridgeFile,
       parentPid: process.pid,
       maxMemoryMb: settings.maxMemoryMb,
+      extraJvmArgs: e2eJvmArgs(server.debug !== null),
     });
     signal.throwIfAborted();
     if (process.platform === 'darwin' && !command.includes('-XstartOnFirstThread')) {

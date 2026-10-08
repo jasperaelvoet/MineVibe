@@ -1,0 +1,7 @@
+{
+  "t": "debug.ui_request",
+  "v": 1,
+  "id": "n-11",
+  "type": "agent.cmd",
+  "payload": { "agentId": "ada", "cmd": "kick" }
+}

@@ -93,9 +93,10 @@ fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~
 | `MINEVIBE_HOME` | Replaces the data home (see above) |
 | `MINEVIBE_BRIDGE_PORT` | The dev server's port (default 47800) |
 | `MINEVIBE_SCRIPTED_CREW=1` | The scripted crew, as `--scripted-crew` |
-| `MINEVIBE_E2E=true` | E2E mode: the `debug.*` helpers. Set it for both `npm run dev` and `./gradlew runClient` (the game reads only `true`). |
+| `MINEVIBE_E2E=true` | E2E mode: the `debug.*` helpers. Set it for both `npm run dev` and `./gradlew runClient` (the game reads only `true`); `npm run play` passes `-Dminevibe.e2e=true` to the game itself. |
 | `MINEVIBE_SAVES_DIR` | Where the dev server looks for saves to bury (default `apps/mod/run/saves`) |
 | `MINEVIBE_PLAYER_NAME` | The offline player name |
+| `MINEVIBE_WORLD_SEED` | Development and E2E only: the level seed of every fresh world, for repeatable terrain (MineVibe.app ignores it) |
 | `MINEVIBE_PC_RUNTIME=docker` or `container` | Picks the Linux PC driver. Docker (OrbStack, Colima) is the development and CI fallback. |
 | `MINEVIBE_CLAUDE=bundled` | Development only: use the Claude Agent SDK's own `claude` binary instead of yours. Release builds never ship it. |
 | `MINEVIBE_LOG_LEVEL`, `MINEVIBE_LOG_JSON=1` | Log level, and JSON logs instead of the pretty terminal format |

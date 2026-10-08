@@ -20,7 +20,13 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DebugStateResult, type PayloadOf, type Place } from '@minevibe/protocol';
+import {
+  DebugChatResult,
+  DebugStateResult,
+  DebugUiRequestResult,
+  type PayloadOf,
+  type Place,
+} from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import type { AgentRecord } from '../agents/AgentBrain.js';
 import type { AgentManager, CrewFate } from '../agents/AgentManager.js';
@@ -57,6 +63,8 @@ import { createNullPcModule } from './placeholderModules.js';
 export const PC_RUNTIME_ENV = 'MINEVIBE_PC_RUNTIME';
 /** `off` (or `0`, `false`, `no`) runs without PCs: no container engine is touched. */
 export const PCS_ENV = 'MINEVIBE_PCS';
+/** Dev and E2E only: the level seed of every fresh world (repeatable terrain for acceptance runs). */
+export const WORLD_SEED_ENV = 'MINEVIBE_WORLD_SEED';
 
 /** How long a new agent's spawn waits for the office door before it appears near the player instead. */
 export const OFFICE_DOOR_WAIT_MS = 5_000;
@@ -74,6 +82,14 @@ export interface DevDebug {
   killPlayer(): Promise<void>;
   openMenu(): Promise<{ screen: string | null }>;
   clickBegin(): Promise<void>;
+  /** Submits a chat line as the player (the mod's chat interceptor, then `chat.send`). */
+  chat(text: string): Promise<DebugChatResult>;
+  /** Makes the mod's UI send one mod-to-Node request (`agent.cmd`, `calendar.put`, ...); resolves with Node's result. */
+  uiRequest(
+    type: string,
+    payload: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>>;
 }
 
 export interface RuntimeOptions {
@@ -165,6 +181,18 @@ export function createDebug(bridge: BridgeServer): DevDebug {
     },
     async clickBegin() {
       await bridge.request('debug.click_begin', {});
+    },
+    async chat(text) {
+      const { t: _t, v: _v, re: _re, ...payload } = await bridge.request('debug.chat', { text });
+      return DebugChatResult.parse(payload);
+    },
+    async uiRequest(type, payload, timeoutMs) {
+      const reply = await bridge.request(
+        'debug.ui_request',
+        { type, payload },
+        { timeoutMs: timeoutMs ?? 15_000 },
+      );
+      return DebugUiRequestResult.parse({ reply: reply.reply }).reply;
     },
   };
 }
@@ -311,6 +339,8 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
   let scriptedCrew: ScriptedCrew | null = null;
   let ui: UiHub | null = null;
   const worldLog = log.child({ component: 'world' });
+  // MineVibe.app never takes a seed from the environment.
+  const worldSeed = options.mode === 'app' ? undefined : env[WORLD_SEED_ENV]?.trim() || undefined;
   const lifecycle = new WorldLifecycle({
     bridge,
     store,
@@ -328,6 +358,7 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
     onWorldReady: (world, { fresh }) => onWorldReady(world, fresh),
     snapshot: () => snapshot(),
     crewFates: (worldId) => fates.get(worldId) ?? [],
+    ...(worldSeed ? { worldSeed } : {}),
   });
 
   // --- Crew ------------------------------------------------------------------------------------------------------

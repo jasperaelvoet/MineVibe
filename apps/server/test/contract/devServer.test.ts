@@ -122,6 +122,34 @@ describe('dev server', () => {
     });
   });
 
+  it('passes MINEVIBE_WORLD_SEED to fresh worlds only (repeatable terrain for acceptance runs)', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'mv-dev-'));
+    dirs.push(repo);
+    const server = await startDevServer({
+      repoRoot: repo,
+      logger: silentLogger(),
+      port: 0,
+      env: { MINEVIBE_WORLD_SEED: ' e2e-forest ' },
+      heartbeatMs: 0,
+      ...NO_CREW,
+    });
+    servers.push(server);
+    const token = JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token;
+    const mod = await connect(server.port, token);
+    mod.send(hello);
+    await mod.next('hello.ok');
+    expect(await mod.next('world.open')).toMatchObject({ worldId: 'world-1', fresh: true, seed: 'e2e-forest' });
+    // Once the world exists, reopening it never carries a seed.
+    mod.send({ t: 'world.state', v: 1, id: 'ws-1', worldId: 'world-1', phase: 'ready', fresh: true });
+    await mod.next('ok', (m) => m.re === 'ws-1');
+    const again = await connect(server.port, token);
+    again.send({ ...hello, id: 'm-2' });
+    await again.next('hello.ok');
+    const reopen = await again.next('world.open');
+    expect(reopen).toMatchObject({ worldId: 'world-1', fresh: false });
+    expect(reopen).not.toHaveProperty('seed');
+  });
+
   it('runs the hardcore loop: death -> ack -> world.next -> closed -> world.open of World #2', async () => {
     const { server, token } = await start();
     const mod = await connect(server.port, token);
@@ -396,6 +424,19 @@ describe('dev server', () => {
     const click = await mod.next('debug.click_begin');
     mod.send({ t: 'err', v: 1, re: click.id, code: 'NOT_READY', msg: 'Begin is not enabled yet' });
     await expect(begin).rejects.toMatchObject({ code: 'NOT_READY' });
+
+    // A chat line as the player, and a UI request through the mod (the E2E harness drives the game with these).
+    const chat = debug.chat('@ceo hi');
+    const chatReq = await mod.next('debug.chat');
+    expect(chatReq).toMatchObject({ text: '@ceo hi' });
+    mod.send({ t: 'ok', v: 1, re: chatReq.id, sent: false, hint: 'Nobody is called ceo' });
+    expect(await chat).toEqual({ sent: false, hint: 'Nobody is called ceo' });
+
+    const kick = debug.uiRequest('agent.cmd', { agentId: 'ada', cmd: 'kick' });
+    const uiReq = await mod.next('debug.ui_request');
+    expect(uiReq).toMatchObject({ type: 'agent.cmd', payload: { agentId: 'ada', cmd: 'kick' } });
+    mod.send({ t: 'ok', v: 1, re: uiReq.id, reply: { echo: 'Kicked Ada off linux-1' } });
+    expect(await kick).toEqual({ echo: 'Kicked Ada off linux-1' });
   });
 
   it('remembers that a world was created, and reopens a stale in-world mod', async () => {

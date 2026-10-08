@@ -31,6 +31,11 @@ export interface WorldLifecycleOptions {
   >;
   /** The crew's fates for the Game Over summary (`world.next.summary.crewFates`) of a dead world. */
   readonly crewFates?: (worldId: string) => PayloadOf<'world.next'>['summary']['crewFates'];
+  /**
+   * Level seed for every fresh world (`world.open.seed`; dev and E2E only, `MINEVIBE_WORLD_SEED`): repeatable terrain
+   * for acceptance runs. Default: none, the mod picks a random seed.
+   */
+  readonly worldSeed?: string;
 }
 
 /**
@@ -56,6 +61,7 @@ export class WorldLifecycle {
   readonly #onWorldReady: WorldLifecycleOptions['onWorldReady'];
   readonly #snapshot: WorldLifecycleOptions['snapshot'];
   readonly #crewFates: WorldLifecycleOptions['crewFates'];
+  readonly #worldSeed: string | undefined;
   #playerName: string;
   #lastPhase: string | null = null;
   readonly #unsubscribe: Array<() => void> = [];
@@ -75,6 +81,7 @@ export class WorldLifecycle {
     this.#onWorldReady = options.onWorldReady;
     this.#snapshot = options.snapshot;
     this.#crewFates = options.crewFates;
+    this.#worldSeed = options.worldSeed?.trim() || undefined;
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
@@ -295,12 +302,14 @@ export class WorldLifecycle {
   }
 
   #sendWorldOpen(rec: CurrentWorldRecord): void {
+    const seed = this.#worldSeed;
     this.#bridge.send('world.open', {
       worldId: rec.worldId,
       gen: rec.gen,
       fresh: !rec.created,
       hardcore: true,
       difficulty: 'hard',
+      ...(seed && !rec.created ? { seed } : {}),
     });
   }
 

@@ -55,7 +55,7 @@ class MsgCatalogTest {
 		for (List<MessageType<?>> group : List.of(Bodies.TYPES, Skills.TYPES, Seats.TYPES, Ui.TYPES, Pc.TYPES, Org.TYPES, Debug.TYPES)) {
 			for (MessageType<?> type : group) assertSame(type, Messages.byName(type.name()), type.name());
 		}
-		assertEquals(67, Messages.catalog().size(), "the catalog has every type of registry.ts");
+		assertEquals(69, Messages.catalog().size(), "the catalog has every type of registry.ts");
 	}
 
 	@Test
