@@ -349,7 +349,6 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     agentId: AGENT_ID,
     store,
     plans,
-    canEnterPlan: () => seated,
     seatEpoch: () => seat.epoch,
     playerName: () => PLAYER,
     hooks: {
@@ -360,9 +359,6 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       setPermissionMode: async (mode) => {
         trackedMode = mode;
         await session?.setPermissionMode(mode);
-      },
-      trackMode: (mode) => {
-        trackedMode = mode;
       },
     },
   });
