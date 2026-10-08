@@ -1,0 +1,16 @@
+{
+  "t": "calendar.put",
+  "v": 1,
+  "id": "m-1",
+  "title": "Farm\nwheat",
+  "kind": "task",
+  "assignees": ["bram"],
+  "clock": "game",
+  "at": 0,
+  "recurrence": {
+    "kind": "once"
+  },
+  "durationMin": 10,
+  "catchUp": "skip",
+  "runWhileAway": false
+}

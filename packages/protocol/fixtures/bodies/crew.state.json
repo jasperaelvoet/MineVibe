@@ -1,0 +1,30 @@
+{
+  "t": "crew.state",
+  "v": 1,
+  "crew": [
+    {
+      "agentId": "ada",
+      "handle": "ada",
+      "name": "Ada",
+      "role": "ceo",
+      "ceo": true,
+      "status": "alive"
+    },
+    {
+      "agentId": "bram",
+      "handle": "bram",
+      "name": "Bram",
+      "role": "engineer",
+      "ceo": false,
+      "status": "alive"
+    },
+    {
+      "agentId": "cleo",
+      "handle": "cleo",
+      "name": "Cleo",
+      "role": "miner",
+      "ceo": false,
+      "status": "dead"
+    }
+  ]
+}

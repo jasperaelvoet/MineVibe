@@ -1,0 +1,18 @@
+{
+  "t": "calendar.put",
+  "v": 1,
+  "id": "m-110",
+  "title": "Farm wheat",
+  "kind": "task",
+  "assignees": ["bram"],
+  "clock": "game",
+  "at": 48000,
+  "recurrence": {
+    "kind": "once"
+  },
+  "durationMin": 30,
+  "location": "wheat-field",
+  "task": "Harvest and replant the wheat.",
+  "catchUp": "skip",
+  "runWhileAway": false
+}

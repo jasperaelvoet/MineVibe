@@ -1,0 +1,10 @@
+{
+  "t": "brains.state",
+  "v": 1,
+  "inFlight": 2,
+  "queued": 1,
+  "max": 2,
+  "mode": "tired",
+  "utilization": 0.82,
+  "resetsAt": 1791492000000
+}

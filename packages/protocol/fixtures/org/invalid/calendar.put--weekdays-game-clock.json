@@ -1,0 +1,16 @@
+{
+  "t": "calendar.put",
+  "v": 1,
+  "id": "m-1",
+  "title": "Standup",
+  "kind": "meeting",
+  "assignees": "all",
+  "clock": "game",
+  "at": 0,
+  "recurrence": {
+    "kind": "weekdays"
+  },
+  "durationMin": 10,
+  "catchUp": "skip",
+  "runWhileAway": false
+}

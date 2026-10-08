@@ -1,0 +1,28 @@
+{
+  "t": "pc.state",
+  "v": 1,
+  "pcId": "mac-1",
+  "type": "macos",
+  "name": "mac-1",
+  "status": "awaiting_consent",
+  "progress": null,
+  "detail": null,
+  "slot": 2,
+  "cpus": 4,
+  "memoryMiB": 8192,
+  "diskGiB": 150,
+  "plugged": true,
+  "pinned": false,
+  "wipeOnDeath": false,
+  "mounts": [],
+  "occupant": null,
+  "reservation": null,
+  "banner": null,
+  "screen": null,
+  "consent": {
+    "consentId": "consent-1",
+    "what": "macOS 26 image",
+    "bytes": 24000000000,
+    "freeBytes": 310000000000
+  }
+}

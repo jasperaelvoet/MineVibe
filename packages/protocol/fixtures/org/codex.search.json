@@ -1,0 +1,8 @@
+{
+  "t": "codex.search",
+  "v": 1,
+  "id": "m-100",
+  "query": "iron",
+  "category": "places",
+  "limit": 8
+}
