@@ -4,6 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.world.provenance.Consents;
+import dev.minevibe.world.provenance.Protection;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
@@ -130,6 +132,88 @@ public abstract class SkillJob implements Job {
 		return Status.DONE;
 	}
 
+	// ---------------------------------------------------------------- protection (W1)
+
+	private boolean allowProtected;
+	private boolean consented;
+
+	/**
+	 * {@code args.allow_protected} as asked, and whether Node's {@code consent} token was valid (then {@code Consents}
+	 * holds a grant for this job). Set by {@code SkillService} before the job starts.
+	 */
+	public void protection(final boolean allowProtected, final boolean consented) {
+		this.allowProtected = allowProtected;
+		this.consented = consented;
+	}
+
+	public boolean consented() {
+		return this.consented;
+	}
+
+	/**
+	 * Fails with {@code PROTECTED}: {@code v} is the nearest protected thing this job would change, {@code all} every
+	 * protected position it met (the box a consent covers). Offers a consent token for them ({@code Consents}), which
+	 * Node keeps for when the player agrees, and teaches the agent to ask.
+	 */
+	protected final Status refuseProtected(final AgentPlayer agent, final Protection.Verdict v, final java.util.Collection<BlockPos> all) {
+		java.util.List<BlockPos> positions = new java.util.ArrayList<>(all);
+		if (!positions.contains(v.pos())) {
+			positions.add(v.pos());
+		}
+		String token = Consents.offer(agent.agentId(), agent.level(), positions);
+		JsonObject p = new JsonObject();
+		p.add("pos", pos(v.pos()));
+		p.addProperty("what", v.what().wire);
+		// Clipped to the protocol's bounds (a hand-edited zones.json can hold long names).
+		p.addProperty("owner", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.owner(), 48));
+		p.addProperty("block", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.block(), 128));
+		if (v.zone() != null) {
+			p.addProperty("zone", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.zone(), 48));
+		}
+		p.addProperty("count", positions.size());
+		if (token != null) {
+			p.addProperty("consentId", token);
+		}
+		p.addProperty("hint", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.hint(), 400));
+		this.result.add("protected", p);
+		String more = positions.size() > 1 ? ", and " + (positions.size() - 1) + " more" : "";
+		String where = v.block().replace("minecraft:", "") + " at " + v.pos().getX() + " " + v.pos().getY() + " " + v.pos().getZ();
+		String tail = this.allowProtected && !this.consented
+			? " allow_protected only works once " + v.owner() + " has agreed: ask " + v.owner() + " first."
+			: " Nothing was changed. Ask " + v.owner() + "; only if they agree, retry with allow_protected.";
+		return this.fail("PROTECTED", v.hint() + " (" + where + more + ")." + tail);
+	}
+
+	/**
+	 * Fails with {@code NO_NATURAL_SOURCE}: nothing natural and reachable of {@code what} within {@code radius}. Lists
+	 * the nearest sources it saw and why they were no good, and says never to take something else instead.
+	 */
+	protected final Status noNaturalSource(
+		final AgentPlayer agent, final String what, final int radius, final java.util.List<dev.minevibe.agent.perception.Sources.Candidate> candidates
+	) {
+		JsonObject d = new JsonObject();
+		d.addProperty("what", dev.minevibe.bridge.protocol.ProtocolCodec.clip(what, 160));
+		d.addProperty("radius", Math.max(1, Math.min(64, radius)));
+		JsonArray arr = new JsonArray();
+		for (dev.minevibe.agent.perception.Sources.Candidate c : candidates) {
+			arr.add(c.toJson());
+		}
+		d.add("candidates", arr);
+		String player = Protection.playerName(agent.level().getServer());
+		String hint = "Don't take anything else instead. Tell " + player + " what you found and ask what to do (another place, or permission).";
+		d.addProperty("hint", hint);
+		this.result.add("noNaturalSource", d);
+		StringBuilder msg = new StringBuilder("No reachable natural ").append(what).append(" within ").append(radius).append(" blocks");
+		if (!candidates.isEmpty()) {
+			msg.append(". Seen: ");
+			for (int i = 0; i < candidates.size(); i++) {
+				msg.append(i == 0 ? "" : "; ").append(candidates.get(i).describe());
+			}
+		}
+		msg.append(". ").append(hint);
+		return this.fail("NO_NATURAL_SOURCE", msg.toString());
+	}
+
 	protected final void progress(final @Nullable Double fraction, final String text) {
 		Double f = fraction == null ? null : Math.max(0.0, Math.min(1.0, fraction));
 		if (!text.equals(this.progressText) || !java.util.Objects.equals(f, this.progress)) {
@@ -141,6 +225,11 @@ public abstract class SkillJob implements Job {
 
 	public @Nullable String failureCode() {
 		return this.failureCode;
+	}
+
+	/** The message of the failure (empty when there is none). */
+	public String failureMessage() {
+		return this.failureMessage;
 	}
 
 	@Override

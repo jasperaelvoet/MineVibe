@@ -4,6 +4,8 @@ import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.skill.seat.Seats;
 import dev.minevibe.bridge.MineVibeBridge;
+import dev.minevibe.world.provenance.Consents;
+import dev.minevibe.world.provenance.Zones;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
@@ -20,6 +22,9 @@ public final class SkillsModInit implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		SkillCommands.register();
+		// W1: agents never change player-built or Base blocks, whatever drives their hands.
+		ProtectionGuard.register();
+		dev.minevibe.world.provenance.ProvenanceCommands.register();
 		// Before the bridge connects (the client entrypoint installs it after every common one has run).
 		MineVibeBridge.onInstall(SkillBridge::attach);
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
@@ -37,6 +42,9 @@ public final class SkillsModInit implements ModInitializer {
 			SkillService.stopped(server);
 			Seats.onServerStopped();
 			WorldClock.clear();
+			Zones.serverStopped(server);
+			Consents.reset();
+			ProtectionGuard.clear();
 		});
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			SkillService s = SkillService.current();

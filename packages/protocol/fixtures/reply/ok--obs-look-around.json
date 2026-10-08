@@ -1,0 +1,37 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "n-50",
+  "result": {
+    "scene": "Here: 101 64 -35 overworld, plains, day 1 09:14 (day, light 14, under cover).\nInside Base (Steve's base, 94 60 -45..110 71 -31): never break or change its blocks.\nHazards: none seen.\nTrees (natural): oak 9m W at 93 73 -38, unreachable; oak 20m N at 103 64 -55, reachable; birch 26m SE at 118 65 -16, reachable.\nBuilt: Base (you are in it). Player-built blocks are protected; crew-built ones are yours to change.\nPeople: Steve (player) 3m N.\nResources: water 18m E; ores in sight: coal x3 12m W.\nGround: grass_block, gentle slopes (-2..+5 within 16m), standing on spruce_planks.",
+    "detail": "brief",
+    "zone": { "name": "Base", "inside": true, "distance": 0, "owner": "Steve" },
+    "trees": [
+      {
+        "species": "oak",
+        "trunk": { "x": 93, "y": 73, "z": -38 },
+        "distance": 9,
+        "dir": "W",
+        "reachable": "unreachable",
+        "logs": 6
+      },
+      {
+        "species": "oak",
+        "trunk": { "x": 103, "y": 64, "z": -55 },
+        "distance": 20,
+        "dir": "N",
+        "reachable": "reachable",
+        "logs": 5
+      },
+      {
+        "species": "birch",
+        "trunk": { "x": 118, "y": 65, "z": -16 },
+        "distance": 26,
+        "dir": "SE",
+        "reachable": "reachable",
+        "logs": 7
+      }
+    ],
+    "footer": "HP 20/20 food 18 | day 1 09:14 | 101 64 -35 overworld | in Base | idle (follow)"
+  }
+}

@@ -3,6 +3,7 @@ package dev.minevibe.agent.skill;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.job.Job;
 import dev.minevibe.agent.job.SkillJob;
+import dev.minevibe.world.provenance.Zones;
 import java.util.Locale;
 import net.minecraft.world.item.ItemStack;
 
@@ -20,12 +21,28 @@ public final class StatusFooter {
 		sb.append(String.format(Locale.ROOT, "HP %.0f/%.0f food %d", Math.ceil(agent.getHealth()), agent.getMaxHealth(), agent.getFoodData().getFoodLevel()));
 		sb.append(" | ").append(WorldClock.dayAndTime(agent.level().getOverworldClockTime()));
 		sb.append(String.format(Locale.ROOT, " | %d %d %d %s", agent.getBlockX(), agent.getBlockY(), agent.getBlockZ(), agent.level().dimension().identifier().getPath()));
+		String zone = zone(agent);
+		if (!zone.isEmpty()) {
+			sb.append(" | ").append(zone);
+		}
 		sb.append(" | ").append(activity(agent));
 		ItemStack held = agent.getMainHandItem();
 		if (!held.isEmpty()) {
 			sb.append(" | ").append(Refs.itemId(held).replace("minecraft:", ""));
 		}
 		return sb.toString();
+	}
+
+	/** Where the agent is relative to the nearest protected zone (W1): {@code in Base}, {@code 12m from Base}, or empty. */
+	public static String zone(final AgentPlayer agent) {
+		Zones.Zone z = Zones.nearest(agent.level(), agent.blockPosition());
+		if (z == null) {
+			return "";
+		}
+		if (z.contains(agent.level().dimension(), agent.blockPosition())) {
+			return "in " + z.name();
+		}
+		return Math.round(z.horizontalDistance(agent.blockPosition())) + "m from " + z.name();
 	}
 
 	/** What the body is doing: a reflex, the job (with its progress), sitting, or the idle mode. */

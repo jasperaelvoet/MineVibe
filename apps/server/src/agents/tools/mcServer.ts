@@ -35,11 +35,28 @@ import type { Actor } from '../../contracts/common.js';
 import { ApiError, isApiError } from '../../contracts/common.js';
 import type { OrgApi, OrgToolResult } from '../../contracts/OrgApi.js';
 import type { SkillApi } from '../../contracts/SkillApi.js';
+import { asPos } from '../../world/baseArea.js';
 import { DEFAULT_WAIT_S, MAX_WAIT_S, MCP_TOOL_TIMEOUT_MS } from '../constants.js';
 import { summarizeResult } from '../EventRouter.js';
 import { baseConflict, failureText, PROTECTED, type Refusal } from '../world/guard.js';
 import { type PerceptionContext, perceiveFind, perceiveLookAround } from '../world/perception.js';
 import type { TreeSighting } from '../world/scene.js';
+
+/** The nearest tree of the mod's `look_around` `trees` (reachable first), for the scene line. */
+function treesOf(value: unknown): TreeSighting | null {
+  if (!Array.isArray(value)) return null;
+  const trees = value
+    .map((t) => (t && typeof t === 'object' ? (t as Record<string, unknown>) : null))
+    .filter((t): t is Record<string, unknown> => t !== null && asPos(t.trunk) !== null);
+  const pick = trees.find((t) => t.reachable === 'reachable') ?? trees[0];
+  const pos = pick ? asPos(pick.trunk) : null;
+  if (!pick || !pos) return null;
+  return {
+    pos,
+    reachable: pick.reachable === 'reachable' ? true : pick.reachable === 'unreachable' ? false : null,
+  };
+}
+
 import { MC_TOOLS, type McToolName } from './catalog.js';
 import {
   type CallToolResult,
@@ -93,10 +110,11 @@ export interface McHost {
   /** look_around / find showed natural trees (for the scene line). */
   noteTrees?(sighting: TreeSighting): void;
   /**
-   * The player's consent to change protected blocks for this agent, if one is valid (protocol §7.4.3). Only Node mints
-   * it; it is attached to world jobs and never read from tool arguments.
+   * Uses up the player's consent to change protected blocks for this agent, if one is valid (protocol §7.4.3): the
+   * mod's token of a refusal the player allowed (AgentManager notes refusals from every `PROTECTED` job end). Never
+   * read from tool arguments; without it no consent is ever attached.
    */
-  consent?(): SkillConsent | null;
+  takeConsent?(): SkillConsent | null;
   /** Node refused a job itself (`PROTECTED`, the Base): the refusal the player may still allow. */
   noteRefusal?(refusal: Refusal): void;
 }
@@ -110,6 +128,8 @@ export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set([
   'build',
   'farm',
   'use_item',
+  'attack',
+  'container',
 ]);
 
 // biome-ignore lint/suspicious/noExplicitAny: the server holds tools of many different input shapes
@@ -124,9 +144,9 @@ const WaitS = z
 
 /** Skill tools: name → description. Input schemas come from the protocol's `SkillArgs`. */
 const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
-  mine: 'Break blocks of one kind nearby (24 blocks around you, or around near) and keep the drops. Name the exact natural block you were asked for ("oak_log"): a #tag means any of its kinds, which is a substitution, and building blocks (planks, stripped logs, bricks, glass) are never gathered. Never the Base (the office, the player\'s home) or anything a player built: that fails PROTECTED, a hard stop (never retry). NO_NATURAL_SOURCE: nothing natural in reach; tell the player and ask, never substitute. Examples: {block:"oak_log", count:10}; {block:"oak_log", count:10, near:{x:130,y:64,z:-20}} for the tree find showed. A job.',
+  mine: 'Break blocks of one kind nearby (24 blocks around you, or around near) and keep the drops. Name the exact natural block you were asked for ("oak_log"): a #tag means any of its kinds, which is a substitution, and building blocks (planks, stripped logs, bricks, glass) are never gathered. Logs come from whole natural trees you can walk to, never from buildings. Never the Base (the office, the player\'s home) or anything a player built: that fails PROTECTED, a hard stop (never retry). NO_NATURAL_SOURCE: nothing natural in reach; tell the player and ask, never substitute. Examples: {block:"oak_log", count:10}; {block:"oak_log", count:10, near:{x:130,y:64,z:-20}} for the tree find showed. A job.',
   collect:
-    'Get count of an item: picks up dropped ones, then breaks blocks that drop it (stone → cobblestone, ores → raw metal). For natural things only: never ask it for building blocks (planks, glass, bricks) or furniture (crafting_table, chest); craft those. Same rules as mine: never blocks of the Base or anything a player built (PROTECTED), and NO_NATURAL_SOURCE when nothing natural is in reach (ask the player, don\'t substitute). Example: {item:"oak_log", count:10}. A job.',
+    'Get count of an item: picks up dropped ones, then breaks blocks that drop it (stone → cobblestone, ores → raw metal; logs by felling reachable natural trees, replant:true plants a sapling on each stump). For natural things only: never ask it for building blocks (planks, glass, bricks) or furniture (crafting_table, chest); craft those. Same rules as mine: never blocks of the Base or anything a player built (PROTECTED), and NO_NATURAL_SOURCE when nothing natural is in reach (ask the player, don\'t substitute). Example: {item:"oak_log", count:10}. A job.',
   hunt: 'Hunt mobs of a kind (e.g. "minecraft:cow"), count of them. A job.',
   dig: 'Dig out every block in the box from..to (inclusive): a tunnel, a cellar, a path. A box that holds protected blocks (the Base, anything a player built) fails PROTECTED before anything breaks: pick a box outside them. Example: {from:{x:100,y:60,z:-20}, to:{x:102,y:62,z:-10}}. A job.',
   place:
@@ -160,13 +180,21 @@ const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
 const OBS_TOOLS = {
   status: { desc: 'Your body: health, food, position, held item, current job, mode.', shape: {} },
   look_around: {
-    desc: 'The scene around you: where you are (in the Base, the player\'s home, or outside), natural resources with distance and direction ("logs ×12 nearest 25m NE"), PROTECTED blocks (the Base, anything the player built: never break), things to use, people, mobs and items. Call it before multi-step gathering. Example: {} or {radius:32}.',
-    shape: { radius: z.number().int().min(1).max(64).optional() },
+    desc: 'The scene around you, written to read: where you are (inside or near the Base, the player\'s home), hazards, natural trees by species with where they stand, distance, direction and whether you can reach them, what the player built (PROTECTED: never break) and what the crew built, people, water, ores, crops and the ground. Call it before multi-step gathering. detail:"full" for more. Example: {} or {radius:24, detail:"full"}.',
+    shape: {
+      radius: z.number().int().min(1).max(32).optional(),
+      detail: z.enum(['brief', 'full']).optional(),
+    },
   },
   inventory: { desc: 'Your inventory and equipment.', shape: {} },
   find: {
-    desc: 'Find the nearest blocks, mobs or items of a kind. Each block says its distance and direction and whether it is natural (fine to gather), PROTECTED (part of the Base or built by the player: never break) or UNREACHABLE. Examples: {what:"oak_log"}; {what:"oak_log", radius:64} to look further; {what:"minecraft:cow"}.',
-    shape: { what: z.string().min(1).max(128), radius: z.number().int().min(1).max(128).optional() },
+    desc: 'Find the nearest blocks, mobs or items of a kind. Each block says its distance and direction and whether it is natural (fine to gather; a log names its tree), built by the crew (yours), PROTECTED (part of the Base or built by the player: never break) or UNREACHABLE. filter:"natural" keeps natural ones only (logs: real trees), "built" built ones. Examples: {what:"oak_log", filter:"natural"}; {what:"oak_log", radius:64} to look further; {what:"minecraft:cow"}.',
+    shape: {
+      what: z.string().min(1).max(128),
+      radius: z.number().int().min(1).max(64).optional(),
+      limit: z.number().int().min(1).max(10).optional(),
+      filter: z.enum(['natural', 'built', 'any']).optional(),
+    },
   },
   recipe: { desc: 'How to craft or smelt an item.', shape: { item: z.string().min(1).max(128) } },
   recent_events: {
@@ -234,17 +262,25 @@ export function mcToolDefinitions(host: McHost): Def[] {
   const runJob = async (skill: SkillName, args: Record<string, unknown>, waitS: unknown, label: string) => {
     // Consent is Node's alone (protocol §7.4.3): whatever the model put in the arguments never reaches the mod.
     const { consent: _forged, consentId: _forgedId, ...cleanArgs } = args;
-    const consent = BLOCK_CHANGING_SKILLS.has(skill) ? (host.consent?.() ?? null) : null;
-    // Jobs that would reach the Base never get to the mod without the player's consent (world/guard.ts).
+    // The player's consent (the mod's token for a refusal the player allowed) goes along only when the agent asks
+    // for it (allow_protected) on a block-changing job; it is used up by that one job.
+    const consent =
+      cleanArgs.allow_protected === true && BLOCK_CHANGING_SKILLS.has(skill)
+        ? (host.takeConsent?.() ?? null)
+        : null;
+    // Jobs that would reach the Base never get to the mod without the player's consent (world/guard.ts). A mod that
+    // reports zones guards provenance itself (protocol §7.4.3) and offers the consent token with its refusal, so
+    // Node leaves the check to it: a refusal of Node's own could never be allowed.
     const world = consent ? null : (host.world?.() ?? null);
-    const conflict = world
-      ? baseConflict(skill, cleanArgs, world.base, {
-          here: world.here,
-          // A mod that reports zones guards provenance itself (protocol §7.4.3); today's mod reports none.
-          modGuards: world.zone !== null && world.zone !== undefined,
-          playerName: host.playerName(),
-        })
-      : null;
+    const modGuards = world?.zone !== null && world?.zone !== undefined;
+    const conflict =
+      world && !modGuards
+        ? baseConflict(skill, cleanArgs, world.base, {
+            here: world.here,
+            modGuards,
+            playerName: host.playerName(),
+          })
+        : null;
     if (conflict) {
       host.noteRefusal?.(conflict.refusal);
       return errorResult(
@@ -317,6 +353,12 @@ export function mcToolDefinitions(host: McHost): Def[] {
             const { result, footer } = splitFooter(
               await host.skills.obsQuery(host.agentId, query, queryArgs),
             );
+            // look_around: the mod's scene is written for reading (protocol §7.4.2); older mods get Node's.
+            if (query === 'look_around' && typeof result?.scene === 'string') {
+              const trees = treesOf(result.trees);
+              if (trees) host.noteTrees?.(trees);
+              return fromMod(textResult(result.scene), footer);
+            }
             if ((query === 'look_around' || query === 'find') && result) {
               const ctx = host.world?.() ?? { here: null, base: null, playerName: host.playerName() };
               const seen = query === 'find' ? perceiveFind(result, ctx) : perceiveLookAround(result, ctx);

@@ -5,14 +5,22 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import {
   CalendarEvent,
+  ConsentToken,
   createMessage,
   directionOf,
   ERROR_CODES,
+  FindArgs,
   groupOf,
+  LookAroundArgs,
+  LookAroundResult,
   MESSAGE_TYPES,
   messageCatalog,
+  NO_NATURAL_SOURCE,
+  NoNaturalSourceDetail,
   OBS_QUERIES,
   type PayloadOf,
+  PROTECTED,
+  ProtectedDetail,
   ProtocolError,
   type ReplyOf,
   type RequestType,
@@ -20,6 +28,7 @@ import {
   SKILL_NAMES,
   SkillArgs,
   type SkillArgsOf,
+  SourceCandidate,
   safeParseMessage,
 } from '../src/index.js';
 import { defineMessage } from '../src/messages/define.js';
@@ -127,43 +136,66 @@ describe('skill args', () => {
   });
 });
 
-describe('the world guard (§7.4.3)', () => {
-  const run = {
-    t: 'skill.run',
-    v: 1,
-    id: 'n-1',
-    jobId: 'job-1',
-    agentId: 'ada1f3c',
-    skill: 'mine',
-    args: { block: 'stripped_spruce_log', count: 1 },
-    waitMs: 20_000,
-    replace: true,
-  } as const;
-
-  it('skill.run carries an optional consent scoped to positions or a zone', () => {
-    expect(safeParseMessage(run).status).toBe('ok');
-    const consent = {
-      consentId: 'consent-0123456789abcdef',
-      agentId: 'ada1f3c',
-      positions: [{ x: 12, y: 65, z: 0 }],
-      expiresAt: 1_791_453_900_000,
+describe('W1: protection and perception', () => {
+  const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
+  const fixture = (path: string) =>
+    JSON.parse(readFileSync(join(fixturesDir, path), 'utf8')) as Record<string, unknown> & {
+      result: Record<string, unknown>;
     };
-    const ok = safeParseMessage({ ...run, consent });
-    expect(ok.status).toBe('ok');
-    expect(ok.status === 'ok' ? (ok.message as { consent?: unknown }).consent : null).toEqual(consent);
+
+  it('block-changing skills take allow_protected; collect takes replant', () => {
+    for (const skill of [
+      'mine',
+      'collect',
+      'dig',
+      'place',
+      'use_item',
+      'attack',
+      'container',
+      'build',
+      'farm',
+    ] as const) {
+      const shape = (SkillArgs[skill] as unknown as z.ZodObject<z.ZodRawShape>).shape;
+      expect(Object.hasOwn(shape, 'allow_protected'), skill).toBe(true);
+    }
     expect(
-      safeParseMessage({ ...run, consent: { ...consent, positions: undefined, zone: 'base' } }).status,
-    ).toBe('ok');
-    // Neither positions nor zone, or a zone that does not exist: invalid.
-    expect(safeParseMessage({ ...run, consent: { ...consent, positions: undefined } }).status).toBe(
-      'invalid',
+      SkillArgs.collect.safeParse({ item: 'oak_log', count: 6, replant: true, allow_protected: false })
+        .success,
+    ).toBe(true);
+    expect(SkillArgs.mine.safeParse({ block: 'oak_log', count: 1, allow_protected: 'yes' }).success).toBe(
+      false,
     );
-    expect(safeParseMessage({ ...run, consent: { ...consent, zone: 'everywhere' } }).status).toBe('invalid');
-    // createMessage keeps it on the wire (zod would strip an unknown key).
-    expect(createMessage('skill.run', { ...run, consent } as never)).toMatchObject({ consent });
   });
 
-  it('agent.state bodies carry an optional zone', () => {
+  it('consent lives outside args, so a tool call cannot carry it', () => {
+    const consent = fixture('skills/skill.run--consent.json');
+    expect(safeParseMessage(consent).status).toBe('ok');
+    // zod strips keys a skill does not know: `consent` inside args never reaches the mod.
+    const parsed = SkillArgs.mine.parse({ block: 'oak_log', count: 1, consent: { token: 'a'.repeat(32) } });
+    expect(Object.hasOwn(parsed, 'consent')).toBe(false);
+    expect(ConsentToken.safeParse('3f9c2a7be41d08c65a9e0b7d21c4f8e1').success).toBe(true);
+    expect(ConsentToken.safeParse('3F9C2A7BE41D08C65A9E0B7D21C4F8E1').success).toBe(false);
+  });
+
+  it('the failure details of the fixtures match their schemas', () => {
+    const prot = fixture('skills/skill.result--protected.json');
+    expect(ProtectedDetail.parse(prot.result.protected)).toEqual(prot.result.protected);
+    expect((prot.error as { code: string }).code).toBe(PROTECTED);
+    const none = fixture('skills/skill.result--no-natural-source.json');
+    expect(NoNaturalSourceDetail.parse(none.result.noNaturalSource)).toEqual(none.result.noNaturalSource);
+    expect((none.error as { code: string }).code).toBe(NO_NATURAL_SOURCE);
+    expect(
+      SourceCandidate.safeParse({
+        pos: { x: 0, y: 0, z: 0 },
+        block: 'x',
+        distance: 1,
+        dir: 'up',
+        why: 'protected',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('agent.state bodies carry the zone as the footer words', () => {
     const body = {
       agentId: 'ada1f3c',
       pos: { x: 6.5, y: 65, z: 5.5 },
@@ -177,23 +209,32 @@ describe('the world guard (§7.4.3)', () => {
       inCombat: false,
     };
     const state = (zone: unknown) => ({ t: 'agent.state', v: 1, tick: 1, agents: [{ ...body, zone }] });
-    const parsed = safeParseMessage(state({ kind: 'base', name: 'Base (office)' }));
-    expect(parsed.status).toBe('ok');
-    expect(
-      parsed.status === 'ok' ? (parsed.message as { agents: { zone?: unknown }[] }).agents[0]?.zone : null,
-    ).toEqual({ kind: 'base', name: 'Base (office)' });
-    expect(safeParseMessage(state({ kind: 'wild' })).status).toBe('ok');
-    expect(safeParseMessage(state({ kind: 'castle' })).status).toBe('invalid');
+    expect(safeParseMessage(state('in Base')).status).toBe('ok');
+    expect(safeParseMessage(state('12m from Base')).status).toBe('ok');
+    expect(safeParseMessage(state({ kind: 'base' })).status).toBe('invalid');
     expect(safeParseMessage({ t: 'agent.state', v: 1, tick: 1, agents: [body] }).status).toBe('ok');
   });
 
-  it('protocol.md documents the codes, the zone and the consent', () => {
+  it('look_around returns a scene within its budget, with zone and trees as data', () => {
+    const ok = fixture('reply/ok--obs-look-around.json');
+    const result = LookAroundResult.parse(ok.result);
+    expect(result.scene.length).toBeLessThanOrEqual(900);
+    expect(result.scene).toContain('Inside Base');
+    expect(result.trees?.some((t) => t.reachable === 'reachable')).toBe(true);
+    expect(LookAroundArgs.safeParse({ detail: 'full', radius: 24 }).success).toBe(true);
+    expect(LookAroundArgs.safeParse({ detail: 'huge' }).success).toBe(false);
+    expect(FindArgs.safeParse({ what: '#minecraft:logs', filter: 'natural' }).success).toBe(true);
+    expect(FindArgs.safeParse({ what: 'oak_log', filter: 'mine' }).success).toBe(false);
+  });
+
+  it('protocol.md documents the new codes and fields', () => {
     for (const word of [
       'PROTECTED',
       'NO_NATURAL_SOURCE',
-      '#### 7.4.3',
-      'consent?',
-      'zone?: { kind: base|built|wild',
+      'allow_protected',
+      'consentId',
+      'noNaturalSource',
+      'detail',
     ]) {
       expect(protocolMd, word).toContain(word);
     }

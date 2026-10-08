@@ -160,6 +160,7 @@ final class BodyEmitter {
 		SkillService.Seated seated = this.service.seated(a.agentId());
 		ServerPlayer player = Refs.player(a);
 		String reflex = a.brain().active() == null ? null : ProtocolCodec.clip(a.brain().active().name(), 32);
+		String zone = StatusFooter.zone(a);
 		return new Bodies.AgentBody(
 			a.agentId(),
 			new Types.Vec3(a.getX(), a.getY(), a.getZ()),
@@ -175,7 +176,8 @@ final class BodyEmitter {
 			bodyJob,
 			seated == null ? null : seated.target(),
 			player == null ? null : Math.round(a.distanceTo(player) * 10.0) / 10.0,
-			a.getMainHandItem().isEmpty() ? null : Refs.itemId(a.getMainHandItem()));
+			a.getMainHandItem().isEmpty() ? null : Refs.itemId(a.getMainHandItem()),
+			zone.isEmpty() ? null : ProtocolCodec.clip(zone, 64));
 	}
 
 	private static double clamp(final double v, final double min, final double max) {

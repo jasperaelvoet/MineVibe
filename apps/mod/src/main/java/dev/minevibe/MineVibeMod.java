@@ -18,6 +18,8 @@ public final class MineVibeMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("MineVibe loaded");
+		// Block provenance (W1): the chunk attachment type must exist before any world loads.
+		dev.minevibe.world.provenance.Provenance.init();
 	}
 
 	/** {@code minevibe:<path>} */
