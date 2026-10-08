@@ -4,6 +4,10 @@
     "includes": [
       "apps/server/**",
       "packages/**",
+      "packaging/**/*.ts",
+      "packaging/package.json",
+      "packaging/tsconfig.json",
+      "packaging/vendor.lock.json",
       "scripts/**",
       "apps/docs/*.mjs",
       "apps/docs/src/**/*.ts",

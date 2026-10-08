@@ -11,7 +11,8 @@
   "workspaces": [
     "packages/protocol",
     "apps/server",
-    "apps/docs"
+    "apps/docs",
+    "packaging"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -20,7 +21,8 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "dev": "node --conditions=source --import tsx apps/server/src/main.ts dev",
-    "play": "node --conditions=source --import tsx apps/server/src/main.ts play"
+    "play": "node --conditions=source --import tsx apps/server/src/main.ts play",
+    "build:app": "node --import tsx packaging/build-app.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

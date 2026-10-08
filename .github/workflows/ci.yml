@@ -98,32 +98,47 @@ jobs:
 
   app:
     name: MineVibe.app (macOS)
-    # TODO(M10): enable once the Swift stub (apps/launcher-mac) and packaging/build-app.ts exist. The job
-    # compiles the stub with swiftc, assembles the bundle from packaging/vendor.lock.json (sha256-verified),
-    # signs it ad hoc, verifies the signature, runs the --selftest handshake and uploads the artifact.
-    if: false
+    # Compiles the Swift stub, builds the mod jar and the server bundle, assembles dist/MineVibe.app from
+    # packaging/vendor.lock.json (sha256-verified, vendor code byte-identical), signs the stub ad hoc,
+    # verifies the signature, runs the --selftest handshake and uploads the zipped bundle (packaging/README.md).
     runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Vendor download cache (Node, Temurin, Apple container)
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/MineVibe-dev/vendor
+          key: vendor-${{ hashFiles('packaging/vendor.lock.json') }}
       - run: npm ci
       - name: Build MineVibe.app (ad-hoc signed)
-        run: npm run build:app # TODO(M10): wire up packaging/build-app.ts
+        run: npm run build:app -- --identity adhoc
       - name: Verify signature
-        run: codesign --verify --deep --strict --verbose=2 out/MineVibe.app
+        run: codesign --verify --deep --strict --verbose=2 dist/MineVibe.app
       - name: Self-test (stub to Node handshake, no game)
-        run: out/MineVibe.app/Contents/MacOS/MineVibe --selftest
+        run: dist/MineVibe.app/Contents/MacOS/MineVibe --selftest
+      - name: Stub and packaging tests
+        run: npm test -w @minevibe/packaging
+      - name: Zip (ditto keeps symlinks, modes and the signature)
+        run: ditto -c -k --keepParent dist/MineVibe.app dist/MineVibe-app.zip
       - uses: actions/upload-artifact@v7
         with:
           name: MineVibe-app
-          path: out/MineVibe.app
+          path: dist/MineVibe-app.zip
           if-no-files-found: error
+          retention-days: 7
 
   pc-image:
     name: Linux PC image

@@ -8,7 +8,7 @@ import { MinecraftFolder } from '@xmcl/core';
 import type { Logger } from 'pino';
 import { generateToken } from '../bridge/bridgeFile.js';
 import { ensureBaseDirs, HOME_ENV, type MineVibePaths, playHome, resolvePaths } from '../config/paths.js';
-import { formatBytes } from '../launcher/download.js';
+import { type FetchLike, formatBytes } from '../launcher/download.js';
 import { installFabricLoader } from '../launcher/installFabric.js';
 import { installMinecraft } from '../launcher/installMinecraft.js';
 import { JAVA_FOR_26_3, type JavaRequirement, resolveJava } from '../launcher/javaRuntime.js';
@@ -33,11 +33,25 @@ export interface PlayControl {
   onStopRequest: ((reason: string) => void) | null;
 }
 
+/** Milestones of {@link play}, for MineVibe.app's first-run window (`npm run play` ignores them). */
+export type PlayProgressEvent =
+  | { readonly phase: 'install'; readonly state: 'start' | 'done' }
+  | { readonly phase: 'seed' }
+  | { readonly phase: 'launch' }
+  | { readonly phase: 'launched'; readonly pid: number | undefined }
+  /** The game connected to the bridge (its window is up). */
+  | { readonly phase: 'connected' }
+  | { readonly phase: 'exited'; readonly code: number | null; readonly signal: NodeJS.Signals | null };
+
 export interface PlayOptions {
   readonly repoRoot: string | null;
   readonly logger: Logger;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly control?: PlayControl;
+  /** Fetch for every installer (MineVibe.app counts the downloads with it). Default: each installer's own. */
+  readonly fetch?: FetchLike;
+  /** Called at each milestone. */
+  readonly onProgress?: (event: PlayProgressEvent) => void;
 }
 
 export interface PlayTimings {
@@ -125,6 +139,14 @@ export async function play(options: PlayOptions): Promise<number> {
   const repoRoot = options.repoRoot;
   const started = performance.now();
   const timings: PlayTimings = {};
+  const progress = (event: PlayProgressEvent) => {
+    try {
+      options.onProgress?.(event);
+    } catch (err) {
+      log.warn({ err }, 'progress listener failed');
+    }
+  };
+  const fetchOption = options.fetch ? { fetch: options.fetch } : {};
   const mark = (phase: string, since: number) => {
     timings[phase] = Math.round(performance.now() - since);
   };
@@ -191,8 +213,10 @@ export async function play(options: PlayOptions): Promise<number> {
       savesDir: join(paths.game, 'saves'),
     });
     mark('bridge', t);
+    server.bridge.once('connected', () => progress({ phase: 'connected' }));
 
     // Installs run in parallel; the first failure aborts the rest.
+    progress({ phase: 'install', state: 'start' });
     t = performance.now();
     const gameDir = paths.game;
     const runtimeRoot = join(paths.appSupport, 'runtime');
@@ -209,11 +233,18 @@ export async function play(options: PlayOptions): Promise<number> {
       }
     };
     const javaFor = (requirement: JavaRequirement) =>
-      resolveJava({ runtimeRoot, requirement, env, log: log.child({ component: 'java' }), signal });
+      resolveJava({
+        runtimeRoot,
+        requirement,
+        env,
+        log: log.child({ component: 'java' }),
+        signal,
+        ...fetchOption,
+      });
     const [java, game, mods] = await Promise.all([
       step('java', () => javaFor(JAVA_FOR_26_3)),
       step('minecraft+fabric', async () => {
-        const mc = await installMinecraft({ gameDir, version: lock.minecraft, log, signal });
+        const mc = await installMinecraft({ gameDir, version: lock.minecraft, log, signal, ...fetchOption });
         const fabric = await installFabricLoader({
           gameDir,
           minecraftVersion: lock.minecraft,
@@ -221,6 +252,7 @@ export async function play(options: PlayOptions): Promise<number> {
           libraries: lock.fabric.libraries,
           log,
           signal,
+          ...fetchOption,
         });
         return { mc, fabric };
       }),
@@ -233,6 +265,7 @@ export async function play(options: PlayOptions): Promise<number> {
           extraJars: [extraJarFor(modJar, 'minevibe')],
           log: log.child({ component: 'mods' }),
           signal,
+          ...fetchOption,
         }),
       ),
     ]);
@@ -247,7 +280,9 @@ export async function play(options: PlayOptions): Promise<number> {
       javaResolved = await javaFor(required);
     }
     mark('install', t);
+    progress({ phase: 'install', state: 'done' });
 
+    progress({ phase: 'seed' });
     t = performance.now();
     const clientJar = MinecraftFolder.from(gameDir).getVersionJar(lock.minecraft);
     const optionsResult = await seedOptionsTxt(gameDir, { dataVersion: () => readDataVersion(clientJar) });
@@ -295,6 +330,7 @@ export async function play(options: PlayOptions): Promise<number> {
       throw new Error('launch command lacks -XstartOnFirstThread (the version JSON rule did not apply)');
     }
     const consoleLog = join(paths.logs, 'minecraft-console.log');
+    progress({ phase: 'launch' });
     const spawned = await spawnGame({ command, gameDir, consoleLog });
     child = spawned;
     if (stopReason !== null) {
@@ -304,6 +340,7 @@ export async function play(options: PlayOptions): Promise<number> {
       killTimer.unref();
     }
     timings.launch = Math.round(performance.now() - started);
+    progress({ phase: 'launched', pid: spawned.pid });
     log.info(
       { pid: spawned.pid, consoleLog, latestLog: join(gameDir, 'logs', 'latest.log') },
       'game launched',
@@ -326,6 +363,7 @@ export async function play(options: PlayOptions): Promise<number> {
     });
     if (killTimer) clearTimeout(killTimer);
     log.info({ code: exit.code, signal: exit.signal }, 'game exited');
+    progress({ phase: 'exited', code: exit.code, signal: exit.signal });
     if (stopReason !== null) return 130;
     return exit.code ?? 1;
   } catch (err) {
