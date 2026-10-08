@@ -1114,6 +1114,36 @@ async function step6(r: StepResult): Promise<void> {
   ).catch(() => null);
   r.numbers.backToHaikuMs = haiku ? haiku - kickAt : null;
   check(r, haiku !== null, `back on Haiku (${r.numbers.backToHaikuMs ?? '-'} ms after the kick)`);
+  // A kicked agent wakes and may ask what to do next: the player tells it to leave the PC alone (otherwise it might
+  // retry the 10-minute build, as in the first live run).
+  const ask = await waitFor(
+    'a question after the kick',
+    30_000,
+    () => {
+      const e = [...events]
+        .reverse()
+        .find(
+          (x) => x.at >= kickAt && x.dir === 'out' && x.t === 'agent.pending' && x.p.agentId === boss.agentId,
+        );
+      return ((e?.p.cards as Json[] | undefined) ?? []).find((c) => c.kind === 'question') ?? null;
+    },
+    500,
+  ).catch(() => null);
+  if (ask) {
+    r.numbers.afterKickQuestion = JSON.stringify(
+      (ask.questions as Json[] | undefined)?.[0]?.question ?? '',
+    ).slice(0, 120);
+    await debug()
+      .uiRequest('pending.answer', {
+        agentId: boss.agentId,
+        pendingId: String(ask.id),
+        answer: {
+          kind: 'text',
+          text: 'Leave the PC alone for now; no retry. Just wait for my next request.',
+        },
+      })
+      .catch((e: Error) => r.notes.push(`answering the after-kick question failed: ${e.message}`));
+  }
   await waitSettled(boss.agentId, kickAt, 120_000, 5_000).catch(() => {});
   r.numbers.turns = turnsSince(at, boss.agentId).length;
 }
@@ -1360,6 +1390,25 @@ async function scriptedSmoke(r: StepResult): Promise<void> {
     )
     .catch((e: Error) => ({ status: 'error', error: e.message }))) as Json;
   r.numbers.oakMineJob = `${String(job.status)} ${JSON.stringify(job.error ?? job.result ?? '').slice(0, 160)}`;
+  if (job.status !== 'done') {
+    // Diagnosis: is it the office (the body starts inside, by the player) or the tree? Walk out through the door to
+    // the porch, then try again from there.
+    const door = office(firstWorld).find((x) => x.kind === 'door')?.pos;
+    const run = (skill: 'goto' | 'mine', args: Json, waitMs: number) =>
+      runtime()
+        .bridge.request(
+          'skill.run',
+          { jobId: `e2e-${skill}-${Date.now()}`, agentId: boss.agentId, skill, args, waitMs, replace: true },
+          { timeoutMs: waitMs + 15_000 },
+        )
+        .catch((e: Error) => ({ status: 'error', error: e.message })) as Promise<Json>;
+    if (door) {
+      const out = await run('goto', { pos: { x: door.x, y: door.y, z: door.z + 1 } }, 30_000);
+      r.numbers.gotoPorch = `${String(out.status)} ${JSON.stringify(out.error ?? '').slice(0, 120)}`;
+      const again = await run('mine', { block: 'oak_log', count: 2, radius: 32 }, 60_000);
+      r.numbers.oakFromPorch = `${String(again.status)} ${JSON.stringify(again.error ?? again.result ?? '').slice(0, 160)}`;
+    }
+  }
   // And the office stays whole: its stripped spruce corner posts are never a mining target.
   const posts = (await find(boss.agentId, 'minecraft:stripped_spruce_log', 16)) as Json;
   r.numbers.officePosts = ((posts.matches as Json[] | undefined) ?? []).length;
