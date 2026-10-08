@@ -238,6 +238,16 @@ describe('exits and prompts', () => {
     expect(mirrorPrompt('ls -la', { agentId: 'ada', pcId: 'linux-1', cwd: undefined })).toBeNull();
   });
 
+  it('colours the prompt with real escape sequences and strips the ones a command carries', () => {
+    const ESC = '\u001b';
+    const p = mirrorPrompt(wrapBash(`printf '${ESC}[2J${ESC}]0;pwned\u0007'`), {
+      agentId: 'ada',
+      pcId: 'linux-1',
+      cwd: '/home/cua',
+    });
+    expect(p).toBe(`${ESC}[1;32mada@linux-1${ESC}[0m:${ESC}[1;34m~${ESC}[0m$ printf '[2J]0;pwned'`);
+  });
+
   it('quotes shell words', () => {
     expect(shellQuote("it's")).toBe(`'it'\\''s'`);
   });

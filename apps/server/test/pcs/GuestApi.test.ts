@@ -350,6 +350,18 @@ describe('files in the guest', () => {
       code: 'GUEST_ERROR',
       message: expect.stringMatching(/changed while it was being edited/),
     });
+    // A UTF-8 byte-order mark survives the edit (the decoder would otherwise eat it).
+    const bom = '\uFEFFname = old\r\n';
+    let bomWrite: Buffer | null = null;
+    guest.scripts.set(EDIT_READ_SCRIPT, () => ({ code: 0, stdout: bom }));
+    guest.scripts.set(EDIT_WRITE_SCRIPT, (args, stdin) => {
+      bomWrite = stdin;
+      expect(args[1]).toBe(createHash('sha256').update(bom).digest('hex'));
+      return { code: 0 };
+    });
+    expect(await api.editFile('linux-1', { path: '/w/b.ini', oldString: 'old', newString: 'new' })).toBe(1);
+    expect((bomWrite as Buffer | null)?.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect((bomWrite as Buffer | null)?.toString('utf8')).toBe('\uFEFFname = new\r\n');
     guest.scripts.set(EDIT_READ_SCRIPT, () => ({ code: 0, stdout: 'bin\u0000ary' }));
     expect(await codeOf(api.editFile('linux-1', { path: '/w/b', oldString: 'bin', newString: 'x' }))).toBe(
       'NOT_A_FILE',
@@ -446,6 +458,52 @@ describe('the shell', () => {
     expect(await codeOf(api.exec('linux-1', { command: 'ls', tag: 'not a tag' }))).toBe('DENIED');
   });
 
+  it('refuses a call from an earlier seat of the same agent: nothing starts under a tag no kill will reach', async () => {
+    sit('ada', 4);
+    const e = await api.exec('linux-1', { command: 'npm run dev', tag: 'ada:3' }).catch((x: ApiError) => x);
+    expect(e).toMatchObject({ code: 'DENIED', message: expect.stringMatching(/ada:3 has ended/) });
+    expect(guest.execs).toHaveLength(0);
+    // A seat whose epoch the mod did not report still runs the agent's commands.
+    seats.seat('linux-1', { kind: 'agent', agentId: 'ada', seatEpoch: null });
+    const run = api.exec('linux-1', { command: 'true', tag: 'ada:7' });
+    await new Promise((r) => setTimeout(r, 10));
+    (guest.execs[0] as FakeProc).exit({ code: 0 });
+    expect(await run).toMatchObject({ kind: 'done', exitCode: 0 });
+  });
+
+  it('a command whose seat ends while it starts is killed with everything it started', async () => {
+    sit('ada', 3);
+    guest.scripts.set(SWEEP_LAUNCH, () => ({ code: 0, stdout: '1\n' }));
+    const spawn = guest.client.spawn;
+    guest.client.spawn = async (cmd) => {
+      const p = await spawn(cmd);
+      // The kick lands while spacesd is starting the process (the seat's kill sweep found nothing yet).
+      seats.unseat('linux-1', { kind: 'agent', agentId: 'ada' }, false);
+      return p;
+    };
+    const e = await api
+      .exec('linux-1', { command: 'sleep 999', background: true, tag: 'ada:3' })
+      .catch((x: ApiError) => x);
+    expect(e).toMatchObject({ code: 'DENIED' });
+    const p = guest.execs[0] as FakeProc;
+    expect(p.killed).toBe(true);
+    const sweep = guest.runs.find((r) => r.script === SWEEP_LAUNCH);
+    expect(sweep?.args.slice(0, 2)).toEqual(['MV_CALL', p.command.env.get('MV_CALL')]);
+  });
+
+  it('a command that starts while its agent is away asking the player keeps running', async () => {
+    sit('ada', 3);
+    const spawn = guest.client.spawn;
+    guest.client.spawn = async (cmd) => {
+      const p = await spawn(cmd);
+      seats.unseat('linux-1', { kind: 'agent', agentId: 'ada' }, true);
+      return p;
+    };
+    const started = await api.exec('linux-1', { command: 'npm run dev', background: true, tag: 'ada:3' });
+    expect(started.kind).toBe('background');
+    expect((guest.execs[0] as FakeProc).killed).toBe(false);
+  });
+
   it('kills a command that overruns its timeout, and everything it left behind', async () => {
     sit();
     guest.scripts.set(SWEEP_LAUNCH, () => ({ code: 0, stdout: '2\n' }));
@@ -494,6 +552,32 @@ describe('the shell', () => {
     expect(guest.runs.find((r) => r.script === SWEEP_LAUNCH)?.args.slice(0, 2)).toEqual(['MV_TAG', 'ada:3']);
     const out = await api.jobOutput('linux-1', (second as { jobId: string }).jobId);
     expect(out.running).toBe(false);
+  });
+
+  it('kills sweep the guest before killing handles, so children are found under their tagged parent', async () => {
+    sit('ada', 3);
+    // What the sweep saw: whether the shell it walks down from was still alive.
+    const parentAlive: boolean[] = [];
+    let job: FakeProc | null = null;
+    guest.scripts.set(SWEEP_LAUNCH, () => {
+      parentAlive.push(job !== null && !job.killed);
+      return { code: 0, stdout: '3\n' };
+    });
+    const bg = await api.exec('linux-1', { command: 'sudo -n sleep 274', background: true, tag: 'ada:3' });
+    job = guest.execs[0] as FakeProc;
+    expect(await api.kill('linux-1', { jobId: (bg as { jobId: string }).jobId })).toBe(3);
+    const next = await api.exec('linux-1', { command: 'sudo -n sleep 275', background: true, tag: 'ada:3' });
+    job = guest.execs[1] as FakeProc;
+    expect(await api.killTag('linux-1', 'ada:3')).toBe(3);
+    expect(parentAlive).toEqual([true, true]);
+    expect((guest.execs[0] as FakeProc).killed && (guest.execs[1] as FakeProc).killed).toBe(true);
+    expect((await api.jobOutput('linux-1', (next as { jobId: string }).jobId)).running).toBe(false);
+    // A PC that is stopping cannot be swept: the handles are what is killed, and counted.
+    await api.exec('linux-1', { command: 'sleep 9', background: true, tag: 'ada:3' });
+    statuses.set('linux-1', { status: 'stopping' });
+    expect(await api.killTag('linux-1', 'ada:3')).toBe(1);
+    expect(parentAlive).toHaveLength(2);
+    expect((guest.execs[2] as FakeProc).killed).toBe(true);
   });
 
   it('a job that exits reports its exit code', async () => {

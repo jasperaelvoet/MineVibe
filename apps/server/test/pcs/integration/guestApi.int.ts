@@ -356,6 +356,62 @@ describe('PcApi on a real PC, through the agents’ pc tools', () => {
     expect((await asCua('pgrep -fc "sleep 27[12]" || true')).stdout).toBe('0');
   });
 
+  it('a kill by seat tag takes what the agent started with sudo too', async () => {
+    // The image keeps the seat tag through sudo (images/linux-pc/sudoers-minevibe). A dev image built before that
+    // drop-in existed gets the very same file here, so the run checks what a rebuilt image does.
+    const dropIn = readFileSync(join(repo, 'images', 'linux-pc', 'sudoers-minevibe'), 'utf8');
+    const has = await asCua('sudo -n test -f /etc/sudoers.d/minevibe && echo yes || echo no');
+    if (has.stdout !== 'yes') {
+      const put = await pc.run({
+        program: 'bash',
+        args: [
+          '-c',
+          'printf %s "$1" | sudo -n tee /etc/sudoers.d/minevibe >/dev/null && sudo -n chmod 0440 /etc/sudoers.d/minevibe && sudo -n visudo -cf /etc/sudoers.d/minevibe',
+          'put',
+          dropIn,
+        ],
+        env: new Map(),
+        stdin: false,
+        user: 'cua',
+        timeoutMs: 20_000,
+      });
+      expect(put.exit.code).toBe(0);
+    }
+    note(
+      'sudoers_dropin',
+      has.stdout === 'yes' ? 'from the image' : 'installed by the test (image predates it)',
+    );
+    // Left behind by a call that ended (its sudo is reparented away from the call's shell), and a running job.
+    await tool('bash', { command: 'sudo -n sleep 273 >/dev/null 2>&1 & echo left' });
+    await tool('bash', { command: 'sudo -n sleep 274', run_in_background: true });
+    await sleep(600);
+    const diag = await asCua(
+      `for p in $(pgrep -f "sleep 27[34]"); do s=$(cat /proc/$p/stat); r=\${s##*) }; set -- $r; ` +
+        `t=$(sudo -n cat /proc/$p/environ 2>/dev/null | tr '\\0' '\\n' | grep -c '^MV_TAG=' || true); ` +
+        `echo "$p ppid=$2 uid=$(stat -c %u /proc/$p) tag=$t $(tr '\\0' ' ' < /proc/$p/cmdline | cut -c1-40)"; done`,
+    );
+    note('sudo_processes', diag.stdout.split('\n'));
+    expect(Number((await asCua('pgrep -fc "^sleep 27[34]" || true')).stdout)).toBe(2);
+    const n = await api.killTag(ID, TAG);
+    note('killed_by_tag_with_sudo', n);
+    await sleep(300);
+    expect((await asCua('pgrep -fc "^(sudo -n )?sleep 27[34]" || true')).stdout).toBe('0');
+  });
+
+  it('a call from an ended seat never starts; an edit keeps a byte-order mark; no spacesd token in the shell', async () => {
+    expect(await api.exec(ID, { command: 'true', tag: `${AGENT}:${EPOCH + 1}` }).catch((e) => e.code)).toBe(
+      'DENIED',
+    );
+    const file = join(vaultRw, 'bom.ini');
+    writeFileSync(file, '\uFEFFkey = old\r\n');
+    const edit = await tool('edit', { file_path: file, old_string: 'old', new_string: 'new' });
+    expect(edit.isError).toBe(false);
+    expect(readFileSync(file)).toEqual(Buffer.from('\uFEFFkey = new\r\n', 'utf8'));
+    const token = await tool('bash', { command: 'printenv CUA_ENV_TOKEN | wc -c' });
+    note('cua_env_token_chars_in_agent_shell', token.text);
+    expect(token.text).toBe('0');
+  });
+
   it('a command that overruns its timeout is killed', async () => {
     const t0 = Date.now();
     const r = await tool('bash', { command: 'sleep 61 && echo never', timeout: 2000 });
@@ -382,6 +438,10 @@ describe('PcApi on a real PC, through the agents’ pc tools', () => {
       y: Math.round(b.y + b.height / 2),
     });
     await sleep(200);
+    // A chord (hotkey with cua names): ctrl+u clears what was typed so far, or the command below breaks.
+    await api.type(ID, 'garbage');
+    await api.keyboard(ID, { action: 'press', keys: ['ctrl', 'u'] });
+    await sleep(200);
     await api.type(ID, 'echo agent-typed-$((6*7)) > /tmp/mv-agent.txt');
     await api.keyboard(ID, { action: 'press', keys: ['Enter'] });
     await sleep(700);
@@ -402,6 +462,8 @@ describe('PcApi on a real PC, through the agents’ pc tools', () => {
     note('mirror_window', b);
     await tool('bash', { command: 'echo mirror-check-$((40+2))' });
     await sleep(800);
+    // The prompt line carries real colour codes (ESC [), not their printable remains.
+    expect((await asCua(`grep -c $'\\e\\[1;32m${AGENT}@${ID}' ~/.mv/shell.log`)).stdout).not.toBe('0');
     const h1 = await shotHash();
     expect(h1).not.toBe(h0);
     const mirrorProcs = await asCua('pgrep -fc "[t]ail -n 200 -F" || true');

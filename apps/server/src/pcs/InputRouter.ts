@@ -258,7 +258,8 @@ interface Batch {
 type Op = (
   | { t: 'move'; x: number; y: number }
   | { t: 'down' | 'up'; button: MouseButtonName }
-  | { t: 'scroll'; dx: number; dy: number }
+  /** At x,y: where the pointer is once the move queued before it ran (not wherever it went later). */
+  | { t: 'scroll'; dx: number; dy: number; x: number; y: number }
   | { t: 'text'; text: string }
   | { t: 'keydown' | 'keyup'; key: string }
   | { t: 'chord'; keys: string[] }
@@ -277,7 +278,7 @@ interface PcQueue {
   /** Keys whose key-down spacesd accepted and whose key-up it has not (yet) accepted. */
   downKeys: Set<string>;
   downButtons: Set<MouseButtonName>;
-  /** Where the pointer is (or will be, once the queue ran): scrolls happen there. */
+  /** Where the pointer is (or will be, once the queue ran): a move there again is skipped. */
   lastPos: { x: number; y: number } | null;
   display: { w: number; h: number } | null;
   stats: { calls: number; coalesced: number; rejected: number; errors: number; overflows: number };
@@ -545,15 +546,16 @@ export class InputRouter {
         return this.#moveTo(q, ev.x, ev.y, batch, cap);
       case 'scroll': {
         if (!this.#moveTo(q, ev.x, ev.y, batch, cap)) return false;
+        const at = this.#clamp(q, ev.x, ev.y);
         const tail = q.ops[q.ops.length - 1];
-        if (!batch && tail?.t === 'scroll' && !tail.batch) {
+        if (!batch && tail?.t === 'scroll' && !tail.batch && tail.x === at.x && tail.y === at.y) {
           tail.dx += ev.dx;
           tail.dy += ev.dy;
           q.stats.coalesced++;
           return true;
         }
         if (q.ops.length >= cap) return false;
-        q.ops.push({ t: 'scroll', dx: ev.dx, dy: ev.dy, ...b });
+        q.ops.push({ t: 'scroll', dx: ev.dx, dy: ev.dy, x: at.x, y: at.y, ...b });
         return true;
       }
       case 'button': {
@@ -690,7 +692,7 @@ export class InputRouter {
 
   async #call(pcId: string, q: PcQueue, op: CallOp): Promise<void> {
     try {
-      await this.#send(pcId, q, op);
+      await this.#send(pcId, op);
     } catch (err) {
       // A failed (or timed-out) down may still have landed in the guest: count it as held so the next
       // release sends its up. A spurious key-up is harmless; a missing one is a stuck key.
@@ -709,7 +711,7 @@ export class InputRouter {
     }
   }
 
-  async #send(pcId: string, q: PcQueue, op: CallOp): Promise<void> {
+  async #send(pcId: string, op: CallOp): Promise<void> {
     const timeoutMs = op.t === 'drag' || op.t === 'click' ? this.#callTimeoutMs * 2 : this.#callTimeoutMs;
     await withDeadline(timeoutMs, `pc input ${op.t}`, async (signal) => {
       const c = await this.#getClient(pcId);
@@ -722,11 +724,12 @@ export class InputRouter {
         case 'up':
           await c.pointerJson(JSON.stringify({ [op.t]: { button: BUTTONS[op.button] } }), o);
           return;
-        case 'scroll': {
-          const position = q.lastPos ?? { x: 0, y: 0 };
-          await c.pointerJson(JSON.stringify({ scroll: { position, deltaX: op.dx, deltaY: op.dy } }), o);
+        case 'scroll':
+          await c.pointerJson(
+            JSON.stringify({ scroll: { position: { x: op.x, y: op.y }, deltaX: op.dx, deltaY: op.dy } }),
+            o,
+          );
           return;
-        }
         case 'click':
           await c.pointerJson(
             JSON.stringify({

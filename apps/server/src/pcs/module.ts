@@ -184,7 +184,7 @@ export class PcModuleImpl implements PcModule {
   #frames: FrameService | null = null;
   #glue: PcBridgeGlue | null = null;
   #booting: Promise<void> | null = null;
-  #started = false;
+  #starting: Promise<void> | null = null;
   #stopping: Promise<void> | null = null;
 
   constructor(ctx: RuntimeContext, parts: PcModuleParts, tuning: PcModuleTuning = {}) {
@@ -229,9 +229,13 @@ export class PcModuleImpl implements PcModule {
     }
   }
 
-  async start(): Promise<void> {
-    if (this.#started) return;
-    this.#started = true;
+  start(): Promise<void> {
+    if (this.#stopping) return Promise.resolve();
+    this.#starting ??= this.#start();
+    return this.#starting;
+  }
+
+  async #start(): Promise<void> {
     const { manager, pool } = this.#parts;
     try {
       await pool.module();
@@ -241,6 +245,8 @@ export class PcModuleImpl implements PcModule {
     const fresh = !existsSync(manager.pcsFile);
     await manager.init({ createDefault: fresh && this.#tuning.firstPc !== false });
     if (fresh) this.#log.info({ pcs: manager.list().map((p) => p.id) }, 'first run: PCs created');
+    // `stop()` came while this was loading: attach nothing and boot nothing (stop waits for this to return).
+    if (this.#stopping) return;
     this.#frames = manager.createFrameService(
       { sendFrame: (frame) => this.#ctx.bridge.sendFrame(frame) },
       { jpegFormat: this.#jpegFormat(), onCursor: (pcId, pos) => this.#glue?.onCursor(pcId, pos) },
@@ -301,7 +307,9 @@ export class PcModuleImpl implements PcModule {
 
   stop(): Promise<void> {
     this.#stopping ??= (async () => {
-      if (!this.#started) return;
+      const starting = this.#starting;
+      if (!starting) return;
+      await starting.catch(() => {});
       this.#glue?.detach();
       await settleWithin(this.mirror.closeAll(), 3000);
       this.pcApi.dispose();

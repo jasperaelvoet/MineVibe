@@ -276,6 +276,27 @@ describe('input and seats', () => {
     expect(states(t.bridge).at(-1)).toMatchObject({ occupant: { kind: 'player' }, reservation: null });
   });
 
+  it('one body, one chair: a seat whose pc.unseat was lost ends when its occupant sits elsewhere', async () => {
+    const t = await setup();
+    await t.manager.create({ type: 'linux', id: 'linux-2' });
+    t.bridge.fire('pc.seat', { pcId: 'linux-1', occupant: { kind: 'player' } });
+    t.bridge.fire('pc.seat', { pcId: 'linux-2', occupant: { kind: 'player' } });
+    expect(t.seats.playerAt('linux-1')).toBe(false);
+    expect(t.router.occupant('linux-1')).toBeNull();
+    expect(t.router.occupant('linux-2')).toEqual({ kind: 'player', id: 'player' });
+    // Input for the old PC no longer reaches it.
+    t.bridge.fire('pc.input', { pcId: 'linux-1', seq: 1, events: [{ k: 'text', text: 'x' }] });
+    await t.router.idle('linux-1');
+    expect(t.input).toEqual([]);
+
+    t.bridge.fire('pc.seat', { pcId: 'linux-1', occupant: { kind: 'agent', agentId: 'ada' }, seatEpoch: 2 });
+    t.bridge.fire('pc.seat', { pcId: 'linux-2', occupant: { kind: 'agent', agentId: 'ada' }, seatEpoch: 3 });
+    await tick();
+    expect(t.killed).toEqual(['linux-1 ada:2']);
+    expect(t.seats.agentAt('linux-1')).toBeNull();
+    expect(t.seats.agentAt('linux-2')).toEqual({ agentId: 'ada', seatEpoch: 3 });
+  });
+
   it('a hello from BootScreen ends every seat', async () => {
     const t = await setup();
     t.bridge.fire('pc.seat', { pcId: 'linux-1', occupant: { kind: 'agent', agentId: 'ada' }, seatEpoch: 1 });

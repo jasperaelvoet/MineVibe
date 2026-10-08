@@ -210,6 +210,9 @@ describe('host.pick_folder', () => {
     const pick = createFolderPicker({ mode: 'dev', platform: 'darwin', exec });
     expect(await pick({ title: 'Pick "it"' })).toBe('/Users/me/Code/bar');
     expect(calls[0]).toEqual({ file: '/usr/bin/osascript', args: [...OSASCRIPT_ARGS, 'Pick "it"'] });
+    // A folder name may end in a space: only osascript's line break is cut.
+    answer = { code: 0, stdout: '/Users/me/Code/Spaced /\n' };
+    expect(await pick({ title: 'x' })).toBe('/Users/me/Code/Spaced ');
     answer = { code: 0, stdout: '\n' };
     expect(await pick({ title: 'x' })).toBeNull();
     answer = { code: 1, stdout: '' };

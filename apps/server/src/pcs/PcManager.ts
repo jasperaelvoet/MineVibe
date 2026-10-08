@@ -303,6 +303,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   /** Ids handed out by `create` but not yet in `#file` (M9). */
   readonly #reservedIds = new Set<string>();
   #engineDown: string | null = null;
+  /** Set when `shutdown` begins: nothing starts any more (a `bootAll` still going stops planning starts). */
+  #closing = false;
   #frames: FrameService | null = null;
   #input: InputRouter | null = null;
   /** Coalescing save queue (M8). */
@@ -1298,6 +1300,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         }
       }
       for (const id of plan.boot) {
+        // Shutdown began while earlier PCs booted: the rest stay off (their reservations are released below).
+        if (this.#closing) break;
         if (lowDisk) {
           this.#setStatus(id, { status: 'error', reason: 'low_disk', detail: lowDisk });
           failed.push(id);
@@ -1450,6 +1454,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   async #startLocked(p: PcRecord, opts: { admitted: boolean }): Promise<void> {
+    if (this.#closing) throw new PcError('ENGINE_DOWN', 'MineVibe is quitting; no PC starts now');
     const spec = PC_TYPE_SPECS[p.type];
     if (!spec.available) throw new PcError('UNAVAILABLE', spec.unavailableReason ?? 'unavailable');
     if (spec.driverStub) {
@@ -2169,6 +2174,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * time (a wedged `system stop`, another MineVibe holding the engine lock) leaves the engine running.
    */
   async shutdown(options: { stopEngine?: boolean } = {}): Promise<void> {
+    this.#closing = true;
     this.stopMonitor();
     const budgetMs = this.#o.shutdownTimeoutMs ?? 20_000;
     if (!this.#engineDown) await this.#inventory();

@@ -65,12 +65,19 @@ export class SeatBook extends TypedEmitter<SeatBookEvents> {
     return null;
   }
 
-  /** `pc.seat`: someone sat down. An agent sitting elsewhere is moved (a PC chair holds one occupant). */
+  /** The PC the player sits at, if any. */
+  pcOfPlayer(): string | null {
+    for (const [pcId, s] of this.#seats) if (s.occupant?.kind === 'player') return pcId;
+    return null;
+  }
+
+  /**
+   * `pc.seat`: someone sat down. Whoever sits elsewhere is moved (one body, one chair): a seat elsewhere whose
+   * `pc.unseat` was lost (a reconnect) must not keep that PC's input and occupancy.
+   */
   seat(pcId: string, occupant: SeatOccupant): void {
-    if (occupant.kind === 'agent') {
-      const elsewhere = this.pcOfAgent(occupant.agentId);
-      if (elsewhere && elsewhere !== pcId) this.#set(elsewhere, { ...this.get(elsewhere), occupant: null });
-    }
+    const elsewhere = occupant.kind === 'agent' ? this.pcOfAgent(occupant.agentId) : this.pcOfPlayer();
+    if (elsewhere && elsewhere !== pcId) this.#set(elsewhere, { ...this.get(elsewhere), occupant: null });
     this.#set(pcId, { occupant, reservation: null });
   }
 

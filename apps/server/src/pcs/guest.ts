@@ -94,33 +94,61 @@ export const GREP_SCRIPT = `rg "$@" | head -c ${SEARCH_MAX_BYTES}
 exit \${PIPESTATUS[0]}`;
 
 /**
- * Kills every guest process whose environment holds `$1=$2` (for example `MV_TAG=ada:3`), including processes a
- * command left behind (they inherit the variable). Prints how many it killed. It only sees processes of the user it
- * runs as: inside the container even root cannot read another user's `/proc/<pid>/environ` (no CAP_SYS_PTRACE).
+ * Prints (one per line) the pid of every guest process whose environment holds `$1=$2` (for example `MV_TAG=ada:3`),
+ * which takes processes a command left behind (they inherit the variable), plus every descendant of one, found by
+ * parent pid. The environment is only readable for some processes: inside the container even root cannot read
+ * another user's `/proc/<pid>/environ` (no CAP_SYS_PTRACE), nor that of a setuid `sudo`, and `sudo` resets the
+ * environment of what it runs. Parent pids are readable for every process, so a root process an agent started with
+ * `sudo` is still found, as a descendant of the agent's tagged shell.
  */
 export const SWEEP_SCRIPT = `want="$1=$2"
-n=0
+declare -A parent=() hit=()
 for d in /proc/[0-9]*; do
   pid=\${d#/proc/}
   [ "$pid" = "$$" ] && continue
+  { IFS= read -r st < "$d/stat"; } 2>/dev/null || continue
+  rest=\${st##*) }
+  rest=\${rest#* }
+  ppid=\${rest%% *}
+  case $ppid in ''|*[!0-9]*) ;; *) parent[$pid]=$ppid ;; esac
   [ -r "$d/environ" ] || continue
-  hit=0
   while IFS= read -r -d '' e; do
-    if [ "$e" = "$want" ]; then hit=1; break; fi
+    if [ "$e" = "$want" ]; then hit[$pid]=1; break; fi
   done 2>/dev/null < "$d/environ"
-  if [ "$hit" = 1 ] && kill -KILL "$pid" 2>/dev/null; then n=$((n+1)); fi
 done
-echo "$n"`;
+grow=1
+while [ "$grow" = 1 ]; do
+  grow=0
+  for pid in "\${!parent[@]}"; do
+    [ -n "\${hit[$pid]:-}" ] && continue
+    if [ -n "\${hit[\${parent[$pid]}]:-}" ]; then hit[$pid]=1; grow=1; fi
+  done
+done
+for pid in "\${!hit[@]}"; do echo "$pid"; done`;
+
+/** Kills the pids given as arguments; prints how many it killed. */
+const KILL_SCRIPT = 'n=0; for p in "$@"; do kill -KILL "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"';
 
 /**
- * Runs {@link SWEEP_SCRIPT} (`$3`) as the guest user, and again as root when `sudo -n` works (processes an agent
- * started with `sudo` carry the tag too); prints the total.
+ * Collects the pids of {@link SWEEP_SCRIPT} (`$3`), run as the guest user and again as root when `sudo -n` works
+ * (root reads the environment of root processes started with `sudo -n --preserve-env`), first, and only then kills
+ * them all (as root when it can), so a child is never reparented away from its tagged parent before it is found.
+ * Prints how many processes died.
  */
 export const SWEEP_LAUNCH = `s=$3
-n=$(bash -c "$s" sweep "$1" "$2" 2>/dev/null) || n=0
-m=0
-if sudo -n true 2>/dev/null; then m=$(sudo -n bash -c "$s" sweep "$1" "$2" 2>/dev/null) || m=0; fi
-echo $(( \${n:-0} + \${m:-0} ))`;
+k='${KILL_SCRIPT}'
+pids=$(bash -c "$s" sweep "$1" "$2" 2>/dev/null)
+root=0
+if sudo -n true 2>/dev/null; then
+  root=1
+  pids="$pids
+$(sudo -n bash -c "$s" sweep "$1" "$2" 2>/dev/null)"
+fi
+set -f
+pids=$(printf '%s\n' $pids | grep -E '^[0-9]+$' | sort -un)
+[ -n "$pids" ] || { echo 0; exit 0; }
+if [ "$root" = 1 ]; then sudo -n bash -c "$k" kill $pids 2>/dev/null || echo 0
+else bash -c "$k" kill $pids; fi`;
 
 /**
  * Prefix of every `exec`: the working directory (an argument in `MV_EXEC_CWD`, falling back to the home when it is
@@ -133,6 +161,8 @@ unset MV_PROMPT MV_EXEC_CWD`;
 /** The tool server's `pc__bash` wrapper writes the shell log; its own command sits between these lines. */
 const WRAP_START = 'exec > >(tee -a ~/.mv/shell.log) 2>&1';
 const WRAP_END = 'ec=$?';
+
+const ESC = '\u001b';
 
 /**
  * The prompt line ShellMirror shows before a command: `ada@linux-1:~/foo$ npm test`. Null for commands that do not
@@ -154,11 +184,14 @@ export function mirrorPrompt(
   const shown = first.length > 300 ? `${first.slice(0, 300)}…` : first;
   const more = inner.length > 1 ? ' …' : '';
   const cwd = (who.cwd ?? GUEST_HOME).replace(new RegExp(`^${GUEST_HOME}(?=/|$)`), '~');
+  // Control characters (escape sequences an agent put in its command included) are stripped from the parts; the
+  // prompt's own colours are added afterwards.
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this strips
-  const clean = (s: string) => s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
-  return clean(
-    `\u001b[1;32m${who.agentId}@${who.pcId}\u001b[0m:\u001b[1;34m${cwd}\u001b[0m$ ${shown}${more}`,
-  );
+  const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, '');
+  const green = `${ESC}[1;32m`;
+  const blue = `${ESC}[1;34m`;
+  const reset = `${ESC}[0m`;
+  return `${green}${clean(who.agentId)}@${clean(who.pcId)}${reset}:${blue}${clean(cwd)}${reset}$ ${clean(shown)}${more}`;
 }
 
 /** POSIX shell quoting of one word. */

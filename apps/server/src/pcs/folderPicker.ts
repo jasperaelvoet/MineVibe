@@ -94,6 +94,7 @@ export function createFolderPicker(options: FolderPickerOptions): FolderPicker {
         options.logger?.warn({ err: r.stderr.trim().slice(0, 200) }, 'osascript folder picker failed');
       return null;
     }
-    return cleanPickedPath(r.stdout.trim() || null);
+    // Only the line break osascript adds is cut: a folder name may end in a space.
+    return cleanPickedPath(r.stdout || null);
   };
 }

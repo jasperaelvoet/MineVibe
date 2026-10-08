@@ -22,6 +22,11 @@ RUN mkdir -p /opt/minevibe \
 COPY minevibe-entrypoint.sh /opt/minevibe/entrypoint.sh
 RUN chmod 0755 /opt/minevibe/entrypoint.sh
 
+# Processes an agent starts with sudo keep its seat tag, so a stand-up or kick kills them too (visudo refuses a
+# broken drop-in here, at build time, rather than leaving sudo unusable in every PC).
+COPY sudoers-minevibe /etc/sudoers.d/minevibe
+RUN chmod 0440 /etc/sudoers.d/minevibe && visudo -cf /etc/sudoers.d/minevibe
+
 LABEL dev.minevibe.image="linux-pc" \
       org.opencontainers.image.source="https://github.com/jasperaelvoet/MineVibe" \
       org.opencontainers.image.base.name="ghcr.io/trycua/linux:24.04" \

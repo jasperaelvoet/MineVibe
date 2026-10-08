@@ -226,6 +226,19 @@ export class PcGuestApi implements PcApi {
     return a ? seatTag(a.agentId, a.seatEpoch) : null;
   }
 
+  /**
+   * Whether the seat `tag` still holds the PC: its agent sits there with that epoch (or an unknown one), or is away
+   * from the chair asking the player (the seat and its processes live on).
+   */
+  #seatOwns(pcId: string, tag: string): boolean {
+    const agentId = tagAgent(tag);
+    const s = this.#o.seats.get(pcId);
+    if (s.occupant?.kind === 'agent' && s.occupant.agentId === agentId) {
+      return s.occupant.seatEpoch === null || seatTag(agentId, s.occupant.seatEpoch) === tag;
+    }
+    return s.occupant === null && s.reservation?.kind === 'away' && s.reservation.agentId === agentId;
+  }
+
   // ------------------------------------------------------------------------------------------- info
 
   async info(pcId: string): Promise<PcGuestInfo> {
@@ -429,6 +442,14 @@ export class PcGuestApi implements PcApi {
     if (tagAgent(request.tag) !== agent.agentId) {
       throw err(PC_ERROR_CODES.DENIED, `${agent.agentId} sits at ${pcId}, not ${tagAgent(request.tag)}`);
     }
+    // A call from an earlier seat of the same agent (its kill sweep may already have run) never starts: its
+    // processes would carry a tag nobody kills any more, and its job would belong to no current seat.
+    if (agent.seatEpoch !== null && request.tag !== seatTag(agent.agentId, agent.seatEpoch)) {
+      throw err(
+        PC_ERROR_CODES.DENIED,
+        `the seat ${request.tag} has ended; ${agent.agentId} sits at ${pcId} as ${seatTag(agent.agentId, agent.seatEpoch)}`,
+      );
+    }
     const timeoutMs = Math.round(
       Math.min(PC_LIMITS.maxTimeoutMs, Math.max(1_000, request.timeoutMs ?? PC_LIMITS.defaultTimeoutMs)),
     );
@@ -479,9 +500,19 @@ export class PcGuestApi implements PcApi {
         ),
       );
     } catch (e) {
+      // The spawn may still land after its deadline: whatever runs with this call id is swept (best effort).
+      void this.sweep(pcId, 'MV_CALL', callId).catch(() => 0);
       throw err(
         PC_ERROR_CODES.GUEST_ERROR,
         `starting the command failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    if (!this.#seatOwns(pcId, request.tag)) {
+      // The seat ended while the command was starting (its kill sweep may have run before the process existed).
+      await this.#killCall(pcId, callId, proc);
+      throw err(
+        PC_ERROR_CODES.DENIED,
+        `the seat ${request.tag} ended while the command started; it was killed`,
       );
     }
     if (request.background) return this.#startJob(pcId, request.tag, callId, proc);
@@ -549,19 +580,25 @@ export class PcGuestApi implements PcApi {
     }
   }
 
-  /** Kills a call's process and everything it left behind (`MV_CALL`). */
+  /**
+   * Kills a call's process and everything it left behind (`MV_CALL`). The sweep goes first: killing the call's
+   * shell first would reparent its children (a `sudo` among them) away from it before the sweep could find them by
+   * parent. The process handle is killed afterwards as a backstop (counted only when the sweep could not run).
+   */
   async #killCall(pcId: string, callId: string, proc: SpacesdProcessLike | null): Promise<number> {
-    let killed = 0;
-    if (proc) {
-      try {
-        await withDeadline(this.#callTimeoutMs, 'kill', (signal) => proc.kill({ signal }));
-        killed = 1;
-      } catch {
-        // already gone
-      }
+    const swept = await this.sweep(pcId, 'MV_CALL', callId).catch(() => null);
+    const byHandle = proc ? await this.#killHandle(proc) : 0;
+    return swept ?? byHandle;
+  }
+
+  /** SIGKILL through spacesd; 1 when spacesd accepted it, 0 when the process was gone or the call failed. */
+  async #killHandle(proc: SpacesdProcessLike): Promise<number> {
+    try {
+      await withDeadline(this.#callTimeoutMs, 'kill', (signal) => proc.kill({ signal }));
+      return 1;
+    } catch {
+      return 0;
     }
-    const swept = await this.sweep(pcId, 'MV_CALL', callId).catch(() => 0);
-    return killed + swept;
   }
 
   #startJob(pcId: string, tag: string, callId: string, proc: SpacesdProcessLike): ExecResult {
@@ -667,36 +704,36 @@ export class PcGuestApi implements PcApi {
 
   /**
    * Kills everything a seat started on a PC: its background jobs, its foreground commands and every guest process
-   * that carries its tag (kick, stand-up, any unseat). Never throws; returns how many processes died.
+   * that carries its tag or descends from one (kick, stand-up, any unseat). The sweep goes first, while the process
+   * tree is intact; the job and command handles are killed afterwards as a backstop. Never throws; returns how many
+   * processes died.
    */
   async killTag(pcId: string, tag: string): Promise<number> {
-    let handles = 0;
+    const procs: SpacesdProcessLike[] = [];
     for (const job of this.#jobs.values()) {
       if (job.pcId !== pcId || job.tag !== tag || !job.running) continue;
-      const proc = job.proc;
+      if (job.proc) procs.push(job.proc);
       job.abort.abort();
       job.running = false;
       job.exitCode = job.exitCode ?? 137;
       job.buffer.append('\n[killed: the seat ended]\n');
-      if (proc) {
-        handles++;
-        await withDeadline(this.#callTimeoutMs, 'kill', (signal) => proc.kill({ signal })).catch(() => {});
-      }
     }
     for (const fg of this.#foreground.values()) {
-      if (fg.pcId !== pcId || fg.tag !== tag) continue;
-      handles++;
-      await withDeadline(this.#callTimeoutMs, 'kill', (signal) => fg.proc.kill({ signal })).catch(() => {});
+      if (fg.pcId === pcId && fg.tag === tag) procs.push(fg.proc);
     }
-    if (this.#o.pcs.status(pcId).status !== 'running') return handles;
-    const swept = await this.sweep(pcId, 'MV_TAG', tag).catch((e: unknown) => {
-      this.#log?.warn({ pcId, err: String(e) }, 'guest process sweep failed');
-      return 0;
-    });
-    return handles + swept;
+    let swept: number | null = null;
+    if (this.#o.pcs.status(pcId).status === 'running') {
+      swept = await this.sweep(pcId, 'MV_TAG', tag).catch((e: unknown) => {
+        this.#log?.warn({ pcId, err: String(e) }, 'guest process sweep failed');
+        return null;
+      });
+    }
+    let byHandle = 0;
+    for (const proc of procs) byHandle += await this.#killHandle(proc);
+    return swept ?? byHandle;
   }
 
-  /** Kills every guest process whose environment holds `name=value`; returns how many. */
+  /** Kills every guest process whose environment holds `name=value`, and their descendants; returns how many. */
   async sweep(pcId: string, name: string, value: string): Promise<number> {
     const r = await this.#script(pcId, SWEEP_LAUNCH, [name, value, SWEEP_SCRIPT], { timeoutMs: 30_000 });
     const n = Number.parseInt(r.stdout.toString('utf8').trim().split('\n').at(-1) ?? '', 10);
@@ -760,7 +797,8 @@ export class PcGuestApi implements PcApi {
     let text: string;
     try {
       if (read.stdout.includes(0)) throw new Error('NUL');
-      text = new TextDecoder('utf-8', { fatal: true }).decode(read.stdout);
+      // ignoreBOM keeps a leading byte-order mark in the text, so the write-back keeps it too.
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.stdout);
     } catch {
       throw err(PC_ERROR_CODES.NOT_A_FILE, `${request.path} is not a UTF-8 text file; change it with bash`);
     }

@@ -198,6 +198,22 @@ describe('InputRouter', () => {
     ]);
   });
 
+  it('a scroll happens at its own position, not where the pointer went after it', async () => {
+    const { f, router } = setup();
+    f.gate();
+    router.submit('linux-1', player, [text('x')]);
+    // Scrolling while the mouse moves on: both land in one batch, the move after the scroll.
+    router.submit('linux-1', player, [{ k: 'scroll', dx: 0, dy: 3, x: 10, y: 10 }, move(60, 60)]);
+    f.open();
+    await router.idle('linux-1');
+    expect(f.calls.map(([k, v]) => `${k}:${JSON.stringify(v)}`)).toEqual([
+      'type:"x"',
+      'pointer:{"move":{"position":{"x":10,"y":10}}}',
+      'pointer:{"scroll":{"position":{"x":10,"y":10},"deltaX":0,"deltaY":3}}',
+      'pointer:{"move":{"position":{"x":60,"y":60}}}',
+    ]);
+  });
+
   it('coalesces moves while a call is in flight (only the latest move is kept)', async () => {
     const { f, router } = setup();
     f.gate();

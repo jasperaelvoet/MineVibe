@@ -298,6 +298,13 @@ export class PcBridgeGlue {
         this.#endAgentSeat(m.pcId, away.agentId, away.seatEpoch, 'player_took');
       }
     }
+    if (occupant.kind === 'agent') {
+      // The agent sits down here while Node still has it at another PC (that `pc.unseat` was lost): that seat is
+      // over, so its processes and mirror go like on any other unseat.
+      const elsewhere = this.#o.seats.pcOfAgent(occupant.agentId);
+      const before = elsewhere && elsewhere !== m.pcId ? this.#o.seats.agentAt(elsewhere) : null;
+      if (elsewhere && before) this.#endAgentSeat(elsewhere, before.agentId, before.seatEpoch, 'moved');
+    }
     this.#o.seats.seat(m.pcId, occupant);
     if (this.#o.manager.get(m.pcId)) {
       this.#o.manager.markUsed(m.pcId).catch(() => {});

@@ -114,6 +114,52 @@ describe('PcModuleImpl', () => {
     await mod.stop();
   });
 
+  it('a stop that comes while start is loading wins: nothing is attached and nothing boots', async () => {
+    const { mod, driver, bridge } = moduleWith();
+    const starting = mod.start();
+    const stopping = mod.stop();
+    await starting;
+    await stopping;
+    expect(mod.glue).toBeNull();
+    expect(mod.booting).toBeNull();
+    expect(bridge.handlers.size).toBe(0);
+    expect(driver.log.filter((l) => l === 'engine' || l.startsWith('create '))).toEqual([]);
+    await mod.start();
+    expect(mod.glue).toBeNull();
+  });
+
+  it('PCs planned by the boot that have not started yet stay off once stop begins', async () => {
+    /** Holds the first container start until `open()`. */
+    class GatedDriver extends FakeDriver {
+      readonly started: string[] = [];
+      gate: Promise<void> | null = null;
+      override async start(name: string) {
+        this.started.push(name);
+        if (this.started.length === 1 && this.gate) await this.gate;
+        return super.start(name);
+      }
+    }
+    const driver = new GatedDriver();
+    const earlier = moduleWith(driver);
+    await earlier.manager.init({ createDefault: true });
+    await earlier.manager.create({ type: 'linux', id: 'linux-2' });
+    let open = () => {};
+    driver.gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const { mod, manager } = moduleWith(driver);
+    await mod.start();
+    for (let i = 0; i < 200 && driver.started.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(driver.started).toHaveLength(1);
+    const stopping = mod.stop();
+    await new Promise((r) => setTimeout(r, 20));
+    open();
+    await stopping;
+    await mod.booting;
+    expect(driver.started).toHaveLength(1);
+    expect(manager.list().map((p) => manager.status(p.id).status)).toEqual(['off', 'off']);
+  });
+
   it('an engine that cannot start leaves the PCs engine_down, and start still resolves', async () => {
     const driver = new FakeDriver();
     driver.engineError = new Error('apiserver did not start');
