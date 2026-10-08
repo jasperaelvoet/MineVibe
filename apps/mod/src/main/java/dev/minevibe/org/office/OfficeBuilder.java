@@ -14,11 +14,9 @@ import dev.minevibe.world.seat.SeatKind;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.DyeColor;
@@ -41,6 +39,7 @@ import net.minecraft.world.level.block.state.properties.DoorHingeSide;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Builds the starter office of {@link OfficePlan} (PLAN §7.5): a lit 13x9 room with beds, a chest of bread and
@@ -53,9 +52,10 @@ import net.minecraft.world.level.levelgen.Heightmap;
  *       filled down to the ground (at most {@value OfficePlan#MAX_FOUNDATION_DEPTH} blocks) under every cell, and
  *       only the room inside the walls is cleared. Blocks are set without neighbour updates, so nothing outside reacts
  *       (no redstone, no falling sand), but shapes still connect (panes, doors, beds).</li>
- *   <li><b>Workstations.</b> When a {@code minevibe:pc_desk} block exists, slot 1 gets one (placed like a player
- *       would, so a multiblock desk completes itself). Otherwise both slots are marked with polished andesite on the
- *       floor and reported as {@code workstation} slots for whoever places PCs later.</li>
+ *   <li><b>Workstations.</b> Both slots are marked with polished andesite on the floor and reported as
+ *       {@code workstation} slots. The PC track installs a {@link WorkstationPlacer} that puts the first PC's desk
+ *       and chair into slot 1 (PLAN §7.5: OfficeBuilder places {@code linux-1}'s workstation); without one the slots
+ *       stay empty for whoever places PCs later.</li>
  * </ul>
  */
 public final class OfficeBuilder {
@@ -72,9 +72,28 @@ public final class OfficeBuilder {
 	public static final int BREAD = 16;
 	public static final int TORCHES = 32;
 
-	private static final net.minecraft.resources.Identifier PC_DESK = MineVibeMod.id("pc_desk");
+	/**
+	 * Puts a PC workstation into an office slot. The PC track installs one ({@link #installWorkstationPlacer}); the
+	 * desk is a multiblock with its own placement code, so the office never places {@code pc_desk} blocks itself.
+	 */
+	@FunctionalInterface
+	public interface WorkstationPlacer {
+		/**
+		 * Places a workstation whose desk main column stands at {@code origin}, its screen facing {@code facing}, its
+		 * side column at {@code origin.relative(facing.getClockWise())} and its chair at {@code origin.relative(facing)}.
+		 * Those four cells (and the two above the desk) are free when this runs. Returns false when it placed nothing.
+		 */
+		boolean place(ServerLevel level, BlockPos origin, Direction facing);
+	}
+
+	private static volatile @Nullable WorkstationPlacer workstationPlacer;
 
 	private OfficeBuilder() {
+	}
+
+	/** Installs (or with null removes) the placer for the first workstation slot. */
+	public static void installWorkstationPlacer(final @Nullable WorkstationPlacer placer) {
+		workstationPlacer = placer;
 	}
 
 	/**
@@ -209,7 +228,7 @@ public final class OfficeBuilder {
 					set(level, at(origin, cell[0], 0, cell[2]), SLOT_MARKER);
 				}
 				if (index == 0) {
-					placeDesk(level, pos, facing);
+					placeWorkstation(level, pos, facing);
 				}
 				slots.add(new OfficeLayout.Slot(OfficeLayout.WORKSTATION, pos, null));
 			}
@@ -222,25 +241,18 @@ public final class OfficeBuilder {
 		}
 	}
 
-	/**
-	 * Puts a {@code minevibe:pc_desk} into a workstation slot when that block exists (the PC track registers it):
-	 * the default state, turned to face the room when it has a facing, then its {@code setPlacedBy} so a desk that
-	 * builds the rest of itself on placement does so. Without the block the slot stays marked and empty.
-	 */
-	private static void placeDesk(final ServerLevel level, final BlockPos pos, final Direction facing) {
-		Optional<Block> desk = BuiltInRegistries.BLOCK.getOptional(PC_DESK);
-		if (desk.isEmpty()) {
+	/** Lets the PC track's placer fill a workstation slot; without one the slot stays marked and empty. */
+	private static void placeWorkstation(final ServerLevel level, final BlockPos pos, final Direction facing) {
+		WorkstationPlacer placer = workstationPlacer;
+		if (placer == null) {
 			return;
 		}
-		BlockState state = desk.get().defaultBlockState();
-		if (state.hasProperty(HorizontalDirectionalBlock.FACING)) {
-			state = state.setValue(HorizontalDirectionalBlock.FACING, facing);
-		}
 		try {
-			level.setBlock(pos, state, Block.UPDATE_ALL);
-			state.getBlock().setPlacedBy(level, pos, level.getBlockState(pos), null, new ItemStack(state.getBlock()));
+			if (!placer.place(level, pos, facing)) {
+				MineVibeMod.LOGGER.info("No workstation placed in the office at {}; leaving the slot marked", pos.toShortString());
+			}
 		} catch (RuntimeException e) {
-			MineVibeMod.LOGGER.warn("Could not place a pc_desk in the office at {}; leaving the slot marked", pos, e);
+			MineVibeMod.LOGGER.warn("Could not place a workstation in the office at {}; leaving the slot marked", pos.toShortString(), e);
 		}
 	}
 

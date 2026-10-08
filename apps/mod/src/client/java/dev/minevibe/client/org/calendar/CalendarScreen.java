@@ -72,6 +72,8 @@ public final class CalendarScreen extends Screen {
 	private @Nullable String meetingEventId;
 	private String meetingTitle = "Meeting";
 	private @Nullable JsonElement meetingAttendees;
+	/** Bumped for every meeting dialog, so a late ETA preview never lands in a later dialog. */
+	private int meetingSeq;
 	private boolean busy;
 	private String status = "";
 	private int statusColour = OrgUi.GREY;
@@ -244,19 +246,22 @@ public final class CalendarScreen extends Screen {
 			EditBox date = this.addRenderableWidget(new EditBox(this.font, lx, y, 72, 14, Component.literal("Date")));
 			date.setHint(Component.literal("yyyy-mm-dd").withStyle(ChatFormatting.GRAY));
 			date.setValue(f.realDate.toString());
+			f.dateTextValid = true;
 			date.setMaxLength(10);
 			date.setResponder(t -> {
 				LocalDate parsed = RealClock.parseDate(t);
 				if (parsed != null) {
 					f.realDate = parsed;
 				}
-				this.formErrors = parsed == null ? List.of("Date: yyyy-mm-dd") : f.validate();
+				f.dateTextValid = parsed != null;
+				this.revalidate();
 			});
 			lx += 76;
 		}
 		lx += this.font.width("at ") + 2;
 		EditBox time = this.addRenderableWidget(new EditBox(this.font, lx, y, 40, 14, Component.literal("Time")));
 		time.setValue(String.format(Locale.ROOT, "%02d:%02d", f.hour, f.minute));
+		f.timeTextValid = true;
 		time.setMaxLength(5);
 		time.setResponder(t -> {
 			int[] hm = GameClock.parseTime(t);
@@ -264,7 +269,8 @@ public final class CalendarScreen extends Screen {
 				f.hour = hm[0];
 				f.minute = hm[1];
 			}
-			this.formErrors = hm == null ? List.of("Time: hh:mm") : f.validate();
+			f.timeTextValid = hm != null;
+			this.revalidate();
 		});
 		lx += 44;
 		if ("every_n_days".equals(f.recurrence)) {
@@ -436,14 +442,19 @@ public final class CalendarScreen extends Screen {
 		this.meetingAttendees = attendees;
 		this.etas = null;
 		this.overlay = Overlay.MEETING;
+		int seq = ++this.meetingSeq;
 		this.rebuildWidgets();
 		OrgClient.whenDone(this.backend.meetingStart(new Org.MeetingStart(eventId, eventId == null ? title : null, eventId == null ? attendees : null, true)), result -> {
-			this.etas = result.etas();
-			this.rebuildIfOpen();
+			if (seq == this.meetingSeq && this.overlay == Overlay.MEETING) {
+				this.etas = result.etas();
+				this.rebuildIfOpen();
+			}
 		}, error -> {
-			this.etas = List.of();
-			this.setStatus(OrgClient.describe(error), OrgUi.RED);
-			this.rebuildIfOpen();
+			if (seq == this.meetingSeq && this.overlay == Overlay.MEETING) {
+				this.etas = List.of();
+				this.setStatus(OrgClient.describe(error), OrgUi.RED);
+				this.rebuildIfOpen();
+			}
 		});
 	}
 

@@ -15,8 +15,8 @@ import java.util.List;
  * <pre>
  *   x: 0 1 2 3 4 5 6 7 8 9 10 11 12
  * z=0  # # # w # # # # # # #  #  #     # wall, w window, = window/door in the south wall
- *   1  # D D . D D . c . X X  .  #     D workstation desk slot, c wall calendar (y=2), X codex (2 wide, 3 high)
- *   2  w s s . s s . . . . .  .  w     s workstation chair slot
+ *   1  # d D . d D . c . X X  .  #     D desk main column (the slot), d its side column, c wall calendar (y=2), X codex
+ *   2  w s s . s s . . . . .  .  w     s workstation chair row (the chair stands in front of D)
  *   3  w . . . . . C C . . .  .  w     C meeting chair, T meeting table
  *   4  w . . . . C T T C . .  .  #
  *   5  # . . . . . C C . . .  F  #     F furnace
@@ -60,6 +60,16 @@ public final class OfficePlan {
 			this.dz = dz;
 		}
 
+		/** The next direction clockwise seen from above (as Direction#getClockWise). */
+		public Facing clockWise() {
+			return switch (this) {
+				case NORTH -> EAST;
+				case EAST -> SOUTH;
+				case SOUTH -> WEST;
+				case WEST -> NORTH;
+			};
+		}
+
 		/** The "right" of something whose front faces this way (as Direction#getCounterClockWise). */
 		public Facing right() {
 			return switch (this) {
@@ -94,7 +104,11 @@ public final class OfficePlan {
 		CHEST,
 		CRAFTING_TABLE,
 		FURNACE,
-		/** A 2x2 slot: a 2-wide desk (to its right) at the cell, its chair row one step toward {@code facing}. */
+		/**
+		 * A 2x2 slot for a PC workstation, laid out like {@code minevibe:pc_desk}: the desk's main column at the cell,
+		 * its side column one step {@link Facing#clockWise() clockwise} of {@code facing} (PcDeskBlock#sideDirection),
+		 * the screen facing {@code facing}, and the chair row one step toward {@code facing}.
+		 */
 		WORKSTATION,
 		/** Hangs from the roof. */
 		LANTERN,
@@ -128,10 +142,11 @@ public final class OfficePlan {
 					cells.add(new int[] {this.x, this.y + 1, this.z});
 				}
 				case WORKSTATION -> {
+					Facing side = this.facing.clockWise();
 					for (int column = 0; column < 2; column++) {
 						for (int depth = 0; depth < 2; depth++) {
 							cells.add(new int[] {
-								this.x + right.dx * column + this.facing.dx * depth, this.y, this.z + right.dz * column + this.facing.dz * depth
+								this.x + side.dx * column + this.facing.dx * depth, this.y, this.z + side.dz * column + this.facing.dz * depth
 							});
 						}
 					}
@@ -143,9 +158,10 @@ public final class OfficePlan {
 	}
 
 	public static final List<Piece> PIECES = List.of(
-		// North wall: two workstation slots, the wall calendar and the Codex.
-		new Piece(Kind.WORKSTATION, 1, 1, 1, Facing.SOUTH),
-		new Piece(Kind.WORKSTATION, 4, 1, 1, Facing.SOUTH),
+		// North wall: two workstation slots (main columns at x 2 and 5, side columns to their west), the wall calendar
+		// and the Codex.
+		new Piece(Kind.WORKSTATION, 2, 1, 1, Facing.SOUTH),
+		new Piece(Kind.WORKSTATION, 5, 1, 1, Facing.SOUTH),
 		new Piece(Kind.WALL_CALENDAR, 7, 2, 1, Facing.SOUTH),
 		new Piece(Kind.CODEX, 9, 1, 1, Facing.SOUTH),
 		// The meeting table (2 blocks) with 6 chairs around it.

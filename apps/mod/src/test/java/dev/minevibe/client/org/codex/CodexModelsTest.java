@@ -90,6 +90,18 @@ class CodexModelsTest {
 	}
 
 	@Test
+	void aTruncatedIndexNeverReportsThePageDeleted() {
+		// codex.index holds at most 1000 pages; past that a page under edit may simply not be listed.
+		CodexEditLock lock = new CodexEditLock();
+		lock.begin(page(PAGES.getFirst(), "Iron at 120 40 -80"));
+		lock.onIndex(PAGES.subList(1, PAGES.size()), true);
+		assertEquals(CodexEditLock.State.EDITING, lock.state(), "missing from a truncated index is not deleted");
+		assertFalse(lock.staleDeleted());
+		lock.onIndex(List.of(meta("iron-cave", "Iron cave", "places", false, 900, "eeeeeee", BRAM)), true);
+		assertEquals(CodexEditLock.State.STALE, lock.state(), "a newer rev in a truncated index still counts");
+	}
+
+	@Test
 	void aConflictLetsThePlayerOverwriteOnTheCurrentRev() {
 		CodexEditLock lock = new CodexEditLock();
 		lock.begin(page(PAGES.getFirst(), "old"));

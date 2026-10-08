@@ -120,6 +120,21 @@ class CalendarFormTest {
 	}
 
 	@Test
+	void unparsableTimeOrDateTextBlocksTheSave() {
+		// The screen keeps the last good hour/minute/date while the box holds junk; saving must not use them silently.
+		CalendarForm f = task();
+		f.timeTextValid = false;
+		assertEquals(List.of("Time: hh:mm"), f.validate());
+		f.timeTextValid = true;
+		f.dateTextValid = false;
+		assertEquals(List.of(), f.validate(), "the date box only exists on the real clock");
+		f.clock = "real";
+		assertEquals(List.of("Date: yyyy-mm-dd"), f.validate());
+		f.dateTextValid = true;
+		assertEquals(List.of(), f.validate());
+	}
+
+	@Test
 	void realClockEventsUseTheirZone() {
 		CalendarForm f = task();
 		f.clock = "real";

@@ -38,6 +38,12 @@ public final class CalendarForm {
 	public int minute = 0;
 	/** Real clock: the date (the time is {@link #hour}:{@link #minute}). */
 	public LocalDate realDate = LocalDate.of(2026, 1, 1);
+	/**
+	 * False while the screen's time box (or, on the real clock, its date box) holds text that does not parse: the
+	 * fields above then keep the last good value, which must not be saved as if the player had typed it.
+	 */
+	public boolean timeTextValid = true;
+	public boolean dateTextValid = true;
 	public @Nullable String tz;
 	public String recurrence = "once";
 	public int everyNDays = 2;
@@ -127,7 +133,10 @@ public final class CalendarForm {
 		if ("game".equals(this.clock) && this.gameDay < 1) {
 			errors.add("Day: 1 or later");
 		}
-		if (this.hour < 0 || this.hour > 23 || this.minute < 0 || this.minute > 59) {
+		if ("real".equals(this.clock) && !this.dateTextValid) {
+			errors.add("Date: yyyy-mm-dd");
+		}
+		if (!this.timeTextValid || this.hour < 0 || this.hour > 23 || this.minute < 0 || this.minute > 59) {
 			errors.add("Time: hh:mm");
 		}
 		if (!RECURRENCES.contains(this.recurrence)) {

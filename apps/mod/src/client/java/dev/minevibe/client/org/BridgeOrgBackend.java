@@ -35,7 +35,8 @@ public final class BridgeOrgBackend implements OrgBackend {
 
 	@Override
 	public CompletableFuture<Org.CodexPage> codexGet(final String pageId) {
-		return this.request(Org.CODEX_GET, new Org.CodexGet(pageId), null, Org.CodexGetResult.class).thenApply(Org.CodexGetResult::page);
+		// Checked like the other replies: the screen draws every field of the page, so a half page must fail here.
+		return this.request(Org.CODEX_GET, new Org.CodexGet(pageId), Org.CODEX_GET_RESULT, Org.CodexGetResult.class).thenApply(Org.CodexGetResult::page);
 	}
 
 	@Override

@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import org.junit.jupiter.api.Test;
 
 /** The starter office's floor plan (PLAN §7.5), checked without a world. */
@@ -96,6 +97,36 @@ class OfficePlanTest {
 		assertEquals(6, codex.cells().size());
 		assertTrue(codex.cells().stream().allMatch(c -> c[1] <= OfficePlan.WALL_TOP && c[2] == 1));
 		assertEquals(OfficePlan.Facing.EAST, codex.facing().right(), "a south-facing codex grows east");
+	}
+
+	@Test
+	void workstationSlotsFitThePcDesk() {
+		// minevibe:pc_desk: main column at the slot, side column clockwise of the screen's facing
+		// (PcDeskBlock#sideDirection), the chair in front of the main column, monitor blocks one above the desk.
+		for (OfficePlan.Facing f : OfficePlan.Facing.values()) {
+			assertEquals(Direction.valueOf(f.name()).getClockWise(), Direction.valueOf(f.clockWise().name()), "clockwise of " + f);
+		}
+		Map<String, Piece> taken = new HashMap<>();
+		for (Piece piece : OfficePlan.PIECES) {
+			for (int[] cell : piece.cells()) {
+				taken.put(key(cell), piece);
+			}
+		}
+		for (Piece slot : OfficePlan.piecesOf(Kind.WORKSTATION)) {
+			OfficePlan.Facing side = slot.facing().clockWise();
+			int[] main = {slot.x(), slot.y(), slot.z()};
+			int[] sideCell = {slot.x() + side.dx, slot.y(), slot.z() + side.dz};
+			int[] chair = {slot.x() + slot.facing().dx, slot.y(), slot.z() + slot.facing().dz};
+			for (int[] cell : List.of(main, sideCell, chair)) {
+				assertEquals(slot, taken.get(key(cell)), slot + " reserves " + key(cell));
+			}
+			for (int[] desk : List.of(main, sideCell)) {
+				int[] monitor = {desk[0], desk[1] + 1, desk[2]};
+				assertTrue(OfficePlan.isInterior(monitor[0], monitor[2]) && taken.get(key(monitor)) == null, slot + " leaves room for the monitor at " + key(monitor));
+				int[] behind = {desk[0] - slot.facing().dx, desk[1], desk[2] - slot.facing().dz};
+				assertTrue(OfficePlan.isWall(behind[0], behind[2]), slot + " stands against the wall");
+			}
+		}
 	}
 
 	@Test

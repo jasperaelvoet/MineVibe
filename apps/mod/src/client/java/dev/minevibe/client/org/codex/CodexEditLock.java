@@ -85,8 +85,16 @@ public final class CodexEditLock {
 		this.latest = null;
 	}
 
-	/** A new index arrived: notice when the page under edit changed or went away. */
+	/** A new (complete) index arrived: notice when the page under edit changed or went away. */
 	public void onIndex(final List<Org.CodexPageMeta> pages) {
+		this.onIndex(pages, false);
+	}
+
+	/**
+	 * A new index arrived: notice when the page under edit changed or went away. A {@code truncated} index lists only
+	 * some pages, so a page missing from it is not a deleted page.
+	 */
+	public void onIndex(final List<Org.CodexPageMeta> pages, final boolean truncated) {
 		if (this.pageId == null || this.state == State.IDLE || this.state == State.CONFLICT) {
 			return;
 		}
@@ -98,8 +106,10 @@ public final class CodexEditLock {
 			}
 		}
 		if (meta == null) {
-			this.state = State.STALE;
-			this.staleDeleted = true;
+			if (!truncated) {
+				this.state = State.STALE;
+				this.staleDeleted = true;
+			}
 		} else if (!meta.rev().equals(this.baseRev)) {
 			this.state = State.STALE;
 			this.staleRev = meta.rev();

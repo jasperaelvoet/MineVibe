@@ -224,6 +224,37 @@ public final class OrgGameTests {
 		helper.succeed();
 	}
 
+	@GameTest(structure = OFFICE_SITE, maxTicks = 20)
+	public void officeHandsTheFirstWorkstationSlotToThePcPlacer(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		BlockPos origin = helper.absolutePos(OFFICE_AT);
+		List<String> calls = new ArrayList<>();
+		// The PC track's placer gets slot 1 with every cell of a pc_desk workstation free (desk, monitor row, chair).
+		OfficeBuilder.installWorkstationPlacer((placeLevel, at, facing) -> {
+			BlockPos side = at.relative(facing.getClockWise());
+			boolean free = placeLevel.getBlockState(at).isAir() && placeLevel.getBlockState(side).isAir() && placeLevel.getBlockState(at.above()).isAir()
+				&& placeLevel.getBlockState(side.above()).isAir() && placeLevel.getBlockState(at.relative(facing)).isAir();
+			calls.add(at.subtract(origin).toShortString() + " " + facing + " " + free);
+			placeLevel.setBlock(at, Blocks.LECTERN.defaultBlockState(), Block.UPDATE_CLIENTS);
+			return true;
+		});
+		OfficeLayout layout;
+		try {
+			layout = OfficeBuilder.build(level, origin);
+		} finally {
+			OfficeBuilder.installWorkstationPlacer(null);
+		}
+		OfficePlan.Piece first = OfficePlan.piecesOf(OfficePlan.Kind.WORKSTATION).getFirst();
+		helper.assertValueEqual(calls, List.of(first.x() + ", " + first.y() + ", " + first.z() + " south true"), "placer calls");
+		BlockPos slot = layout.firstSlot(OfficeLayout.WORKSTATION).pos();
+		helper.assertValueEqual(slot, origin.offset(first.x(), first.y(), first.z()), "the reported slot is the desk's main column");
+		helper.assertTrue(level.getBlockState(slot).is(Blocks.LECTERN), "what the placer put there stays");
+		// Without a placer nothing but the floor markers goes into the slots.
+		OfficeBuilder.build(level, origin);
+		helper.assertTrue(level.getBlockState(slot).isAir(), "no desk without a placer");
+		helper.succeed();
+	}
+
 	@GameTest
 	public void officeIsNeverBuiltByItselfInGameTests(final GameTestHelper helper) {
 		helper.assertFalse(OfficeService.autoBuildEnabled(), "GameTest worlds must never get an automatic office");

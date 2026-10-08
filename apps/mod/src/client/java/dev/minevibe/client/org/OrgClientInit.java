@@ -29,6 +29,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderers;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,8 +44,10 @@ public final class OrgClientInit implements ClientModInitializer {
 	/** How often the crew list is refreshed from the integrated server's bodies, in client ticks. */
 	private static final int CREW_REFRESH_TICKS = 40;
 
-	private final OfficeReporter office = new OfficeReporter();
-	private boolean bridgeRegistered;
+	/** Shared with {@link #attach}, which may run before this entrypoint (from MineVibeClient). */
+	private static final OfficeReporter OFFICE = new OfficeReporter();
+	private static @Nullable BridgeClient attachedTo;
+
 	private int ticks;
 
 	@Override
@@ -69,20 +72,33 @@ public final class OrgClientInit implements ClientModInitializer {
 				() -> mc.level == null ? 0 : mc.level.getOverworldClockTime(), System::currentTimeMillis, "Player").seed());
 			LOG.info("Org screens use the in-memory fake backend (-D{}=true)", OrgClient.FAKE_PROPERTY);
 		}
-		this.registerBridge();
-		// The bridge is installed by MineVibeClient's entrypoint; if another entrypoint order ran us first, retry.
-		ClientLifecycleEvents.CLIENT_STARTED.register(mc -> this.registerBridge());
+		// MineVibeClient attaches before it starts the bridge; this is the fallback for any other order.
+		attachInstalled();
+		ClientLifecycleEvents.CLIENT_STARTED.register(mc -> attachInstalled());
 		ClientTickEvents.END_CLIENT_TICK.register(this::tick);
 		// A meeting ends with its world; the Codex and calendar are re-sent by Node when they change.
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> mc.execute(() -> OrgClientState.get().forgetMeeting()));
 	}
 
-	private void registerBridge() {
+	private static void attachInstalled() {
 		BridgeClient bridge = MineVibeBridge.get();
-		if (bridge == null || this.bridgeRegistered) {
+		if (bridge != null) {
+			attach(bridge);
+		}
+	}
+
+	/**
+	 * Hooks the org tools into {@code bridge}: the {@code codex.index}, {@code calendar.state} and {@code meeting.state}
+	 * pushes into {@link OrgClientState}, and the crew list and office report on every handshake. Node pushes the Codex
+	 * and the calendar right after {@code hello.ok}, and a push with no handler yet is dropped (Node only re-sends on a
+	 * change), so MineVibeClient calls this before {@code bridge.start()}. Idempotent; the entrypoint calls it again as
+	 * a fallback.
+	 */
+	public static synchronized void attach(final BridgeClient bridge) {
+		if (attachedTo == bridge) {
 			return;
 		}
-		this.bridgeRegistered = true;
+		attachedTo = bridge;
 		OrgClientState state = OrgClientState.get();
 		on(bridge, Org.CODEX_INDEX, state::onCodexIndex);
 		on(bridge, Org.CALENDAR_STATE, state::onCalendarState);
@@ -90,7 +106,7 @@ public final class OrgClientInit implements ClientModInitializer {
 		bridge.addListener(new BridgeClient.ConnectionListener() {
 			@Override
 			public void onHandshake(final Messages.HelloOk helloOk) {
-				OrgClientInit.this.office.onHandshake();
+				OFFICE.onHandshake();
 				List<Messages.CrewMember> crew = List.copyOf(helloOk.crew());
 				Minecraft.getInstance().execute(() -> state.crew().setNodeCrew(crew));
 			}
@@ -110,7 +126,7 @@ public final class OrgClientInit implements ClientModInitializer {
 	}
 
 	private void tick(final Minecraft mc) {
-		this.office.tick(mc);
+		OFFICE.tick(mc);
 		if (++this.ticks % CREW_REFRESH_TICKS == 0) {
 			refreshCrew(mc);
 		}

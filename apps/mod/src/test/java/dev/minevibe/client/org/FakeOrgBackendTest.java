@@ -64,6 +64,10 @@ class FakeOrgBackendTest {
 		assertEquals("player", page.author().kind());
 		assertEquals("Jasper", page.author().name());
 		assertEquals(5, this.state.codexPages().size(), "the index was pushed");
+		assertValid(Org.CODEX_GET_RESULT, new Org.CodexGetResult(page));
+		JsonObject half = ProtocolCodec.GSON.toJsonTree(new Org.CodexGetResult(page)).getAsJsonObject();
+		half.getAsJsonObject("page").remove("body");
+		assertFalse(Org.CODEX_GET_RESULT.validate(half).isEmpty(), "a codex.get reply without the body is refused before CodexScreen draws it");
 
 		assertEquals(Codes.CODEX_SIMILAR, code(this.fake.codexPut(new Org.CodexPut("create", null, null, "wheat FARM", "again", List.of(), "places", "world", null))));
 		assertEquals(Codes.CODEX_CONFLICT, code(this.fake.codexPut(new Org.CodexPut("update", "wheat-farm", "0000000", "Wheat farm", "x", List.of(), "places", "world", null))));

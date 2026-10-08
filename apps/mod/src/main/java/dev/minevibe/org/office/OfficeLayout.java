@@ -13,9 +13,10 @@ import org.jspecify.annotations.Nullable;
  * and the slots other parts of MineVibe care about. {@link #toWorldState()} is the {@code office} object of
  * {@code world.state} (protocol §6.4): Node learns where the workstations, the meeting table and the door are.
  *
- * <p>Slot kinds: {@code workstation} (desk anchor, {@code pcId} once a PC is bound), {@code meeting_table} (primary
- * table block), {@code codex} (anchor), {@code wall_calendar}, {@code chest}, {@code bed}, {@code door} (the porch cell
- * in front of it: agents without a spawn position appear here), {@code spawn}.
+ * <p>Slot kinds: {@code workstation} (the desk's main column, see {@link OfficeBuilder.WorkstationPlacer}; {@code pcId}
+ * once a PC is bound), {@code meeting_table} (primary table block), {@code codex} (anchor), {@code wall_calendar},
+ * {@code chest}, {@code bed}, {@code door} (the porch cell in front of it: agents without a spawn position appear here),
+ * {@code spawn}.
  */
 public record OfficeLayout(BlockPos origin, BlockPos spawn, float spawnYaw, List<Slot> slots) {
 	public static final String WORKSTATION = "workstation";

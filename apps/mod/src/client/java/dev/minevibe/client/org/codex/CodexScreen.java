@@ -452,7 +452,7 @@ public final class CodexScreen extends Screen {
 		if (this.seenVersion != this.state.version()) {
 			this.seenVersion = this.state.version();
 			CodexEditLock.State before = this.lock.state();
-			this.lock.onIndex(this.state.codexPages());
+			this.lock.onIndex(this.state.codexPages(), this.state.codexTruncated());
 			if (before != this.lock.state() && this.lock.state() == CodexEditLock.State.STALE) {
 				this.setStatus(this.lock.staleDeleted() ? "This page was deleted while you were editing"
 					: this.lock.staleBy() + " changed this page; saving will ask you", INK_RED);
@@ -460,7 +460,8 @@ public final class CodexScreen extends Screen {
 			Org.CodexPage p = this.page;
 			if (this.mode == Mode.BROWSE && p != null) {
 				Org.CodexPageMeta meta = this.state.codexPages().stream().filter(m -> m.id().equals(p.id())).findFirst().orElse(null);
-				if (meta == null && this.state.codexKnown()) {
+				// A truncated index (over 1000 pages) leaves pages out: only a complete one says the page is gone.
+				if (meta == null && this.state.codexKnown() && !this.state.codexTruncated()) {
 					this.page = null;
 					this.selectedId = null;
 					this.rebuildWidgets();
