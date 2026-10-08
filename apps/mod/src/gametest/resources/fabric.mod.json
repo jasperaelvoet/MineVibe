@@ -24,7 +24,8 @@
 			"dev.minevibe.gametest.client.MineVibeClientGameTests",
 			"dev.minevibe.gametest.agent.AgentClientGameTests",
 			"dev.minevibe.gametest.ui.UiClientGameTests",
-			"dev.minevibe.gametest.org.OrgClientGameTests"
+			"dev.minevibe.gametest.org.OrgClientGameTests",
+			"dev.minevibe.gametest.client.IntegrationClientGameTests"
 		]
 	},
 	"depends": {

@@ -97,6 +97,17 @@ public final class OfficeService {
 		return stateOf(server).layout;
 	}
 
+	/**
+	 * GameTests: makes {@code layout} this running world's office (null: none again) without building, saving or moving
+	 * the world spawn, so code that asks where the office is (the door agents spawn at, the meeting table) can be
+	 * tested. Restore it before the test ends.
+	 */
+	public static void overrideLayout(final MinecraftServer server, final @Nullable OfficeLayout layout) {
+		State s = stateOf(server);
+		s.layout = layout;
+		published = layout != null ? new Published(HardcoreHooks.levelId(server), layout) : null;
+	}
+
 	/** True unless office building is switched off for this JVM (GameTests, {@code -Dminevibe.office=false}). */
 	public static boolean autoBuildEnabled() {
 		return System.getProperty("fabric-api.gametest") == null

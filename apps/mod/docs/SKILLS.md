@@ -16,10 +16,10 @@ All run on the integrated server thread (`err NO_SERVER` without one).
 | `skill.progress` | Sent while a job runs, at most once a second per job, when its text changes ("12/20 oak_log"). |
 | `skill.cancel` | Cancels the agent's current job (or only `jobId`); each cancelled job also gets `skill.result{cancelled}` unless its `skill.run` was still waiting, which then answers `cancelled`. |
 | `obs.query` | `status`, `look_around`, `inventory`, `find{what, radius?, limit?}`, `recipe{item}`, `recent_events{limit?}`, `crew`, `list_pcs`, `job_status{jobId?}`, `menu_state`. |
-| `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears near the player (Node sends the office door as `at`). Bodies follow the local player. `at` also becomes the agent's home (shelter at dusk). Errors: `BAD_ARGS` (ids are `[a-z][a-z0-9_]{0,15}` in the mod), `AGENT_DEAD`, `SPAWN_FAILED`. |
+| `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears at the office door (the `door` slot of the world's starter office; near the player in a world without one). Bodies follow the local player. `at`, or the door it appeared at, also becomes the agent's home (shelter at dusk). Errors: `BAD_ARGS` (ids are `[a-z][a-z0-9_]{0,15}` in the mod), `AGENT_DEAD`, `SPAWN_FAILED`. |
 | `agent.despawn` | `dismissed` removes the agent for good; `world_end` / `shutdown` save it. A seat is left first (`pc.unseat`). |
 | `agent.mode` | Idle mode `follow` / `stay` / `guard` / `wander`, around `anchor` (default: where it stands). |
-| `agent.seat` | Pre-checks (`PC_UNKNOWN`, `PC_DOWN`, `SEAT_CAP` when 2 other agents sit at, walk to (`coming`) or keep (`away`) a PC, `OCCUPIED_BY_PLAYER`, `RESERVED`, `NO_SEAT` for meetings), reserves the chair (`coming`), answers `running`, walks and sits. A new `agent.seat` replaces the agent's current job. Reservations of agents that died or left are dropped within a second. The end is `skill.result{jobId}` (failures: `UNREACHABLE`, `OCCUPIED_BY_PLAYER`, `RESERVED`, `PC_DOWN`, `NO_SEAT`) and, for a PC, `pc.seat{seatEpoch}`. |
+| `agent.seat` | Pre-checks (`PC_UNKNOWN`, `PC_DOWN`, `SEAT_CAP` when 2 other agents sit at, walk to (`coming`) or keep (`away`) a PC, `OCCUPIED_BY_PLAYER`, `RESERVED` (also for 30 s after a kick off that PC), `NO_SEAT` for meetings), reserves the chair (`coming`), answers `running`, walks and sits. A PC's chair is the chair of its desk; a meeting seat is a free chair of the office's meeting table (else the table nearest the agent), one per walker, and never counts toward `SEAT_CAP`. A new `agent.seat` replaces the agent's current job. Reservations of agents that died or left are dropped within a second. The end is `skill.result{jobId}` (failures: `UNREACHABLE`, `OCCUPIED_BY_PLAYER`, `RESERVED`, `PC_DOWN`, `NO_SEAT`) and, for a PC, `pc.seat{seatEpoch}`. |
 | `agent.unseat` | Stands up (an epoch older than the seat's, or than a walk to a seat, is ignored: `ok{ignored: true}`), sends `pc.unseat{reason, reserved}`; `keepReservation` keeps the chair (`away`). Not seated: releases the agent's reservations unless `keepReservation`. |
 | `agent.approach` | Observed (other modules may observe it too): `present` / `queue` drive the Approach reflex, `ping` / `release` stop it. |
 | `calendar.fired` | Observed: each agent in `walk` goes to `target` (Attend reflex). |
@@ -32,7 +32,8 @@ Every skill result and observation ends with `footer`, a ~25-token status line:
 
 - **Places in `goto`.** `entity` may name a place: `office` / `home` (the agent's home: its spawn point
   or the bed it last slept in; else world spawn), `spawn`, the nearest `bed`, `chest`,
-  `crafting_table`, `furnace`, or `pc:<id>` (that PC's chair).
+  `crafting_table`, `furnace`, `codex` (the spot in front of the nearest Codex block within 48 blocks:
+  the "file it" walk after a Codex write, PLAN 6.6), or `pc:<id>` (that PC's chair).
 - **Menu buttons.** `menu_click{slot}` keeps vanilla slot numbers (`-999` = outside the window). A
   `slot` of `-2` or less presses menu button `-slot - 2`: a merchant's trade offer (then take slot 2),
   an enchanting option (`-2`, `-3`, `-4`), a stonecutter recipe. `menu_state` lists the button numbers.
@@ -98,10 +99,21 @@ SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47
 
 - **PC chairs**: `PcRegistry` (`agent.skill.seat`) is what seats need from the PC blocks: chair per PC,
   status from `pc.state`, occupant, reservations, `onSeated` / `onUnseated` (which send `pc.seat` /
-  `pc.unseat`). The PC blocks install theirs with `Seats.installPcRegistry(...)`; until then
-  `SimplePcRegistry` serves (`/mv pcbind <pcId> <chair pos>`). A kick should call
-  `agent.brain().noteStand("kick")` before dismounting so the unseat reports `kick`.
-- **Meeting chairs**: `Seats.installMeetingSeats((server, meetingId, agentId) -> chair)`.
+  `pc.unseat`). `PcModInit` installs `dev.minevibe.pc.PcSeatRegistry` with `Seats.installPcRegistry(...)`:
+  - chairs come from the desks (`pc.PcRegistry.chairOf`); `/mv pcbind <pcId> <chair pos>` still binds a
+    chair by hand (it extends `SimplePcRegistry`), and a desk wins over a hand-bound chair;
+  - statuses come from `pc.state` through a `PcStates` listener (`PcBridge` owns the handler), falling back
+    to what `PcStates` holds;
+  - `kick(server, pcId)` calls `agent.brain().noteStand("kick")` before dismounting, so the seat bookkeeping
+    sends `pc.unseat{kick}` and a `kicked` event (urgency 2); it steps the agent aside and blocks a re-sit at
+    that PC for 30 s (also after Node's own `agent.unseat{kick}`). "Kick Bram and sit?" (right-clicking an
+    occupied PC chair) runs `kickAndSit`;
+  - the player sitting down on a chair kept for an agent ends that reservation;
+  - `pcIds` also lists PCs that only a reservation names, so the once-a-second sweep still sees them.
+  Meeting seats are never PC seats: `pc.PcRegistry.pcSeatedAt`, PcControlScreen and the head icon check the
+  seat entity's kind, which is synced to clients and follows the chair.
+- **Meeting chairs**: `OrgModInit` installs `org.meeting.MeetingSeatProvider` with
+  `Seats.installMeetingSeats(...)` (`MeetingSeats.findFreeChair` with the chairs other walkers claimed left out).
 - **Bridge**: `BridgeClient#handleAsync` (reply when a future completes) and `BridgeClient#observe`
   (several listeners for one push) were added for this layer.
 

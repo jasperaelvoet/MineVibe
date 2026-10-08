@@ -52,6 +52,8 @@ public final class CraftJobs {
 		private @Nullable BlockPos table;
 		private @Nullable BlockPos placing;
 		private boolean placedTable;
+		/** A table found nearby could not be reached: the next one is the agent's own. */
+		private boolean ownTableOnly;
 		private int crafted;
 		private int placeTries;
 
@@ -116,7 +118,18 @@ public final class CraftJobs {
 				case OPEN -> {
 					return switch (this.opener.open(agent, this.table)) {
 						case WORKING -> Status.RUNNING;
-						case UNREACHABLE -> this.fail("UNREACHABLE", "cannot reach the crafting table at " + this.table.toShortString());
+						case UNREACHABLE -> {
+							if (!this.placedTable && !this.ownTableOnly && this.requestedTable == null && Inv.count(agent, Items.CRAFTING_TABLE) > 0) {
+								// A table seen behind a wall or up a cliff: put down the one in the bag instead.
+								this.ownTableOnly = true;
+								this.table = null;
+								this.opener.reset();
+								this.walk.reset();
+								this.phase = Phase.TABLE;
+								yield Status.RUNNING;
+							}
+							yield this.fail("UNREACHABLE", "cannot reach the crafting table at " + this.table.toShortString());
+						}
 						case NO_MENU -> this.fail("NO_TABLE", "the crafting table at " + this.table.toShortString() + " did not open");
 						case OPEN -> {
 							if (!(agent.containerMenu instanceof CraftingMenu)) {
@@ -142,7 +155,7 @@ public final class CraftJobs {
 						return this.fail("NO_TABLE", "no crafting table at " + this.requestedTable.toShortString());
 					}
 					this.table = this.requestedTable;
-				} else {
+				} else if (!this.ownTableOnly) {
 					List<BlockPos> tables = BlockScan.nearest(level, agent.blockPosition(), 24, s -> s.is(Blocks.CRAFTING_TABLE), p -> true, 1);
 					if (!tables.isEmpty()) {
 						this.table = tables.getFirst();

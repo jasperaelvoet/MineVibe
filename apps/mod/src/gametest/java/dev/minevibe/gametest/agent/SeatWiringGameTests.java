@@ -72,6 +72,7 @@ public final class SeatWiringGameTests {
 	private static final String SEAT_DESK = "minevibe-gametest:seat_desk";
 	private static final String SEAT_KICK = "minevibe-gametest:seat_kick";
 	private static final String SEAT_MEETING = "minevibe-gametest:seat_meeting";
+	private static final String OFFICE_DOOR = "minevibe-gametest:office_door";
 	private static final AtomicLong SLOTS = new AtomicLong(7_000);
 
 	// ------------------------------------------------------------------ the office's workstation
@@ -131,6 +132,46 @@ public final class SeatWiringGameTests {
 				i -> i.getItem().is(PcContent.LINUX_WORKSTATION) || i.getItem().is(PcContent.MAC_WORKSTATION));
 			helper.assertTrue(drops.isEmpty(), "no workstation item dropped: " + drops);
 			helper.succeed();
+		});
+	}
+
+	// ------------------------------------------------------------------ the office door, table and Codex
+
+	@GameTest(structure = OFFICE_SITE, environment = OFFICE_DOOR, maxTicks = 400)
+	public void anAgentWithoutAtSpawnsAtTheOfficeDoorAndFindsTheTableAndCodex(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		net.minecraft.server.MinecraftServer server = level.getServer();
+		BlockPos origin = helper.absolutePos(new BlockPos(1, 1, 1));
+		OfficeLayout layout = OfficeBuilder.build(level, origin, null);
+		// This world's office for the length of the test (its own batch: nothing else runs meanwhile).
+		dev.minevibe.org.office.OfficeService.overrideLayout(server, layout);
+		onTestEnd(helper, () -> dev.minevibe.org.office.OfficeService.overrideLayout(server, null));
+		BlockPos door = layout.firstSlot(OfficeLayout.DOOR).pos();
+		SkillService service = service(helper);
+		String id = AgentTestSupport.uniqueName("door").toLowerCase(java.util.Locale.ROOT);
+		Map<String, Object> out = service.spawn(new Bodies.AgentSpawn(id, id, "Door", "engineer", false, null, null, false, "stay", null));
+		AgentPlayer agent = dev.minevibe.agent.AgentService.get(server).agent(id);
+		helper.assertTrue(agent != null, "spawned");
+		onTestEnd(helper, () -> dev.minevibe.agent.AgentService.get(server).dismiss(agent));
+		same(helper, agent.blockPosition(), door, "agent.spawn without at appears at the office door (" + out + ")");
+		same(helper, agent.brain().home(), door, "the door is its home");
+
+		// A meeting seat is a free chair of the office's table.
+		PcRegistry.Chair chair = Seats.meetings().chairFor(server, "m-office", id);
+		helper.assertTrue(chair != null && MeetingTables.chairsOf(level, layout.firstSlot(OfficeLayout.MEETING_TABLE).pos()).contains(chair.pos()),
+			"a chair of the office's meeting table: " + chair);
+
+		// The "file it" walk: goto{codex} goes to the spot in front of the office's Codex.
+		Direction codexFacing = OfficeBuilder.direction(OfficePlan.piecesOf(OfficePlan.Kind.CODEX).getFirst().facing());
+		BlockPos spot = layout.firstSlot(OfficeLayout.CODEX).pos().relative(codexFacing);
+		helper.assertTrue(dev.minevibe.agent.skill.Places.isPlace("codex"), "codex is a place");
+		same(helper, dev.minevibe.agent.skill.Places.resolve(agent, "codex"), spot, "the codex place");
+		String job = jobId("file");
+		var reply = SkillTestSupport.run(helper, agent, job, "goto", "{\"entity\":\"codex\"}", 0);
+		helper.succeedWhen(() -> {
+			var r = recorder(helper).results(job);
+			helper.assertTrue(!r.isEmpty() && "done".equals(r.getFirst().status()), "walked to the Codex: " + r + " " + reply);
+			helper.assertTrue(agent.blockPosition().distManhattan(spot) <= 2, "at the Codex: " + agent.blockPosition());
 		});
 	}
 
