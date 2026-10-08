@@ -155,7 +155,7 @@ describe('debug messages (E2E)', () => {
     expect(parsed.paused).toBe(false);
   });
 
-  it('DebugStateResult takes the optional crew and monitor snapshot, nested nulls dropped or kept', () => {
+  it('DebugStateResult takes the optional crew and monitor snapshot; nested nulls are present, never dropped', () => {
     const base = {
       screen: null,
       worldId: 'world-1',
@@ -180,19 +180,28 @@ describe('debug messages (E2E)', () => {
       brain: 'idle',
       headIcon: 'NONE',
       cards: 0,
+      atPc: false,
     };
     const parsed = DebugStateResult.parse({
       ...base,
-      // The mod's reply encoder drops nested nulls: bubble, pos, ageMs and hash may be absent.
+      // The mod's reply encoder keeps nested nulls (DEBT, fixed 2026-10-09): bubble, pos, ageMs and hash are null.
       agents: [
-        agent,
+        { ...agent, bubble: null, pos: null },
         { ...agent, agentId: 'bram2b4d', bubble: 'hi', pos: { x: 0, y: 64, z: 0 }, atPc: true },
-      ].map((a) => ({ atPc: false, ...a })),
-      monitors: [{ pcId: 'linux-1', w: 0, h: 0, seq: -1, patches: 0 }],
+      ],
+      monitors: [{ pcId: 'linux-1', w: 0, h: 0, seq: -1, patches: 0, ageMs: null, hash: null }],
     });
-    expect(parsed.agents?.[0]?.bubble ?? null).toBeNull();
+    expect(parsed.agents?.[0]).toMatchObject({ bubble: null, pos: null });
     expect(parsed.agents?.[1]).toMatchObject({ bubble: 'hi', atPc: true });
-    expect(parsed.monitors?.[0]?.hash ?? null).toBeNull();
+    expect(parsed.monitors?.[0]).toMatchObject({ ageMs: null, hash: null });
+    // A reply whose nested nulls were dropped (the old encoder) no longer passes.
+    expect(DebugStateResult.safeParse({ ...base, agents: [agent] }).success).toBe(false);
+    expect(
+      DebugStateResult.safeParse({
+        ...base,
+        monitors: [{ pcId: 'linux-1', w: 0, h: 0, seq: -1, patches: 0 }],
+      }).success,
+    ).toBe(false);
   });
 
   it('DebugStateResult accepts a BootScreen snapshot with no world', () => {

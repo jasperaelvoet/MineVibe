@@ -1,15 +1,16 @@
 /**
- * The "monitor vs. bootAll" race from docs/design/DEBT.md, pinned down: a monitor pass can stop a container that
- * still runs for an inactive PC just before `bootAll` would have adopted it. `bootAll` then starts the very same
- * container again. That is wasteful (one restart) but benign: nothing is recreated, so the rootfs and the volumes
- * are kept, and the PC ends up running. These tests document that behaviour; a fix (for example, the monitor
- * leaving strays alone while a `bootAll` runs) would make the first one restart-free.
+ * The "monitor vs. bootAll" race (fixed 2026-10-09; formerly in docs/design/DEBT.md): a monitor pass could stop a
+ * container that still runs for an inactive PC just before `bootAll` would have adopted it, and `bootAll` then started
+ * the very same container again (one wasted restart; nothing recreated). The monitor now leaves strays alone while a
+ * `bootAll` runs. A pass that runs before any `bootAll` starts still stops the stray (it cannot know one is coming),
+ * which costs that one restart and never a recreate.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GiB, type HostFacts } from '../../src/pcs/Budget.js';
+import type { PcContainerInfo } from '../../src/pcs/drivers/PcDriver.js';
 import { PcManager } from '../../src/pcs/PcManager.js';
 import { FakeDriver, fakePool, serving } from './fakes.js';
 
@@ -75,6 +76,32 @@ describe('monitor vs. bootAll (DEBT: PC manager)', () => {
     await m.monitorOnce();
     expect(r.booted).toEqual(['a']);
     expect(m.status('a')).toEqual({ status: 'running' });
+    expect(driver.log).toEqual([]);
+  });
+
+  it('a monitor pass while bootAll runs leaves the stray to it: adopted, no stop, no restart', async () => {
+    const { m, driver } = await leftRunning();
+    // Hold bootAll at its first container list, so the monitor pass runs in the middle of it.
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let lists = 0;
+    const list = driver.list.bind(driver);
+    driver.list = async (labels): Promise<PcContainerInfo[]> => {
+      if (lists++ === 0) await gate;
+      return list(labels);
+    };
+    const booting = m.bootAll();
+    await m.monitorOnce();
+    expect(driver.containers.get(cname('a'))?.state).toBe('running');
+    release();
+    const r = await booting;
+    expect(r.booted).toEqual(['a']);
+    expect(m.status('a')).toEqual({ status: 'running' });
+    expect(driver.log).toEqual([]);
+    // Once bootAll is done, the monitor is back to normal (nothing to do for a running, adopted PC).
+    await m.monitorOnce();
     expect(driver.log).toEqual([]);
   });
 

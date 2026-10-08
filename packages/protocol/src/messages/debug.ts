@@ -24,14 +24,12 @@ export const DebugAgent = z.object({
   brain: z.string().min(1).max(32),
   /** The head icon the client draws (`NONE`, `QUESTION`, `THINKING`, `SEATED`, ...). */
   headIcon: z.string().min(1).max(32),
-  /**
-   * The live bubble's text, null (or absent: the mod's reply encoder drops nested nulls) when none is shown.
-   */
-  bubble: z.string().max(4000).nullish(),
+  /** The live bubble's text, null when none is shown. */
+  bubble: z.string().max(4000).nullable(),
   /** Open pending cards. */
   cards: NonNegInt,
-  /** The body's position, null or absent when the body is not loaded on the client. */
-  pos: DebugPos.nullish(),
+  /** The body's position, null when the body is not loaded on the client. */
+  pos: DebugPos.nullable(),
   /** The body rides a PC seat. */
   atPc: z.boolean(),
 });
@@ -46,10 +44,10 @@ export const DebugMonitor = z.object({
   seq: z.number().int().min(-1),
   /** Rects patched in so far. */
   patches: NonNegInt,
-  /** Milliseconds since the last patch, null or absent before the first. */
-  ageMs: NonNegInt.nullish(),
-  /** CRC32 of the frame's pixels (hex), null or absent before the first frame. */
-  hash: z.string().max(16).nullish(),
+  /** Milliseconds since the last patch, null before the first. */
+  ageMs: NonNegInt.nullable(),
+  /** CRC32 of the frame's pixels (hex), null before the first frame. */
+  hash: z.string().max(16).nullable(),
 });
 export type DebugMonitor = z.infer<typeof DebugMonitor>;
 

@@ -4,9 +4,14 @@ import { join } from 'node:path';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, describe, expect, it } from 'vitest';
 import { interpretWireAnswer } from '../../../src/agents/cardAnswers.js';
-import { createInteractionBroker, MISSING_PLAN_TEXT } from '../../../src/agents/InteractionBroker.js';
+import {
+  choosePlan,
+  createInteractionBroker,
+  MISSING_PLAN_TEXT,
+} from '../../../src/agents/InteractionBroker.js';
 import { type Card, type CardOutcome, PendingStore } from '../../../src/agents/PendingStore.js';
 import { PlanCapture } from '../../../src/agents/PlanCapture.js';
+import { TURN_TEXT_MAX_CHARS, TurnText } from '../../../src/agents/TurnText.js';
 
 const tmp: string[] = [];
 afterEach(() => {
@@ -26,12 +31,14 @@ const QUESTIONS = [
 function setup() {
   const store = new PendingStore();
   const plans = new PlanCapture(['/Users/jasper']);
+  const said = new TurnText(() => 1000);
   const events: string[] = [];
   let mode: PermissionMode = 'plan';
   const broker = createInteractionBroker({
     agentId: 'ada-1',
     store,
     plans,
+    turnText: () => said.latest(),
     seatEpoch: () => 3,
     playerName: () => 'Jasper',
     now: () => 1000,
@@ -48,7 +55,7 @@ function setup() {
   });
   const call = (tool: string, input: Record<string, unknown>, signal = new AbortController().signal) =>
     broker(tool, input, { signal, toolUseID: 't1', requestId: 'r1' });
-  return { store, plans, events, call, mode: () => mode };
+  return { store, plans, said, events, call, mode: () => mode };
 }
 
 const next = () => new Promise((r) => setImmediate(r));
@@ -122,6 +129,98 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jasper wants changes to the plan: use tabs/);
   });
 
+  it('ExitPlanMode without a plan file: the card shows what the agent last said; a stale file loses to new prose', async () => {
+    const { store, plans, said, call } = setup();
+    said.text('Looking at the parser.');
+    said.toolUse('mcp__pc__bash');
+    said.text('Plan:\n1. Add a test');
+    said.text('2. Fix the tokenizer');
+    said.toolUse('ExitPlanMode'); // the ExitPlanMode call itself, streamed before the card is read
+    let pending = call('ExitPlanMode', {});
+    await next();
+    let [card] = store.list('ada-1');
+    expect(card).toMatchObject({ kind: 'plan', plan: 'Plan:\n1. Add a test\n\n2. Fix the tokenizer' });
+    store.resolve(card?.id ?? '', { kind: 'revise', feedback: 'more tests' });
+    expect(await pending).toMatchObject({
+      behavior: 'deny',
+      message: expect.stringMatching(/or state it in full/),
+    });
+
+    // A plan file written now is new: it wins over the prose.
+    plans.write('/Users/jasper/.claude/plans/p.md', '# File plan');
+    said.text('Updated the plan file.');
+    pending = call('ExitPlanMode', {});
+    await next();
+    [card] = store.list('ada-1');
+    expect(card).toMatchObject({ plan: '# File plan' });
+    store.resolve(card?.id ?? '', { kind: 'revise', feedback: 'shorter' });
+    expect(await pending).toMatchObject({
+      message: expect.stringMatching(/Update the plan file, then call/),
+    });
+
+    // Revised in prose only: the file was already shown, so the new words are the plan.
+    said.toolUse('mcp__pc__read');
+    said.text('Shorter plan: fix it.');
+    pending = call('ExitPlanMode', {});
+    await next();
+    [card] = store.list('ada-1');
+    expect(card).toMatchObject({ plan: 'Shorter plan: fix it.' });
+    store.resolve(card?.id ?? '', { kind: 'approved' });
+    expect(await pending).toMatchObject({ behavior: 'allow' });
+  });
+
+  it('ExitPlanMode right after another tool call: words said before that call are not a plan', async () => {
+    const { store, said, call } = setup();
+    said.text('Let me look at the tokenizer first.');
+    said.toolUse('mcp__pc__bash');
+    said.toolUse('ExitPlanMode');
+    const pending = call('ExitPlanMode', {});
+    await next();
+    const [card] = store.list('ada-1');
+    expect(card).toMatchObject({ kind: 'plan', plan: MISSING_PLAN_TEXT });
+    store.resolve(card?.id ?? '', { kind: 'denied', reason: 'no plan' });
+    expect(await pending).toMatchObject({ behavior: 'deny' });
+  });
+
+  it('a plan file shown before a session restart is not new to the next broker: fresh prose wins', async () => {
+    const first = setup();
+    first.plans.write('/Users/jasper/.claude/plans/p.md', '# Old plan');
+    let pending = first.call('ExitPlanMode', {});
+    await next();
+    let [card] = first.store.list('ada-1');
+    expect(card).toMatchObject({ plan: '# Old plan' });
+    first.store.resolve(card?.id ?? '', { kind: 'revise', feedback: 'smaller steps' });
+    await pending;
+
+    // The session restarts (crash, Retry): a new broker over the same PlanCapture, as AgentBrain makes it.
+    const said = new TurnText(() => 2000);
+    const broker = createInteractionBroker({
+      agentId: 'ada-1',
+      store: first.store,
+      plans: first.plans,
+      turnText: () => said.latest(),
+      seatEpoch: () => 3,
+      playerName: () => 'Jasper',
+      now: () => 2000,
+      hooks: { onWaitStart: async () => {}, onWaitEnd: async () => {}, setPermissionMode: async () => {} },
+    });
+    said.text('Revised plan: 1. one small step');
+    said.toolUse('ExitPlanMode');
+    pending = broker(
+      'ExitPlanMode',
+      {},
+      { signal: new AbortController().signal, toolUseID: 't2', requestId: 'r2' },
+    );
+    await next();
+    [card] = first.store.list('ada-1');
+    expect(card).toMatchObject({ plan: 'Revised plan: 1. one small step' });
+    first.store.resolve(card?.id ?? '', { kind: 'approved' });
+    expect(await pending).toMatchObject({ behavior: 'allow' });
+    // Approval forgets the captured plans, and with them which one was shown.
+    expect(first.plans.latest()).toBeNull();
+    expect(first.plans.isNew(null)).toBe(false);
+  });
+
   it('EnterPlanMode is always denied (USER DECISION 2026-10-08: no automatic plan mode); so is anything else', async () => {
     const b = setup();
     const res = await b.call('EnterPlanMode', {});
@@ -131,6 +230,48 @@ describe('InteractionBroker (canUseTool)', () => {
     for (const tool of ['Bash', 'mcp__pc__bash', 'mcp__mc__status', 'WebFetch']) {
       expect(await b.call(tool, {}), tool).toMatchObject({ behavior: 'deny' });
     }
+  });
+});
+
+describe('choosePlan and TurnText', () => {
+  it('prefers a new plan file, then the turn text, then an old file, the input, the placeholder', () => {
+    const file = { text: ' # F ' };
+    const spoken = { text: ' said ', at: 1 };
+    expect(choosePlan(file, true, spoken, 'inline')).toEqual({ plan: '# F', source: 'file' });
+    expect(choosePlan(file, false, spoken, 'inline')).toEqual({ plan: 'said', source: 'text' });
+    expect(choosePlan(file, false, null, 'inline')).toEqual({ plan: '# F', source: 'file' });
+    expect(choosePlan(null, false, { text: '  ', at: 1 }, ' inline ')).toEqual({
+      plan: 'inline',
+      source: 'input',
+    });
+    expect(choosePlan(null, false, null, 42)).toEqual({ plan: MISSING_PLAN_TEXT, source: 'none' });
+  });
+
+  it('keeps the text since the latest tool call (ExitPlanMode aside), until the turn ends', () => {
+    let now = 5;
+    const t = new TurnText(() => now);
+    expect(t.latest()).toBeNull();
+    t.text('  ');
+    expect(t.latest()).toBeNull();
+    t.text('one');
+    t.text('two');
+    expect(t.latest()).toEqual({ text: 'one\n\ntwo', at: 5 });
+    // ExitPlanMode keeps the words before it; the next text starts anew.
+    t.toolUse('ExitPlanMode');
+    expect(t.latest()?.text).toBe('one\n\ntwo');
+    now = 9;
+    t.text('three');
+    expect(t.latest()).toEqual({ text: 'three', at: 9 });
+    // Any other tool call ends them: nothing has been said since.
+    t.toolUse('mcp__mc__look');
+    expect(t.latest()).toBeNull();
+    t.text('four');
+    expect(t.latest()?.text).toBe('four');
+    t.reset();
+    expect(t.latest()).toBeNull();
+    t.text('x'.repeat(TURN_TEXT_MAX_CHARS));
+    t.text('tail');
+    expect(t.latest()?.text).toBe('tail');
   });
 });
 

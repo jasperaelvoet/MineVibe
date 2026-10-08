@@ -130,6 +130,7 @@ describe('reply fixtures', () => {
     'ok--meeting-start': 'meeting.start',
     'ok--pick-folder': 'host.pick_folder',
     'ok--debug-state': 'debug.state',
+    'ok--debug-state-crew': 'debug.state',
     ok: 'chat.send',
   };
 

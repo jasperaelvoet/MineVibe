@@ -177,6 +177,8 @@ export interface FakeHealth {
   slowMs?: number;
   /** Health probes answered so far, by URL. */
   probes?: Map<string, number>;
+  /** Guest commands (`run`) received, with the URL of the PC; absent: the fake has no `run`. */
+  runs?: { url: string; program: string; args: string[]; user?: string; env: Map<string, string> }[];
 }
 
 export function fakePool(
@@ -197,6 +199,23 @@ export function fakePool(
             }
             return health.json;
           },
+          ...(health.runs
+            ? {
+                run: async (cmd: {
+                  program: string;
+                  args: string[];
+                  user?: string;
+                  env: Map<string, string>;
+                }) => {
+                  health.runs?.push({ url, ...cmd });
+                  return {
+                    exit: { success: true, code: 0 },
+                    stdout: new ArrayBuffer(0),
+                    stderr: new ArrayBuffer(0),
+                  };
+                },
+              }
+            : {}),
         } as never;
       },
     }),
