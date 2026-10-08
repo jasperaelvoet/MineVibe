@@ -4,6 +4,8 @@ import { findRepoRoot } from './config/paths.js';
 import { doctorReport } from './doctor.js';
 import { createLogger } from './log.js';
 import { startDevServer } from './orchestrator/devServer.js';
+import { type PlayControl, play } from './orchestrator/play.js';
+import { AlreadyRunningError } from './orchestrator/runLock.js';
 import { SERVER_VERSION } from './version.js';
 
 const USAGE = `MineVibe server ${SERVER_VERSION}
@@ -13,7 +15,8 @@ Usage: minevibe-server <command>
 Commands:
   dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient (writes .dev-token)
   doctor    Print versions and paths
-  play      Launch MineVibe (arrives with the M1 launcher)
+  play      Install or verify Java, Minecraft, Fabric and the mods, then launch the game
+            (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; bridge on a random port)
   help      Show this help
 `;
 
@@ -75,6 +78,28 @@ async function runDev(): Promise<number> {
   });
 }
 
+async function runPlay(): Promise<number> {
+  const repoRoot = findRepoRoot(process.cwd()) ?? findRepoRoot(fileURLToPath(new URL('.', import.meta.url)));
+  const log = createLogger({
+    pretty: process.stdout.isTTY === true && process.env.MINEVIBE_LOG_JSON !== '1',
+  });
+  const control: PlayControl = { onStopRequest: null };
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (control.onStopRequest) control.onStopRequest(signal);
+    else process.exit(130);
+  };
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, onSignal);
+  try {
+    return await play({ repoRoot, logger: log, control });
+  } catch (err) {
+    if (err instanceof AlreadyRunningError) log.error(err.message);
+    else log.error({ err }, 'play failed');
+    return 1;
+  } finally {
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.removeListener(signal, onSignal);
+  }
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [command = 'help'] = argv;
   switch (command) {
@@ -84,8 +109,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       process.stdout.write(`${(await doctorReport()).join('\n')}\n`);
       return 0;
     case 'play':
-      process.stdout.write('launcher arrives in M1\n');
-      return 0;
+      return runPlay();
     case 'version':
     case '--version':
     case '-v':
@@ -105,7 +129,8 @@ export async function main(argv: readonly string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => {
     process.exitCode = code;
-    if (code !== 0 || process.argv[2] === 'dev') process.exit(code);
+    // dev and play hold sockets and HTTP keep-alive pools open; exit explicitly once they are done.
+    if (code !== 0 || process.argv[2] === 'dev' || process.argv[2] === 'play') process.exit(code);
   },
   (err: unknown) => {
     process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);

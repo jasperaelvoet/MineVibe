@@ -1,0 +1,13 @@
+{
+  "ignore_initial_click": "disabled",
+  "idle": {
+    "timeout": 0,
+    "condition": "none"
+  },
+  "states": {
+    "unfocused": {
+      "frame_rate_target": 30
+    }
+  },
+  "download_natives": false
+}

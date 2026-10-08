@@ -28,13 +28,21 @@ export interface DevServerOptions {
   readonly playerName?: string;
   /** Heartbeat interval for the bridge (0 disables). */
   readonly heartbeatMs?: number;
+  /**
+   * A per-run token (`npm run play`): used as-is and never written to `.dev-token`. Without it the token comes
+   * from (or is created in) `<repo>/.dev-token`, so a restarted dev server keeps accepting a running game.
+   */
+  readonly token?: string;
+  /** Data locations to use instead of resolving them from `env` and `repoRoot`. */
+  readonly paths?: MineVibePaths;
 }
 
 export interface DevServer {
   readonly bridge: BridgeServer;
   readonly paths: MineVibePaths;
   readonly port: number;
-  readonly tokenFile: string;
+  /** `.dev-token`, or null when a per-run token was passed in. */
+  readonly tokenFile: string | null;
   readonly lifecycle: WorldLifecycle;
   stop(reason?: string): Promise<void>;
 }
@@ -46,15 +54,17 @@ export interface DevServer {
  */
 export async function startDevServer(options: DevServerOptions): Promise<DevServer> {
   const env = options.env ?? process.env;
-  const paths = resolvePaths({
-    env: { ...env, [HOME_ENV]: env[HOME_ENV]?.trim() || devHome(options.repoRoot) },
-    cwd: options.repoRoot,
-  });
+  const paths =
+    options.paths ??
+    resolvePaths({
+      env: { ...env, [HOME_ENV]: env[HOME_ENV]?.trim() || devHome(options.repoRoot) },
+      cwd: options.repoRoot,
+    });
   await ensureBaseDirs(paths);
   const log = options.logger;
 
-  const tokenFile = devTokenFile(options.repoRoot);
-  const token = await loadOrCreateToken(tokenFile);
+  const tokenFile = options.token === undefined ? devTokenFile(options.repoRoot) : null;
+  const token = tokenFile === null ? (options.token as string) : await loadOrCreateToken(tokenFile);
 
   const store = new CurrentWorldStore(join(paths.state, 'current-world.json'));
   await store.load();
