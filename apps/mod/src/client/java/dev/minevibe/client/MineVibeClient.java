@@ -4,6 +4,7 @@ import dev.minevibe.MineVibeMod;
 import dev.minevibe.bridge.BridgeClient;
 import dev.minevibe.bridge.BridgeConfig;
 import dev.minevibe.bridge.MineVibeBridge;
+import dev.minevibe.bridge.TaskQueue;
 import dev.minevibe.client.e2e.DebugHandlers;
 import dev.minevibe.hardcore.HardcoreHooks;
 import java.nio.file.Path;
@@ -11,13 +12,16 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.server.IntegratedServer;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Client entrypoint (PLAN §5, §7.9, §9.2).
  *
  * <ul>
  *   <li>Starts the {@link BridgeClient} when {@code -Dminevibe.bridgeFile} is set, with world/UI messages routed to
- *       the client thread and server-world messages to the integrated server.</li>
+ *       the client thread (through a {@link TaskQueue} drained every client tick, which {@code Minecraft#disconnect}
+ *       cannot drop) and server-world messages to the integrated server while it is running.</li>
  *   <li>Registers the hardcore hooks (the integrated server's player-death marker; singleplayer only, so this is
  *       the one place they need to be registered), the world ticker and, with {@code -Dminevibe.e2e=true}, the
  *       E2E debug handlers.</li>
@@ -47,10 +51,12 @@ public final class MineVibeClient implements ClientModInitializer {
 		// server that happens to be running must not open or close their worlds).
 		Path bridgeFile = config.gameTest() ? null : config.bridgeFile();
 		if (bridgeFile != null) {
+			TaskQueue clientTasks = new TaskQueue();
+			ClientTickEvents.END_CLIENT_TICK.register(mc -> clientTasks.drain());
 			BridgeClient bridge = BridgeClient.builder()
 					.config(() -> BridgeConfig.load(bridgeFile))
-					.clientExecutor(task -> Minecraft.getInstance().execute(task))
-					.serverExecutor(() -> Minecraft.getInstance().getSingleplayerServer())
+					.clientExecutor(clientTasks)
+					.serverExecutor(MineVibeClient::runningServer)
 					.hello(ClientBridge::hello)
 					.build();
 			MineVibeBridge.install(bridge);
@@ -65,6 +71,12 @@ public final class MineVibeClient implements ClientModInitializer {
 		}
 
 		config.parentPid().ifPresent(ParentWatchdog::start);
+	}
+
+	/** The integrated server, while it runs (a stopping or stopped server takes no bridge work). */
+	private static @Nullable IntegratedServer runningServer() {
+		IntegratedServer server = Minecraft.getInstance().getSingleplayerServer();
+		return server != null && server.isRunning() && !server.isStopped() ? server : null;
 	}
 
 	/** Client thread: the profile name for {@code hello} (the user is set before mods initialise, but be careful). */

@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -46,11 +47,15 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Receive.</b> {@code request(1)} is called on <em>every</em> {@code onText}/{@code onBinary} invocation,
  *       partial fragments included. Text parts accumulate into one builder per connection; binary parts into a
  *       pooled direct buffer that is handed to the {@link FrameSink} when the message is complete.</li>
- *   <li><b>Route.</b> Each handler runs on its {@link Route}: the client thread
- *       ({@code Minecraft.getInstance().execute}), the integrated server thread ({@code server.execute}, or
- *       {@code err NO_SERVER} when none is running), or directly on the listener thread.</li>
+ *   <li><b>Route.</b> Each handler runs on its {@link Route}: the client thread (the game drains a queue of its own
+ *       every client tick, because {@code Minecraft#disconnect} drops vanilla's task queue), the integrated server
+ *       thread ({@code server.execute}, or {@code err NO_SERVER} when none is running or the task would run inline
+ *       because it stopped), or directly on the listener thread.</li>
  *   <li><b>Send.</b> One {@code mv-bridge-send} thread drains a queue and waits for each send to finish, because
- *       {@link WebSocket} allows only one outstanding send.</li>
+ *       {@link WebSocket} allows only one outstanding send. A frame the JDK refuses to encode fails only that message;
+ *       any other send failure drops the connection.</li>
+ *   <li><b>Stale bridge files.</b> A bridge file whose owner pid is not running is never connected to (no token is
+ *       sent to whatever listens on that port now).</li>
  * </ul>
  */
 public final class BridgeClient {
@@ -60,6 +65,9 @@ public final class BridgeClient {
 	public static final int MAX_BINARY_MESSAGE_BYTES = 32 + 64 * 1024 * 1024;
 
 	static final Duration SEND_TIMEOUT = Duration.ofSeconds(10);
+
+	/** java.net.http's default text encoding buffer ({@code jdk.httpclient.websocket.intermediateBufferSize}). */
+	static final int SINGLE_FRAGMENT_BYTES = 16 * 1024;
 
 	/** Close code for an oversize message from Node. */
 	static final int POLICY_VIOLATION = 1008;
@@ -100,7 +108,8 @@ public final class BridgeClient {
 
 	private record Pending(String type, CompletableFuture<JsonObject> future) {}
 
-	private record Outgoing(String text, Conn conn) {}
+	/** A queued text frame; {@code requestId} is set for requests, so a frame that cannot be sent fails just that one. */
+	private record Outgoing(String text, Conn conn, @Nullable String requestId) {}
 
 	private final ConfigSource configSource;
 	private final Executor clientExecutor;
@@ -236,7 +245,7 @@ public final class BridgeClient {
 				return CompletableFuture.failedFuture(new BridgeException(Codes.DISCONNECTED, "cannot send " + type + ": not connected"));
 			}
 			pending.put(id, new Pending(type.name(), future));
-			outbox.add(new Outgoing(text, current));
+			outbox.add(new Outgoing(text, current, id));
 		}
 		var timer = scheduler.schedule(() -> {
 			if (pending.remove(id) != null) {
@@ -361,6 +370,12 @@ public final class BridgeClient {
 			connectFailed("bridge file: " + e.getMessage());
 			return;
 		}
+		if (!config.ownerAlive()) {
+			// A bridge file left behind by a Node that is gone (killed, crashed). Whoever listens on that port now
+			// is not MineVibe: never present the token to it. Node writes a fresh file when it starts.
+			connectFailed("bridge file is stale (owner pid " + config.pid() + " is not running)");
+			return;
+		}
 		Conn conn = new Conn();
 		try {
 			http.newWebSocketBuilder()
@@ -390,20 +405,24 @@ public final class BridgeClient {
 			return;
 		}
 		Messages.Hello hello;
+		String helloId = "m-" + requestSeq.incrementAndGet();
+		String helloText;
 		try {
 			hello = helloSupplier.get();
+			helloText = ProtocolCodec.encode(Messages.HELLO, hello, helloId, null);
 		} catch (RuntimeException e) {
+			// Building or encoding hello failed (e.g. a value outside the schema): drop this connection and try again
+			// later. Leaving it half-open would keep `connecting` set, and no reconnect would ever be scheduled.
 			LOG.error("Could not build hello; closing", e);
 			conn.ws().abort();
 			connectFailed("hello failed");
 			return;
 		}
-		String helloText = ProtocolCodec.encode(Messages.HELLO, hello, "m-" + requestSeq.incrementAndGet(), null);
 		synchronized (lock) {
 			current = conn;
 			connecting = false;
 			// hello is queued under the same lock that publishes the connection, so it is always sent first.
-			outbox.add(new Outgoing(helloText, conn));
+			outbox.add(new Outgoing(helloText, conn, null));
 		}
 		failuresSinceConnected = 0;
 		LOG.info("Bridge connected (phase {})", hello.phase());
@@ -453,16 +472,21 @@ public final class BridgeClient {
 	private boolean enqueue(String text) {
 		synchronized (lock) {
 			if (current == null) return false;
-			outbox.add(new Outgoing(text, current));
+			outbox.add(new Outgoing(text, current, null));
 			return true;
 		}
+	}
+
+	/** Queues an already-encoded frame as is (tests: frames the encoder would never produce). */
+	boolean enqueueRaw(String text) {
+		return enqueue(text);
 	}
 
 	private void reply(Conn conn, String text) {
 		synchronized (lock) {
 			// A reply belongs to the connection the request came on; after a reconnect it is dropped.
 			if (current != conn) return;
-			outbox.add(new Outgoing(text, conn));
+			outbox.add(new Outgoing(text, conn, null));
 		}
 	}
 
@@ -482,10 +506,51 @@ public final class BridgeClient {
 			} catch (InterruptedException e) {
 				return;
 			} catch (ExecutionException | TimeoutException | RuntimeException e) {
-				LOG.warn("Bridge send failed ({}); reconnecting", describe(e));
-				o.conn().ws().abort();
-				lost(o.conn(), "send failed");
+				if (isMalformedText(e)) {
+					unsendable(o, e);
+				} else {
+					sendFailed(o, e);
+				}
 			}
+		}
+	}
+
+	/**
+	 * java.net.http refused the text itself: not well-formed UTF-16. The API documents an IllegalArgumentException;
+	 * JDK 25 reports {@code IOException("Malformed text message")} caused by a {@code CharacterCodingException}.
+	 */
+	static boolean isMalformedText(Throwable e) {
+		for (Throwable t = e; t != null; t = t.getCause()) {
+			if (t instanceof IllegalArgumentException || t instanceof CharacterCodingException) return true;
+		}
+		return false;
+	}
+
+	/** The connection is broken: drop it and reconnect. */
+	private void sendFailed(Outgoing o, Exception e) {
+		LOG.warn("Bridge send failed ({}); reconnecting", describe(e));
+		o.conn().ws().abort();
+		lost(o.conn(), "send failed");
+	}
+
+	/**
+	 * This one frame cannot be sent: its text is not well-formed UTF-16 (the encoder sanitises what it builds, so this
+	 * is a bug). It is a fault of the message, not of the connection, so only this message fails: a request fails
+	 * with BAD_MESSAGE, which retry loops treat as final (before, the same frame was re-sent after every reconnect,
+	 * forever). The JDK encodes up to 16 KiB before it writes anything, so a shorter frame left nothing on the wire
+	 * and the connection stays; a longer one may have left a partial fragment, so that connection is replaced.
+	 */
+	private void unsendable(Outgoing o, Exception e) {
+		LOG.error("Bridge message could not be sent and was dropped: {}", describe(e));
+		if (o.requestId() != null) {
+			Pending p = pending.remove(o.requestId());
+			if (p != null) {
+				p.future().completeExceptionally(new BridgeException(Codes.BAD_MESSAGE, p.type() + " could not be sent: malformed text"));
+			}
+		}
+		if ((long) o.text().length() * 3 > SINGLE_FRAGMENT_BYTES) {
+			o.conn().ws().abort();
+			lost(o.conn(), "partial frame");
 		}
 	}
 
@@ -550,7 +615,17 @@ public final class BridgeClient {
 					if (server == null) {
 						noServer(conn, msg);
 					} else {
-						server.execute(task);
+						// MinecraftServer#execute runs the task inline on the calling thread once the server has
+						// stopped. A task that runs on this listener thread therefore never reached the server
+						// thread: answer NO_SERVER instead of running server code here.
+						Thread listener = Thread.currentThread();
+						server.execute(() -> {
+							if (Thread.currentThread() == listener) {
+								noServer(conn, msg);
+							} else {
+								task.run();
+							}
+						});
 					}
 				}
 				case BRIDGE -> task.run();

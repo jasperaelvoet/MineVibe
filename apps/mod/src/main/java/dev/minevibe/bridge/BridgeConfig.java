@@ -18,8 +18,10 @@ import org.jspecify.annotations.Nullable;
  * ({@code {"port":…, "token":…, "pid":…}}, written 0600 by Node). The JVM only ever receives the file's path
  * ({@code -Dminevibe.bridgeFile}); the token never appears on a command line or in a log, and
  * {@link #toString()} redacts it.
+ *
+ * @param pid the Node process that wrote the file; 0 when unknown (configs built in code, not read from a file)
  */
-public record BridgeConfig(int port, String token) {
+public record BridgeConfig(int port, String token, long pid) {
 	/** System property naming the bridge file. */
 	public static final String BRIDGE_FILE_PROPERTY = "minevibe.bridgeFile";
 
@@ -30,6 +32,20 @@ public record BridgeConfig(int port, String token) {
 		if (token == null || !TOKEN.matcher(token).matches()) {
 			throw new IllegalArgumentException("bridge token is missing or malformed");
 		}
+		if (pid < 0) throw new IllegalArgumentException("bridge pid out of range: " + pid);
+	}
+
+	/** A config without an owner pid (tests, code). */
+	public BridgeConfig(int port, String token) {
+		this(port, token, 0);
+	}
+
+	/**
+	 * The Node process that wrote the bridge file is still running (always true without a pid). A stale file (Node
+	 * was killed) must not be connected to: the port may belong to someone else by now.
+	 */
+	public boolean ownerAlive() {
+		return pid == 0 || ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
 	}
 
 	/** {@code ws://127.0.0.1:<port>/v1}. The bridge only ever listens on IPv4 loopback. */
@@ -53,8 +69,11 @@ public record BridgeConfig(int port, String token) {
 		if (!(obj.get("token") instanceof JsonPrimitive token) || !token.isString()) {
 			throw new IOException("bridge file " + file + " has no token");
 		}
+		if (!(obj.get("pid") instanceof JsonPrimitive pid) || !pid.isNumber() || pid.getAsLong() < 1) {
+			throw new IOException("bridge file " + file + " has no pid");
+		}
 		try {
-			return new BridgeConfig(port.getAsInt(), token.getAsString());
+			return new BridgeConfig(port.getAsInt(), token.getAsString(), pid.getAsLong());
 		} catch (IllegalArgumentException e) {
 			throw new IOException("bridge file " + file + ": " + e.getMessage());
 		}
@@ -68,6 +87,6 @@ public record BridgeConfig(int port, String token) {
 
 	@Override
 	public String toString() {
-		return "BridgeConfig[port=" + port + ", token=<redacted>]";
+		return "BridgeConfig[port=" + port + ", token=<redacted>, pid=" + pid + "]";
 	}
 }

@@ -293,6 +293,106 @@ class BridgeClientTest {
 	}
 
 	@Test
+	void serverRouteTasksThatWouldRunInlineGetNoServer() throws Exception {
+		// MinecraftServer#execute runs a task inline on the caller once the server has stopped. Such a task must not
+		// run server code on the WebSocket thread: the request gets NO_SERVER instead.
+		AtomicInteger ran = new AtomicInteger();
+		WebSocket conn = connect(builder(server.getPort()).serverExecutor(() -> Runnable::run));
+		client.handle(Messages.DEBUG_KILL_PLAYER, Route.SERVER, req -> {
+			ran.incrementAndGet();
+			return Map.of();
+		});
+		server.next("hello");
+		conn.send("{\"t\":\"debug.kill_player\",\"v\":1,\"id\":\"n-9\"}");
+		JsonObject err = server.next("err");
+		assertEquals("n-9", err.get("re").getAsString());
+		assertEquals("NO_SERVER", err.get("code").getAsString());
+		assertEquals(0, ran.get(), "the handler must not run on the listener thread");
+
+		// A real server thread runs it.
+		client.close("test over");
+		client = null;
+		java.util.concurrent.ExecutorService serverThread = java.util.concurrent.Executors.newSingleThreadExecutor();
+		try {
+			WebSocket conn2 = connect(builder(server.getPort()).serverExecutor(() -> serverThread));
+			client.handle(Messages.DEBUG_KILL_PLAYER, Route.SERVER, req -> {
+				ran.incrementAndGet();
+				return Map.of();
+			});
+			server.next("hello");
+			conn2.send("{\"t\":\"debug.kill_player\",\"v\":1,\"id\":\"n-10\"}");
+			assertEquals("n-10", server.next("ok").get("re").getAsString());
+			assertEquals(1, ran.get());
+		} finally {
+			serverThread.shutdownNow();
+		}
+	}
+
+	@Test
+	void anUnsendableFrameFailsOnlyThatMessage() throws Exception {
+		connect(builder(server.getPort()));
+		server.next("hello");
+		// A lone surrogate: java.net.http refuses to encode it (IllegalArgumentException). That used to look like a
+		// broken connection, and the same message was re-sent after every reconnect, forever.
+		assertTrue(client.enqueueRaw("{\"t\":\"client.stopping\",\"v\":1,\"reason\":\"x\uD800\"}"));
+		assertTrue(client.send(Messages.CLIENT_STOPPING, new Messages.ClientStopping("after")));
+		JsonObject after = server.next("client.stopping");
+		assertEquals("after", after.get("reason").getAsString());
+		assertEquals(null, server.opened.poll(500, TimeUnit.MILLISECONDS), "no reconnect: the connection was fine");
+		assertTrue(client.isConnected());
+	}
+
+	@Test
+	void encodedMessagesNeverCarryLoneSurrogates() throws Exception {
+		WebSocket conn = connect(builder(server.getPort()));
+		server.next("hello");
+		// A cause clipped in the middle of an emoji by older code, or any other unpaired surrogate.
+		String cause = "Jasper was blown up by \uD83D";
+		CompletableFuture<JsonObject> acked = client.requestUntilAcked(
+				Messages.PLAYER_DIED, () -> new Messages.PlayerDied("world-1", cause, null, 1, 1), Duration.ofSeconds(2), Duration.ofMillis(100));
+		JsonObject died = server.next("player.died");
+		assertEquals("Jasper was blown up by \uFFFD", died.get("cause").getAsString());
+		conn.send("{\"t\":\"ok\",\"v\":1,\"re\":\"" + died.get("id").getAsString() + "\"}");
+		acked.get(5, TimeUnit.SECONDS);
+	}
+
+	@Test
+	void aHelloThatCannotBeEncodedIsRetried() throws Exception {
+		AtomicInteger calls = new AtomicInteger();
+		// The first hello breaks the schema (empty mod version); encoding it threw outside the try, which left the
+		// client "connecting" forever with no reconnect scheduled.
+		connect(builder(server.getPort()).hello(() -> calls.incrementAndGet() == 1
+				? new Messages.Hello("", "26.3", Messages.Hello.PHASE_BOOT, null, null)
+				: new Messages.Hello("0.1.0", "26.3", Messages.Hello.PHASE_BOOT, null, null)));
+		JsonObject hello = server.next("hello");
+		assertEquals("0.1.0", hello.get("mod").getAsString());
+		assertTrue(calls.get() >= 2);
+		assertTrue(client.isConnected());
+	}
+
+	@Test
+	void neverConnectsWithAStaleBridgeFile() throws Exception {
+		Process gone = new ProcessBuilder("true").start();
+		gone.waitFor();
+		long deadPid = gone.pid();
+		AtomicInteger loads = new AtomicInteger();
+		client = BridgeClient.builder()
+				.config(() -> {
+					loads.incrementAndGet();
+					return new BridgeConfig(server.getPort(), TOKEN, deadPid);
+				})
+				.hello(() -> new Messages.Hello("0.1.0", "26.3", Messages.Hello.PHASE_BOOT, null, null))
+				.backoff(Duration.ofMillis(20), Duration.ofMillis(50))
+				.build();
+		client.start();
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+		while (loads.get() < 3 && System.nanoTime() < deadline) Thread.sleep(20);
+		assertTrue(loads.get() >= 3, "keeps re-reading the bridge file");
+		assertEquals(null, server.opened.poll(300, TimeUnit.MILLISECONDS), "the token is never sent to the port of a dead owner");
+		assertEquals(null, server.authorization);
+	}
+
+	@Test
 	void closesOnOversizeText() throws Exception {
 		WebSocket conn = connect(builder(server.getPort()));
 		server.next("hello");
