@@ -769,15 +769,12 @@ async function step3(r: StepResult): Promise<void> {
   const myTurns = turnsSince(at, boss.agentId);
   const myTools = toolsSince(at, boss.agentId);
   r.numbers.turns = myTurns.length;
-  r.numbers.turnModels = [
-    ...new Set(myTurns.flatMap((t) => (t.usageModels.length ? t.usageModels : [t.sessionModel ?? '?']))),
-  ];
+  // A turn's model is its assistant messages' message.model (the session model at the turn's end); modelUsage and
+  // total_cost_usd are cumulative over the session, so they only show what was used so far.
+  r.numbers.turnModels = [...new Set(myTurns.map((t) => t.sessionModel ?? '?'))];
   r.numbers.toolModels = [...new Set(myTools.map((t) => `${t.model}/${String(t.effort)}`))];
   r.numbers.tools = myTools.map((t) => t.toolName.replace('mcp__mc__', '')).slice(0, 20);
-  r.numbers.costUsd = round(
-    myTurns.reduce((n, t) => n + (t.costUsd ?? 0), 0),
-    4,
-  );
+  r.numbers.sessionCostUsd = myTurns.at(-1)?.costUsd ?? null;
   check(
     r,
     logs + planks / 4 + table >= 9,
@@ -804,11 +801,8 @@ async function step3(r: StepResult): Promise<void> {
   check(r, table >= 1 || crafted, `a crafting table made (inventory ${table}, craft job done ${crafted})`);
   check(
     r,
-    myTurns.length > 0 &&
-      myTurns.every((t) =>
-        (t.usageModels.length ? t.usageModels : [t.sessionModel ?? '']).every((m) => m.includes('haiku')),
-      ),
-    'every turn on Haiku (message.model / modelUsage)',
+    myTurns.length > 0 && myTurns.every((t) => String(t.sessionModel).includes('haiku')),
+    'every turn on Haiku (message.model)',
   );
   check(
     r,
@@ -1016,12 +1010,13 @@ async function step5(r: StepResult): Promise<void> {
   const kVer = kernel.out.split('-')[0] ?? '';
   check(r, kVer !== '' && replies.includes(kVer), `the kernel version reported (${kernel.out})`);
   const seatedTurns = turnsSince(at, boss.agentId);
-  r.numbers.turns = seatedTurns.map((t) => (t.usageModels.length ? t.usageModels.join('+') : t.sessionModel));
+  r.numbers.turns = seatedTurns.map((t) => t.sessionModel);
   check(
     r,
-    seatedTurns.some((t) => t.usageModels.some((m) => m.includes('opus'))),
-    'a turn on Opus while seated (modelUsage)',
+    seatedTurns.some((t) => String(t.sessionModel).includes('opus')),
+    'a turn on Opus while seated (message.model)',
   );
+  r.numbers.compactedBeforeDownswap = turnsSince(at, boss.agentId).some((t) => t.numTurns === 0);
   // Back on Haiku once standing (the swap waits out the 60 s re-sit debounce).
   const standAt = stand?.at ?? Date.now();
   const haiku = await waitFor(
@@ -1616,8 +1611,9 @@ function writeResults(): void {
     seed: seed ?? null,
     turns: turns.length,
     maxTurns,
+    // total_cost_usd is cumulative per session: the last turn of each agent holds its session's total.
     costUsd: round(
-      turns.reduce((n, t) => n + (t.costUsd ?? 0), 0),
+      [...new Map(turns.map((t) => [t.agentId, t.costUsd ?? 0])).values()].reduce((n, c) => n + c, 0),
       4,
     ),
     results,
@@ -1651,7 +1647,13 @@ async function seedHome(home: string): Promise<void> {
   const from = join(repo, '.minevibe-dev', 'play');
   for (const d of ['game/assets', 'game/libraries', 'game/versions', 'runtime', 'Caches/mods']) {
     const src = join(from, d);
-    if (existsSync(src)) await cp(src, join(home, d), { recursive: true, force: false, errorOnExist: false });
+    if (!existsSync(src)) continue;
+    mkdirSync(dirname(join(home, d)), { recursive: true });
+    // `cp -cR`: APFS clones that keep the JRE bundle's relative symlinks (fs.cp rewrote them, and the launcher then
+    // found the runtime "damaged" and downloaded it again on every run).
+    if (spawnSync('cp', ['-cR', src, join(home, d)]).status !== 0) {
+      await cp(src, join(home, d), { recursive: true, verbatimSymlinks: true });
+    }
   }
 }
 
