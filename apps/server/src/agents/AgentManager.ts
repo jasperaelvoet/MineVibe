@@ -289,7 +289,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       }),
       this.pending.on('resolved', (card, outcome) => {
         if (card.kind !== 'question' || outcome.kind !== 'answered') return;
-        this.#consentVerdict(card.agentId, this.consents.fromCard(card.agentId, card, outcome.answers));
+        this.#consentVerdict(
+          card.agentId,
+          this.consents.fromCard(card.agentId, card, outcome.answers),
+          'card',
+        );
       }),
       options.skills.on('result', (end) => this.#onJobEnd(end)),
       options.org.on('codexIndex', (index) => void this.#onCodexIndex(index)),
@@ -859,13 +863,25 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
 
   /**
    * A player answer was read for consent (protocol §7.4.3). A grant is announced to the player (toast) and to the
-   * agent (context, so its retry knows); an unclear one only tells the player how to grant it.
+   * agent (context, so its retry knows). An unclear one tells the player how to grant it (the chat echo, or a toast
+   * for a card) and the agent that nothing is unlocked, so it does not read the reply as a yes and retry.
    */
-  #consentVerdict(agentId: string, verdict: GrantVerdict): string | null {
+  #consentVerdict(agentId: string, verdict: GrantVerdict, via: 'card' | 'chat'): string | null {
     const brain = this.#brains.get(agentId);
     const name = brain?.record.name ?? 'The agent';
     if (verdict.kind === 'none') return null;
-    if (verdict.kind === 'unclear') return `not a permission: ${verdict.reason}`;
+    if (verdict.kind === 'unclear') {
+      const note = `not a permission: ${verdict.reason}`;
+      if (via === 'card') this.emit('toast', { text: `${name}: ${note}`, kind: 'info', agentId });
+      brain?.context(
+        control(
+          brain.record.nonce,
+          'CONSENT',
+          `${this.#o.playerName()}'s reply did not allow changing protected blocks; nothing protected is unlocked, so don't retry the refused job. Gather elsewhere, or ask what to use instead.`,
+        ),
+      );
+      return note;
+    }
     const grant = verdict.grant;
     const scope = grantScope(grant);
     const minutes = Math.max(1, Math.round((grant.expiresAt - this.#now()) / 60_000));
@@ -1477,7 +1493,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     const direct = route.deliveries.filter((d) => d.mode === 'wake' || d.mode === 'context');
     const only = direct[0];
     if (route.scope === 'direct' && !route.answer && direct.length === 1 && only) {
-      const note = this.#consentVerdict(only.agentId, this.consents.fromChat(only.agentId, route.body));
+      const note = this.#consentVerdict(
+        only.agentId,
+        this.consents.fromChat(only.agentId, route.body),
+        'chat',
+      );
       if (note) echo = `${echo} (${note})`;
     }
     const chatMode = delivery.mode ?? (delivery.to === 'all' ? 'chat' : 'reply');

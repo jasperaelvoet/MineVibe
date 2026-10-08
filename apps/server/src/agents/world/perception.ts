@@ -41,6 +41,8 @@ export interface Perceived {
   readonly trees: TreeSighting | null;
 }
 
+/** How many block matches the mod's `find` lists by default (Observations.find `limit`). */
+const FIND_LIST_LIMIT = 5;
 /** Blocks within this many blocks of the Base building count as part of it when the mod gives no provenance. */
 const BUILDING_MARGIN = 1;
 
@@ -284,7 +286,12 @@ export function perceiveFind(result: Record<string, unknown>, ctx: PerceptionCon
       .map((m) => (obj(m) ? classifyBlock(obj(m) as Record<string, unknown>, ctx) : null))
       .filter((m): m is BlockMatch => m !== null);
     const usable = USABLE_RE.test(what);
-    lines.push(`find ${what}: ${matches.length} block(s).`);
+    // The mod lists only the nearest few (5 unless asked for more): a full list says nothing about how many exist.
+    lines.push(
+      matches.length >= FIND_LIST_LIMIT
+        ? `find ${what}: the nearest ${matches.length} block(s) (only the nearest are listed; there may be more near them).`
+        : `find ${what}: ${matches.length} block(s).`,
+    );
     for (const m of matches) {
       const marks: string[] = [];
       if (m.protected && usable)
@@ -320,8 +327,11 @@ export function perceiveFind(result: Record<string, unknown>, ctx: PerceptionCon
         `Gather natural ones: collect{item:"${what}", count:N} or mine{block:"${what}", count:N${near ? `, near:{x:${near.x},y:${near.y},z:${near.z}}` : ''}}.`,
       );
     }
-    if (LOG_RE.test(what.replace(/^#?minecraft:/, ''))) {
-      const tree = reachable[0] ?? free[0];
+    // Trees for the scene line: logs, never building variants (stripped logs, wood) that someone placed.
+    const variant = (id: string) => /^stripped_|_wood$/.test(id);
+    const kindOf = what.replace(/^#?minecraft:/, '');
+    if (LOG_RE.test(kindOf) && !variant(kindOf)) {
+      const tree = reachable.find((m) => !variant(m.block)) ?? free.find((m) => !variant(m.block));
       if (tree) trees = { pos: tree.pos, reachable: tree.reachable };
     }
   } else {

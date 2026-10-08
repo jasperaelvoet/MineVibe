@@ -105,14 +105,23 @@ describe('persona (stable system prompt)', () => {
     expect(p).toContain(
       "The Base (the office you start in) is Jasper's home. Never break, replace or take blocks",
     );
-    expect(p).toContain('mcp__mc__mine and mcp__mc__collect only take natural blocks');
-    expect(p).toContain('call mcp__mc__look_around (or mcp__mc__find)');
+    // Truthful with today's mod too, which takes the nearest match of a #tag (the incident's office pillars).
     expect(p).toContain(
-      'ask Jasper with AskUserQuestion (options such as "Go further", "Use oak planks instead", "Skip")',
+      'the exact natural block you need ("oak_log"), never a #tag (it means any kind) or building blocks',
     );
+    expect(p).not.toContain('only take natural blocks');
+    expect(p).toContain('call mcp__mc__look_around (or mcp__mc__find)');
+    expect(p).toContain('with near:{x,y,z}');
+    // The example substitute is natural: the Base's walls are oak planks.
+    expect(p).toContain(
+      'ask Jasper with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw',
+    );
+    expect(p).not.toMatch(/planks instead/);
     expect(p).toContain('PROTECTED and NO_NATURAL_SOURCE failures are hard stops');
-    expect(p).toContain('an option whose label starts with "Allow"');
-    expect(worldPrimer('Jasper').join('\n').length).toBeLessThan(1_400);
+    // "Allow" is for what the player asked to change, never offered as a substitute.
+    expect(p).toContain('Never offer Base blocks as an option.');
+    expect(p).toContain('ask with an option "Allow: <what>" that names them');
+    expect(worldPrimer('Jasper').join('\n').length).toBeLessThan(1_500);
     // Stable: the primer has no per-world or per-turn values (the prompt cache stays warm).
     expect(personaPrompt({ ...base, role: 'miner', ceo: false })).toBe(p);
   });

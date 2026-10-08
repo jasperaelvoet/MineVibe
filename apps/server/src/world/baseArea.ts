@@ -23,6 +23,43 @@ export const OFFICE_FOOTPRINT = Object.freeze({ width: 13, depth: 10, height: 6 
 /** Blocks around the walls that still count as the Base (its grounds: the porch, the yard). */
 export const BASE_GROUNDS = 4;
 
+/** OfficeBuilder's foundation fills at most this far below the floor (OfficePlan.MAX_FOUNDATION_DEPTH). */
+export const FOUNDATION_DEPTH = 24;
+
+/**
+ * What OfficeBuilder builds the Base of (keep in sync with OfficeBuilder): its foundation, floor, walls, corner pillars,
+ * windows, door, lights and furniture. MineVibe's own blocks (`minevibe:*`: desks, chairs, the Codex, the calendar)
+ * and beds count too ({@link isBaseMaterial}). A mod without provenance (protocol §7.4.3) cannot tell these from
+ * natural blocks.
+ */
+const BASE_MATERIALS: ReadonlySet<string> = new Set([
+  'cobblestone',
+  'spruce_planks',
+  'oak_planks',
+  'polished_andesite',
+  'stone_bricks',
+  'stripped_spruce_log',
+  'spruce_door',
+  'glass_pane',
+  'furnace',
+  'crafting_table',
+  'chest',
+  'lantern',
+  'torch',
+  'wall_torch',
+]);
+/** Building variants of the same kinds (any wood's planks or stripped logs, bricks, glass, doors, beds). */
+const BUILDING_VARIANT_RE = /^stripped_|_planks$|_bricks$|glass|_door$|_bed$/;
+
+/** Whether a block or item id (`minecraft:` optional) is something the Base is built of. Tags are not judged here. */
+export function isBaseMaterial(id: string): boolean {
+  const lower = id.trim().toLowerCase();
+  if (lower.startsWith('#')) return false;
+  if (lower.startsWith('minevibe:')) return true;
+  const bare = lower.replace(/^minecraft:/, '');
+  return BASE_MATERIALS.has(bare) || BUILDING_VARIANT_RE.test(bare);
+}
+
 export interface Vec3Like {
   readonly x: number;
   readonly y: number;
@@ -71,6 +108,12 @@ export function inBase(pos: Vec3Like, base: BaseArea, grounds = BASE_GROUNDS): b
     y >= base.min.y - grounds &&
     y <= base.max.y + grounds
   );
+}
+
+/** Straight-line distance from `pos` to the nearest point of the box `min..max` (0 inside it). */
+export function distanceToBox(pos: Vec3Like, min: Vec3Like, max: Vec3Like): number {
+  const gap = (v: number, lo: number, hi: number) => (v < lo ? lo - v : v > hi ? v - hi : 0);
+  return Math.hypot(gap(pos.x, min.x, max.x), gap(pos.y, min.y, max.y), gap(pos.z, min.z, max.z));
 }
 
 /** The Base's centre at floor level. */

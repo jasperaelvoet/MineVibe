@@ -124,9 +124,9 @@ const WaitS = z
 
 /** Skill tools: name → description. Input schemas come from the protocol's `SkillArgs`. */
 const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
-  mine: 'Break natural blocks of a kind nearby and keep the drops. Natural only: blocks of the Base (the office, the player\'s home) and anything a player placed are PROTECTED, and a #tag never includes building variants (#minecraft:logs means natural logs, never stripped logs, wood or planks). Prefer the exact block you were asked for. Fails PROTECTED (a hard stop: never retry those blocks) or NO_NATURAL_SOURCE (nothing natural in reach: tell the player and ask, never substitute). Examples: {block:"oak_log", count:10}; {block:"oak_log", count:10, near:{x:130,y:64,z:-20}} to use the trees find showed. A job.',
+  mine: 'Break blocks of one kind nearby (24 blocks around you, or around near) and keep the drops. Name the exact natural block you were asked for ("oak_log"): a #tag means any of its kinds, which is a substitution, and building blocks (planks, stripped logs, bricks, glass) are never gathered. Never the Base (the office, the player\'s home) or anything a player built: that fails PROTECTED, a hard stop (never retry). NO_NATURAL_SOURCE: nothing natural in reach; tell the player and ask, never substitute. Examples: {block:"oak_log", count:10}; {block:"oak_log", count:10, near:{x:130,y:64,z:-20}} for the tree find showed. A job.',
   collect:
-    'Get count of an item: picks up dropped ones, then breaks natural blocks that drop it (stone → cobblestone, ores → raw metal). Same rules as mine: never blocks of the Base or anything a player built (PROTECTED), and NO_NATURAL_SOURCE when nothing natural is in reach (ask the player, don\'t substitute). Example: {item:"oak_log", count:10}. A job.',
+    'Get count of an item: picks up dropped ones, then breaks blocks that drop it (stone → cobblestone, ores → raw metal). For natural things only: never ask it for building blocks (planks, glass, bricks) or furniture (crafting_table, chest); craft those. Same rules as mine: never blocks of the Base or anything a player built (PROTECTED), and NO_NATURAL_SOURCE when nothing natural is in reach (ask the player, don\'t substitute). Example: {item:"oak_log", count:10}. A job.',
   hunt: 'Hunt mobs of a kind (e.g. "minecraft:cow"), count of them. A job.',
   dig: 'Dig out every block in the box from..to (inclusive): a tunnel, a cellar, a path. A box that holds protected blocks (the Base, anything a player built) fails PROTECTED before anything breaks: pick a box outside them. Example: {from:{x:100,y:60,z:-20}, to:{x:102,y:62,z:-10}}. A job.',
   place:
@@ -235,19 +235,29 @@ export function mcToolDefinitions(host: McHost): Def[] {
     // Consent is Node's alone (protocol §7.4.3): whatever the model put in the arguments never reaches the mod.
     const { consent: _forged, consentId: _forgedId, ...cleanArgs } = args;
     const consent = BLOCK_CHANGING_SKILLS.has(skill) ? (host.consent?.() ?? null) : null;
-    // Arguments that name the Base outright never reach the mod without the player's consent.
-    const conflict = consent ? null : baseConflict(skill, cleanArgs, host.world?.().base ?? null);
+    // Jobs that would reach the Base never get to the mod without the player's consent (world/guard.ts).
+    const world = consent ? null : (host.world?.() ?? null);
+    const conflict = world
+      ? baseConflict(skill, cleanArgs, world.base, {
+          here: world.here,
+          // A mod that reports zones guards provenance itself (protocol §7.4.3); today's mod reports none.
+          modGuards: world.zone !== null && world.zone !== undefined,
+          playerName: host.playerName(),
+        })
+      : null;
     if (conflict) {
       host.noteRefusal?.(conflict.refusal);
       return errorResult(
-        `Failed: ${label}. ${failureText({
-          label,
-          skill,
-          code: PROTECTED,
-          msg: conflict.msg,
-          result: { zone: conflict.refusal.zone },
-          playerName: host.playerName(),
-        })}`,
+        conflict.advice
+          ? `Failed: ${label}. ${PROTECTED}: ${conflict.msg}. ${conflict.advice}`
+          : `Failed: ${label}. ${failureText({
+              label,
+              skill,
+              code: PROTECTED,
+              msg: conflict.msg,
+              result: { zone: conflict.refusal.zone },
+              playerName: host.playerName(),
+            })}`,
       );
     }
     const res = await host.skills.runSkill({

@@ -64,11 +64,11 @@ export function sanitizeDisplayName(name: string, fallback: string): string {
 export function worldPrimer(player: string): string[] {
   return [
     '## The world',
-    `- The Base (the office you start in) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built. Its chests, beds, tables and PCs are there to use.`,
-    '- Gather from nature: trees outside the Base, natural stone and ores. mcp__mc__mine and mcp__mc__collect only take natural blocks.',
-    '- Before gathering anything in several steps, call mcp__mc__look_around (or mcp__mc__find) to see what is natural, how far and in which direction. Each turn starts with a one-line Scene of where you are.',
-    `- If what ${player} asked for is missing or out of reach, say so and ask ${player} with AskUserQuestion (options such as "Go further", "Use oak planks instead", "Skip") instead of taking something else.`,
-    `- PROTECTED and NO_NATURAL_SOURCE failures are hard stops: don't retry them or work around them; report and ask. Only ${player} can allow changing protected blocks: ask with an option whose label starts with "Allow".`,
+    `- The Base (the office you start in) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use.`,
+    '- Gather from nature: trees outside the Base, natural stone and ores. Ask mcp__mc__mine / mcp__mc__collect for the exact natural block you need ("oak_log"), never a #tag (it means any kind) or building blocks (planks, stripped logs, bricks, glass).',
+    '- Before gathering anything in several steps, call mcp__mc__look_around (or mcp__mc__find) to see what is natural, how far and in which direction; then mcp__mc__mine the one you pick with near:{x,y,z}. Each turn starts with a one-line Scene of where you are.',
+    `- If what ${player} asked for is missing or out of reach, say so and ask ${player} with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw (e.g. "Use the birch 20m W instead").`,
+    `- PROTECTED and NO_NATURAL_SOURCE failures are hard stops: don't retry them or work around them; report and ask. Never offer Base blocks as an option. Only when ${player} asked you to change protected blocks themselves ("knock down that wall") and the job was refused: ask with an option "Allow: <what>" that names them.`,
   ];
 }
 

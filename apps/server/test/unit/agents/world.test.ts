@@ -323,6 +323,42 @@ describe('perception texts', () => {
     );
   });
 
+  it('find: a full list (the mod shows the nearest 5) does not read as "only 5 exist"', () => {
+    const logs = [64, 65, 66, 67, 68].map((y) => ({
+      pos: { ...TREE_REACHABLE, y },
+      block: 'minecraft:oak_log',
+      natural: true,
+      reachable: true,
+    }));
+    expect(perceiveFind({ what: 'oak_log', kind: 'block', matches: logs }, ctx).text).toContain(
+      'find oak_log: the nearest 5 block(s) (only the nearest are listed; there may be more near them).',
+    );
+    expect(perceiveFind({ what: 'oak_log', kind: 'block', matches: logs.slice(0, 2) }, ctx).text).toContain(
+      'find oak_log: 2 block(s).',
+    );
+  });
+
+  it('find: tree sightings skip building variants (a stripped log is no tree)', () => {
+    const { trees } = perceiveFind(
+      {
+        what: '#minecraft:logs',
+        kind: 'block',
+        matches: [
+          { pos: { x: 30, y: 64, z: 30 }, block: 'minecraft:stripped_spruce_log' },
+          { pos: TREE_REACHABLE, block: 'minecraft:oak_log' },
+        ],
+      },
+      ctx,
+    );
+    expect(trees).toEqual({ pos: TREE_REACHABLE, reachable: null });
+    expect(
+      perceiveFind(
+        { what: 'stripped_spruce_log', kind: 'block', matches: [{ pos: { x: 30, y: 64, z: 30 } }] },
+        ctx,
+      ).trees,
+    ).toBeNull();
+  });
+
   it('find: only protected, or only unreachable natural ones → ask, never take the house', () => {
     const onlyHouse = perceiveFind(
       {
@@ -442,9 +478,12 @@ describe('world guard failures as teaching text', () => {
       /^PROTECTED: those logs are part of the Base\. 2 blocks \(e\.g\. stripped_spruce_log at 12 65 0\) are part of the Base, Jasper's home\./,
     );
     expect(text).toContain('A hard stop: never break or take them');
+    expect(text).toContain('never offer them as a substitute');
     expect(text).toContain('Gather from nature outside the Base');
-    expect(text).toContain('only an answered option starting "Allow"');
-    expect(text.length).toBeLessThan(600);
+    // "Allow" only for blocks the player asked for, and the option names them (a consent needs that).
+    expect(text).toContain('Only if Jasper asked for exactly these blocks');
+    expect(text).toContain('"Allow: take those stripped_spruce_log"');
+    expect(text.length).toBeLessThan(650);
   });
 
   it('NO_NATURAL_SOURCE: no substitution, ask with options', () => {
@@ -502,14 +541,104 @@ describe("Node's own Base guard (explicit coordinates)", () => {
       'near 12 65 0 is inside the Base (x 0 to 12, z 0 to 9)',
     );
     expect(baseConflict('mine', { block: 'oak_log', count: 10, near: TREE_REACHABLE }, BASE)).toBeNull();
-    // Without coordinates the mod decides which blocks a search takes.
-    expect(baseConflict('mine', { block: '#minecraft:logs', count: 10 }, BASE)).toBeNull();
+    // A mod that guards provenance (protocol §7.4.3) decides which blocks a search without coordinates takes.
+    expect(
+      baseConflict('mine', { block: '#minecraft:logs', count: 10 }, BASE, { modGuards: true }),
+    ).toBeNull();
     expect(
       baseConflict('build', { blueprint: 'shelter', origin: { x: 5, y: 65, z: 5 } }, BASE)?.msg,
     ).toContain('build on open ground outside it');
     expect(baseConflict('build', { blueprint: 'shelter', origin: { x: 40, y: 64, z: 40 } }, BASE)).toBeNull();
     expect(baseConflict('place', { block: 'torch', pos: { x: 5, y: 66, z: 5 } }, BASE)).toBeNull();
     expect(baseConflict('dig', box, null)).toBeNull();
+  });
+});
+
+describe("Node's Base guard for today's mod (no provenance): searches that reach the Base", () => {
+  const ada = { here: ADA.pos, modGuards: false, playerName: 'Jasper' };
+  const far = { here: { x: 80, y: 64, z: -60 }, modGuards: false, playerName: 'Jasper' };
+
+  it('the incident: #minecraft:logs from the office is refused before the mod takes the pillars', () => {
+    const c = baseConflict('mine', { block: '#minecraft:logs', count: 10 }, BASE, ada);
+    expect(c?.refusal).toEqual({ positions: [], blocks: [], zone: 'base' });
+    expect(c?.msg).toBe(
+      "#minecraft:logs means any of its kinds, and this search (24 blocks around 6 65 5) reaches the Base, so it could take the Base's own blocks",
+    );
+    expect(c?.advice).toContain("Never take blocks of the Base, Jasper's home.");
+    expect(c?.advice).toContain('name the exact natural block you need (oak_log, spruce_log, stone)');
+    // near: the tree 17 m from the office still reaches it (today's mod takes the nearest to the agent among the
+    // 24 nearest to near), so only a smaller radius or the exact block gets through.
+    expect(
+      baseConflict('mine', { block: '#minecraft:logs', count: 10, near: TREE_REACHABLE }, BASE, ada),
+    ).not.toBeNull();
+    expect(
+      baseConflict(
+        'mine',
+        { block: '#minecraft:logs', count: 10, near: TREE_REACHABLE, radius: 8 },
+        BASE,
+        ada,
+      ),
+    ).toBeNull();
+    expect(baseConflict('mine', { block: 'oak_log', count: 10 }, BASE, ada)).toBeNull();
+    expect(baseConflict('collect', { item: 'minecraft:oak_log', count: 10 }, BASE, ada)).toBeNull();
+    // Far from the Base a tag is fine; with no position known Node assumes it reaches.
+    expect(baseConflict('mine', { block: '#minecraft:logs', count: 10 }, BASE, far)).toBeNull();
+    expect(baseConflict('mine', { block: '#minecraft:logs', count: 10 }, BASE)).not.toBeNull();
+  });
+
+  it('what the Base is built of, or furnished with, is refused near it, with what to do instead', () => {
+    const advice = (skill: string, args: Record<string, unknown>) =>
+      baseConflict(skill, args, BASE, ada)?.advice;
+    expect(advice('collect', { item: 'oak_planks', count: 4 })).toContain(
+      'get logs (e.g. oak_log) and craft planks from them',
+    );
+    expect(advice('collect', { item: 'minecraft:crafting_table', count: 1 })).toContain(
+      "use the Base's crafting_table where it stands, or craft your own",
+    );
+    expect(advice('collect', { item: 'cobblestone', count: 20 })).toContain(
+      'mine natural stone ({block:"stone"}), which drops cobblestone',
+    );
+    expect(advice('mine', { block: 'stripped_spruce_log', count: 1 })).toContain('gather from nature');
+    for (const item of [
+      'glass_pane',
+      'torch',
+      'red_bed',
+      'spruce_door',
+      'stone_bricks',
+      'minevibe:office_chair',
+    ])
+      expect(baseConflict('collect', { item, count: 1 }, BASE, ada), item).not.toBeNull();
+    for (const item of ['stone', 'spruce_log', 'iron_ore', 'sand', 'wheat_seeds'])
+      expect(baseConflict('collect', { item, count: 1 }, BASE, ada), item).toBeNull();
+    expect(baseConflict('collect', { item: 'oak_planks', count: 4 }, BASE, far)).toBeNull();
+    // The foundation reaches 24 blocks under the floor.
+    expect(
+      baseConflict('collect', { item: 'cobblestone', count: 4 }, BASE, {
+        ...ada,
+        here: { x: 6, y: 30, z: 5 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('blueprints are judged by how far they reach, and dig boxes by the wall torches too', () => {
+    // stairs_down digs 8 blocks ahead: 5 blocks east of the wall still reaches under it.
+    expect(
+      baseConflict('build', { blueprint: 'stairs_down', origin: { x: 17, y: 64, z: 4 }, rotation: 90 }, BASE)
+        ?.msg,
+    ).toBe(
+      'the stairs_down at 17 64 4 reaches into the Base (x 0 to 12, z 0 to 9); build on open ground outside it, at least 10 blocks from its walls',
+    );
+    expect(baseConflict('build', { blueprint: 'shelter', origin: { x: 17, y: 64, z: 4 } }, BASE)).toBeNull();
+    expect(
+      baseConflict('build', { blueprint: 'wall_ring', origin: { x: 17, y: 64, z: 4 } }, BASE),
+    ).not.toBeNull();
+    // A cellar dug right against the east wall would take its torches.
+    expect(
+      baseConflict('dig', { from: { x: 13, y: 64, z: 2 }, to: { x: 15, y: 62, z: 4 } }, BASE)?.msg,
+    ).toContain('the box overlaps the Base');
+    expect(
+      baseConflict('dig', { from: { x: 14, y: 64, z: 2 }, to: { x: 16, y: 62, z: 4 } }, BASE),
+    ).toBeNull();
   });
 });
 
@@ -593,10 +722,10 @@ describe('consent to change protected blocks', () => {
     expect(
       l.fromCard(
         'ada',
-        { createdAt: now(), questions: question(['Go further', 'Allow: take them'], true) },
-        { [Q]: 'Go further, Allow: take them' },
+        { createdAt: now(), questions: question(['Go further', 'Allow: take the pillars'], true) },
+        { [Q]: 'Go further, Allow: take the pillars' },
       ),
-    ).toEqual({ kind: 'none' });
+    ).toMatchObject({ kind: 'unclear' });
     expect(l.active('ada')).toBeNull();
     // Free text on a card: a clear grant counts, a bare yes needs the option.
     expect(
@@ -630,12 +759,41 @@ describe('consent to change protected blocks', () => {
     expect(v.kind === 'granted' ? grantScope(v.grant) : '').toBe('protected blocks of the Base');
   });
 
+  it('the model writes the options: an "Allow" option must name what it unlocks, and not say it stays', () => {
+    const { l, now } = ledger();
+    const pick = (label: string, description?: string) => {
+      l.noteRefusal('ada', refusal);
+      const questions = [
+        {
+          question: Q,
+          options: [{ label: 'Skip' }, { label, ...(description ? { description } : {}) }],
+          multiSelect: false,
+        },
+      ];
+      return l.fromCard('ada', { createdAt: now(), questions }, { [Q]: label });
+    };
+    // Labels that start with "Allow" but mean something else unlock nothing.
+    expect(pick('Allow: go further')).toMatchObject({ kind: 'unclear' });
+    expect(pick('Allow me to search the forest')).toMatchObject({ kind: 'unclear' });
+    expect(pick('Allow: use the Base crafting table')).toMatchObject({ kind: 'unclear' });
+    expect(pick('Allow: go further', 'The house logs stay untouched')).toMatchObject({ kind: 'unclear' });
+    expect(l.active('ada')).toBeNull();
+    // Naming the Base or the refused block (in the label or its description) does.
+    expect(pick('Allow Base logs')).toMatchObject({ kind: 'granted' });
+    expect(pick('Allow: take those stripped_spruce_log')).toMatchObject({ kind: 'granted' });
+    expect(pick('Allow: take the corner log', 'Break one house pillar')).toMatchObject({ kind: 'granted' });
+  });
+
   it('the chat path: only a plain yes that names the action and the thing', () => {
     const { l } = ledger();
-    expect(l.fromChat('ada', 'yes, take them')).toEqual({ kind: 'none' }); // nothing refused
+    expect(l.fromChat('ada', 'yes, take them from the house')).toEqual({ kind: 'none' }); // nothing refused
     l.noteRefusal('ada', refusal);
     expect(l.fromChat('ada', 'yes')).toMatchObject({ kind: 'unclear' });
+    expect(l.fromChat('ada', 'yes, take it')).toMatchObject({ kind: 'unclear' });
     expect(l.fromChat('ada', 'go further')).toEqual({ kind: 'none' });
+    // A yes to something else is no answer about the house at all (no "not a permission" noise).
+    expect(l.fromChat('ada', 'ok, go further')).toEqual({ kind: 'none' });
+    expect(l.fromChat('ada', 'sure, sounds good')).toEqual({ kind: 'none' });
     expect(l.fromChat('ada', 'you are destroying my house')).toEqual({ kind: 'none' });
     const v = l.fromChat('ada', 'Yes, use the logs from the house.');
     expect(v).toMatchObject({ kind: 'granted', grant: { agentId: 'ada', via: 'chat' } });
@@ -644,14 +802,27 @@ describe('consent to change protected blocks', () => {
 
   it('clear grants: affirmative + action + reference, no hedges or questions', () => {
     for (const yes of [
-      'yes, take them',
-      'ok break it',
+      'yes, take them from the house',
+      'ok break the pillars',
       'go ahead and use the house logs',
       'Sure, mine those pillars',
     ]) {
       expect(clearlyGrants(yes), yes).toBe(true);
     }
+    expect(clearlyGrants('yes, break the stripped spruce logs', ['stripped_spruce_log'])).toBe(true);
     for (const no of [
+      // A pronoun may answer another question: "take it from the forest" is not about the house.
+      'yes, take them',
+      'ok break it',
+      'yes, take it from the forest',
+      'sure, use this',
+      // The Base as a place, its furniture, or "base" in another sense: no permission to break it.
+      'yes, take them back to base',
+      'yes take them to the house',
+      "yes, use the house's crafting table",
+      'ok take the bread from the house chest',
+      'yes, chop the base of the tree',
+      'yes, mine the cave walls',
       'yes',
       'take them',
       'no, take them',
@@ -674,9 +845,9 @@ describe('consent to change protected blocks', () => {
     const { l, advance } = ledger();
     l.noteRefusal('ada', refusal);
     advance(REFUSAL_TTL_MS + 1);
-    expect(l.fromChat('ada', 'yes, take them')).toEqual({ kind: 'none' });
+    expect(l.fromChat('ada', 'yes, take them from the house')).toEqual({ kind: 'none' });
     l.noteRefusal('ada', refusal);
-    expect(l.fromChat('ada', 'yes, take them').kind).toBe('granted');
+    expect(l.fromChat('ada', 'yes, take them from the house').kind).toBe('granted');
     expect(l.active('ada')).not.toBeNull();
     advance(CONSENT_TTL_MS);
     expect(l.active('ada')).toBeNull();

@@ -274,7 +274,8 @@ page called "Base (office)" with its door and layout.
 
 Agents gather from nature: trees outside the Base, natural stone and ores. If what you asked for is missing
 or out of reach, they ask you instead of taking something else, usually with a card such as "Go further",
-"Use something else instead" or "Skip". To let an agent use protected blocks after all, pick its option that
-starts with **Allow**, or reply to that one agent with a plain yes that names the blocks, such as
-`@ada yes, take them from the house`. The permission covers only the blocks the agent was refused, and it
-lasts 5 minutes. The echo and a toast confirm it. A bare `@ada yes` doesn't count; use the card.
+"Use something else instead" or "Skip". If you do want an agent to change the Base (say, knock down a wall),
+it asks first: pick its option that starts with **Allow** and names the blocks, or reply to that one agent with
+a plain yes that names them, such as `@ada yes, take them from the house`. The permission covers only the
+blocks the agent was refused, and it lasts 5 minutes. The echo and a toast confirm it. A yes that could mean
+something else, such as `@ada yes` or `@ada yes, take it`, doesn't count; use the card.

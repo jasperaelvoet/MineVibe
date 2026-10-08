@@ -661,9 +661,18 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - **Consent.** `skill.run.consent = { consentId, agentId, positions?: BlockPos[] (≤ 512), zone?: ZoneKind, expiresAt }`
   lets that one job change exactly `positions` (or, without positions, anything protected in `zone`) until `expiresAt`
   (epoch ms; Node issues 5 minutes). Node mints it only when the player explicitly allowed it: an answered question
-  card whose chosen option starts with "Allow", or a direct chat reply to that agent that is a plain yes. Ambiguous
-  replies need the card. The model can never pass one: tool arguments carry no consent. The mod ignores a consent
-  whose `agentId` is another agent's or that has expired.
+  card whose chosen option starts with "Allow" and, in its label or description, names what it unlocks (the Base, the
+  house, the pillars, or a refused block id), or a direct chat reply to that agent that is a plain yes naming the same
+  (`yes, take them from the house`). A pronoun alone (`yes, take it`), the Base as a destination (`back to base`) or
+  its furniture is not a permission; such replies need the card. The model can never pass one: tool arguments carry
+  no consent. The mod ignores a consent whose `agentId` is another agent's or that has expired.
+- **Node's own guard** (whatever the mod knows): `dig` / `farm` boxes that overlap the Base (and the torches on its
+  walls), `mine` / `collect` aimed `near` a spot inside it, and `build` blueprints that reach into it are refused
+  `PROTECTED` before they reach the mod. Until the mod guards provenance, Node also refuses a `mine` / `collect` for a
+  `#tag` or for something the Base is built of (planks, stripped logs, cobblestone, bricks, glass, its furniture)
+  whose search (`near` or the agent, `radius` default 24) reaches the Base: today's mod takes the nearest match, which
+  is the Base. **Node treats a mod that sends `zone` in `agent.state` as one that guards provenance**, so a mod must
+  send `zone` only once it enforces the rules above.
 
 ### 7.5 seats
 

@@ -178,6 +178,51 @@ describe('world context on the agent runtime', () => {
     expect(w.skills.runs.at(-1)?.consent).toBeUndefined();
   });
 
+  it('a yes that may mean something else grants nothing, and the agent is told so instead of retrying', async () => {
+    const { w, id, q } = await officeWorld();
+    await wake(w, q, 'get logs');
+    w.skills.skillHandler = () => ({
+      status: 'failed',
+      code: 'PROTECTED',
+      msg: 'part of the Base',
+      result: { protected: [{ pos: PILLAR, block: 'minecraft:stripped_spruce_log' }] },
+    });
+    await q.callTool('mcp__mc__mine', { block: 'stripped_spruce_log', count: 1 });
+    expect(w.manager.consents.openRefusal(id)).toMatchObject({ positions: [PILLAR] });
+    // Ada asked in speech whether to fetch oak from the forest; "it" is the forest's oak, not the pillar.
+    const reply = await w.manager.deliverChat({ to: 'all', text: '@ada yes, take it from the forest' });
+    expect(reply.echo).toContain('not a permission');
+    expect(w.manager.consents.active(id)).toBeNull();
+    const nonce = w.manager.brain(id)?.record.nonce ?? '';
+    await w.until(
+      () => w.texts(q).some((t) => t.includes(`[MV:${nonce} CONSENT] Jasper's reply did not allow`)),
+      'unclear notice',
+    );
+    // A model-written "Allow" option that names something else unlocks nothing either; the player gets a toast.
+    const asking = q.callTool('AskUserQuestion', {
+      questions: [
+        {
+          question: 'No oak in reach. What now?',
+          options: [
+            { label: 'Allow: go further', description: 'Walk to the forest 60m north' },
+            { label: 'Skip' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    await w.until(() => w.manager.pendingCards().length === 1, 'card');
+    await w.manager.deliverChat({ to: 'all', text: '@ada 1' });
+    await asking;
+    expect(w.manager.consents.active(id)).toBeNull();
+    expect(
+      w.events.some((e) => e.type === 'toast' && /Ada: not a permission/.test(JSON.stringify(e.payload))),
+    ).toBe(true);
+    w.skills.skillHandler = () => ({ status: 'done' });
+    await q.callTool('mcp__mc__mine', { block: 'stripped_spruce_log', count: 1 });
+    expect(w.skills.runs.at(-1)?.consent).toBeUndefined();
+  });
+
   it('a clear chat reply to that agent grants it (and says so in the echo); a broadcast never does', async () => {
     const { w, id, q } = await officeWorld();
     await wake(w, q, 'get logs');
