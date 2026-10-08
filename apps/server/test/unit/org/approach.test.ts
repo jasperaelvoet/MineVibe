@@ -79,10 +79,15 @@ function harness() {
     kind,
     createdAt: clock.now() - ageMs,
   });
-  /** Advances time in 1 s steps, updating the snapshot each second (the 1 Hz agent.state). */
+  /**
+   * Advances time in 1 s steps, updating the snapshot each second (the 1 Hz agent.state). The queue keeps no timers
+   * of its own (it is driven by these updates), so time moves with `set` and no macrotask flushes: a 10-minute
+   * wait is 600 plain steps, fast and deterministic even on a loaded machine (it used to hit vitest's 5 s timeout).
+   */
   const tick = async (ms: number, patch: Parameters<typeof update>[0] = {}) => {
     for (let t = 0; t < ms; t += 1000) {
-      await clock.advance(1000);
+      if (clock.pendingTimers > 0) await clock.advance(1000);
+      else clock.set(clock.now() + 1000);
       update(patch);
     }
   };

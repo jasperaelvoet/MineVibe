@@ -86,6 +86,38 @@ export const PlayerState = z.object({
 });
 export type PlayerState = z.infer<typeof PlayerState>;
 
+/**
+ * What an office slot is (`world.state.office.slots[].kind`, the mod's OfficeLayout): `workstation` (a PC desk's
+ * main column; `pcId` once a PC is bound to it), `meeting_table` (the primary table block), `codex` (its anchor),
+ * `wall_calendar`, `chest`, `bed`, `door` (the porch cell in front of the door: agents spawned without `at` appear
+ * here) and `spawn` (where the player first appears).
+ */
+export const OfficeSlotKind = z.enum([
+  'workstation',
+  'meeting_table',
+  'codex',
+  'wall_calendar',
+  'chest',
+  'bed',
+  'door',
+  'spawn',
+]);
+export type OfficeSlotKind = z.infer<typeof OfficeSlotKind>;
+
+/** The starter office as OfficeBuilder placed it (protocol §6.4). */
+export const OfficeLayout = z.object({
+  /** Local 0,0,0: the north-west floor corner. */
+  origin: BlockPos,
+  slots: z.array(
+    z.object({
+      kind: OfficeSlotKind,
+      pos: BlockPos,
+      pcId: PcId.optional(),
+    }),
+  ),
+});
+export type OfficeLayout = z.infer<typeof OfficeLayout>;
+
 /** N→M. Open (or create) this world. BootScreen calls openWorld, or createFreshLevel if missing. */
 export const WorldOpen = defineMessage('world.open', {
   worldId: WorldId,
@@ -105,18 +137,8 @@ export const WorldState = defineMessage('world.state', {
   phase: z.enum(['loading', 'ready', 'closing', 'closed']),
   fresh: z.boolean().optional(),
   spawn: BlockPos.optional(),
-  office: z
-    .object({
-      origin: BlockPos,
-      slots: z.array(
-        z.object({
-          kind: z.string().min(1).max(32),
-          pos: BlockPos,
-          pcId: z.string().min(1).max(64).optional(),
-        }),
-      ),
-    })
-    .optional(),
+  /** The starter office; sent on a `ready` once the world has one (again after every reconnect). */
+  office: OfficeLayout.optional(),
   /** Overworld clock time in ticks (`getOverworldClockTime()`). Day = floor(t/24000)+1. */
   clockTime: NonNegInt.optional(),
   /** The local player (1 Hz pushes while ready). */

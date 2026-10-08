@@ -64,6 +64,11 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class SkillGameTests {
 	private static final String ARENA = "minevibe-gametest:arena";
+	/**
+	 * A 41x41 floor: an agent in its middle (20, 1, 20) is more than 24 blocks (the job's block scans) from every other
+	 * test, since the grid leaves 5-6 blocks between structures.
+	 */
+	private static final String WIDE_YARD = "minevibe-gametest:wide_yard";
 	private static final String NIGHT = "minevibe-gametest:night";
 	private static final String DAY = "minevibe-gametest:day";
 	/**
@@ -117,9 +122,18 @@ public final class SkillGameTests {
 			.thenSucceed();
 	}
 
-	@GameTest(maxTicks = 400)
+	/**
+	 * Runs in {@link #WIDE_YARD} with the agent in the middle: the craft job uses any crafting table within 24 blocks
+	 * before it places its own, and in a small structure that can be another test's table (one run failed with
+	 * UNREACHABLE on a table 16 blocks away, in the next row of the grid). The yard keeps every other test more than
+	 * 24 blocks from the agent.
+	 */
+	@GameTest(structure = WIDE_YARD, maxTicks = 400)
 	public void skillCraftPlacesATableFor3x3(final GameTestHelper helper) {
-		AgentPlayer agent = spawnAgent(helper, "Smith", AgentRole.ENGINEER, 3, 0, 3);
+		AgentPlayer agent = spawnAgent(helper, "Smith", AgentRole.ENGINEER, 20, 1, 20);
+		helper.assertTrue(
+			dev.minevibe.agent.job.BlockScan.nearest(helper.getLevel(), agent.blockPosition(), 24, s -> s.is(Blocks.CRAFTING_TABLE), p -> true, 1).isEmpty(),
+			"no other test's crafting table is in the job's reach");
 		agent.getInventory().setItem(0, new ItemStack(Items.OAK_PLANKS, 3));
 		agent.getInventory().setItem(1, new ItemStack(Items.STICK, 2));
 		agent.getInventory().setItem(2, new ItemStack(Items.CRAFTING_TABLE, 1));

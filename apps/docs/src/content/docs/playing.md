@@ -3,9 +3,20 @@ title: Playing MineVibe
 description: Controls, the crew and its CEO, hardcore rules, @name chat routing, answering cards, the Codex, the Calendar and meetings.
 ---
 
-:::caution[Planned]
-Nothing on this page is playable yet. It describes the approved design; details may change as the
-milestones land (see the status table on the [home page](/MineVibe/)).
+:::caution[Partly built]
+This page describes the approved design. What you can try from source today (see
+[Development](/MineVibe/development/#dev-loop)):
+
+- **Works:** booting straight into a hardcore world on Hard, the non-pausing MineVibe menu, death and
+  **Begin World #N+1** (the old save moves to `saves/_graveyard/`), the starter office with its Codex, wall
+  calendar, meeting table and workstation desks, agent bodies with their reflexes and skills (driven by `/mv`
+  commands in a dev world), and the in-game UI (bubbles, head icons, AgentScreen, the crew HUD, cards, chat
+  routing) against a scripted, zero-token crew (`npm run dev -- --scripted-crew`).
+- **Built, being wired in:** real Claude brains for the crew, agents walking over with cards, PCs on the desks,
+  and the Codex, Calendar and meetings behind their blocks.
+- **Planned:** macOS PCs, sounds and the other polish of milestone M11.
+
+Details may still change (see the status table on the [home page](/MineVibe/#status)).
 :::
 
 MineVibe is one Minecraft world with **hardcore survival** rules on **Hard** difficulty. Launching the app

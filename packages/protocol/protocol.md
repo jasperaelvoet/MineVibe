@@ -135,11 +135,14 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `CHAT_INVALID_ANSWER` | Node | `chat.send`: out-of-range option, or several picks on a single-select question |
 | `CHAT_REJECTED` | Node | `chat.send`: empty, malformed mention, `@all` mixed with names, no meeting running |
 | `UNKNOWN_AGENT` | both | The agent id names no living agent / body |
+| `AGENT_DEAD` | mod | `agent.spawn`: that agent died in this world (its grave is there); it never comes back |
+| `SPAWN_FAILED` | mod | `agent.spawn`: the body could not be created or placed |
 | `UNKNOWN_SKILL` | mod | `skill.run`: unknown skill |
-| `BAD_ARGS` | mod | `skill.run` / `obs.query`: `args` do not fit |
+| `BAD_ARGS` | mod | `skill.run` / `obs.query` / `agent.spawn`: `args` (or ids) do not fit (section 7.4.2) |
+| `UNKNOWN_BLUEPRINT` | mod | `skill.run` `build`: no such blueprint (section 7.4.2) |
 | `BUSY` | mod | `skill.run`: a job is running and `replace` is false |
 | `UNKNOWN_JOB` | mod | `skill.cancel`: no such job |
-| `PC_DOWN`, `SEAT_CAP` | Node | `mc__sit_at_pc` pre-checks: the PC is not running, `maxSeated` reached |
+| `PC_DOWN`, `SEAT_CAP` | both | `agent.seat` pre-checks (Node's `mc__sit_at_pc` first, then the mod): the PC is not running, `maxSeated` reached |
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `UNREACHABLE`, `NO_SEAT` | mod | `agent.seat`: chair reserved, the player sits there, no path, no free meeting chair |
 | `CARD_GONE` | Node | `pending.answer` / `plan.decision` / `hire.decision`: the card is no longer pending |
 | `FORBIDDEN` | Node | Rights: CEO only, player-created event, `rules` page, ... |
@@ -148,7 +151,9 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `CALENDAR_NOT_FOUND`, `CALENDAR_INVALID`, `CALENDAR_LIMIT` | Node | Calendar requests |
 | `MEETING_BUSY`, `MEETING_NOT_FOUND`, `NO_QUORUM` | Node | Meeting requests |
 
-`TIMEOUT` and `DISCONNECTED` are local failure codes; they are never sent.
+`TIMEOUT` and `DISCONNECTED` are local failure codes; they are never sent. A job's own failure (a `skill.run`
+reply or `skill.result` with status `failed`) carries its code in `error.code`, not in an `err` reply: section
+7.4.1 lists those.
 
 ## 6. Messages: session, world and M1 UI
 
@@ -214,14 +219,34 @@ BootScreen calls `openWorld` if the folder exists, otherwise `createFreshLevel(�
 | `phase` | `loading` \| `ready` \| `closing` \| `closed` | |
 | `fresh` | bool? | The world was just created |
 | `spawn` | BlockPos? | |
-| `office` | `{ origin: BlockPos, slots: [{ kind, pos: BlockPos, pcId? }] }`? | OfficeBuilder result |
+| `office` | `{ origin: BlockPos, slots: [{ kind: OfficeSlotKind, pos: BlockPos, pcId?: PcId }] }`? | OfficeBuilder result (below) |
 | `clockTime` | int≥0? | `getOverworldClockTime()` ticks; pushed at 1 Hz while `ready` |
 
 `loading` and `ready` (and the 1 Hz clock pushes) are fire-and-forget. **`closed` is a request**: the mod sends it
 with an `id` and re-sends it until Node replies (the reply is `ok {}` when Node moved on to the next world, or
 `ok {"ignored": true}` when it did not, see 6.6). A lost `closed` therefore never leaves Node on a dead world.
 
-Fixtures: `world.state.json`, `world.state--closed.json`, `ok--ignored.json`.
+**`ready` repeats.** Besides the 1 Hz clock pushes, the mod sends one extra `ready` carrying `office` once the world
+has a starter office, and again after every reconnect. Node treats any repeated `ready` as an update of the fields it
+carries, never as a new world.
+
+**The office.** `origin` is the office's north-west floor corner (its local 0,0,0). Each slot is a place other parts
+of MineVibe care about. `OfficeSlotKind`:
+
+| Kind | The slot is |
+|---|---|
+| `workstation` | A PC desk's main column (the desk, monitor and chair stand there). `pcId` once a PC is bound to it; the mod never binds one today, so Node fills the workstations with its PCs. |
+| `meeting_table` | The primary block of the meeting table |
+| `codex` | The Codex block (its anchor) |
+| `wall_calendar` | The wall calendar |
+| `chest` | A supply chest |
+| `bed` | A bed |
+| `door` | The porch cell in front of the door: what Node passes as `agent.spawn.at` (section 7.3), so new agents arrive at the door |
+| `spawn` | Where the player first appears |
+
+An unknown kind is invalid (Node and the mod ship together). `pc` is not a kind: a PC desk is a `workstation`.
+
+Fixtures: `world.state.json`, `world.state--office.json`, `world.state--closed.json`, `ok--ignored.json`.
 
 ### 6.5 `player.died` (M→N, request)
 
@@ -487,13 +512,17 @@ records flatten every variant into one record with `@Nullable` fields.
 ### 7.3 bodies
 
 - `agent.spawn` (request, `AgentSpawnResult { pos, dim, restored }`): `{ agentId, handle, name, role: AgentRole,
-  ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Without `at` the body appears at the office door. With
-  `restore` the mod loads the agent's saved playerdata if there is one (app restart, world reload). A hire spawns
-  with `bark: "reporting_for_duty"`.
+  ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Idempotent: a living body is returned as it is. Node
+  passes the office's `door` slot (section 6.4) as `at`; `at` also becomes the agent's home (where Shelter takes it at
+  dusk). Without `at` the mod puts the body next to the player (or at world spawn without one). With `restore` the mod
+  loads the agent's saved playerdata if there is one (app restart, world reload). A hire spawns with
+  `bark: "reporting_for_duty"`. Errors: `BAD_ARGS` (the mod also needs `agentId` to be `[a-z][a-z0-9_]{0,15}`,
+  because it names the fake player), `AGENT_DEAD` (the agent died in this world), `SPAWN_FAILED`.
 - `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
-  playerDistance?, held? }`. Node builds the 25-token status footer and the Digest from it.
+  playerDistance?, held? }`. Node builds the 25-token status footer and the Digest from it (the mod's job results
+  carry a footer of their own, see 7.4).
 - `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
   `killed`, `reflex`, `stuck`, `unseated`, `kicked`, `player_low_hp`, `dimension_changed`, `arrived`,
   `approach_blocked` (`data.why`: `combat|night|far|dimension|pc_screen`, so ApproachQueue falls back to a ping),
@@ -507,9 +536,21 @@ records flatten every variant into one record with `@Nullable` fields.
 ### 7.4 skills
 
 - `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error? }`):
-  `{ jobId, agentId, skill, args, waitMs, replace }`. The mod waits up to `waitMs` (the tool's `wait_s`, default
-  20 s); a job that is still going replies `running` and later sends `skill.result`. Errors: `UNKNOWN_AGENT`,
-  `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job is running and `replace` is false).
+  `{ jobId, agentId, skill, args, waitMs, replace }`. The mod starts the job and replies when it ends or when
+  `waitMs` passes, whichever comes first; a job that is still going replies `running` and later sends `skill.result`.
+  `waitMs` is the tool's `wait_s` × 1000 (default 20 s). The schema allows up to 600 000, but **the mod caps it at
+  120 000** (the tools offer `wait_s` ≤ 120), so a longer wait still answers `running` after 2 minutes. A `skill.run`
+  repeating a known `jobId` answers that job's current state instead of starting another. Errors: `UNKNOWN_AGENT`,
+  `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job is running and `replace` is false), `UNKNOWN_BLUEPRINT` (`build`).
+  A job that fails replies `failed` with `error: { code, msg }` (section 7.4.1).
+- **Lost replies.** If the bridge reconnects while a `skill.run` reply is waiting, that reply belonged to the old
+  connection and is dropped; the outcome follows as `skill.result` on the new one. Outcomes of jobs that end while
+  Node is away go out after the next handshake. If the socket dies before either side notices, an outcome can still
+  be lost: Node recovers with `obs.query job_status` or by repeating the `skill.run` with the same `jobId`.
+- **Footer.** Every job `result` and observation the mod returns carries `footer`, a one-line status (about 25
+  tokens): `HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld | collect 12/20 oak_log | iron_sword`. Node also
+  builds the same line from `agent.state` and appends it to every `mcp__mc__*` tool result, so it must not pass the
+  mod's `footer` on to the agent as well (which of the two stays is open: `docs/design/DEBT.md`).
 - Skills: `goto`, `mine`, `collect`, `hunt`, `dig`, `place`, `use_block`, `use_item`, `attack`, `equip`, `eat`,
   `sleep`, `pickup`, `drop`, `give`, `craft`, `smelt`, `container`, `open_menu`, `menu_click`, `menu_close`, `build`,
   `farm`, `ride`, `dismount`, `emote`. Their `args` schemas are exported as `SkillArgs.<skill>` (Node validates
@@ -523,16 +564,72 @@ records flatten every variant into one record with `@Nullable` fields.
 - `skill.result`: `{ jobId, agentId, status: done|failed|cancelled, result?, error?: { code, msg }, durationMs }`.
 - `obs.query` (request, `ObsQueryResult { result }`): `{ agentId, query, args }`, `query` one of `status`,
   `look_around`, `inventory`, `find`, `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`.
+  Arguments: `find { what, radius?, limit? }`, `recipe { item }`, `recent_events { limit? }`, `job_status { jobId? }`;
+  the others take none. `menu_state` lists the open menu's slots and its button numbers (section 7.4.2).
+- A higher reflex (danger, combat, eating, approach, attend) pauses a running job; the job resumes afterwards. Only
+  its own time counts toward its `TIMEOUT`.
+
+#### 7.4.1 Job failure codes
+
+The `error.code` of a `skill.run` reply or `skill.result` whose status is `failed` (or `cancelled`):
+
+| Code | Meaning |
+|---|---|
+| `NOT_FOUND` | Nothing to work on in range: no such block, mob, item, entity or place. Partial counts are in `result`. |
+| `UNREACHABLE`, `OTHER_DIMENSION` | No path to the target / the target is in another dimension |
+| `NO_ITEM`, `NO_FOOD`, `NO_FUEL`, `NO_MATERIAL` | The inventory lacks what the skill needs |
+| `MISSING_INGREDIENTS`, `NO_RECIPE`, `NEEDS_TABLE`, `NO_TABLE`, `NEEDS_FURNACE`, `NO_FURNACE`, `FURNACE_BUSY` | Crafting and smelting (`NO_TABLE` / `NO_FURNACE`: the given or found block is gone or did not open). `result.ingredients` lists what is needed and what the agent has. |
+| `NEEDS_TOOL` | The block would drop nothing without the right tool |
+| `OCCUPIED`, `NO_SUPPORT`, `BLOCKED`, `CANNOT_PLACE`, `NO_ROOM` | Placing blocks |
+| `NOT_HUNGRY`, `CANNOT_EAT` | Eating |
+| `NO_BED`, `NOT_NIGHT`, `NOT_SAFE`, `OBSTRUCTED`, `CANNOT_SLEEP_HERE` | Sleeping (`CANNOT_SLEEP_HERE`: beds explode in this dimension) |
+| `BAD_TARGET`, `ESCAPED` | Players and agents are never attacked; the mob got away |
+| `NOT_A_CONTAINER`, `NO_MENU`, `BAD_CLICK`, `BAD_SLOT` | Containers and menus |
+| `SEATED`, `SEAT_EXCLUDED`, `NOT_RIDEABLE` | The body sits (stand up or dismount first); chairs are for `agent.seat`, not `ride` |
+| `INVENTORY_FULL` | No room for what was gathered or crafted |
+| `TIMEOUT` | The job ran past its limit (counted only while it had control) |
+| `INTERRUPTED` | Cancelled: replaced by another job, `skill.cancel`, or the agent died or left (`msg` says which). Status `cancelled`. |
+| `RESERVED`, `OCCUPIED_BY_PLAYER`, `PC_DOWN`, `NO_SEAT` | The end of an `agent.seat` job (section 7.5) |
+| `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
+| `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
+
+#### 7.4.2 Skill conventions beyond the schemas
+
+- **Places in `goto`.** `entity` may name a place instead of an entity: `office` or `home` (the agent's home: its
+  spawn point or the bed it last slept in, else world spawn), `spawn` (world spawn), the nearest `bed`, `chest`,
+  `crafting_table` or `furnace`, or `pc:<pcId>` (that PC's chair). An unknown place fails with `NOT_FOUND`.
+- **Menu buttons.** `menu_click.slot` keeps vanilla slot numbers (`-999` = outside the window). A `slot` of `-2` or
+  less presses menu button `-slot - 2`: a merchant's trade offer (then take the result from slot 2), an enchanting
+  option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
+- **`smelt.item`** is either what goes in (`raw_iron`) or what should come out (`iron_ingot`).
+- **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus
+  stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds.
+- **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
+  north at rotation 0, roof), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks
+  ahead at foot level), `stairs_down` (8 steps down, ahead), `farm_plot` (water in the middle, 9×9 tilled and
+  planted). "Ahead" is south (+Z) at rotation 0; rotations turn clockwise. Walls take any plain full block (dirt,
+  cobblestone, planks, ...); the job checks the material first (`NO_MATERIAL`). Any other id is `UNKNOWN_BLUEPRINT`.
+- **`farm`** repeats passes over the box until nothing is left to do: harvest ripe crops, till dirt and grass (with
+  a hoe, when there are seeds), plant empty farmland, bone-meal growing crops. `crop` must be a seed item (or a tag);
+  anything else is `BAD_ARGS`.
+- **Agent ids in the mod.** The mod names each body's fake player after its `agentId`, so it only accepts ids of the
+  form `[a-z][a-z0-9_]{0,15}` (a subset of `AgentId`); other ids are `BAD_ARGS` on `agent.spawn` and `skill.run`.
 
 ### 7.5 seats
 
 - `agent.seat` (request, `AgentSeatResult { jobId, status: "running" }`): `{ agentId, jobId, seatEpoch, target:
   { kind: "pc", pcId } | { kind: "meeting", meetingId }, purpose? }`. The mod reserves the chair ("Bram is
   coming"), walks, then rides it (non-forced). The outcome is a `skill.result{jobId}` and, for a PC, `pc.seat`.
-  Node runs its own pre-checks first (`PC_DOWN`, `SEAT_CAP`); the mod answers `RESERVED`, `OCCUPIED_BY_PLAYER`,
-  `UNREACHABLE`, `NO_SEAT`, `UNKNOWN_AGENT` or `PC_UNKNOWN`.
+  Node runs its own pre-checks first (`PC_DOWN`, `SEAT_CAP`); the mod checks again before it reserves (`PC_UNKNOWN`,
+  `PC_DOWN`, `SEAT_CAP` when 2 other agents sit at, walk to or keep a PC, `OCCUPIED_BY_PLAYER`, `RESERVED`, `NO_SEAT`
+  for a meeting without a free chair, `UNKNOWN_AGENT`) and answers `err` with that code. Past the checks it replies
+  `running`; `UNREACHABLE`, `OCCUPIED_BY_PLAYER`, `RESERVED`, `PC_DOWN` and `NO_SEAT` can still end the job later.
+  A new `agent.seat` replaces the agent's current job. Reservations of agents that died or left are dropped within
+  a second.
 - `agent.unseat` (request): `{ agentId, seatEpoch, reason, keepReservation }`. `keepReservation` keeps the chair for
-  the agent (`away`: asking the player, "BRB" on the monitor; `meeting`).
+  the agent (`away`: asking the player, "BRB" on the monitor; `meeting`). A `seatEpoch` older than the seat's (or
+  than the walk to a seat) is answered `ok { "ignored": true }`. An agent that is not seated only has its
+  reservations released (unless `keepReservation`).
 - `pc.seat`: `{ pcId, occupant, seatEpoch? }`; `pc.unseat`: `{ pcId, occupant, reason, reserved }`. The mod's
   PcRegistry is authoritative for who sits where; these fire for the player too (sitting opens PcControlScreen,
   Shift+Esc stands up).

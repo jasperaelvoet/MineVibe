@@ -3,12 +3,17 @@ title: Architecture
 description: The processes inside MineVibe.app, how they talk to each other, and the principles behind the design.
 ---
 
-:::note[Design, not code yet]
+:::note[Design, mostly built]
 This page summarizes the approved design in
 [`docs/design/PLAN.md`](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/PLAN.md). The
 longer reference, with fact-checks and critiques, is
 [`docs/design/full-design.md`](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/full-design.md).
-Most components below are **planned**; items marked [U] in the plan are still being verified by spikes.
+
+Most components below exist in the repository and are tested on their own: the bridge, the launcher, the world
+lifecycle, the agent runtime, the PC manager, the Codex, Calendar and meeting services, the Swift stub, and on the
+game side the bodies, reflexes, skills, screens, PC blocks and the starter office. They are being composed into
+one runtime now. Still **planned**: `LumeMacDriver` (macOS PCs), the digging and bridging path planner, the
+first-run setup steps and the startup reaper.
 :::
 
 ## Processes

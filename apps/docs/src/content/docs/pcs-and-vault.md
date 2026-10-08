@@ -3,9 +3,13 @@ title: PCs and the Vault
 description: In-game PCs are real Linux containers and macOS VMs. How they are sized, how you and your agents use them, how to mount your own folders, and what that means for your security.
 ---
 
-:::caution[Planned]
-PCs arrive with milestones M4 (Linux PCs, sitting at a PC, Vault), M5 (agents at PCs) and M9 (macOS PCs).
-Items marked "unverified" depend on spike results that are not in yet.
+:::caution[Partly built]
+- **Built:** the Linux PC manager in Node (Apple `container` and Docker drivers, the budget, the Vault, live
+  frames and input, measured in spikes S4 and S5 and in `npm run test:pcs`), and the PC blocks, monitors,
+  PcControlScreen and PcConfigScreen in the mod.
+- **Being wired together:** the two halves, so that a PC on a desk in the game is a running Linux PC; and agents
+  at PCs (milestone M5).
+- **Planned:** macOS PCs (milestone M9, after spike S6). Items marked "untested" have not been measured yet.
 :::
 
 Every PC in the world is a **real computer**: a Linux container or a macOS virtual machine running on your
@@ -163,14 +167,15 @@ git hooks and `.git/config` entries that your own git will honour. MineVibe's tr
 - **Prompt injection is real.** Seated agents can search and fetch the web, and they read whatever is in your
   repositories. Hostile text can steer them. The tool gate limits what they can do; it can't make them
   trustworthy.
-- **Services on your Mac may be reachable from PCs.** Apple `container` guests sit on a private network
-  (`192.168.64.x`). A service on your Mac that listens on all interfaces (`0.0.0.0`) is reachable from PCs
-  through `192.168.64.1`. MineVibe binds its own services to loopback only. Whether guests can reach
-  services bound to your Mac's loopback is **unverified**: spike S5 must prove they can't, and MineVibe adds
-  a guest firewall if they can.
-- **Bind mounts have known quirks** (being checked in spike S5): mounted files appear as owned by root inside
-  Linux PCs, edits made on the Mac don't raise file-change events inside the PC, and creating write-only
-  (mode 0200) files fails. These are usability limits more than security ones.
+- **Services on your Mac may be reachable from PCs.** Each Linux PC gets its own private network
+  (`192.168.65.x`, `192.168.66.x`, ...), so PCs can't reach each other. A service on your Mac that listens on
+  all interfaces (`0.0.0.0`) is reachable from PCs through the network's gateway and your Mac's LAN address.
+  Services bound to your Mac's loopback (`127.0.0.1`) refused guest connections in spike S5, so MineVibe binds
+  everything it runs to loopback only. IPv6, UDP and DNS isolation are **untested**.
+- **Bind mounts have known quirks** (measured in spike S5): files a PC writes land on your Mac as your user and
+  `chown` inside the PC fails, edits made on the Mac don't raise file-change events inside the PC (watch-mode
+  tools in a PC miss them), and creating a write-only (mode 0200) file fails but leaves an empty file behind.
+  These are usability limits more than security ones.
 
 ### Recommendations
 

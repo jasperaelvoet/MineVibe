@@ -129,6 +129,13 @@ public final class Messages {
 		public static final String CLOSING = "closing";
 		public static final String CLOSED = "closed";
 
+		/**
+		 * The {@code office.slots[].kind} values (protocol §6.4): the slot kinds of
+		 * {@code dev.minevibe.org.office.OfficeLayout}. A PC desk is a {@code workstation}.
+		 */
+		public static final List<String> OFFICE_SLOT_KINDS = List.of(
+				"workstation", "meeting_table", "codex", "wall_calendar", "chest", "bed", "door", "spawn");
+
 		/** Without the player snapshot (the M1 shape). */
 		public WorldState(
 				String worldId,
@@ -250,7 +257,10 @@ public final class Messages {
 			.opt("office", object()
 					.req("origin", BLOCK_POS)
 					.req("slots", array(
-							object().req("kind", string(1, 32)).req("pos", BLOCK_POS).opt("pcId", string(1, 64)),
+							object()
+									.req("kind", oneOf(WorldState.OFFICE_SLOT_KINDS.toArray(String[]::new)))
+									.req("pos", BLOCK_POS)
+									.opt("pcId", Types.PC_ID),
 							0,
 							Integer.MAX_VALUE)))
 			.opt("clockTime", NON_NEG_INT)

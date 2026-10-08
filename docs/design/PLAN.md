@@ -104,7 +104,7 @@ MineVibe/
 │   src/{main,client,gametest}/java/dev/minevibe/… + resources (fabric.mod.json, mixins, assets, data)
 ├─ apps/launcher-mac/  MineVibe.swift (stub, ~300 lines, swiftc), Info.plist, entitlements
 ├─ apps/docs/          Astro Starlight site
-├─ packages/protocol/  protocol.md, zod schemas, fixtures/*.json (round-tripped by vitest AND JUnit)
+├─ packages/protocol/  protocol.md, zod schemas, fixtures/<group>/*.json (parsed by vitest AND JUnit; layout in protocol.md §10)
 ├─ images/linux-pc/    Containerfile (FROM ghcr.io/trycua/linux:24.04@sha256:<pin> + tmux ripgrep git build-essential)
 ├─ packaging/          build-app.ts, vendor.lock.json (node/jre/container/lume URLs + sha256), mods.lock.json, seed configs
 ├─ spikes/s0…s9/       throwaway spike code + result.md each
@@ -679,7 +679,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
   2. The mod writes a dead marker into the world data and re-sends `player.died` until Node acks it.
   3. `DeathScreen` is replaced by **GameOverScreen**, showing the world number, day, cause of death, crew fates and Vault commit counts.
   4. **Last words.** The CEO gets one async turn, hard-capped at 8 s, run off the scheduler, and skipped when usage is Tired or Asleep. The other agents get scripted barks. Then every session is closed and archived.
-  5. **[Begin World #N+1]**: disconnect (the integrated server saves and stops), then `world.state{closed}` is re-sent until Node acknowledges it. Node durably moves to the next world, moves the old save to `saves/_graveyard/` (last 5 kept) and sends `world.open`; BootScreen then runs `createFreshLevel` with Node's seed. **The mod never creates the next world on its own**, so a lost message can never leave Node on the dead world while the game plays a new one; Node also treats the mod showing up in the allocated next world (`hello{in_world}`, `world.state`, `player.died`) as the missing `closed`.
+  5. **[Begin World #N+1]**: disconnect (the integrated server saves and stops), then `world.state{closed}` is re-sent until Node acknowledges it. Node durably moves to the next world (listing the dead one as `unburied` in the same write), moves the old save to `saves/_graveyard/` (last 5 kept; a burial a crash interrupted is retried at the next start) and sends `world.open`; BootScreen then runs `createFreshLevel`, with the optional `world.open.seed` when there is one (Node sends none today, so every world gets a random seed). **The mod never creates the next world on its own**, so a lost message can never leave Node on the dead world while the game plays a new one; Node also treats the mod showing up in the allocated next world (`hello{in_world}`, `world.state`, `player.died`) as the missing `closed`.
   6. `OfficeBuilder` runs, and a new CEO arrives with the Chronicle greeting. The lasting Codex and real-clock calendar events carry over.
 - **Crash recovery.** If the app quits or crashes on the Game Over screen, the next launch sees the dead marker and goes straight to GameOver, then the new world.
 - **Timings:** death → GameOver in under 3 s; [Begin] click → standing in the new world in under 20 s. The button enables after `world.next`, or after 10 s with a locally built summary.
@@ -873,7 +873,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
   - Minecraft closes → Node aborts the queries, stops the PCs and services, and exits → the stub exits.
   - Logout or SIGTERM → the stub sends `shutdown`; there is a 60 s grace period, then SIGKILL.
 - **Startup reaper:** a single-instance lock, kill stale PIDs, stop orphaned `mv-*` containers and VMs, and `launchctl bootout` a wedged apiserver.
-  - **The lock (M1):** `run/lock` holds `{pid, started, nonce}` (`started` = `ps -o lstart`), created with O_EXCL. A pid that now belongs to a later process (reuse after a reboot) is stale. A stale lock is removed only by the holder of a short `mkdir` guard, after re-reading exactly the content it judged stale, so racing starters never both win. `npm run dev` and `npm run play` each take the lock of their own home.
+  - **The lock (M1):** `run/lock` holds `{pid, started, nonce}` (`started` = `ps -o lstart` read with `TZ=UTC`, stored as an ISO instant, so starters in different time zones agree), created atomically with its content (a temp file hard-linked into place, never visible empty). A pid that now belongs to a later process (reuse after a reboot) is stale. A lock younger than 2 s is live while its pid exists, and an empty young one is waited on. A stale lock is removed only by the holder of a short `mkdir` guard, after re-reading exactly the content it judged stale, so racing starters never both win. `npm run dev` and `npm run play` each take the lock of their own home.
 - **PATH.** Nothing relies on the LaunchServices PATH. Every tool path is absolute: claude, git, and the bundled binaries.
 
 ### 9.3 First run

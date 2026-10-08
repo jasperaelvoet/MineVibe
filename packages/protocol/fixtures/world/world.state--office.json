@@ -1,0 +1,21 @@
+{
+  "t": "world.state",
+  "v": 1,
+  "worldId": "world-7",
+  "phase": "ready",
+  "office": {
+    "origin": { "x": -6, "y": 63, "z": -6 },
+    "slots": [
+      { "kind": "workstation", "pos": { "x": -5, "y": 64, "z": -5 } },
+      { "kind": "workstation", "pos": { "x": -3, "y": 64, "z": -5 }, "pcId": "linux-1" },
+      { "kind": "meeting_table", "pos": { "x": 0, "y": 64, "z": -2 } },
+      { "kind": "codex", "pos": { "x": 4, "y": 64, "z": -5 } },
+      { "kind": "wall_calendar", "pos": { "x": 5, "y": 65, "z": -4 } },
+      { "kind": "chest", "pos": { "x": -5, "y": 64, "z": 1 } },
+      { "kind": "bed", "pos": { "x": 4, "y": 64, "z": 1 } },
+      { "kind": "door", "pos": { "x": 0, "y": 64, "z": 3 } },
+      { "kind": "spawn", "pos": { "x": 0, "y": 64, "z": 0 } }
+    ]
+  },
+  "clockTime": 120
+}
