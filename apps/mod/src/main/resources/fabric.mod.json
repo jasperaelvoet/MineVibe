@@ -1,0 +1,59 @@
+{
+	"schemaVersion": 1,
+	"id": "minevibe",
+	"version": "${version}",
+	"name": "MineVibe",
+	"description": "A hardcore Minecraft world where Claude Code agents live, survive and work at real computers.",
+	"authors": [
+		"Jasper Aelvoet",
+		"MineVibe contributors"
+	],
+	"contact": {
+		"homepage": "https://jasperaelvoet.github.io/MineVibe",
+		"sources": "https://github.com/jasperaelvoet/MineVibe",
+		"issues": "https://github.com/jasperaelvoet/MineVibe/issues"
+	},
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"dev.minevibe.MineVibeMod"
+		],
+		"client": [
+			"dev.minevibe.client.MineVibeClient"
+		]
+	},
+	"mixins": [
+		"minevibe.mixins.json",
+		{
+			"config": "minevibe.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"recommends": {
+		"sodium": ">=0.9.2",
+		"lithium": ">=0.26.2",
+		"ferritecore": ">=9.0.0",
+		"immediatelyfast": ">=1.17.1",
+		"entityculling": ">=1.11.2",
+		"moreculling": ">=1.9.0",
+		"cloth-config": ">=26.3.159",
+		"dynamic_fps": ">=3.11.10",
+		"badoptimizations": ">=2.4.1",
+		"sodium-extra": ">=0.9.4"
+	},
+	"conflicts": {
+		"krypton": "*"
+	},
+	"custom": {
+		"lithium:options": {
+			"mixin.entity.framed_maps": false
+		}
+	}
+}

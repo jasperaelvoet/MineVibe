@@ -1,0 +1,853 @@
+{
+ "coverage": {
+  "issues": [
+   {
+    "severity": "major",
+    "section": "12.2 Milestones / 3 Architecture (Launcher) / 10 Mod stack",
+    "issue": "None of M1\u2013M11 includes the Node Launcher: the JRE, the xmcl install of MC 26.3 and Fabric, the mods.lock Modrinth installer, seeded mod configs and options.txt. Only spike S8 touches it. The dev loop uses `./gradlew runClient`, so no milestone proves the default performance-mod set (req 14) is installed, verified and active. M4's '>= 25 fps seated' and M10's 'double-click lands in the world' both depend on it without saying so.",
+    "fix": "Add 'Launcher + mods.lock installer + seeded configs' to M1, or to a milestone before M4. Acceptance: from a clean game dir it installs MC 26.3, Fabric and all 11 default mods with sha512 verified; seeded configs are merged and not clobbered; the mod list shows Sodium, Lithium and the rest active; M4's fps figure is measured with this stack.",
+    "source": "plan lines 74, 632-667, 710, 716-730"
+   },
+   {
+    "severity": "major",
+    "section": "9.3 First run / 7.5 Blocks / 8.1 Lifecycle",
+    "issue": "The plan never says how the first PC gets created. M4 expects 'linux-1 is running at launch' and M10 expects 'lands in the world with the CEO and a booting PC', but the first-run steps only build the image and no step creates a default PC record. Crafting a new workstation is also unspecified: what the first placement of an item with no pc_id does, how a type is picked, budget admission and over-budget feedback. The linux-slim type has no item and no image build step.",
+    "fix": "Add a step to first run or to the first world: create `linux-1` (linux, 2 vCPU / 4 GiB, admitted against the budget, Vault optional through the folder picker), and OfficeBuilder places its workstation. Then specify that placing a workstation with no pc_id creates a new PC of the item's type, runs admission, and shows OVER_BUDGET or no_capacity on the monitor. Also say how linux-slim is chosen (PcConfigScreen type switch) and where its image is built.",
+    "source": "plan lines 437, 446, 611-620, 723, 729"
+   },
+   {
+    "severity": "major",
+    "section": "6.3 SeatFSM vs 6.4 / 6.6 / 13",
+    "issue": "The SeatFSM state list (wandering \u2192 walking_to_seat \u2192 seated_pending_swap \u2192 seated \u2192 standing_pending_swap \u2192 wandering) leaves out `away_from_seat`, which 6.4 introduces and the unit tests in 13 cover. The exit-edge list also leaves out 'meeting' (6.6 makes seated agents stand for a meeting) and 'player took the PC while away' (6.4 step 4). The plan doesn't say whether seatEpoch increments on away/return.",
+    "fix": "Rewrite the 6.3 state machine in one place and include away_from_seat with its edges: seated \u2192 away_from_seat on approach; back to seated after the answer with no swap; to wandering when the player takes the PC, on a kick, or on a timeout. Add the meeting and player_took_pc exit edges. State the epoch rules for each edge.",
+    "source": "plan lines 205-206, 235-238, 356, 736"
+   },
+   {
+    "severity": "major",
+    "section": "6.5 Chat routing (Delivery)",
+    "issue": "'The CEO and every addressed agent wake at P0' means `@bram \u2026` also reaches and wakes the CEO. That contradicts req 21: @agentname should pick which agent gets the message. It also spends tokens on every targeted message.",
+    "fix": "Only the agents named in the message receive it and wake. If the CEO should know about it, make that an opt-in setting (default off) that gives the CEO a context-only copy (shouldQuery:false).",
+    "source": "plan line 265; user req 21"
+   },
+   {
+    "severity": "major",
+    "section": "6.5 Chat routing (Parsing) / 6.6 Meetings",
+    "issue": "`@all wrap up` treats 'all' as a reserved token, but names match case-insensitively by prefix, so an agent called 'Allie' or 'Alba' collides with it. The plan doesn't say what happens with an ambiguous prefix (`@a` when both Ada and Alex exist), with a name that matches nobody, or with a dead or dismissed agent. It sets no uniqueness or format rules for hire names (`request_hire{name?}`).",
+    "fix": "Define the rules: an exact match beats a prefix match; an ambiguous prefix gets an inline client-side error and nothing is sent; an unknown or dead name gets a toast and is never broadcast as a fallback. Reserve 'all' and 'everyone'. Hire names must be unique single tokens with a distinct prefix of at least 2 characters. Add unit tests for each case.",
+    "source": "plan lines 261-264, 254, 364"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 Questions, plans, hires (answering via chat)",
+    "issue": "How chat resolves pending items is unclear in three cases: (a) whether a broadcast with no @ counts as the answer, or as a Revise, for agents with a pending card; (b) an agent with several pending items, since one AskUserQuestion call can carry up to 4 questions and an agent can also have a plan or hire pending, so it isn't clear what `@ada 2` answers; (c) `@ada @bram 2`. As written, any message to an agent with a pending plan counts as Revise, so a clarifying question rejects the plan.",
+    "fix": "Rules: only a message addressed to exactly one agent resolves a card; broadcasts never do. It resolves that agent's oldest pending item. Multi-question calls are asked one at a time, with the bubble showing 'Q1/3'. A message ending in '?' to an agent with a pending plan is delivered as a question, not as Revise. Add ChatRouter unit tests.",
+    "source": "plan lines 240-251"
+   },
+   {
+    "severity": "major",
+    "section": "7.8 Screens / 7.7 Kicking / 1 Context",
+    "issue": "Req 6 says clicking an agent opens interaction, and line 9 repeats it, but the mod section never specifies the gesture, the event hook or a protocol message. Agents are ServerPlayers, so right-clicking one does nothing by default; left-click is an attack, which is cancelled; and sneak-clicking a seated agent kicks it. A misclick can therefore kick a working agent. No acceptance criterion tests opening AgentScreen by clicking.",
+    "fix": "Specify that right-click on an AgentPlayer (client-side UseEntityCallback) opens its AgentScreen. Make sneak-right-click on a seated agent open a kick confirmation instead of kicking instantly. Add to M2 acceptance: 'right-click the CEO opens AgentScreen; a reply and a new task reach the scripted brain; a question card can be answered there'.",
+    "source": "plan lines 9, 477, 498; user req 6"
+   },
+   {
+    "severity": "major",
+    "section": "7.7 Player at a PC",
+    "issue": "In PcControlScreen, Tab toggles look-around, so the player can't send Tab to the guest. That breaks shell completion and focus switching, which matters for req 4 (the player controlling a PC).",
+    "fix": "Pass Tab through to the guest. Move look-around to a configurable chord or to holding the middle mouse button, and list every reserved chord (Shift+Esc and the look-around chord) in the docs and on-screen hints.",
+    "source": "plan line 473"
+   },
+   {
+    "severity": "minor",
+    "section": "7.8 Keys",
+    "issue": "'1\u20134 answer the question of the agent standing in front of you' collides with vanilla hotbar slots 1\u20134. In hardcore combat, switching to a weapon near an agent could answer a question by accident.",
+    "fix": "Consume 1\u20134 only while a modifier is held, or only while the AgentScreen card or G card is open. Otherwise leave the hotbar untouched.",
+    "source": "plan line 505"
+   },
+   {
+    "severity": "minor",
+    "section": "12.1 Spikes",
+    "issue": "'S6 Lume (before M8)' and 'with S6 before M8' are stale. macOS PCs are M9; M8 is the hardcore loop. This looks like fallout from inserting M7 (Codex/Calendar).",
+    "fix": "Change both references to 'before M9'.",
+    "source": "plan lines 712, 714, 727-728"
+   },
+   {
+    "severity": "minor",
+    "section": "7.6 Monitor rendering",
+    "issue": "'which sets the frame tier (9.5)' points to a section that doesn't exist (section 9 has only 9.1\u20139.4). The frame tiers are in 8.4.",
+    "fix": "Change it to (8.4).",
+    "source": "plan line 459"
+   },
+   {
+    "severity": "minor",
+    "section": "2 Decisions (Hardcore)",
+    "issue": "The tagline 'Only the Vault and your machines survive' contradicts other sections: lasting Codex pages, real-clock calendar events and the Chronicle also survive player death.",
+    "fix": "Update the tagline, for example: 'The Vault, your machines, the lasting Codex, real-clock calendar events and the Chronicle survive.'",
+    "source": "plan lines 54 vs 57, 293, 313, 333, 516"
+   },
+   {
+    "severity": "minor",
+    "section": "6.5 Wake rules / BrainScheduler",
+    "issue": "The wake table has no rows for scheduled-task firing, meeting calls and gathering, or resuming after an approach. 6.6 fires tasks at P1, but the table defines P1 as 'PC kickoff'. The 'meeting lane' isn't reconciled with maxConcurrentTurns=2, and neither is what Tired or Asleep usage does during a meeting.",
+    "fix": "Add rows for SCHEDULED task, meeting call and approach-resolved, each with a priority and delivery mode. Say whether the meeting lane uses one of the 2 slots or preempts them, and how UsageGovernor states affect meetings.",
+    "source": "plan lines 275-286, 335, 359"
+   },
+   {
+    "severity": "minor",
+    "section": "6.2 ToolGate table",
+    "issue": "The table leaves out codex_*, calendar_*, report_task and the server-side CEO-only check for scheduling other agents. It also doesn't define which pc__ tools count as 'mutating' in plan mode. pc__bash is the hard case: plan-first agents need read-only commands like git status or running tests.",
+    "fix": "Add rows for the codex and calendar tools, covering wandering (walk to the Codex) and seated (network) access, and a role check on assignees. Define how pc__bash behaves in plan mode: deny it, or allow a read-only allowlist.",
+    "source": "plan lines 185-195, 305-311, 340-345"
+   },
+   {
+    "severity": "minor",
+    "section": "6.4 ExitPlanMode / 6.1 Session",
+    "issue": "'Approve+auto-edit' and `@ada approve auto` have no defined effect. Approve already sets `default`, and pc__* are pre-allowed through allowedTools, so there are no prompts left to auto-accept. WebSearch and WebFetch aren't in allowedTools, so canUseTool will fire for them, and the plan never says the broker auto-allows them.",
+    "fix": "Either define what auto-edit changes (for example, skipping per-edit confirmations that the ToolGate would otherwise raise) or remove the option. Add WebSearch and WebFetch to allowedTools, gated by ToolGate, or state that the broker auto-allows them.",
+    "source": "plan lines 157-164, 248-250"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Calendar (Firing)",
+    "issue": "Game time comes from the 1 Hz `agent.state` tick. With an empty crew (waiting for the dawn newcomer) no ticks arrive, so game-clock events and 'next dawn' never fire.",
+    "fix": "Push the world time in `world.state` at 1 Hz whether or not agents exist, and drive CalendarService from that.",
+    "source": "plan lines 334, 518"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Calendar vs 7.3 Reflexes",
+    "issue": "6.6 says a task for a busy agent 'queues until its next turn boundary', but reflex 38 'Attend \u2026 scheduled task location' outranks Job (35), so the body leaves immediately while the brain is still on other work. Separately, ApproachPlayer (40) outranks Attend meeting (38), so an agent with a pending question walks to the player instead of the meeting. ApproachPlayer also refuses to cross dimensions, while Follow mode does.",
+    "fix": "Have reflex 38 engage only once the brain has accepted the task. Settle meeting vs approach precedence, for example by raising pending items at the table during the Floor phase. Make the dimension rules consistent.",
+    "source": "plan lines 233-234, 335, 404-406, 432"
+   },
+   {
+    "severity": "minor",
+    "section": "4 Runtime data / 6.6 Codex",
+    "issue": "The App Support list ({state, game, worlds, container, lume}) is missing `codex/`, which 6.6 uses. The storage location of lasting real-clock calendar events, the Chronicle and agentHome/memory.md is never stated.",
+    "fix": "List every persistent store and its path, and say which ones live per world and which are lasting.",
+    "source": "plan lines 110, 153, 292-293, 299, 333"
+   },
+   {
+    "severity": "minor",
+    "section": "9.3 First run / 1 Context",
+    "issue": "'This is the only non-Minecraft UI' contradicts the native folder picker the stub opens (lines 65 and 499). The future Microsoft device-code sign-in (M11) also has no stated surface. Req 1 asks for no UI outside the world.",
+    "fix": "List the exceptions explicitly (first-run window, native folder picker) and put the Microsoft device code inside BootScreen.",
+    "source": "plan lines 4, 65, 499, 612, 730"
+   },
+   {
+    "severity": "minor",
+    "section": "10 Mod stack",
+    "issue": "C2ME is listed as an opt-in mod, yet fabric.mod.json declares `conflicts` with c2me, so opting in produces a conflict warning.",
+    "fix": "Remove c2me from `conflicts` and keep krypton, or drop C2ME from the opt-in list.",
+    "source": "plan lines 650, 661"
+   },
+   {
+    "severity": "minor",
+    "section": "8.2 Budget / 13 Soak",
+    "issue": "The RAM pool arithmetic doesn't work out. 48 \u2212 (10 + 8 + 0.5 + 0.5\u00d74) = 27.5 GiB, or about 24.2 GiB if '48 GB' is decimal; neither is 'about 26 GiB'. The soak test also allows each claude up to 1 GB while the budget reserves 0.5 GiB per claude.",
+    "fix": "Correct the figure and make the per-claude reserve match the soak limit.",
+    "source": "plan lines 545, 751"
+   },
+   {
+    "severity": "minor",
+    "section": "6.3 Debounce / 6.4 away_from_seat",
+    "issue": "Req 9 says Haiku while wandering, but agents can wander on Opus: for up to 60 s after standing (re-sit debounce) and while walking to the player from a seat. The plan doesn't call these out as exceptions.",
+    "fix": "Document both as accepted exceptions in the section 1 model table, or force the downswap (for example, defer only the kickoff, not the model).",
+    "source": "plan lines 18-21, 217, 236"
+   },
+   {
+    "severity": "minor",
+    "section": "7.9 Player death / 12 Acceptance",
+    "issue": "Death-to-new-world timing differs: S7 says under 20 s, M8 under 30 s. Last-words turns for up to 4 agents, with maxConcurrentTurns=2 on Haiku/xhigh, can easily exceed either. Because [Begin World #N+1] needs a click, the measured interval is undefined.",
+    "fix": "Cap last words with a hard timeout (for example 8 s each), run them concurrently and off the BrainScheduler limit so they never block the reset, and define the timed intervals (death \u2192 GameOver; click \u2192 in the new world).",
+    "source": "plan lines 514-515, 709, 727"
+   },
+   {
+    "severity": "minor",
+    "section": "7.8 Bubbles vs 6.4 Approach",
+    "issue": "Bubbles wrap at about 32 characters and 3 lines, but the approach bubble has to show the question, numbered options and '(answer: @ada 2, or press G)'. agent.say's '1\u20132 sentences' may not fit either.",
+    "fix": "Define a larger card-style bubble when the agent is within a few blocks, or show only the question plus 'G for options'. Specify the truncation rule for agent.say.",
+    "source": "plan lines 180, 233, 484"
+   },
+   {
+    "severity": "minor",
+    "section": "8.1 Lifecycle / 7.5 Workstation items",
+    "issue": "Breaking a workstation 'unplugs' its PC and stops the sandbox, but bootAll at launch boots every PC. Recovering a lost workstation item within a world (lava, a grave, a dead agent's inventory) is unspecified.",
+    "fix": "Track a plugged flag that bootAll respects, and add 'Re-issue workstation item' to PcConfigScreen or the PCs & Resources menu.",
+    "source": "plan lines 437, 539"
+   },
+   {
+    "severity": "minor",
+    "section": "7.5 / 7.8 PcConfigScreen / M4",
+    "issue": "No in-world gesture opens a specific PC's config screen; only the Esc menu's 'PCs & Resources' and the Kick button are mentioned. M4 acceptance doesn't check that allocated resources and remaining host capacity are displayed, which is the core of req 10.",
+    "fix": "Specify the gesture (for example, sneak-right-click the desk or monitor). Add to M4 acceptance: 'PcConfigScreen shows this PC's vCPU/RAM, host free budget bars and macOS slots; sliders clamp to free budget'.",
+    "source": "plan lines 435, 499, 504, 723"
+   },
+   {
+    "severity": "minor",
+    "section": "12.2 M7 / 13 E2E",
+    "issue": "Meeting acceptance only says 'a meeting gathers 3 agents', and the E2E run uses 'Start meeting now'. Nothing tests req 20 as written: the player adds a meeting to the calendar (assignees=all), it fires at the scheduled time, and all living agents, a seated one included, stand up, walk over and sit together.",
+    "fix": "Add that scenario to M7 acceptance and the E2E run, including absentee recording and a seated agent handing off its PC.",
+    "source": "plan lines 726, 748"
+   },
+   {
+    "severity": "minor",
+    "section": "6.5 Chat routing (meeting scope)",
+    "issue": "During a meeting, a message with no @ goes only to attendees. That deviates from req 21's 'no @ means all agents receive it'.",
+    "fix": "Confirm this exception with the user, or deliver to all agents and mark the copy for absentees as context only.",
+    "source": "plan line 264; user req 21"
+   },
+   {
+    "severity": "minor",
+    "section": "12.2 M1 / 14 Gates",
+    "issue": "M1's scope includes 'CI green, docs site live', but a live site needs the public repo and Pages, both confirmation-gated, and M1's acceptance doesn't check CI or docs at all.",
+    "fix": "Add acceptance: 'CI green on a PR; docs build plus link check passes in CI; Pages live once the user confirms repo creation (otherwise a local preview)'.",
+    "source": "plan lines 672, 720, 757"
+   },
+   {
+    "severity": "minor",
+    "section": "2 Decisions (PC control) / 8 PC manager",
+    "issue": "Req 4 asks for each PC to be its own trycua/cua workspace. The plan uses cua images and spacesd with @trycua/cua as a client only; MineVibe's own Apple container and Lume drivers own the lifecycle, not cua's sandbox or workspace API. This is a reasonable deviation, but the plan doesn't flag it for the user.",
+    "fix": "Mark it as an explicit deviation with the reason (bundled Apple container, 2-VM macOS limit, lifecycle control) and get the user's sign-off.",
+    "source": "plan lines 49-51"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Codex (Context) vs 3 Principles",
+    "issue": "The Codex digest is carried in the persona (systemPrompt.append) and 'refreshed daily'. Changing the system prompt breaks the prompt-cache stability that principle 3 is meant to protect.",
+    "fix": "Inject the refreshed digest as a context message (shouldQuery:false) or in the Digest block, and keep the system prompt fixed for the life of the session.",
+    "source": "plan lines 86, 165, 312"
+   }
+  ],
+  "coverage": [
+   {
+    "requirement": "1. App 'MineVibe' launches straight into one Minecraft world; no other UI, no multiplayer, no leave; app open = in, closed = out",
+    "status": "covered",
+    "note": "BootScreen replaces TitleScreen and DisconnectedScreen, `--disableMultiplayer`, the Esc menu doesn't pause, and quit means the app closes (sections 1, 7.9, 9.2). The first-run window and native folder picker are exceptions to 'no other UI', and 9.3 wrongly calls the first-run window the only one."
+   },
+   {
+    "requirement": "2. An agentic server plus Minecraft as client (mod)",
+    "status": "covered",
+    "note": "Node 24 orchestrator, Fabric 26.3 mod, one authenticated WebSocket bridge (sections 3, 5)."
+   },
+   {
+    "requirement": "3. One agent by default at start; it listens to the player; full interactivity with the world",
+    "status": "covered",
+    "note": "The CEO starts in Listen autonomy with follow as its idle mode. The skill API covers movement, mining, crafting, generic menus, riding and portals (sections 2, 7.3, 7.4); M2 and M3 acceptance test it."
+   },
+   {
+    "requirement": "4. Real PCs, desks and seats; each PC is its own trycua/cua workspace; the player can take control of a PC",
+    "status": "covered",
+    "note": "pc_desk, office_chair, workstation items, cua images with spacesd, PcControlScreen (7.5, 7.7, 8). Gaps: cua is used only as a spacesd client, not for lifecycle; default and new PC provisioning is unspecified; Tab is captured for look-around."
+   },
+   {
+    "requirement": "5. Agents take a PC by walking to it and sitting on the seat; one occupant per PC; the player can kick an agent off",
+    "status": "covered",
+    "note": "sit_at_pc job, single-passenger seat plus a PcRegistry check, kick sequence, M5 acceptance (6.3, 7.5, 7.7). The SeatFSM state and edge lists are inconsistent with 6.4 (away_from_seat) and 6.6 (meeting)."
+   },
+   {
+    "requirement": "6. Agent messages as bubbles above heads (not vanilla chat); clicking an agent lets the player reply, send a new message and answer plan-mode questions",
+    "status": "partial",
+    "note": "Bubbles, an optional chat mirror, and AgentScreen with Reply, New task, question, plan and hire cards are specified (7.8). The click gesture, its event hook and any acceptance test are missing, and sneak-click doubles as kick."
+   },
+   {
+    "requirement": "7. The CEO can hire sub-agents, always asking confirmation first",
+    "status": "covered",
+    "note": "mc__request_hire creates a hire card; nothing spawns without approval; a declined hire spawns nothing in M6 (6.4). The CEO name is used consistently and there are no stale 'Lead' references."
+   },
+   {
+    "requirement": "8. Each agent is a Claude Code instance with custom extensions, on the user's subscription like T3 Code",
+    "status": "covered",
+    "note": "Agent SDK query() using the user's own claude binary, in-process MCP servers mc and pc, PreToolUse hook, canUseTool broker, env allowlist, subscription assertions (6.1). The SDK options toolAliases and applyFlagSettings are flagged [U] for spikes S2 and S3."
+   },
+   {
+    "requirement": "9. Haiku at xhigh while wandering; Opus at medium while controlling a PC",
+    "status": "covered",
+    "note": "Model table and turn-boundary swap via applyFlagSettings (1, 6.3). Undocumented exceptions: Opus is kept during away_from_seat and the 60 s re-sit debounce."
+   },
+   {
+    "requirement": "10. Several PC types; starting the game boots the PCs; per-PC indicator and config menu with allocated resources and remaining host capacity",
+    "status": "partial",
+    "note": "Types linux, linux-slim, macos (2-running cap) and windows (greyed out); bootAll at launch; LED, monitor status, HUD line; PcConfigScreen with budget bars (8.1, 8.2, 7.8). Missing: the in-world gesture to open a PC's config, M4 acceptance for the resource display, default PC provisioning, and unplugged-PC handling in bootAll."
+   },
+   {
+    "requirement": "11. Agents sandboxed; host folders mounted into PCs",
+    "status": "covered",
+    "note": "No host-path tools, all file and shell work inside the PC, fail-closed ToolGate, Vault path-identical mounts with validation and tripwire, loopback isolation tested in S5 (3 principle 5, 6.2, 8.3, 8.5, 13.10)."
+   },
+   {
+    "requirement": "12. Seated agents get cua screen control plus full shell plus file tools and pick what's best",
+    "status": "covered",
+    "note": "pc__ screen, input, bash and file tools with Bash/Read/etc. aliases, ShellMirror (6.2). The persona and kickoff guidance on choosing between GUI and shell isn't spelled out; plan-mode handling of bash is undefined."
+   },
+   {
+    "requirement": "13. Hardcore survival; agents have health and hunger and look after the player and each other; player death restarts in a new world",
+    "status": "covered",
+    "note": "createFreshLevel(HARD, hardcore), real fake-player stats, care reflexes (protect, feed, share), graves and diaries, durable reset, GameOver (7.1, 7.3, 7.9); M2, M6 and M8 acceptance test it. The 20 s vs 30 s reset timings conflict, and last words are unbounded."
+   },
+   {
+    "requirement": "14. Ship popular optimisation mods (Sodium etc.)",
+    "status": "partial",
+    "note": "Section 10 pins an 11-mod default set with sha512, downloaded on first run because licences forbid rehosting. No milestone owns the Launcher or mods.lock installer, and no acceptance criterion checks the mods are active. The C2ME opt-in contradicts the declared conflict."
+   },
+   {
+    "requirement": "15. One macOS app bundling agents, game, world and VMs, all running locally",
+    "status": "covered",
+    "note": "MineVibe.app bundles a Swift stub, Node, a JRE, Apple container, lume.app and the mod; everything runs locally (9.1, 9.2). Documented deviations the user should approve: Minecraft, mods and images are downloaded on first run; claude is the user's own install; public binary releases wait on Microsoft sign-in, so the project is source-only until then."
+   },
+   {
+    "requirement": "16. Public GitHub repo with CI and a documentation site",
+    "status": "covered",
+    "note": "jasperaelvoet/MineVibe (MIT), ci, release and docs workflows, Astro Starlight on Pages, creation gated on user confirmation (11, 14). M1 acceptance doesn't check CI or docs."
+   },
+   {
+    "requirement": "17. A Codex: large book storage where agents write and read notes for each other",
+    "status": "covered",
+    "note": "CodexStore (markdown in git, MiniSearch), codex block multiblock and CodexScreen, codex_* tools, lasting and world scopes, read-only mount into PCs; M7 acceptance tests it (6.6, 7.5). It's a block, not a handheld item, which is acceptable. The codex/ path is missing from the runtime data list."
+   },
+   {
+    "requirement": "18. Calendar item for assigning agents tasks at specific times; the CEO can use it to distribute tasks",
+    "status": "covered",
+    "note": "wall_calendar block and calendar item open CalendarScreen; game and real clocks with recurrence; the CEO schedules for anyone, including when:'now'; M7 acceptance tests player scheduling and CEO delegation (6.6). Game-time source and reflex-38-vs-queueing inconsistencies remain."
+   },
+   {
+    "requirement": "19. Agents walk to the player to ask questions or get confirmation",
+    "status": "covered",
+    "note": "agent.approach plus the ApproachPlayer reflex (priority 40) for questions, plans and hires, an away_from_seat flow for seated agents, and a per-agent 'ping instead' setting; M3 acceptance tests it (6.4, 7.3). Bubble size can't hold the options; precedence against meetings is undefined."
+   },
+   {
+    "requirement": "20. The player can add a meeting to the calendar that makes all agents sit together",
+    "status": "covered",
+    "note": "kind=meeting with assignees=all, MeetingRunner gathers agents to meeting_table chairs (6 in the starter office), 'Start meeting now' (6.6, 7.5). Acceptance tests only an ad-hoc 3-agent meeting, not a player-scheduled meeting for all agents firing on time."
+   },
+   {
+    "requirement": "21. Messages shown above heads; the player answers via chat; '@agentname' targets an agent; no @ reaches all agents",
+    "status": "partial",
+    "note": "Client-side chat interception, @prefix parsing with several mentions, broadcast when there's no @, `@ada 2` card answers (6.5); M3 acceptance tests it. Deviations and gaps: the CEO also wakes on messages addressed to others; no-@ goes only to attendees during a meeting; `@all` collides with prefix matching; ambiguous or unknown names are unhandled; it's unclear whether broadcasts resolve pending cards or which item `@ada 2` answers when an agent has several."
+   }
+  ]
+ },
+ "feas": {
+  "issues": [
+   {
+    "severity": "major",
+    "section": "8.1 `container` handling / 12.1 S5",
+    "issue": "The plan sets CONTAINER_INSTALL_ROOT and CONTAINER_APP_ROOT, then runs `system start --enable-kernel-install`. In container 1.5.0, `system start` ignores both env vars. Its defaults are the hard-coded paths `var appRoot = ApplicationRoot.defaultPath` (always `~/Library/Application Support/com.apple.container`) and `var installRoot = InstallRoot.defaultPath` (the grandparent of the executable). Without `--app-root`, MineVibe's apiserver, kernels, images and named volumes all land in Apple's default directory, not in `App Support/MineVibe/container`. The env vars only reach the apiserver because `system start` writes them into the launchd plist from its own flag values. Apple's Makefile does the same thing: it passes `--app-root` to `system start` and separately exports CONTAINER_APP_ROOT for the other CLI calls.",
+    "fix": "Always start with `container system start --app-root \"$APPSUPPORT/MineVibe/container\" --install-root \"<bundle>/\u2026/container\" --enable-kernel-install --timeout <n>`. Keep CONTAINER_APP_ROOT and CONTAINER_INSTALL_ROOT in the env of every other CLI call. `--enable-kernel-install` is mandatory: without it, the non-TTY `readLine()` returns nil and start throws \"failed to read user input\". Sources: github.com/apple/container/blob/1.5.0/Sources/ContainerCommands/System/SystemStart.swift, Sources/ContainerPlugin/ApplicationRoot.swift, InstallRoot.swift, Makefile lines 42-43 and 295-297.",
+    "source": "apple/container 1.5.0 source"
+   },
+   {
+    "severity": "major",
+    "section": "8.1 `container` handling, 9.2 startup reaper, App quit",
+    "issue": "In 1.5.0 the apiserver's launchd label is hard-coded to `com.apple.container.apiserver` (SystemStart.swift `LaunchPlist(label: \"com.apple.container.apiserver\" \u2026)`), and `system start` has no `--prefix` option. Only `stop` and `status` take one. So each user session can have one apiserver, shared with any container the user installed via Homebrew or the pkg. Three steps in the plan can then hit the user's own install: the reaper's `launchctl bootout` of a \"wedged apiserver\", the quit-time `container system stop`, and the reconcile pass. They could stop the user's own container service and containers. Separately, \"refuse an apiserver that belongs to a different install\" also refuses MineVibe's own apiserver after the .app is moved or updated, because the install root changes while the app root stays the same.",
+    "fix": "Before any stop, bootout or reuse, run `container system status --format json` and compare `paths.appRoot` and `paths.installRoot`; status 1.5.0 reports both. Case by case: (a) appRoot is MineVibe's and installRoot differs (app moved or updated): stop, then restart from the current bundle. (b) The appRoot belongs to someone else: never stop or bootout it. Show `engine_down` with \"another `container` install is running\", or offer to use it. (c) On quit, run `system stop` only if the apiserver is ours. Document the one-apiserver limitation in Troubleshooting.",
+    "source": "apple/container 1.5.0 SystemStart.swift, SystemStatus.swift, docs/command-reference.md"
+   },
+   {
+    "severity": "major",
+    "section": "8.2 Budget (\"Resizing needs a restart under container [U S5]\")",
+    "issue": "A restart is not enough. container 1.5.0 has no `update` command (see the full command list in docs/command-reference.md@1.5.0), and `container start` only accepts `[--attach] [--interactive]`. CPU and memory are fixed at `run`/`create`, so changing them means `container delete` followed by a new `container run` with the new flags. Anything written to the container's root filesystem is lost: apt packages the agent installed, or files outside `/home/cua` and the Vault mounts. Only `container machine set cpus= memory=` supports resize via stop/start, but machines have no `--publish` or `--volume` and mount the host $HOME read-write by default, so they don't fit here.",
+    "fix": "Model a resize as a recreate, the same as Reimage but keeping the volumes. The PcConfigScreen warns that system-level changes outside `/home/cua` are lost. Optionally offer a per-PC named volume for `/usr/local` or `/opt` if persistence there matters. Update the [U S5] note and the S5 checklist.",
+    "source": "github.com/apple/container/blob/1.5.0/docs/command-reference.md"
+   },
+   {
+    "severity": "major",
+    "section": "6.1 Session (toolAliases) / 6.2 / 12.1 S2",
+    "issue": "Verified: `toolAliases?: Record<string,string>` in 0.3.293 is generic and can alias Read, Edit, Write, Glob and Grep as well as Bash. The docs call it \"complementary to `disallowedTools`\", which matches the plan's use. But the alias only rewrites the tool name; the model's built-in input is passed through unchanged. If the `mcp__pc__*` schemas don't exactly accept the built-in inputs, aliased calls fail MCP input validation. The built-in inputs are: Read `{file_path, offset?, limit?, pages?}`, Edit `{file_path, old_string, new_string, replace_all?}`, Write `{file_path, content}`, Glob `{pattern, path?}`, Grep `{pattern, path?, glob?, output_mode?, \"-A\"?, \"-B\"?, \"-C\"?, context?, \"-n\"?, \"-i\"?, \"-o\"?, type?, head_limit?, offset?, multiline?}` and Bash `{command, timeout?, description?, run_in_background?, dangerouslyDisableSandbox?}`. Two things are also undocumented: whether PreToolUse, allowedTools and canUseTool see the alias name or the target name.",
+    "fix": "Define pc__bash, pc__read, pc__edit, pc__write, pc__glob and pc__grep with input schemas that are supersets of the built-in ones above. Ignore `dangerouslyDisableSandbox`. Mirror the output conventions too: Read uses `cat -n` line numbers, Grep uses its output modes. In ToolGate, match both `Read` and `mcp__pc__read` (and the other pairs). Add one S2 check that PreToolUse sees the alias target name.",
+    "source": "@anthropic-ai/claude-agent-sdk 0.3.293 sdk.d.ts (Options.toolAliases) and sdk-tools.d.ts"
+   },
+   {
+    "severity": "major",
+    "section": "11 ci.yml `mod-client`, 13.3 Client GameTests, 12.1 S7",
+    "issue": "Fabric's client gametest runner (fabric-client-gametest-api-v1, 26.3 branch, FabricClientGameTestRunner.setupAndCheckFinalGameTestState) fails every test that does not finish on `TitleScreen` with no level loaded and no server running. It throws \"did not finish on the title screen\". It also starts tests from Minecraft.tick once the loading overlay clears. MineVibe's GuiSetScreenMixin replaces TitleScreen with BootScreen, and BootScreen blocks until Node sends `world.open`, but CI has no Node. The planned client tests (\"boot never shows TitleScreen\", \"death leads to a new world\") therefore fail by construction, not because they are flaky.",
+    "fix": "Add a test mode that disables the TitleScreen\u2192BootScreen redirect when `System.getProperty(\"fabric.client.gametest\")` is set. Drive BootScreen explicitly with `context.setScreen(...)` against an in-JVM fake bridge, or start `bridgeSim` from the Gradle task. End every test by closing the world and returning to TitleScreen. Cover \"never shows TitleScreen\" with a mixin unit test plus the S7 E2E recording. In CI, follow Fabric's documented path: a `runProductionClientGameTest` task (`net.fabricmc.loom.task.prod.ClientProductionRunTask`, `jvmArgs.add(\"-Dfabric.client.gametest\")`, `useXVFB = true`, `productionRuntimeMods` fabric-api). Add `-Dfabric.client.gametest.disableNetworkSynchronizer=true`; Fabric's docs warn that tests fail on GitHub Actions without it.",
+    "source": "raw.githubusercontent.com/FabricMC/fabric/26.3/fabric-client-gametest-api-v1/\u2026/FabricClientGameTestRunner.java; lifecycle/MinecraftMixin.java; docs.fabricmc.net/develop/automatic-testing"
+   },
+   {
+    "severity": "minor",
+    "section": "11 ci.yml `mod` job",
+    "issue": "`./gradlew build test runGametest`: Loom's run config is named `gameTest`, so the task is `runGameTest`, and Loom wires `check` to depend on it once `fabricApi { configureTests { \u2026 } }` is set. A plain `build` therefore already runs the headless server GameTests, and `runGametest` has the wrong casing.",
+    "fix": "Use `./gradlew build`, or `./gradlew build runGameTest` if you want it explicit. Add `fabricApi { configureTests { createSourceSet = true; modId = \"minevibe-gametest\"; enableGameTests = true; enableClientGameTests = true; eula = true } }`, which matches the plan's `src/gametest`.",
+    "source": "FabricMC/fabric-loom src/main/java/net/fabricmc/loom/configuration/fabricapi/FabricApiTesting.java; Fabric docs automatic-testing"
+   },
+   {
+    "severity": "minor",
+    "section": "11 ci.yml runners and actions",
+    "issue": "The `app` job says only \"macos arm64\". As of Oct 2026 the arm64 labels are `macos-26` (also `macos-latest`, `macos-26-xlarge`) and `macos-15`/`macos-15-xlarge`. `macos-14` is deprecated. The stub sets LSMinimumSystemVersion 26.0 and the job launches `--selftest`, so the job needs macOS 26, and a floating `macos-latest` can move. ubuntu-24.04 (`ubuntu-latest`) already ships xvfb 21.1.12 and Temurin 25.0.4. Fabric's sample workflow uses checkout@v4 and setup-java@v4; the current majors are checkout v7.0.1, setup-java v6.0.1, setup-node v7.1.0, upload-artifact v7.0.2, upload-pages-artifact v5, deploy-pages v5.0.1.",
+    "fix": "Use `runs-on: macos-26` for `app` and `runs-on: ubuntu-24.04` for the others. Use `actions/setup-java@v6` with `distribution: temurin` and `java-version: 25`. The ubuntu-24.04 image needs no apt install of xvfb. Pin action majors (Dependabot for actions is already planned).",
+    "source": "github.com/actions/runner-images README.md and images/ubuntu/Ubuntu2404-Readme.md, images/macos/macos-26-arm64-Readme.md; GitHub releases API for the actions repos"
+   },
+   {
+    "severity": "minor",
+    "section": "6.5 Chat routing (Tab completes agent names) / 12.1 S4",
+    "issue": "`ClientSendMessageEvents.ALLOW_CHAT` exists in Fabric API 26.3 (fabric-message-api-v1, `boolean allowSendChatMessage(String)`; returning false cancels and fires CHAT_CANCELED), so interception is fine. Fabric API has no hook for tab suggestions in non-command chat; its client command API only covers `/` commands. Vanilla does support custom completions: `ClientSuggestionProvider.getCustomTabSugggestions()` merges online player names with `customCompletionSuggestions`, which `ClientboundCustomChatCompletionsPacket` (ADD/REMOVE/SET) populates. Checked against decompiled 1.21.11; confirm in 26.3 during S4.",
+    "fix": "From the integrated server, send the player a `ClientboundCustomChatCompletionsPacket(Action.SET, [\"@Ada\",\"@Bram\",\"@all\"])` whenever the crew changes, or call `getSuggestionsProvider().modifyCustomCompletions(...)` client-side. Vanilla prefix matching then completes `@ad` to `@Ada` with no mixin. Keep a mixin on ClientSuggestionProvider or CommandSuggestions as the fallback.",
+    "source": "FabricMC/fabric 26.3 ClientSendMessageEvents.java; vanilla ClientSuggestionProvider (decompiled 1.21.11)"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Calendar (game clock `Day N hh:mm`, firing from `agent.state`)",
+    "issue": "Since 26.1, time is driven by data-driven world clocks (`world_clock` registry; `/time` can query, set, pause and resume a clock). Day time is no longer read via getDayTime: Carpet v26.3 uses `level.getOverworldClockTime()` and `level.clockManager().setTotalTicks(registryAccess.getOrThrow(WorldClocks.OVERWORLD), t)`. Paper on 26.3 uses `getDefaultClockTime()` and throws for dimensions whose `dimensionType().defaultClock()` is empty. The clock can be paused, and it jumps on sleep or `/time set`. The plan also reads game time from `agent.state`, which is per-agent and stops when the crew is empty.",
+    "fix": "Push the game clock in a world-level 1 Hz message (`world.state`), computed from `server.overworld().getOverworldClockTime()` even when the player is in the Nether or End. Day N = floor(t/24000)+1; tick 0 = 06:00. CalendarService catches up across discontinuities: occurrences skipped by sleep or `/time` either fire late or are marked `missed`, per a rule. Add a GameTest for a sleep skip.",
+    "source": "gnembon/fabric-carpet tag v26.3 src/main/java/carpet/script/api/Auxiliary.java (minecraft_version=26.3); PaperMC/Paper CraftWorld.java (mcVersion=26.3); minecraft.net 26.1 Snapshot 3 notes; kore.ayfri.com/docs/data-driven/world-clocks"
+   },
+   {
+    "severity": "minor",
+    "section": "9.1 Bundle (`Resources/container/`, `Runtime/jre/`, `Resources/server/node_modules`)",
+    "issue": "The plan puts the Mach-O binaries of the container install root in `Contents/Resources`. Apple's \"Placing content in a bundle\" says helper tools go in `Contents/MacOS/` or `Contents/Helpers/`, and warns that misplaced code \"might cause problems during notarization\". The same applies to `Contents/Runtime/jre` and any native addons in `Resources/server/node_modules`, such as the `sharp` fallback. Also, container 1.5.0 ships only as `container-1.5.0-installer-signed.pkg` (118 MB), with no tarball.",
+    "fix": "Use `Contents/Helpers/container/{bin,libexec/container/plugins/...}`. The install root is just the grandparent of `bin/container`, and Apple's SystemStart resolves symlinks because amfid validates relative to the enclosing .app. Pin the pkg's sha256 in vendor.lock.json and extract the payload with `pkgutil --expand-full` so the Apple signatures stay byte-identical. Re-check JRE and native-addon placement before Developer ID notarization.",
+    "source": "developer.apple.com/documentation/bundleresources/placing-content-in-a-bundle; GitHub release apple/container 1.5.0 assets"
+   },
+   {
+    "severity": "minor",
+    "section": "9.3 First run step 3 (`container build`) / 8.2 Budget",
+    "issue": "`container build` starts a builder VM (default 2 CPU and 2 GiB) that pulls its own builder image and keeps running after the build. `system start` also pulls the vminit image and downloads the kernel. None of this is counted in the RAM budget or the first-run size.",
+    "fix": "After the build, run `container builder stop` and `container builder delete`. Better: build `minevibe/linux-pc` in CI, publish it to GHCR pinned by digest, and `container image pull` it, which needs no builder. Add kernel, vminit and builder downloads to the first-run consent and size text.",
+    "source": "apple/container 1.5.0 docs/resource-usage.md; SystemStart.swift (installInitialFilesystem, installDefaultKernel)"
+   },
+   {
+    "severity": "minor",
+    "section": "8.1 (apple/container#2275) / S5",
+    "issue": "Issue #2275 (open) is a full hang of every `container` command on macOS 27.0. The reporter later found it deterministic: it happens whenever no process holds a pf starter reference, because pfd exits and vmnet_network_create blocks forever. This dev Mac runs Darwin 27.0 (macOS 27), so the S5 spike will likely hit it. The plan's Node-side timeouts are correct but don't tell the user what to do.",
+    "fix": "Keep the timeouts. Map a `system start`/`status` timeout to `engine_down`, with a toast that links the issue. Run S5 on macOS 27 explicitly and note any workaround in result.md (e.g. holding a pf reference).",
+    "source": "github.com/apple/container/issues/2275"
+   },
+   {
+    "severity": "minor",
+    "section": "6.1 / 6.2 ToolGate and S2/S3",
+    "issue": "`permission_mode` is in PreToolUse input, but it's optional: `BaseHookInput.permission_mode?: string`. A fail-closed gate that relies only on it would deny everything, or allow plan-mode writes if it treats absent as `default`. Three related details: (a) a PreToolUse `allow` skips the permission flow, so returning `allow` for AskUserQuestion, ExitPlanMode or EnterPlanMode may bypass `canUseTool` (plausible, not verified); HookPermissionDecision is `'allow'|'deny'|'ask'|'defer'`. (b) Options has a direct `effort?: EffortLevel` field, so `settings:{effortLevel}` isn't needed at startup. (c) `supportedModels()` returns ModelInfo whose `value` may be an alias; the full id is in `resolvedModel`, and xhigh support is in `supportedEffortLevels`.",
+    "fix": "ToolGate uses `input.permission_mode ?? nodeTrackedMode`. Node tracks the mode from its own setPermissionMode calls and the brokered Enter/ExitPlanMode. For broker tools, return no decision (or `defer`) so `canUseTool` runs, and verify this in S2. Use `effort: 'xhigh'` in Options. Assert on `resolvedModel ?? value` and on `supportedEffortLevels.includes('xhigh')`.",
+    "source": "@anthropic-ai/claude-agent-sdk 0.3.293 sdk.d.ts (BaseHookInput, HookPermissionDecision, Options.effort, ModelInfo)"
+   },
+   {
+    "severity": "minor",
+    "section": "11 docs.yml (Starlight on GitHub Pages)",
+    "issue": "withastro/action@v6 detects the lockfile only inside `path`. In this npm-workspaces repo, package-lock.json sits at the root, so `path: apps/docs` reports \"No lockfile found\". With `package-manager: npm` set explicitly, LOCKFILE is never set and setup-node's `cache-dependency-path` becomes `apps/docs/`, which likely fails cache resolution. The plan also doesn't mention Astro's required project-site config.",
+    "fix": "Skip the composite action and use plain steps: `actions/checkout@v7`, `actions/setup-node@v7` (node 24, cache npm), `npm ci` at the root, `npm run build -w apps/docs`, `actions/upload-pages-artifact@v5` (path `apps/docs/dist`), then `actions/deploy-pages@v5` in an `environment: github-pages` job with `permissions: pages: write, id-token: write`. In astro.config set `site: 'https://jasperaelvoet.github.io'` and `base: '/MineVibe'`. Internal links must respect base. Set Pages Source to \"GitHub Actions\" (already behind the confirmation gate).",
+    "source": "github.com/withastro/action action.yml and README (v6.1.3); docs.astro.build/en/guides/deploy/github/"
+   },
+   {
+    "severity": "minor",
+    "section": "10 Installer (Modrinth)",
+    "issue": "Verified live: `GET https://api.modrinth.com/v2/versions?ids=[\u2026]` (a URL-encoded JSON array) returns a JSON array of version objects with `id`, `project_id`, `version_number`, `version_type`, `game_versions`, `loaders`, `dependencies` and `files[]`. Each file has `{url, filename, primary, size, hashes{sha1, sha512}, file_type, id}`. All 11 pinned ids resolve to release builds for 26.3. The response order does not follow the request order (it came back d5ddUdiB, bAZQdGpg, \u2026 for a request starting v2j28coa). Dynamic FPS has 2 files.",
+    "fix": "Index the response by `id` and fail if any requested id is missing. Choose the file with `primary === true`, then verify `size` and `sha512`. Send a descriptive User-Agent.",
+    "source": "Live call to api.modrinth.com/v2/versions with the plan's 11 ids (2026-10-08)"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Codex search (MiniSearch)",
+    "issue": "MiniSearch fits: v7.2.0, MIT, zero dependencies, ESM and CJS exports, Node versions with ES2018. It supports `filter` callbacks for tag and category filtering, `storeFields`, `discard`/`replace`, and `toJSON`/`loadJSON`. But it does not produce snippets or highlights, and the plan says `codex_search` returns the \"top 8 snippets\".",
+    "fix": "Store `title`, `tags`, `category` and `scope` as storeFields. Build snippets yourself from the stored body or the file around the matched `terms` in the result. Rebuild the index at startup; a few hundred 8 KB pages takes milliseconds. Use `replace` on update and `discard` on delete.",
+    "source": "npm view minisearch (7.2.0); github.com/lucaong/minisearch README"
+   }
+  ],
+  "coverage": [
+   {
+    "requirement": "(1) Apple container 1.5.0: CONTAINER_INSTALL_ROOT / --install-root",
+    "status": "covered",
+    "note": "Env vars and flags exist (InstallRoot.swift, ApplicationRoot.swift, `system start --app-root/--install-root`), but `system start` ignores the env vars, so the flags are mandatory (issue). Default install root is the grandparent of bin/container."
+   },
+   {
+    "requirement": "(1) --enable-kernel-install",
+    "status": "covered",
+    "note": "Exists as `--enable-kernel-install/--disable-kernel-install`. It also prevents the interactive readLine prompt, which throws when there is no TTY."
+   },
+   {
+    "requirement": "(1) container build",
+    "status": "covered",
+    "note": "Exists. It starts a persistent builder VM (2 CPU / 2 GiB) that the plan doesn't account for (issue)."
+   },
+   {
+    "requirement": "(1) -v bind mounts and named volumes",
+    "status": "covered",
+    "note": "`-v host:guest` bind (virtiofs; files show root:root per volumes.md). `-v name:/path` auto-creates a named volume (Utility.getOrCreateVolume, logs a warning); ext4 sparse image, 512 GiB max by default."
+   },
+   {
+    "requirement": "(1) -p 127.0.0.1:port and --shm-size, -l, --cpus/--memory, -e KEY",
+    "status": "covered",
+    "note": "All present in the 1.5.0 run/create options. Publish format is `[host-ip:]host-port:container-port[/protocol]`."
+   },
+   {
+    "requirement": "(1) Live resize (docker update equivalent)",
+    "status": "covered",
+    "note": "None exists. `start` takes no resource flags, so resize means recreate and root-filesystem changes are lost (issue). Freed guest memory is not returned to the host (technical-overview.md), which matches the plan."
+   },
+   {
+    "requirement": "(1) Embedding in an app bundle",
+    "status": "covered",
+    "note": "Hard-coded launchd label conflicts with a user's own install (issue). Resources/ is the wrong place for code per Apple (issue). Ships as a .pkg only. #2275 affects macOS 27."
+   },
+   {
+    "requirement": "(2) toolAliases for Read/Edit/Write/Glob/Grep, not only Bash",
+    "status": "covered",
+    "note": "Typed as a generic Record<string,string>, single-hop, documented as complementary to disallowedTools; sent via the initialize request (needs CLI >= 2.1.293, the SDK's claudeCodeVersion). Input schemas must match (issue)."
+   },
+   {
+    "requirement": "(2) PreToolUse input includes permission_mode",
+    "status": "covered",
+    "note": "Yes, `BaseHookInput.permission_mode?: string`, but it's optional (issue)."
+   },
+   {
+    "requirement": "(2) disallowedTools with built-ins",
+    "status": "covered",
+    "note": "Documented as removing tools from the model's context and blocking harness-internal direct calls. Works together with the `tools` base set. Tool names Agent and TodoWrite still exist in 0.3.293."
+   },
+   {
+    "requirement": "(3) ClientSendMessageEvents.ALLOW_CHAT in 26.x",
+    "status": "covered",
+    "note": "Present in Fabric API 26.3 fabric-message-api-v1 with that exact name."
+   },
+   {
+    "requirement": "(3) Chat suggestion / tab-completion hooks",
+    "status": "covered",
+    "note": "No Fabric API hook. Use vanilla custom chat completions (ClientboundCustomChatCompletionsPacket) or a mixin (issue). Verified against decompiled 1.21.11, not 26.3."
+   },
+   {
+    "requirement": "(3) World day/time reading in 26.x (world clocks)",
+    "status": "covered",
+    "note": "26.1 introduced world clocks. Use getOverworldClockTime() / clockManager() / WorldClocks.OVERWORLD (Carpet v26.3, Paper 26.3) (issue)."
+   },
+   {
+    "requirement": "(3) LevelRenderEvents.COLLECT_SUBMITS",
+    "status": "covered",
+    "note": "Exists in 26.3. Context gives submitNodeCollector() and poseStack(). The extraction hook is LevelExtractionEvents.END_EXTRACTION, also re-exported on LevelRenderEvents."
+   },
+   {
+    "requirement": "(4) macOS arm64 runner labels (Oct 2026)",
+    "status": "covered",
+    "note": "macos-26 / macos-latest / macos-26-xlarge (macOS 26.6.2 arm64), macos-15 / macos-15-xlarge. macos-14 is deprecated."
+   },
+   {
+    "requirement": "(4) setup-java Temurin 25",
+    "status": "covered",
+    "note": "Works (setup-java v6.0.1 current). Temurin 25.0.4 is also preinstalled on ubuntu-24.04 and macos-26."
+   },
+   {
+    "requirement": "(4) Server GameTests and client gametests headless on ubuntu + xvfb",
+    "status": "covered",
+    "note": "Server: run by `build` via check\u2192runGameTest. Client: runProductionClientGameTest with useXVFB; xvfb is preinstalled. Structural conflict with the TitleScreen replacement (issue)."
+   },
+   {
+    "requirement": "(5) Astro Starlight deploy to GitHub Pages",
+    "status": "covered",
+    "note": "withastro/action@v6 + deploy-pages@v5 is the official path. Workspaces lockfile caveat, plus site/base config (issue)."
+   },
+   {
+    "requirement": "(6) Modrinth GET /v2/versions?ids=[...] shape",
+    "status": "covered",
+    "note": "Verified live with all 11 pinned ids. Response is an array, order not preserved."
+   },
+   {
+    "requirement": "(7) MiniSearch suitability in Node",
+    "status": "covered",
+    "note": "Suitable. No built-in snippets (issue)."
+   },
+   {
+    "requirement": "Guest cannot reach host loopback (S5)",
+    "status": "partial",
+    "note": "Docs say a host-loopback service is reachable only through `system dns create --localhost` (needs sudo). Services bound to 0.0.0.0 are reachable through the 192.168.64.1 gateway. Still needs the S5 empirical check."
+   }
+  ]
+ },
+ "ux": {
+  "issues": [
+   {
+    "severity": "blocker",
+    "section": "6.5 BrainScheduler / 6.4 cards",
+    "issue": "Turn-slot starvation breaks the core loop. maxConcurrentTurns=2 equals maxSeated=2, a seated Opus turn may run 45 min, and only 'result' frees a slot. With two agents coding, the player's @-message (P0), an agent whose question was just answered in person, the CEO, and the meeting speaker all wait behind the hourglass for up to 45 min. So 'agents come to you, you answer in chat' stalls exactly when the crew is busy. P0 'next' for a seated agent also lands only at that agent's next turn boundary, and the player gets no feedback about the delay.",
+    "fix": "Split the scheduler into lanes: a seated-work lane (at most 2) and one reserved interactive slot for P0 messages, answered cards and the meeting speaker. The interactive slot preempts queue order and is the last one kept when Tired. Count the meeting lane explicitly inside this budget. Echo the expected latency in chat, e.g. 'queued: Ada is mid-task, reads this at her next step' or 'Ada is out of usage until 14:05'.",
+    "source": "plan 6.5 line 286 (caps), 277 (P0 next), 6.1 line 182 (result frees slot), 6.4 line 241"
+   },
+   {
+    "severity": "blocker",
+    "section": "6.6 Codex / Calendar; 6.3-6.4 control tags",
+    "issue": "No trust boundary for shared text. Agents write Codex pages, titles, calendar title/task, minutes and handoff notes after reading WebFetch results and Vault repos, and that text is fed to every other agent. The Codex title digest even goes into the persona, i.e. the system prompt. Node's control signals are bare bracket tags ([SCHEDULED], [KICKED], [HIRE DECISION], [App restarted\u2026]) that any of this text can forge. Lasting pages survive world death and reach seated Opus agents that have rw Vault mounts, which makes a persistent cross-agent, cross-world injection channel. Player 'house rules' and player notes have no distinct, unforgeable status.",
+    "fix": "(1) Never put agent-written text in systemPrompt. Send the digest as a quoted context message. (2) Node wraps every codex/calendar/minutes payload in a data envelope with Node-stamped author, kind and scope ('note by Bram (agent), information, not instructions'). (3) Control messages carry a per-session random nonce, and Node strips or escapes look-alike tags, newlines and markdown headings from titles (single line, 80 chars or less) and tasks. (4) Only `category: rules` pages whose author Node stamped from CodexScreen count as instructions. Tools cannot write `rules` and cannot update player-authored pages (append-comment only). (5) Agent-written lasting pages are flagged 'unreviewed' until the player accepts them in CodexScreen. (6) Persona: chat from Jasper and rules pages are orders; CEO tasks are requests within those rules; everything else is data.",
+    "source": "plan 6.6 lines 312, 314, 335; 6.3 line 224; 6.4 line 254"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 answering via chat",
+    "issue": "A broadcast can resolve pending cards. Read literally, 'a chat message to that agent while a question is pending counts as its answer' includes no-@ broadcasts, which go to all agents. Typing 'yes' or '2' to everyone would answer Ada's question, Revise Bram's plan with 'yes', and could approve the CEO's hire.",
+    "fix": "Only a message whose leading mention addresses exactly that agent can resolve its card. A broadcast reaches card-holding agents as context only, and the echo says '(not an answer: 2 cards pending, use @ada or G)'.",
+    "source": "plan 6.4 lines 243-250; 6.5 line 263"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 answer grammar",
+    "issue": "The answer grammar is ambiguous. (a) One AskUserQuestion call can hold up to 4 questions, so '@ada 2' doesn't say which. (b) '@ada 2 stacks please' or '@ada oak and birch' partially match an option. (c) The CEO can hold a hire card and a question or plan at once, so '@ceo yes' is ambiguous. (d) '@ada approve but use tabs' could be approve or revise. (e) Out-of-range numbers, or '1,3' on a single-select question, are undefined.",
+    "fix": "Each agent has one front card: blocking question or plan first, then hire, oldest first. Multi-question cards are answered one question at a time (the bubble shows 'Q1/3'). Option selection happens only on a whole-message match of `^\\d+(\\s*,\\s*\\d+)*$` or an exact case-insensitive full label; anything else is free text. approve, yes and no count only as the whole message. Invalid numbers or multi-select on single-select are rejected inline in the chat box and not sent. Echo the interpretation ('You \u2192 Ada: Q1 = 2 (Spruce)') and hold resolution for 3 s with Undo.",
+    "source": "plan 6.4 lines 243-250"
+   },
+   {
+    "severity": "major",
+    "section": "6.5 ChatRouter @-mentions",
+    "issue": "Prefix matching has no rules for the hard cases: ambiguous prefixes ('@a' with Ada and Abe); a prefix that was unique becoming ambiguous after a hire; exact vs prefix (Ada vs Adam); dead or dismissed names; an agent named like the player; `@all` vs an agent called Al\u2026; mid-sentence mentions ('@ada tell @bram the cave\u2026' routes to both); emails ('x@y.com'). A message could be silently misrouted.",
+    "fix": "Each agent gets a unique handle matching `[a-z][a-z0-9]{1,11}`, enforced at hire: no handle may be a prefix of another, of a reserved word (all, ceo, everyone, meeting) or of the player's name. Exact match wins; otherwise a unique prefix of at least 2 chars; otherwise refuse to send, keep the text in the box and show '@a matches Ada, Abe'. Only leading mentions route; inline mentions are references. '@' must follow the start of the message or whitespace. `@ceo` is an alias for the current CEO. A dead target gets an inline error ('Ada died on Day 4').",
+    "source": "plan 6.5 line 261; 6.6 line 364"
+   },
+   {
+    "severity": "major",
+    "section": "6.5 Delivery",
+    "issue": "'The CEO and every addressed agent wake at P0' means `@bram get logs` also wakes the CEO, which doubles the turns for every direct message.",
+    "fix": "Wake addressed agents only. The CEO gets other agents' direct messages as `shouldQuery:false` context, or not at all.",
+    "source": "plan 6.5 line 265"
+   },
+   {
+    "severity": "major",
+    "section": "6.5 broadcasts and P2 fan-out",
+    "issue": "Wake fan-out has a large token cost. The default 'Broadcast wakes: everyone' turns 'good morning' into 4 full-context turns: 2 of them queue behind the cap and reply minutes later to stale text, and seated agents pay Opus context just to decide to stay silent. Personas only stop the output, not the cost, and replies plus `tell` can cascade. P2 'player HP < 30%' and 'teammate died' wake everyone, with `now` for seated agents, which interrupts Opus work on every close fight in hardcore.",
+    "fix": "A broadcast wakes wandering agents only. Seated agents get it as context unless they are named or the message uses `@all!`. Debounce player messages by 2 s and merge them into one pending wake per agent. Turn queued broadcast wakes older than 2 min into context. Replies to a broadcast never wake other agents. A player-HP P2 wakes only the Guard and the nearest wandering agent within 32 blocks, debounced 60 s and never `now` for seated agents (reflexes 45/47 already cover survival). 'Teammate died' is `now` only for the CEO and context for everyone else.",
+    "source": "plan 6.5 lines 263-266, 279"
+   },
+   {
+    "severity": "major",
+    "section": "7.7 / 7.8 / 6.4: player in a screen",
+    "issue": "PcControlScreen forwards T, Enter, G and 1-4 to the guest and covers 92% of the window. When an agent walks up, the player can't see its bubble and can't open chat, yet sitting at a PC is where the player spends much of their time. The same gap exists in CodexScreen, CalendarScreen, AgentScreen and inventories.",
+    "fix": "Add a card strip in the PcControlScreen border that lists pending cards and new direct replies. Clicking it, or pressing a reserved never-forwarded chord (configurable, e.g. Ctrl+Shift+Enter), opens an overlay chat and card answerer. An agent approaching a seated player stops at 4 blocks, chimes once and keeps off the chair's dismount spot. Other MineVibe screens show the same strip.",
+    "source": "plan 7.7 lines 462-476; 7.8 line 505; 6.4 lines 232-233"
+   },
+   {
+    "severity": "major",
+    "section": "7.8 keys",
+    "issue": "'1-4 answer the question of the agent standing in front of you' collides with the vanilla hotbar keys 1-9. Switching weapons next to a waiting agent mid-fight sends answers.",
+    "fix": "Require holding G plus 1-4 (or Alt+1-4), only while the crosshair is on that agent, and never while the player is in combat (damage or an attack in the last 8 s).",
+    "source": "plan 7.8 line 505"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 ApproachPlayer / 7.3",
+    "issue": "Approaching agents crowd the player and walk into danger. Several agents with cards all path to 2.5 blocks: they body-block doors and 1-wide tunnels, push the player (players collide), stack inside creeper blast radius and overlap bubbles. Approach priority 40 sits above Shelter at dusk (30), so agents cross the map at night and run into fights. 'Beyond 64 blocks it waits where it is' can mean waiting in the dark or in a cave.",
+    "fix": "Add an ApproachQueue in Node with one presenter at 2.5 blocks (blocking cards first, then oldest). Others wait silently at 5-7 blocks in an arc behind the player, showing only '?'. Put agents on a team with `CollisionRule.NEVER` against the player. Hold the bubble card and chime while the player is in combat (hostiles within 12 blocks, or damage in the last 8 s). Fall back to a ping (toast plus CrewHud) instead of walking when it is night outside lit areas, the path is over 48 blocks or needs Tier-2 digging, or the player is in another dimension. A waiting agent waits at the nearest lit or safe spot, not in place. Chime once per card and at most once per 30 s overall.",
+    "source": "plan 6.4 lines 231-239; 7.3 table"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 follow until resolved",
+    "issue": "The approaching agent follows without limit and there is no snooze. 'Keeps following the player until the item is resolved' gives an AFK or busy player a permanent shadow, and the agent's job (35 < 40) stalls. The only ways out (Interrupt, cleanup) resolve the card as deny.",
+    "fix": "Add a 'Later' action: `@ada later`, a key on the card, or the player walking away. The card parks: it stays answerable via @ or G and shows '?' in CrewHud. The agent resumes its job and comes back after 10 min, or when the player is idle within 16 blocks. Auto-park after 2 min without an answer or 2 min of player AFK.",
+    "source": "plan 6.4 lines 234, 252"
+   },
+   {
+    "severity": "major",
+    "section": "6.4 away_from_seat",
+    "issue": "An away_from_seat agent holds its Opus turn open and its chair reserved for as long as the player takes to answer. The 45-minute per-turn cap may expire during the wait. The prompt cache (5-minute default TTL) lapses, so the answer re-writes the whole Opus context. The reserved chair blocks other agents.",
+    "fix": "Seated agents ping by default (monitor banner '? for Jasper', toast, screen-edge indicator). They walk over only when the player is within 24 blocks, not seated and not in combat. Exclude card-wait time from the per-turn time cap. Release the chair reservation after 3 min away while keeping the card, and re-check the PC on return. [U S2] Verify a canUseTool promise can stay pending for 1 h or more. [U S3] Check whether a longer cache TTL is available to subscription sessions.",
+    "source": "plan 6.4 lines 235-238; 6.5 line 286"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Meetings: gathering",
+    "issue": "'Up to 60 s, extended while attendees are still walking' has no hard cap. Attendees may be 500 blocks out, in caves (Tier-2 nav only arrives in M6), in the Nether following the player (the meeting would pull the escort away and leave the player alone), in bed, Asleep or Tired on usage, or in the middle of a 45-minute Opus turn.",
+    "fix": "At fire time, compute each attendee's path ETA. An attendee with an ETA over 90 s, in another dimension, or escorting a player more than 64 blocks from the table attends by dial-in (bubbles from where it stands) or is excused. Cap gathering at 120 s. Require a quorum of the CEO plus one, else postpone once and then mark the meeting missed. If Asleep, postpone until after resetsAt. If Tired, use a short format (one round, no floor).",
+    "source": "plan 6.6 lines 354-358"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Meetings: seated attendees",
+    "issue": "Pulling seated agents into a meeting is expensive. Standing ends the PC session, costs a handoff-note turn and an Opus\u2192Haiku swap (possibly with compaction under the context guard), and then a Haiku\u2192Opus swap when they return. The 60 s debounce doesn't cover a meeting, and the agent's turn boundary can be 45 min away.",
+    "fix": "Excuse seated agents by default. Their update is rendered at zero tokens from their TodoWrite list and last activity line. A per-meeting 'pull seated agents' checkbox overrides this; when it's on, the agent is interrupted at its next tool boundary, its seat stays reserved, and the swap debounce stretches to the meeting length plus 2 min.",
+    "source": "plan 6.6 lines 356-357; 6.3 lines 217, 228"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Meetings: cost",
+    "issue": "A meeting runs about 12-20 full-context Haiku xhigh turns: open, N updates times up to 2 rounds, the floor, and wrap-up. On the floor, every player message wakes every attendee to decide whether to reply; 'at most 2 responses' caps the output, not the cost. A daily game-clock meeting fires every 20 real minutes.",
+    "fix": "Render updates at zero tokens by default; only agents with blockers get a turn. A floor message wakes only the chair, which names at most 2 responders (direct @mentions still route). Default to one update round, and wrap up with a single CEO turn. Show a cost estimate in CalendarScreen. Require at least 1 game day and 30 real minutes between meetings. Meetings created by agents need player approval.",
+    "source": "plan 6.6 lines 359-364"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Meetings vs player safety",
+    "issue": "A game-clock meeting can fire while the player is fighting, low on HP or exploring at night. The Guard and the following CEO then walk to the table and leave the player alone, because Protect (80) only acts on nearby threats.",
+    "fix": "Postpone a scheduled meeting (up to 1 game hour, then missed) while the player's HP is under 50%, the player is in combat, or the player is more than 64 blocks from the table at night. Escorts within 32 blocks of the player stay with the player. 'Start meeting now' first shows the list of attendee ETAs. If the player is in a PC screen, show the meeting in the border strip and skip the floor after 30 s with no player message.",
+    "source": "plan 6.6 Meetings; 7.3 priorities 80/38"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Calendar time semantics",
+    "issue": "Time handling is undefined in four cases. (a) Real-clock events while the app is closed or the Mac sleeps pile up missed occurrences and CEO notifications at launch. (b) Nothing ever pauses (pauseOnLostFocus false, non-pausing menu), so with the player AFK, recurring game-clock tasks fire every 20 real minutes all night, draining usage and leaving the player exposed. (c) Sleeping skips the night, so every night-time event fires at once at dawn. (d) If occurrences[] is materialized for recurring events, it grows without bound.",
+    "fix": "Store the rule, the next occurrence and a ring of the last 20 occurrences. Give each event a catch-up policy: `skip` by default (one 'missed while offline' line of Digest context, no wake) or `once_late` within a grace window. After a time jump, fire at most one occurrence per event, staggered at least 10 s apart. Detect AFK (5 min without input) and pause agent-created and game-clock wakes while it lasts; player events can opt in with 'run while I'm away'. Poll the wall clock with an IANA time zone: skip a time that doesn't exist at a DST change and fire once in a repeated hour.",
+    "source": "plan 6.6 lines 326-337; 7.9 line 509"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Calendar rights (CEO)",
+    "issue": "The CEO can abuse the calendar. It can schedule for anyone, recurring, with `when:\"now\"` and meetings, all without confirmation. Self-scheduling bypasses Listen autonomy and breaks the M3 test 'idle uses 0 turns in 5 min'. report_task wakes the CEO at P3 for every task, which sets up a delegate-and-report ping-pong. The player gets a toast for every event. Nothing stops agents from editing or cancelling the player's own events.",
+    "fix": "Charge agent-created wakes to the creator's autonomy budget. Allow at most 1 open CEO task per assignee (further ones queue) and at most 6 CEO-created events per real hour. Recurring events and meetings created by agents become approval cards, like hires. Agents cannot edit or cancel events the player created. report_task wakes the CEO only on failed or blocked; done goes to the Digest. Batch toasts to one per 30 s.",
+    "source": "plan 6.6 lines 343-346; 2 line 58"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Codex physical access",
+    "issue": "Any codex tool walks a wandering agent to a codex block. An agent mining 300 blocks out treks home, possibly at night, and each lookup costs an extra wake (job, then job.done). Agents will either stop consulting the Codex or waste time and tokens.",
+    "fix": "Reads work instantly everywhere; the walk is flavor only, when the agent is idle within 16 blocks. Writes commit immediately with a 'filed at the Codex' effect next time the agent passes one. Add codex_* and calendar_* rows to the ToolGate matrix.",
+    "source": "plan 6.6 line 310; 6.2 table"
+   },
+   {
+    "severity": "major",
+    "section": "6.6 Codex quality and scope",
+    "issue": "The Codex will fill with spam and stale data. Haiku agents told to 'write down what others need' will flood it with near-duplicates ('Iron!', 'Iron cave', 'Found iron'). The 800-token title digest overflows. Coordinates can be hallucinated. Pages with coordinates can be marked `lasting` and then send the next world's crew to wrong coordinates.",
+    "fix": "On create, check MiniSearch title similarity and return 'similar page <id> exists, use update/append'. Give each agent a write budget (e.g. 6 per game day). Roll `log` pages up weekly. `places` pages get coordinates stamped by Node from the agent's real position (`here:true`), are forced to world scope, and coordinates in lasting pages are rejected. Build the digest from rules, pinned pages and the top-N per category by reads and recency, capped by count. The CEO tidies duplicates at meeting wrap-up.",
+    "source": "plan 6.6 lines 300-313"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Codex write conflicts",
+    "issue": "Agents and the player's CodexScreen can update the same page concurrently, which risks lost updates and git index.lock races. An append to a page already at the 8 KB cap has no defined outcome.",
+    "fix": "Use a single-writer queue in Node. codex_read returns a `rev`, and update requires `base_rev`; on a mismatch, return the current text (append needs no merge). CodexScreen takes a soft lock and offers a merge view. An append to a full page returns an error suggesting '<title> (part 2)'.",
+    "source": "plan 6.6 lines 301-302"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Codex mounted in PCs",
+    "issue": "Mounting the Codex directory exposes `.git` (deleted pages and full history) and archived old-world folders. `~/codex` sits inside the `/home/cua` named volume, which is a nested mount. Read-only bind support in Apple container and Lume is unverified. PCs persist across worlds, so the mounted world scope must change at reset.",
+    "fix": "Mount a Node-maintained export directory read-only at /mnt/codex with a ~/codex symlink. It holds lasting pages plus the current world only, no .git, and is rewritten atomically (tmp then rename) after each commit and at world change. Add ro-mount checks to S5 and S6.",
+    "source": "plan 6.6 line 311; 8.1; 12.1 S5/S6"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 CodexStore git",
+    "issue": "The Codex repo's git commits inherit the user's global git config: signing prompts or failures (commit.gpgsign), hooks and fsmonitor all apply. Seated agents could also copy `.env` secrets from the Vault into the Codex, where every agent and every PC can see them.",
+    "fix": "Run git with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 -c commit.gpgsign=false -c core.hooksPath=/dev/null`, or use isomorphic-git, with fixed author identities. Scan codex_write for secrets (known key prefixes, high-entropy strings) and reject matches.",
+    "source": "plan 6.6 line 301; 8.3 line 558"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 Calendar across world death and usage",
+    "issue": "Real-clock events reassigned to the new CEO dump old tasks it has no context for on a brand-new crew. Asleep assignees are marked missed even when the quota resets soon. Any deferred wakes that all fire at resetsAt would make a thundering herd.",
+    "fix": "After world death, mark such events `orphaned` and list them on GameOver or the first CalendarScreen open, so the player can reassign, keep or pause each one. Mark Asleep assignees `deferred` until resetsAt when that falls within a grace window, and stagger the releases.",
+    "source": "plan 6.6 lines 333, 336"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 overlapping meetings and tasks",
+    "issue": "Several overlaps are undefined: a second meeting, or 'Start now', while a meeting runs; a task firing for an attendee mid-meeting; the location reflex (38) preempting a job before the brain has even seen the task; jobs preempted by a meeting emitting job.failed and then P3 wakes for everyone at dismissal; wrap-up action items waking all assignees at once.",
+    "fix": "Allow one active meeting; later ones queue for up to 10 min and are then missed, and 'Start now' during a meeting does nothing but show a toast. Attendee tasks are `deferred` until dismissal. The location walk starts only after the agent acknowledges the task. Jobs preempted by reflex 38 suspend and resume rather than fail. Action items ride inside the dismissal message (one wake each) with staggered starts.",
+    "source": "plan 6.6 lines 335, 354-365; 7.3 priority 38"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 / 7.9 death during a meeting",
+    "issue": "The plan doesn't say what happens when the CEO (the chair) or an attendee dies mid-meeting. 'Teammate died' (P2) would wake every attendee at once.",
+    "fix": "MeetingRunner handles `agent.died`. A dead attendee drops out of the speaker order. If the chair dies, the player chairs when within 16 blocks; otherwise the meeting adjourns, Node writes partial minutes from the running transcript at zero tokens, and only the promoted CEO wakes. A player death aborts the meeting. The chair and `all` assignees resolve at fire time, by role rather than id.",
+    "source": "plan 6.6 lines 359-365; 7.9 line 518"
+   },
+   {
+    "severity": "minor",
+    "section": "6.5 / 6.6 meeting chat scope",
+    "issue": "'No @ goes to attendees during a meeting' silently overrides 'no @ = everyone', even when the player isn't at the meeting. `@all wrap up` is a magic phrase that an ordinary sentence ('@all wrap up the farm') can trigger.",
+    "fix": "Apply meeting scope only while the player is within 16 blocks of the table or chairing, and show the scope in the echo ('You \u2192 meeting (3)'). End a meeting with the HUD button or an exact `@meeting end`.",
+    "source": "plan 6.5 line 264; 6.6 line 364"
+   },
+   {
+    "severity": "minor",
+    "section": "7.8 bubbles",
+    "issue": "A 32-char by 3-line bubble can't hold a question, 4 numbered options and the answer hint. Replies from agents behind the player or off-screen are missed.",
+    "fix": "Within 5 blocks, the presenter's bubble expands to card mode (up to 8 lines of 40 chars), or shows as a HUD side card. Messages addressed to the player get an off-screen indicator (name plus arrow at the screen edge). Truncated replies end with '\u2026 (G)'.",
+    "source": "plan 7.8 line 484; 6.1 line 180; 6.4 line 233"
+   },
+   {
+    "severity": "minor",
+    "section": "6.5 chat input",
+    "issue": "The vanilla chat box caps input at 256 chars, which truncates task instructions. Vanilla Tab completion can't include agents because they are unlisted from the tab list.",
+    "fix": "Raise the EditBox max length (e.g. 2000) on the intercepted path, since the text never reaches the server. Add a custom suggestion provider (extending what S4 already tests).",
+    "source": "plan 6.5 line 261; 7.1 line 377; 12.1 S4"
+   },
+   {
+    "severity": "minor",
+    "section": "6.6 game clock",
+    "issue": "The plan doesn't define 'Day N hh:mm'. Vanilla tick 0 is 06:00 and a game day runs 06:00 to 06:00, so 'Day 3 02:00' comes after 'Day 3 22:00'. Without a definition, the M7 test 'Day 3 06:00' can be off by 6 h. Dimension-local time (fixed in the Nether and End) must not be used.",
+    "fix": "Specify Day = floor(dayTime/24000)+1 and hour = ((dayTime mod 24000)/1000 + 6) mod 24, read from the overworld level. Lay out the CalendarScreen day strip from 06:00 to 06:00.",
+    "source": "plan 6.6 lines 325, 334; 12.2 M7"
+   },
+   {
+    "severity": "minor",
+    "section": "6.2 ToolGate / 7.5 seats",
+    "issue": "The ToolGate matrix omits codex_*, calendar_* and report_task, so the rules for wandering vs seated, plan mode and CEO-only scheduling are enforced only by the prompt. Meeting chairs share `office_chair`/`minevibe:seat` with PC chairs, which risks a model swap, a maxSeated count, `[O]` or PcControlScreen on a meeting seat.",
+    "fix": "Add matrix rows and make ToolGate deny scheduling for others unless the caller is the CEO. Add a seat kind (`pc` or `meeting`) to the SeatFSM and PcRegistry: meeting seats never swap the model or count toward maxSeated, and the player's right-click on one never opens PcControlScreen.",
+    "source": "plan 6.2 table; 7.4; 7.5 line 441"
+   },
+   {
+    "severity": "minor",
+    "section": "7.9 last words / 6.6 digest refresh",
+    "issue": "Every hardcore death runs up to 4 full-context last-words turns that compete for the 2 slots. The 'daily' digest refresh, if done by rewriting systemPrompt.append, forces close and resume and drops the prompt cache for every agent (a game day is 20 real minutes), which contradicts principle 3.",
+    "fix": "By default, run last words asynchronously for the CEO only, capped and skipped when Tired or Asleep; the others get scripted barks. Deliver digest and rules updates as `shouldQuery:false` context messages, and define 'daily' as a real day.",
+    "source": "plan 7.9 line 514; 6.6 line 312; 3 principle 3"
+   }
+  ],
+  "coverage": [
+   {
+    "requirement": "Agents walk to the player to ask questions or get confirmation",
+    "status": "partial",
+    "note": "6.4 ApproachPlayer (priority 40), cards, away_from_seat and the 'Ping instead' setting. Missing: a queue for several agents, collision rules, danger/night gating, a snooze or 'Later', the PC-screen case, and the cost of holding a seated agent's turn."
+   },
+   {
+    "requirement": "Player can add a meeting to the calendar that makes all agents sit together",
+    "status": "covered",
+    "note": "CalendarScreen kind=meeting with assignees `all`, 'Start meeting now', MeetingRunner gathering at meeting_table (6 chairs, crew cap 4). Gaps: no gathering cap, no handling of unreachable or seated attendees, no player-safety gating."
+   },
+   {
+    "requirement": "Agent messages appear above their heads",
+    "status": "covered",
+    "note": "7.8 bubbles plus head icons. Gaps: the card does not fit in 32x3, and there is no off-screen indicator for replies addressed to the player."
+   },
+   {
+    "requirement": "Player replies simply via normal chat",
+    "status": "partial",
+    "note": "Client-side ALLOW_CHAT interception (S4). Chat can't be reached from PcControlScreen or other MineVibe screens, and the vanilla 256-char cap truncates instructions."
+   },
+   {
+    "requirement": "@agentname selects the recipient",
+    "status": "partial",
+    "note": "Case-insensitive prefix match, several mentions, Tab completion. Missing rules for ambiguous prefixes, reserved words, inline vs leading mentions, and dead or unavailable targets."
+   },
+   {
+    "requirement": "No @ means all agents receive it",
+    "status": "partial",
+    "note": "Specified, but meeting scope silently narrows it, broadcasts could resolve pending cards, and the default wake-everyone fan-out is costly."
+   },
+   {
+    "requirement": "Concurrency and broadcast cost (4 agents, cap 2)",
+    "status": "missing",
+    "note": "No reserved interactive slot. Two seated Opus agents can starve every P0 and answered card."
+   },
+   {
+    "requirement": "Codex trust model (prompt injection via notes, digest, control tags)",
+    "status": "missing",
+    "note": "No provenance envelope or nonce-tagged control messages. The digest is placed in the system prompt."
+   },
+   {
+    "requirement": "Codex conflicts, spam and scope correctness",
+    "status": "partial",
+    "note": "Only the 8 KB cap and git authorship are specified. No dedupe, rev check, write budget or scope validation for coordinates."
+   },
+   {
+    "requirement": "Codex read-only mount vs lasting/world scopes",
+    "status": "partial",
+    "note": "Mounted ro at ~/codex. Exposes .git and old worlds, nests inside the home volume, and ro support is unverified."
+   },
+   {
+    "requirement": "Calendar recurrence, time skip, app closed, AFK",
+    "status": "missing",
+    "note": "No catch-up policy, occurrence bounding, AFK pause, DST handling or game-clock definition."
+   },
+   {
+    "requirement": "CEO calendar abuse and autonomy bypass",
+    "status": "missing",
+    "note": "Only a toast per event. No rate limits, approval for recurring events or meetings, or protection of player-created events."
+   },
+   {
+    "requirement": "Meetings with far, seated, asleep or dead attendees, the player in danger, and overlaps",
+    "status": "partial",
+    "note": "Gathering timeout and absentee recording only. No ETA, dial-in, quorum, usage-state handling, safety postponement or single-meeting mutex."
+   },
+   {
+    "requirement": "CEO death mid-meeting and hardcore interactions",
+    "status": "partial",
+    "note": "Succession and hire-card transfer are defined. Meeting chair handover, partial minutes and orphaned real-clock events are not."
+   }
+  ]
+ }
+}

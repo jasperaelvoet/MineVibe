@@ -1,0 +1,31 @@
+# deps / builds
+node_modules/
+dist/
+build/
+.gradle/
+.astro/
+*.tsbuildinfo
+apps/mod/run/
+apps/mod/.kotlin/
+out/
+coverage/
+*.log
+
+# local runtime + secrets — never commit
+.dev-token
+.minevibe-dev/
+run/
+*.token
+.env
+.env.*
+
+# spikes keep code + result.md, not their deps/output
+spikes/**/node_modules/
+spikes/**/out/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.iml
+apps/mod/minevibe.local.properties

@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # GitHub Actions only (PLAN §4). npm and Gradle versions are pinned and bumped by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ['*']

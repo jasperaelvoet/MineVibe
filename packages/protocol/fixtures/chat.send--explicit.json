@@ -1,0 +1,7 @@
+{
+  "t": "chat.send",
+  "v": 1,
+  "id": "m-91",
+  "to": ["ada", "bram"],
+  "text": "Meet me at the north gate before dusk."
+}

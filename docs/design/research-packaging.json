@@ -1,0 +1,428 @@
+{
+ "runtime": {
+  "recommendation": "Use Apple's `container` 1.5.0 for Linux PCs and Lume 0.6.1 for macOS PCs, and ship both inside MineVibe.app. Docker is only an optional fallback, picked up when a Docker-API engine already exists. cua's own SDK can't drive Apple `container` (its local container backend speaks the Docker Engine API), so MineVibe runs the runtime itself and only uses the cua SDK as a client to spacesd on port 3211.\n\nLINUX PCs: Apple `container` embedded in the app\nBundle layout: unpack the files from container-1.5.0-installer-signed.pkg (`pkgutil --expand-full`) into MineVibe.app/Contents/Resources/container/{bin/container, bin/container-apiserver, libexec/container/plugins/...}. Keep `container` and `container-apiserver` next to each other. Copy the files byte for byte. If you build from source instead, ad-hoc signing with com.apple.security.virtualization is enough. The install root is worked out as the folder two levels above the binary (or from $CONTAINER_INSTALL_ROOT). Everything runs as the user through launchd in the gui domain, so no admin password is needed.\n\nStart the service once per login:\n  export CONTAINER_INSTALL_ROOT=\"$APP/Contents/Resources/container\"\n  export CONTAINER_APP_ROOT=\"$HOME/Library/Application Support/MineVibe/container\"\n  C=\"$CONTAINER_INSTALL_ROOT/bin/container\"\n  \"$C\" system status || \"$C\" system start --install-root \"$CONTAINER_INSTALL_ROOT\" --app-root \"$CONTAINER_APP_ROOT\" --enable-kernel-install --timeout 60\n  \"$C\" image pull ghcr.io/trycua/linux:24.04      # arm64 is about 1.19 GB compressed; :24.04-slim is the smaller tier\n\nFor each PC:\n  TOKEN=$(openssl rand -hex 24)\n  CUA_ENV_TOKEN=\"$TOKEN\" \"$C\" run -d --name mv-linux-1 --cpus 4 --memory 4G --shm-size 2G -e CUA_ENV_TOKEN -p 127.0.0.1:43211:3211 -v \"$HOME/Code/foo:/home/cua/foo\" -l minevibe=pc ghcr.io/trycua/linux:24.04\n  \"$C\" inspect mv-linux-1 ; \"$C\" logs mv-linux-1 ; \"$C\" stop|start|delete mv-linux-1 ; \"$C\" system stop (on app quit)\n- `-e CUA_ENV_TOKEN` with no value inherits the token from the environment, so it never appears in argv.\n- Shared memory follows cua's own rule: half the memory, at most 2 GiB. Docker's 64 MiB default crashes Chromium.\n- Pick host ports in MineVibe. Fall back to the container's own IP (192.168.64.x, from `inspect`) at :3211.\n\nFrom Node:\n  import { embedded } from '@trycua/cua'\n  const pc = await embedded().spacesd('http://127.0.0.1:43211', TOKEN)\nThe HTML5 viewer is at http://127.0.0.1:43211/viewer/. Apple `container` ignores the image's HEALTHCHECK, so poll spacesd Health instead.\n\nMACOS PCs: Lume embedded in the app\nCopy the notarized lume.app from lume-0.6.1-darwin-arm64.tar.gz, unchanged, to MineVibe.app/Contents/Helpers/lume.app. Never re-sign it: it carries the restricted com.apple.vm.networking entitlement plus a provisioning profile. MineVibe starts `lume serve` as its own child process instead of the installer's LaunchAgent.\n  L=\"$APP/Contents/Helpers/lume.app/Contents/MacOS/lume\"\n  LUME_TELEMETRY_ENABLED=0 \"$L\" serve --port 7777 &\n  \"$L\" pull macos:26 mv-macos-base            # ghcr.io/trycua/macos:26: about 24 GB download, 150 GB sparse disk, defaults 4 CPU / 8 GB\n  \"$L\" clone mv-macos-base mv-mac-1           # APFS clone, instant\n  mkdir -p \"$PCS/mv-mac-1/setup\" && (umask 077; printf %s \"$TOKEN\" > \"$PCS/mv-mac-1/setup/env-token\")\n  \"$L\" run mv-mac-1 --detach --display none --shared-dir \"$PCS/mv-mac-1/setup:ro\" --shared-dir \"$HOME/Code/foo\"\n  \"$L\" get mv-mac-1 --format json             # ipAddress -> spacesd at http://<ip>:3211\n  \"$L\" stop mv-mac-1\n- The share folder must be named `setup`. The guest's spacesd reads '/Volumes/My Shared Files/setup/env-token'.\n- User folders show up in the guest at '/Volumes/My Shared Files/foo'.\n- Apple allows at most 2 macOS guests at once. Linux guests don't count toward that limit.\n\nLume for Linux PCs: not chosen\nIt needs a qcow2-to-raw conversion with qemu-img (another binary to bundle), a cloud-init seed disk, a full systemd boot and a fixed RAM allocation. Keep it as a last resort if Apple `container` turns out unusable on macOS 27.\n\nFallback (optional)\nOrbStack is already your active Docker engine, and cua-vmm finds it on its own:\n  docker --context orbstack run -d --name mv-linux-1 --cpus 4 -m 4g --shm-size 2g -e CUA_ENV_TOKEN -p 127.0.0.1:43211:3211 -v \"$HOME/Code/foo:/home/cua/foo\" ghcr.io/trycua/linux:24.04\nor: cua sb create linux --runtime runc --name mv-linux-1\n\nBefore building on this, run a smoke test of the cua image under Apple `container` on this Mac: XFCE and supervisord come up, spacesd answers on 3211, a write as uid 1000 into a mounted folder works, and the Local Network permission prompt appears. Nobody has published a run of this image on Apple `container`.\n\nLater option: link the Containerization Swift package directly into a small Swift helper. That removes the launchd service and port forwarding (each container gets its own IP), but it means writing more Swift and managing the kernel and init image yourself.",
+  "findings": [
+   {
+    "topic": "Local host state (read-only checks)",
+    "status": "confirmed",
+    "detail": "macOS 27.0.1 (26A434), arm64. `container` and `lume` are not installed; there is no ~/.lume, no ~/.cua and no ~/Library/Application Support/com.apple.container. The docker CLI is using the OrbStack context: Docker Engine - Community 29.4.0 linux/arm64, 18 CPUs, about 15.7 GiB. Podman is not installed. OrbStack's vmnet bridge is <other-bridge> on <other-subnet>, which doesn't overlap Apple container's default 192.168.64.0/24. The application firewall is enabled with stealth mode off. Several VPN tunnel interfaces are up.",
+    "source": "local: which/docker context ls/docker version/docker info/orb version/socketfilterfw --getstealthmode/ifconfig/netstat"
+   },
+   {
+    "topic": "Apple container: version, license, macOS support",
+    "status": "confirmed",
+    "detail": "Latest release is 1.5.0 (2026-09-29). Assets: container-1.5.0-installer-signed.pkg, an unsigned pkg and dSYMs. License is Apache-2.0 and it needs Apple silicon. The README says it is 'supported on macOS 26' and that issues not reproducible on 26 may not be addressed; macOS 27 isn't listed but people use it (see the macOS 27 issues). Release numbers are 'product versions, not semantic versions'.",
+    "source": "https://github.com/apple/container (README), GitHub API /repos/apple/container/releases"
+   },
+   {
+    "topic": "Apple container: per-container VM, CPU and memory flags, shm, publish, mounts",
+    "status": "confirmed",
+    "detail": "Each container runs in its own lightweight VM through Containerization and Virtualization.framework, with 'sub-second start times'. Default resources are 4 CPUs and 1 GiB (configurable in config.toml [container]). Relevant `run` flags: -c/--cpus, -m/--memory, --shm-size (added in 1.0.0, present in 1.5.0), -p/--publish [host-ip:]host-port:container-port[/proto], -v/--volume and --mount (virtiofs bind mounts of host folders), named ext4 volumes, --tmpfs, -e KEY (inherits from the host), --init, --rosetta, -a/--arch (default arm64). Every container also gets its own IP that the host can reach. Memory freed inside a container is not handed back to macOS (ballooning is only partial), so restart PCs from time to time.",
+    "source": "https://github.com/apple/container/blob/main/docs/command-reference.md (and the 1.5.0 tag), docs/resource-usage.md, docs/volumes.md, docs/networking.md, docs/technical-overview.md, apple/containerization README"
+   },
+   {
+    "topic": "Apple container: embedding in another .app",
+    "status": "confirmed",
+    "detail": "Embedding looks feasible. `container system start` takes --install-root, --app-root and --log-root. The CLI looks for container-apiserver in its own folder (resolving symlinks; a code comment notes amfid checks signatures relative to the enclosing .app bundle). Install root defaults to the folder two levels above the binary, or CONTAINER_INSTALL_ROOT; app root defaults to ~/Library/Application Support/com.apple.container, or CONTAINER_APP_ROOT. The service is registered with `launchctl bootstrap` into the user's gui/<uid> domain, so it runs as the user without admin rights; admin is only needed because the pkg installs into /usr/local. Entitlements: only com.apple.security.virtualization, on container-runtime-linux and container-network-vmnet (unrestricted, and the Makefile signs ad hoc with `--sign -`). The kernel (Kata 3.32.0 arm64 tarball from GitHub) and the vminit image download on first start; pass --enable-kernel-install to skip the interactive prompt. Caveat: the launchd label and Mach service name are fixed at com.apple.container.apiserver, so only one apiserver can run per user.",
+    "source": "apple/container Sources/ContainerCommands/System/SystemStart.swift, Sources/ContainerPlugin/{InstallRoot,ApplicationRoot,ServiceManager}.swift, signing/*.entitlements, Makefile, docs/container-system-config.md"
+   },
+   {
+    "topic": "Apple container: can it run ghcr.io/trycua/linux:24.04",
+    "status": "uncertain",
+    "detail": "Should work, but nobody has published a test on this runtime. The tag is a multi-arch OCI index (amd64 and arm64); arm64 is 25 layers, about 1.19 GB compressed. CMD /opt/cua/desktop/entrypoint.sh runs supervisord as PID 1, which starts dbus, XFCE on Xvfb :1, PipeWire and cua-spacesd as user cua (uid 1000). Exposed ports: 3211/tcp (spacesd gRPC, gRPC-Web, /media and /viewer), 3212/udp (QUIC media) and 18080/tcp (test fixture). It needs neither systemd nor privileged mode. The token comes from CUA_ENV_TOKEN; if it's unset, one is generated at /run/cua/env-token. cua's Docker backend runs it with shm = half the memory (64 MiB to 2 GiB), so use --shm-size. Apple container ignores HEALTHCHECK. The image's own runtime list names only docker, gvisor, kubevirt and qemu.",
+    "source": "ghcr.io registry manifest and config for trycua/linux:24.04 (arm64), trycua/cua libs/images/linux/{Dockerfile,image.json,files/*}, libs/images/common/desktop/entrypoint.sh, libs/cua/crates/cua-vmm/src/container/mod.rs (shm_size_bytes)"
+   },
+   {
+    "topic": "Apple container: bind-mount writes by a non-root user",
+    "status": "uncertain",
+    "detail": "Probably fine. Files in virtiofs mounts show as root:root inside the container (docs example), but issue #1344's reproduction shows `--user 1000:1000` can mkdir and create files on a bind mount; only creating a file with mode 0200 fails with EACCES. Bind mounts with a chosen UID/GID are an open request (#165). Changes made on the host don't fire inotify events inside the container (#141), so file watchers in the PC won't see host-side edits.",
+    "source": "https://github.com/apple/container/issues/1344, /issues/165, /issues/141, docs/volumes.md"
+   },
+   {
+    "topic": "Apple container on macOS 27: networking issues",
+    "status": "confirmed",
+    "detail": "#2029 (closed): on macOS 27 betas, published 127.0.0.1 ports reset the connection unless container-runtime-linux has the Local Network permission. Fixed in macOS 27 beta 7 (26A5421a), where the helper now shows up under Privacy & Security > Local Network, so expect a permission prompt on first use. #2275 (open, macOS 27.0 26A428): `container system start` hangs forever when no process holds a pf 'starter reference' (the default when the firewall's stealth mode is off), because InternetSharing blocks in PFUserDeleteRules. The reporter's workaround is to turn stealth mode on and reboot; it's unknown whether 27.0.1 fixes it. #2335 (open): on some networks, starting a container breaks the host's outbound IPv4. #1881 (open): container subnet routing breaks when a VPN or exit node adds a competing default route. #2360: only custom Cloud Hypervisor kernels fail to boot on 27; the default Kata kernel isn't affected.",
+    "source": "https://github.com/apple/container/issues/2029, /issues/2275, /issues/2335, /issues/1881, /issues/2360"
+   },
+   {
+    "topic": "Apple Containerization Swift framework as an alternative to the CLI",
+    "status": "confirmed",
+    "detail": "The Swift package runs each container in a lightweight VM through Virtualization.framework, with a vminitd gRPC init over vsock, OCI image and ext4 tooling, and support for a dedicated IP per container (so no port forwarding is needed). Building it requires macOS 26 and Xcode 26, and you must supply a kernel (6.14.9 or newer, with VIRTIO built in; a Kata kernel works). A Swift helper inside MineVibe could link it and avoid the launchd apiserver altogether, at the cost of more code.",
+    "source": "https://github.com/apple/containerization README"
+   },
+   {
+    "topic": "cua SDK/CLI support for Apple container",
+    "status": "refuted",
+    "detail": "cua has no Apple container runtime. Its local container backend (cua-vmm container/mod.rs) uses the Docker Engine API through bollard and discovers DOCKER_HOST, docker context, ~/.colima, ~/.orbstack and /var/run/docker.sock. `--runtime` accepts auto, gvisor or runc for containers and qemu or lume for VMs. `cua runtime setup` can install qemu, lume and runsc. The docs say hosts with no container engine aren't supported locally ('install Colima or Docker Engine'). Code and issue searches in trycua/cua find nothing on Apple container. What does work is direct connection: `cua sb create --on direct:127.0.0.1:3211 --token ...`, Python `Sandbox.connect(url=..., token=...)`, or TypeScript `embedded().spacesd(url, token)` from @trycua/cua 0.4.1 (MIT, native darwin-arm64 build). So MineVibe must drive the runtime itself and talk to spacesd.",
+    "source": "trycua/cua docs/content/docs/cua-sdk/guides/local-runtimes.mdx, reference/runtime-support.mdx, cua-cli/reference/cli/runtime.mdx, guides/spacesd.mdx, libs/cua/crates/cua-vmm/src/container/mod.rs, npm registry @trycua/cua"
+   },
+   {
+    "topic": "Lume for macOS PCs: packaging, serve, entitlements, 2-VM limit",
+    "status": "confirmed",
+    "detail": "Latest stable is lume-v0.6.1 (2026-10-04); nightlies are 0.6.2. It ships as lume.app (lume-0.6.1-darwin-arm64.tar.gz or .pkg.tar.gz), notarized, with an embedded provisioning profile, because the release entitlements include com.apple.vm.networking (restricted, for bridged networking) as well as com.apple.security.virtualization. The local-build entitlements have only virtualization, which is enough for NAT. The installer puts it in ~/.local/share/lume/lume.app, links ~/.local/bin/lume and adds a LaunchAgent for `lume serve` on port 7777. Host requirement: Apple silicon, macOS 13 or later. Concurrency: 'Up to two macOS guests at a time (Apple's limit)'. Telemetry to PostHog is on by default; turn it off with LUME_TELEMETRY_ENABLED=0. `--shared-dir path[:ro|:rw]` can be repeated; with several shares Lume uses VZMultipleDirectoryShare, and each one appears as '/Volumes/My Shared Files/<basename>'. The macOS image's spacesd reads its token from '/Volumes/My Shared Files/setup/env-token'. ghcr.io/trycua/macos:26 is a Lume OCI image of about 24 GB compressed over 301 layers, a 150 GB sparse disk, defaults 4 CPU / 8 GB, NAT networking, with spacesd included. cua-vmm reaches guest ports directly at the VM's NAT IP.",
+    "source": "trycua/cua docs/content/docs/lume/{index,quickstart}.mdx, reference/cli/{vms,server,images}.mdx, guides/manage-vms.mdx, concepts/how-lume-works.mdx, libs/lume/resources/*.entitlements, libs/lume/scripts/{install.sh,build/build-release-notarized.sh}, libs/lume/src/Virtualization/VMVirtualizationService.swift, libs/images/macos/files/start-spacesd.sh, GitHub releases API, ghcr manifest trycua/macos:26"
+   },
+   {
+    "topic": "Lume for Linux PCs (ghcr.io/trycua/linux:24.04-disk)",
+    "status": "confirmed",
+    "detail": "Possible, but heavier than Apple container. 24.04-disk is a KubeVirt containerDisk (one layer of about 1.23 GB holding /disk/disk.img, systemd init, EFI). cua-vmm's Lume Linux path converts the qcow2 to raw with qemu-img (it needs `brew install qemu`), builds a cloud-init NoCloud seed, and then runs `lume run --detach --disk-path <raw> --mount <seed>`. cua chooses Lume for Linux only on Apple silicon when QEMU is missing. Lume's `create --os linux` defaults are 4 CPU, 8 GB and a 50 GB disk. A full systemd boot and a fixed RAM allocation make it slower and heavier than an Apple container VM. Exact boot time is not documented.",
+    "source": "trycua/cua libs/cua/crates/cua-vmm/src/lume/mod.rs, docs local-runtimes.mdx, lume reference/cli/vms.mdx, ghcr manifest trycua/linux:24.04-disk"
+   },
+   {
+    "topic": "Startup time",
+    "status": "uncertain",
+    "detail": "Apple says container VMs start in under a second, comparable to containers in a shared VM, but the XFCE, supervisord and spacesd readiness on top hasn't been measured (the image's healthcheck allows a 30 s start period). The first run of a new image also unpacks it into an ext4 block image, which will take noticeably longer for a multi-GB rootfs. Lume macOS guests boot as full macOS (tens of seconds); cloning is instant thanks to APFS clonefile. Measure this before committing to UX timings.",
+    "source": "apple/containerization README, apple/container docs/technical-overview.md, trycua/linux image HEALTHCHECK, cua-vmm lume/mod.rs"
+   },
+   {
+    "topic": "Docker, Colima or Podman as a fallback",
+    "status": "confirmed",
+    "detail": "cua's official direct-connect example is `docker run -d --shm-size=512m -e CUA_ENV_TOKEN -p 127.0.0.1:3211:3211 ghcr.io/trycua/linux:24.04`, and cua-vmm finds OrbStack and Colima automatically. On this Mac, OrbStack (Docker Engine 29.4.0) is already active, so a fallback costs nothing here. It is an external dependency, though, so keep it optional.",
+    "source": "trycua/cua docs/content/docs/cua-sdk/guides/spacesd.mdx, cua-vmm container/mod.rs, local docker context ls/docker version"
+   }
+  ],
+  "risks": [
+   "macOS 27.0 / apple/container #2275: `container system start` can hang forever when no process holds a pf starter reference (the default when stealth mode is off; this Mac has stealth off). Always pass --timeout, show a clear error, and document the workaround (socketfilterfw --setstealthmode on, then reboot). OrbStack's vmnet bridge works on this host right now, which suggests InternetSharing is healthy, but that isn't proof.",
+   "On macOS 27, published ports to 127.0.0.1 need the Local Network permission for container-runtime-linux (#2029). Without it, connections reset. Plan a first-run prompt or onboarding step, and fall back to the container IP 192.168.64.x:3211. Connecting from MineVibe's Node process to VM IPs, including Lume NAT IPs, may also trigger Local Network prompts.",
+   "VPN interaction: VPN clients are installed. apple/container #1881 (subnet routing breaks with a competing default route) and #2335 (host outbound IPv4 breaks on some networks) could disrupt PCs, or the whole Mac's networking, during a hardcore session.",
+   "The cua linux image has never been tested by cua on Apple container (its supported list is docker, gvisor, kubevirt and qemu). supervisord, dbus, PipeWire, Xvfb and Chromium need a smoke test. HEALTHCHECK is ignored, so MineVibe must poll spacesd itself.",
+   "The apiserver's launchd label is fixed (com.apple.container.apiserver), so the bundled copy and any system-wide `container` install would collide. Check `container system status` first and reuse a running apiserver of the same major version. Also pin and bundle a specific version: release numbers are product versions, not semver.",
+   "First start downloads the Kata kernel from GitHub and the vminit image, so the first launch needs network access. The kernel is GPL, so prefer downloading it over shipping it inside the app.",
+   "Memory: Apple container VMs don't return freed guest memory to macOS, and Lume macOS guests reserve about 8 GB each. On 48 GB, Minecraft (Java 25), N Claude Agent SDK sessions, up to 2 macOS VMs (about 16 GB) and the Linux PCs at about 4 GB each must fit. Cap the number of PCs and restart them from time to time.",
+   "Bind mounts: ownership shows as root inside the container. Writes as uid 1000 appear to work, except creating files with mode 0200 (#1344). There are no inotify events for host-side changes (#141), so watch-mode tooling in PCs won't notice edits made on the Mac.",
+   "Lume: never re-sign the notarized lume.app; it carries the restricted com.apple.vm.networking entitlement and a provisioning profile. Telemetry is on by default (set LUME_TELEMETRY_ENABLED=0). The macOS image is a 24 GB download with a 150 GB sparse disk. Apple's limit is 2 concurrent macOS guests. Lume NAT also goes through InternetSharing, so the same pf/pfd hang may apply.",
+   "The cua SDK can't create or manage Apple container PCs. MineVibe owns the whole lifecycle (create, start, stop, delete, ports, tokens) and uses @trycua/cua only as a spacesd client, so future changes to the cua image or token layout must be tracked by hand."
+  ]
+ },
+ "packaging": {
+  "recommendation": "RECOMMENDED PACKAGING FOR MineVibe.app (personal, ad-hoc or self-signed, not App Store)\n\n1) Shell: a minimal Swift/AppKit stub. Skip Electron and Tauri, and don't use a shell-script CFBundleExecutable.\n- Write one file, launcher/MineVibe.swift (about 300 lines), and build it with `xcrun swiftc -O -parse-as-library -target arm64-apple-macos26.0`. It needs no Xcode project.\n- Info.plist settings: LSUIElement=YES (no Dock icon or menu bar for the stub), LSMinimumSystemVersion=26.0, NSSupportsSuddenTermination=NO, NSLocalNetworkUsageDescription (the VMs sit on 192.168.64.x NAT IPs). Do not set LSFileQuarantineEnabled.\n- Why the stub beats the alternatives:\n  - It is a real Mach-O main executable.\n  - It can show a small NSWindow progress splash during first run.\n  - It can handle the quit AppleEvent at logout via applicationShouldTerminate \u2192 .terminateLater, so the hardcore world gets saved.\n  - A shell-script executable can do none of that.\n  - Electron or Tauri would add 100\u2013250 MB of web runtime for a UI you don't have.\n- Process tree: Swift stub (root, UI only) \u2192 Node orchestrator \u2192 { Java/Minecraft, one `claude` per agent (spawned by the SDK), cua runtime }.\n- Node does all the downloading and launching and reports progress to the stub as NDJSON on stdout.\n- Lifelines (macOS has no PR_SET_PDEATHSIG):\n  - The stub gives Node a stdin pipe. When it hits EOF, Node runs a full teardown.\n  - Node gives Java a stdin pipe plus a localhost IPC socket. The Fabric mod also watches `ProcessHandle.current().parent().get().onExit()`, then saves the world and quits cleanly instead of halting.\n  - The stub watches Node with DispatchSource.makeProcessSource(.exit).\n- Quit rules:\n  - Minecraft exits \u2192 Node aborts every SDK query (AbortController), stops PCs, runs `cua daemon stop`, and exits 0 \u2192 the stub terminates.\n  - The stub gets a quit or SIGTERM \u2192 it writes {cmd:\"shutdown\"} to Node \u2192 Node asks the mod over IPC to save and quit \u2192 same teardown. After a 60 s timeout, SIGKILL.\n  - Node crashes \u2192 the mod saves and quits, then the stub runs `node main.mjs --cleanup`.\n- On every start, run a reaper first:\n  - Take a single-instance flock on state/minevibe.lock.\n  - Kill stale PIDs listed in state/run.json, matching by start time.\n  - With MineVibe's CUA_HOME set, run `cua daemon stop` and stop any leftover MineVibe sandboxes.\n- Do not use launchd. A KeepAlive LaunchAgent contradicts \"quit = everything stops\".\n- Dock: Java runs as its own GUI process. Launch it through a byte-identical copy of `java` named `MineVibe` (bin/MineVibe), so the menu bar and Dock show \"MineVibe\". The mod can set the Dock icon. -Xdock:name/icon will not work here: it only applies to AWT (SetXDockArgForAWT), and Minecraft uses GLFW.\n- For later: a v2 could run the JVM inside the stub via JLI_Launch (what jpackage does) to get a single process and a single icon.\n\n2) Node server: ship the official Node binary plus a real node_modules tree. Use neither Node SEA nor `bun build --compile`.\n- @trycua/cua finds libcua_sdk.dylib (94.6 MB) by calling createRequire(import.meta.url).resolve('@trycua/cua-darwin-arm64/package.json'). It then loads it through cua_node_runtime.node, and there is no override for that path.\n- The Agent SDK has to spawn a real file on disk; it cannot spawn from $bunfs.\n- SEA can only require built-ins, so addons would have to be written to tmp and loaded with process.dlopen.\n- Bun can embed .node files but not a dylib that is loaded by path, and it would copy the 236 MB claude binary into /tmp on each version.\n- The approach:\n  - Bundle your own TypeScript with esbuild (`--platform=node --format=esm --target=node24`) into Resources/server/dist/main.mjs.\n  - Mark @anthropic-ai/claude-agent-sdk and @trycua/cua as external.\n  - Run `npm ci --omit=dev` into Resources/server.\n  - Copy in official Node v24.21.0 darwin-arm64 (Developer ID signed, entitlements include disable-library-validation and allow-jit) as Contents/MacOS/node. Do not use Homebrew's node: it is a 50 KB stub linked to libnode.\n- Move the cua CLI out of the npm package to Contents/MacOS/cua. That is exactly where cua's `bundled_cua()` looks (<App>.app/Contents/MacOS/cua). Also set CUA_BIN to it.\n- Move the claude binary to Contents/Helpers/claude and pass pathToClaudeCodeExecutable.\n- Leave all vendor binaries byte-identical so their Developer ID signatures stay valid: Anthropic Q6L2SF6YDW, Cua YCK386LBJ7, Node.js, Adoptium.\n- Never write inside the bundle at runtime; it breaks the signature seal. Point NODE_COMPILE_CACHE and any tmp directories at ~/Library/Caches/MineVibe.\n\n3) Java 25: bundle the unmodified Temurin 25.0.4.1 aarch64 JRE (56 MB tar.gz, sha256 from the Adoptium API) at Contents/Runtime/jre.\n- Reasons: it is deterministic, newer than Mojang's java-runtime-epsilon (25.0.1 from Dec 2025), the same vendor as the JDK 25 used for the build, and a single verified tarball instead of 446 lzma files.\n- Fallback, selectable in config: Mojang's runtime from https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json \u2192 mac-os-arm64 \u2192 java-runtime-epsilon \u2192 manifest, installed into App Support/runtime.\n- Always pass -XstartOnFirstThread; the 26.3 version JSON requires it on osx.\n\n4) Minecraft files: download from Mojang on first run (the EULA says \"Do not distribute \u2026 anything we've made\").\n- Source: version_manifest_v2 \u2192 26.3.json (javaVersion java-runtime-epsilon/25). That gives client.jar (41.5 MB, sha1), 114 libraries filtered by osx/arm64 rules, asset index 34 (about 484 MB), and the log4j config.\n- Fabric: profile JSON from meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json. Intermediary is 0.0.0 because 26.x ships unobfuscated.\n- Mods: download from Modrinth and verify sha512 against a committed mods.lock.json: fabric-api 0.162.0+26.3, sodium 0.9.3-alpha.1+mc26.3 (alpha!), lithium 0.26.2+mc26.3, ferritecore 9.0.0.\n- Load the MineVibe mod from the bundle with -Dfabric.addMods=<bundle>/Contents/Resources/mod/minevibe.jar instead of copying it.\n- Launch with main class net.fabricmc.loader.impl.launch.knot.KnotClient and --quickPlaySingleplayer <world>. The mod creates the hardcore world on first run.\n\n5) Signing:\n- Sign only your own code: `codesign --force --sign \"$ID\" --identifier com.jasperaelvoet.minevibe MineVibe.app`. Use no --deep, and leave vendor code untouched.\n- Hardened runtime is optional, since you aren't notarizing.\n- The stub needs no virtualization entitlement, because Virtualization.framework is only used by vendor processes:\n  - cua's built-in Lume 0.6.0, Developer ID YCK386LBJ7\n  - cua's built-in Colima 0.10.3 / Lima 2.2.0, whose limactl and lima-driver-vz Lima ad-hoc signs with com.apple.security.virtualization\n- If you later run VZ in-process (for example apple/containerization), add com.apple.security.virtualization to the stub. That works ad-hoc with no developer account; Lima does it. Avoid com.apple.vm.networking, which is restricted.\n- Prefer a stable identity over \"-\":\n  - A self-signed \"MineVibe Local Signing\" code-signing certificate from Keychain Access, or\n  - A free Xcode Personal Team \"Apple Development\" certificate.\n  - Ad-hoc ties TCC grants (Local Network, Files & Folders) to the cdhash, so they reset on every rebuild.\n- Gatekeeper: a locally built app has no quarantine flag, so Gatekeeper never checks it. If it arrives through a browser or AirDrop, run `xattr -dr com.apple.quarantine`, or use System Settings \u2192 Privacy & Security \u2192 Open Anyway (the Control-click bypass was removed in Sequoia).\n\n6) Claude auth: ship the SDK-paired binary and leave CLAUDE_CONFIG_DIR unset.\n- Ship claude 2.1.293 from @anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.293 at Contents/Helpers/claude. Set env {...process.env, DISABLE_UPDATES:'1', DISABLE_INSTALLATION_CHECKS:'1', CLAUDE_AGENT_SDK_CLIENT_APP:'minevibe/0.1'}.\n- Keychain prompts are not an issue. Claude Code reads and writes the item by shelling out to `/usr/bin/security find-generic-password -a <user> -w -s \"Claude Code-credentials\"`, so the keychain sees the same accessing binary whatever path claude runs from. The item exists in your login keychain (account <user>).\n- Leave CLAUDE_CONFIG_DIR unset. Setting it changes the keychain service name to \"Claude Code-credentials-<sha256(dir)[0:8]>\", which would cut MineVibe off from your existing login.\n- Isolate agents through the SDK instead: cwd=agents/<id>, settingSources:['project'] (per-agent CLAUDE.md, none of your ~/.claude hooks or plugins), an explicit tool allowlist, and additionalDirectories for mounted folders.\n- Override option: MINEVIBE_CLAUDE_BIN=~/.local/bin/claude. That saves 236 MB but requires `claude update` to \u22652.1.293 (you have 2.1.284), and auto-update will let it drift from the SDK.\n- Escape hatches if you need a separate config dir:\n  - CLAUDE_SECURESTORAGE_CONFIG_DIR='' (undocumented; present in the 2.1.284 binary and SDK 0.3.293).\n  - Or `claude setup-token` \u2192 store the token in MineVibe's own keychain item \u2192 pass it as CLAUDE_CODE_OAUTH_TOKEN.\n\n7) Data layout:\n- ~/Library/Application Support/MineVibe/\n  - config.json\n  - state/ (minevibe.lock, run.json, minevibe.sqlite)\n  - minecraft/ (this is --gameDir): versions/, libraries/, assets/, natives/, mods/, config/, saves/MineVibe/, logs/, crash-reports/\n  - agents/<id>/ (CLAUDE.md, memory/, workspace/)\n  - pcs/<id>/pc.json\n  - runtime/ (only with the Mojang JRE fallback)\n- CUA_HOME=~/.minevibe/cua. It must be a short path: Lima requires instanceDir + \"ssh.sock.1234567890123456\" to be under 104 characters, and under App Support it comes to 122. Set CUA_RUNTIME_LINUX=builtin and CUA_RUNTIME_LUME=builtin so cua ignores any Docker engine already on the Mac.\n- ~/Library/Logs/MineVibe/: launcher.log (plus os_log subsystem com.jasperaelvoet.minevibe), server.log (pino NDJSON, rotated), minecraft.log (JVM stdout tee; Minecraft's own log stays in minecraft/logs/latest.log), agents/<id>.ndjson, cua.log.\n- ~/Library/Caches/MineVibe/: downloads, Modrinth cache, tmp. Safe to delete.\n- Claude transcripts land in ~/.claude/projects/<encoded agents/<id> path>.\n\n8) Build pipeline: one command, `npm run build:app` \u2192 `node scripts/build-app.ts` (Node 24 runs .ts natively), with flags --sign=<identity|-> --claude=bundled|user --update-pins.\n  a) Fetch pinned toolchains into ~/Library/Caches/MineVibe-build and verify sha256: Temurin JDK 25.0.4.1 (for Gradle), Temurin JRE 25.0.4.1, node-v24.21.0-darwin-arm64 (checked against SHASUMS256).\n  b) Build the mod: `JAVA_HOME=$JDK25 mod/gradlew -p mod --no-daemon build`. Uses Gradle 9.7.1, plugin net.fabricmc.fabric-loom 1.18, options.release=25. Alternatively add a toolchain block plus the foojay resolver.\n  c) Build the server: `npm ci` \u2192 `tsc --noEmit` \u2192 esbuild \u2192 staging `npm ci --omit=dev`.\n  d) Build the stub: `xcrun swiftc`.\n  e) Resolve or verify the Modrinth lock (sha512).\n  f) Assemble the bundle: run iconutil, write Info.plist and check it with `plutil -lint`, and move the claude and cua binaries into place.\n  g) Sign the outer bundle only, then run `codesign --verify --strict -vv` and a `--selftest` (load the cua addon, `claude --version`, `java -version`).\n  h) Install with `ditto build/MineVibe.app ~/Applications/MineVibe.app`.\n\n.app tree:\nMineVibe.app/Contents/\n  Info.plist, PkgInfo, _CodeSignature/\n  MacOS/\n    MineVibe (Swift stub)\n    node (official v24.21.0)\n    cua (Cua CLI 0.4.1, moved from @trycua/cua-darwin-arm64)\n  Helpers/\n    claude (Claude Code 2.1.293 from the SDK platform package)\n  Runtime/jre/Contents/Home/{bin/java, bin/MineVibe (copy of java), lib/\u2026} (Temurin 25.0.4.1)\n  Resources/\n    MineVibe.icns\n    server/{package.json, dist/main.mjs, node_modules/{@anthropic-ai/claude-agent-sdk, @trycua/cua, @trycua/cua-darwin-arm64/{libcua_sdk.dylib, cua_node_runtime.node}, @ubjs/core, @ubjs/node}}\n    mod/minevibe-<ver>.jar\n    pins/{minecraft.json, fabric.json, mods.lock.json, toolchains.json}\n    defaults/{options.txt, agent-templates/\u2026}\nExpected size: about 650 MB (claude 236 MB, cua 119 MB, libcua 95 MB, node about 110 MB, JRE about 130 MB).",
+  "findings": [
+   {
+    "topic": "Local host state",
+    "status": "confirmed",
+    "detail": "macOS 27.0.1 (26A434), arm64. The docker CLI's active context is OrbStack (server 29.4.0). lume and Apple container are not installed. Only Temurin 17.0.20.1 is installed. Node 24.20.0 is Homebrew's ad-hoc 50 KB binary linked to libnode, so it can't be bundled; use the official tarball. bun is 1.4.2. ~/.local/bin/claude points to versions/2.1.284, signed by Developer ID Anthropic PBC (Q6L2SF6YDW) with hardened runtime.",
+    "source": "local read-only commands: sw_vers, docker context ls, docker info, claude --version, java_home -V, codesign -dv"
+   },
+   {
+    "topic": "Claude keychain item exists",
+    "status": "confirmed",
+    "detail": "A generic password 'Claude Code-credentials' exists in login.keychain-db (acct=<user>). The secret was not printed.",
+    "source": "security find-generic-password -s 'Claude Code-credentials' (no -g/-w)"
+   },
+   {
+    "topic": "Keychain access path, so no ACL prompt from a bundled claude",
+    "status": "confirmed",
+    "detail": "Claude Code 2.1.284 reads credentials with `security find-generic-password -a \"${user}\" -w -s \"${svc}\"` and writes them with `security add-generic-password -U -a ... -s ... -X <hex>` through a subprocess. The keychain therefore always sees /usr/bin/security as the accessing binary, whichever claude path runs, so moving the binary into the .app triggers no new ACL prompt.",
+    "source": "strings of ~/.local/share/claude/versions/2.1.284 (Mach-O)"
+   },
+   {
+    "topic": "CLAUDE_CONFIG_DIR changes the keychain service name",
+    "status": "confirmed",
+    "detail": "The service name is 'Claude Code' + OAUTH_FILE_SUFFIX + '-credentials', plus a '-' + sha256(configDir)[0:8] suffix when CLAUDE_CONFIG_DIR is set. The suffix is skipped when CLAUDE_SECURESTORAGE_CONFIG_DIR is set to an empty string; that variable is undocumented but present in both the CLI and SDK 0.3.293. The docs confirm that CLAUDE_CONFIG_DIR keys the macOS Keychain entry to that directory. Leaving CLAUDE_CONFIG_DIR unset keeps the user's shared login.",
+    "source": "claude 2.1.284 binary strings (function wN), unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.293/sdk.mjs (function Bq), https://code.claude.com/docs/en/authentication#credential-management"
+   },
+   {
+    "topic": "Agent SDK binary resolution",
+    "status": "confirmed",
+    "detail": "SDK 0.3.293 (claudeCodeVersion 2.1.293) ships the CLI in per-platform optional deps. @anthropic-ai/claude-agent-sdk-darwin-arm64 contains /claude (236,330,608 bytes). By default the SDK resolves that package; pathToClaudeCodeExecutable overrides it. Options.env replaces the subprocess environment rather than merging, so spread process.env yourself. The SDK exports './extract' (extractFromBunfs) for bun --compile, which copies the binary to /tmp/claude-<uid>/claude-agent-sdk-<sha16>/ because child processes cannot exec $bunfs paths. No explicit CLI-version compatibility check was found in sdk.mjs.",
+    "source": "npm view @anthropic-ai/claude-agent-sdk@0.3.293; unpkg.com sdk.d.ts, sdk.mjs, extractFromBunfs.js; unpkg ?meta of the darwin-arm64 package"
+   },
+   {
+    "topic": "@trycua/cua native payload and loading",
+    "status": "confirmed",
+    "detail": "@trycua/cua-darwin-arm64@0.4.1 contains cua (119.3 MB CLI), libcua_sdk.dylib (94.6 MB) and cua_node_runtime.node (887 KB). All three are signed by Developer ID Application: Cua AI, Inc. (YCK386LBJ7). node-runtime.js calls @ubjs/node resolveLibPath({npmPackageBase:'@trycua/cua-'}), which runs createRequire(import.meta.url).resolve('<pkg>/package.json'). Its override option is not exposed, so a real node_modules tree is required. The package was first published 2026-10-01 and has fast API churn.",
+    "source": "npm view @trycua/cua(-darwin-arm64); unpkg dist/native/node-runtime.js; unpkg @ubjs/node@0.31.0-3/typescript/dist/resolve-lib.js; strings of streamed tarball contents"
+   },
+   {
+    "topic": "Node SEA suitability",
+    "status": "confirmed",
+    "detail": "SEA is at Stability 1.1. The injected main script can only require built-in modules (createRequire is the workaround). Native addons must be written to a temp file and loaded with process.dlopen. --build-sea arrived in v25.5.0; Node 24 needs postject. macOS requires codesign --remove-signature and then re-signing. That is unsuitable for cua's dylib-by-path loading and for the spawned claude binary.",
+    "source": "https://nodejs.org/api/single-executable-applications.html"
+   },
+   {
+    "topic": "bun build --compile suitability",
+    "status": "confirmed",
+    "detail": "Bun can embed .node files and arbitrary files as /$bunfs paths, but child processes cannot exec those paths (stated in the SDK's own extractFromBunfs comments). Nothing covers a dylib that an addon loads by path, which is how cua works. Bun's docs require JIT and disable-library-validation entitlements when signing with hardened runtime. Not recommended.",
+    "source": "https://bun.com/docs/bundler/executables; extractFromBunfs.js source"
+   },
+   {
+    "topic": "Official Node entitlements",
+    "status": "confirmed",
+    "detail": "The official macOS Node binaries are signed with allow-jit, allow-unsigned-executable-memory, disable-executable-page-protection, allow-dyld-environment-variables, disable-library-validation and get-task-allow, so Cua's Developer ID addon and dylib load fine. The latest v24 LTS is v24.21.0 (2026-09-07).",
+    "source": "github.com/nodejs/node tools/osx-entitlements.plist; nodejs.org/dist/index.json"
+   },
+   {
+    "topic": "cua is designed to be bundled in an app",
+    "status": "confirmed",
+    "detail": "cua_home() is $CUA_HOME or else ~/.cua. bundled_cua() looks for <Name>.app/Contents/MacOS/cua, described in the source as 'the cua an app ships'. CUA_BIN names the CLI used to start the daemon. The daemon is started on demand with `cua daemon start`, which forks a detached process, unless CUA_DAEMON_AUTOSTART=0. Node can also run the runtime in-process via embedded().",
+    "source": "github.com/trycua/cua libs/cua/crates/cua-home/src/lib.rs, cua-daemon/src/lib.rs + client.rs, @trycua/cua README"
+   },
+   {
+    "topic": "cua built-in Linux runtime (no Docker Desktop)",
+    "status": "confirmed",
+    "detail": "cua sets up a pinned Colima 0.10.3 and Lima 2.2.0 (sha256-checked) running on vz under $CUA_HOME/runtimes/linux, with private HOME, COLIMA_HOME and LIMA_HOME. The disk is ghcr.io/trycua/runtime-gvisor 0.1.0-rc1 (gVisor 20260921.0). The VM is fixed at min(cpus,4) vCPU and 4 GiB, and its profile has NO host mounts ('The VM mounts no host directory'). The engine is chosen by CUA_RUNTIME_LINUX=auto|builtin|system; system mode honors DOCKER_HOST. The VM stops when no Linux Space is running.",
+    "source": "github.com/trycua/cua libs/cua/crates/cua-vmm/src/managed.rs, container/engine.rs"
+   },
+   {
+    "topic": "cua built-in Lume for macOS PCs",
+    "status": "confirmed",
+    "detail": "Lume 0.6.0 (lume launcher plus signed lume.app) is downloaded lazily from the trycua GitHub release into $CUA_HOME/runtimes/lume/0.6.0. Before use, cua verifies its sha256, runs codesign --verify, and requires team YCK386LBJ7. CUA_RUNTIME_LUME=auto|builtin|system. cua never stops an older user-owned lume serve and instead uses a fallback port. Where Lume stores the VM images was not verified.",
+    "source": "github.com/trycua/cua libs/cua/crates/cua-vmm/src/lume/builtin.rs"
+   },
+   {
+    "topic": "Lima unix-socket path limit vs App Support",
+    "status": "confirmed",
+    "detail": "Lima refuses to create an instance when len(instDir + '/ssh.sock.1234567890123456') >= 104. With CUA_HOME=~/Library/Application Support/MineVibe/cua, the cua instance path reaches 122 characters and fails. ~/.minevibe/cua gives 95 and ~/.cua gives 88, both of which work.",
+    "source": "github.com/lima-vm/lima pkg/instance/create.go, pkg/limatype/filenames/filenames.go, pkg/osutil/osutil_others.go; python length computation"
+   },
+   {
+    "topic": "Virtualization entitlement with ad-hoc signing",
+    "status": "uncertain",
+    "detail": "com.apple.security.virtualization (macOS 11+) is not marked restricted. Lima's Makefile signs limactl and lima-driver-vz with `codesign --entitlements vz.entitlements -s -`, so ad-hoc signing plus the entitlement works without a developer account; Homebrew and Colima rely on this. com.apple.vm.networking (bridged networking) is restricted. For macOS 27 specifically, nothing was verified locally: the last local vz run was 2026-09-06 on 26.6.2, and macOS 27 was installed on 2026-09-14. OrbStack (Developer ID) does run on 27.",
+    "source": "developer.apple.com entitlement JSON docs; github.com/lima-vm/lima Makefile + vz.entitlements; local VM logs; softwareupdate --history"
+   },
+   {
+    "topic": "TCC with ad-hoc signing",
+    "status": "confirmed",
+    "detail": "An ad-hoc signature has no stable designated requirement, so TCC pins grants to the cdhash and every rebuild loses Local Network and Files & Folders grants. Apple DTS recommends a stable signing identity. A self-signed or free Apple Development certificate works for personal use.",
+    "source": "https://developer.apple.com/forums/thread/795739, https://developer.apple.com/forums/thread/819406"
+   },
+   {
+    "topic": "Gatekeeper and quarantine",
+    "status": "confirmed",
+    "detail": "Gatekeeper only assesses quarantined files, so a locally built app and files downloaded by Node are not checked. Since Sequoia the Control-click override is gone; quarantined unsigned apps need System Settings \u2192 Privacy & Security \u2192 Open Anyway, or the quarantine xattr removed.",
+    "source": "https://www.cultofmac.com/864843/macos-sequoia-removes-handy-shortcut-bypass-gatekeeper-security/, https://appleinsider.com/inside/macos-sequoia/tips/whats-changed-in-runtime-protection-for-macos-sequoia"
+   },
+   {
+    "topic": "Minecraft 26.3 metadata",
+    "status": "confirmed",
+    "detail": "26.3 was released 2026-09-15; the latest snapshot is 26.4-snapshot-3. It requires javaVersion java-runtime-epsilon (major 25). client.jar is 41,483,720 bytes. There are 114 libraries, including LWJGL 3.4.3 macOS arm64 natives, netty kqueue and java-objc-bridge. Asset index 34 totals about 484 MB. The osx jvm args include -XstartOnFirstThread, and logging uses client-1.21.2.xml.",
+    "source": "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json and .../702fe59163c6ee6578607daa85811d9bc9c7cc40/26.3.json"
+   },
+   {
+    "topic": "Mojang Java runtime vs Temurin",
+    "status": "confirmed",
+    "detail": "Mojang's all.json (launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json) lists mac-os-arm64 java-runtime-epsilon as 25.0.1 (released 2025-12-10): 446 files, about 110 MB raw, jre.bundle layout. Adoptium's latest Temurin 25 is 25.0.4+101: a 56.2 MB aarch64 mac JRE tar.gz (sha256 5b02bcc9...) and a 136 MB JDK.",
+    "source": "Mojang java-runtime manifests; https://api.adoptium.net/v3/assets/latest/25/hotspot"
+   },
+   {
+    "topic": "Minecraft EULA on redistribution",
+    "status": "confirmed",
+    "detail": "The EULA says 'Do not distribute or make commercial use of anything we've made without our permission.' Mods are allowed if they contain no substantial part of Mojang's code. So the client, assets and libraries must be fetched from Mojang at first run.",
+    "source": "https://www.minecraft.net/en-us/eula"
+   },
+   {
+    "topic": "Fabric for 26.3",
+    "status": "confirmed",
+    "detail": "Loader 0.19.5 is the stable release for 26.3. Intermediary is 0.0.0 because 26.x is unobfuscated. The profile JSON endpoint returns 200. The example mod uses Loom 1.18-SNAPSHOT (plugin id net.fabricmc.fabric-loom), Gradle 9.7.1 and options.release=25, so Gradle needs a JDK 25; only 17 is installed. Fabric Loader supports the system property fabric.addMods for loading the mod jar from the bundle.",
+    "source": "https://meta.fabricmc.net/v2/versions/loader/26.3; github.com/FabricMC/fabric-example-mod; fabric-loader SystemProperties.java"
+   },
+   {
+    "topic": "Modrinth pins for 26.3 (Fabric)",
+    "status": "confirmed",
+    "detail": "fabric-api 0.162.0+26.3; sodium mc26.3-0.9.3-alpha.1 (alpha only); lithium 0.26.2+mc26.3; ferritecore 9.0.0; modmenu 21.0.0. The Modrinth v2 API exposes sha512 per file, so a lock file can be enforced.",
+    "source": "https://api.modrinth.com/v2/project/<slug>/version?loaders=[\"fabric\"]&game_versions=[\"26.3\"]"
+   },
+   {
+    "topic": "-Xdock options do not affect Minecraft",
+    "status": "confirmed",
+    "detail": "The JDK macOS launcher handles -Xdock:name and -Xdock:icon in SetXDockArgForAWT by setting the APP_NAME_<pid> and APP_ICON_<pid> env vars, which only AWT reads. Minecraft uses GLFW, so rename the java executable copy instead, and let the mod set the Dock icon.",
+    "source": "github.com/openjdk/jdk src/java.base/macosx/native/libjli/java_md_macosx.m"
+   },
+   {
+    "topic": "Claude.ai login policy and update env vars",
+    "status": "confirmed",
+    "detail": "The Agent SDK docs say: 'Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products.' Personal use of your own login on your own machine is the T3 Code pattern; don't distribute the app. The docs describe DISABLE_UPDATES=1 as being for 'distributing Claude Code through your own channels'.",
+    "source": "https://code.claude.com/docs/en/agent-sdk/overview, https://code.claude.com/docs/en/env-vars"
+   },
+   {
+    "topic": "Minecraft account auth",
+    "status": "uncertain",
+    "detail": "Several sources (secondary and Microsoft Q&A) report that api.minecraftservices.com only accepts Azure client IDs that Mojang has whitelisted. A self-made launcher would need to apply for approval or run singleplayer offline; the EULA still requires owning the game.",
+    "source": "https://learn.microsoft.com/en-gb/answers/questions/5768276/how-to-get-xboxlive-signin-permission-for-azure-ap, https://mcproto.readthedocs.io/en/stable/usage/authentication/"
+   }
+  ],
+  "risks": [
+   "CUA_HOME under ~/Library/Application Support/MineVibe breaks cua's built-in Linux runtime: Lima needs socket paths under 104 characters and that location gives 122. Use a short path such as ~/.minevibe/cua (optionally symlinked from App Support).",
+   "cua's built-in Linux runtime mounts no host folders, by design. Mounting ~/Code/foo into Linux PCs therefore needs a different approach: a MineVibe-managed Lima/Colima profile with virtiofs mounts exposed through DOCKER_HOST plus CUA_RUNTIME_LINUX=system, or sync/copy-in. The built-in VM is also fixed at 4 GiB and 4 vCPU, which caps how many XFCE PCs can run at once.",
+   "The cua daemon (`cua daemon start` forks a detached process), lume serve and the Colima VM can outlive MineVibe. The design needs explicit teardown (stop sandboxes, `cua daemon stop`) plus a reaper on the next launch. Where cua's built-in Lume stores multi-GB macOS images (possibly ~/.lume) was not verified.",
+   "Ad-hoc signing plus com.apple.security.virtualization was not verified on macOS 27 itself; the last local vz run was on 26.6.2. MineVibe only depends on it indirectly, through Lima's ad-hoc limactl.",
+   "Ad-hoc signing resets TCC grants (Local Network for VM IPs, Files & Folders) on every rebuild. Use a stable self-signed or Apple Development identity.",
+   "Pointing at the user's ~/.local/bin/claude (currently 2.1.284, below the SDK's 2.1.293) risks SDK/CLI protocol drift in both directions because of auto-update. The SDK has no explicit version check.",
+   "CLAUDE_SECURESTORAGE_CONFIG_DIR is undocumented and could change. Many agent processes plus the user's interactive CLI share one OAuth refresh token, and the concurrency of token refreshes across them was not verified.",
+   "Anthropic's policy on claude.ai login in Agent SDK products means MineVibe should stay strictly personal and not be distributed.",
+   "Minecraft Microsoft-account auth probably needs a Mojang-whitelisted Azure client ID. Without one, only offline singleplayer is possible.",
+   "Sodium for 26.3 is an alpha. A hardcore world is vulnerable to corruption on hard kills, so the mod-side graceful save on parent exit or IPC shutdown is essential.",
+   "Writing anything inside MineVibe.app at runtime invalidates the code-signature seal. All mutable data, caches and tmp files must go to App Support, Caches or Logs.",
+   "@trycua/cua 0.4.x was first published 2026-10-01 and its API is changing fast. Pin exact versions of @trycua/cua, its platform package and @ubjs/*.",
+   "The app bundle will be about 650 MB (claude 236 MB, cua 119 MB, libcua 95 MB, node about 110 MB, JRE about 130 MB), and the first-run download adds about 600 MB of Minecraft assets and libraries plus the cua runtime disks and the macOS image."
+  ]
+ },
+ "critique": {
+  "recommendation": "Ship one MineVibe.app (Apple silicon, LSMinimumSystemVersion 26.0) that holds the agents, the game and both VM runtimes. MineVibe drives the runtimes itself and uses @trycua/cua 0.4.1 only as a spacesd client: `embedded().spacesd(url, token)` exists in the 0.4.1 types.\n\nThe two research results disagree on Linux PCs. Use Apple `container` 1.5.0, as the runtime research proposed, not cua's built-in Colima/gVisor runtime. cua's own source says that runtime \"mounts no host directory\", so it cannot share project folders with a PC. That choice also removes the need for the 119 MB `cua` CLI and the CUA_HOME/Lima socket-path workaround.\n\nBUNDLE\n- Contents/MacOS/MineVibe: Swift stub that owns the UI and the quit/teardown sequence.\n- Contents/MacOS/node: official Node v24.21.0. Homebrew's node here is a 50 KB stub linked to libnode, so it can't be bundled.\n- Resources/server: esbuild output plus a real node_modules (claude-agent-sdk 0.3.293, @trycua/cua 0.4.1 and its darwin-arm64 package). cua loads its native library through createRequire and a package path, so neither Node SEA nor `bun --compile` will work. The unused `cua` CLI inside the npm package can be deleted.\n- Contents/Helpers/claude: claude 2.1.293 from the SDK's platform package, copied byte for byte.\n- Contents/Helpers/lume.app: notarized Lume 0.6.1, or 0.6.0, which is the version cua itself pins. Never re-sign it: it carries the restricted vm.networking entitlement and a provisioning profile.\n- Apple container 1.5.0 under one install root inside the bundle: bin/container, bin/container-apiserver, and libexec/container/plugins/{container-core-images, container-network-vmnet, container-runtime-linux, machine-apiserver, k8s}. machine-apiserver is required, because `system start` fails if it doesn't answer. Get the files byte for byte from the pkg, or build from source with the installed Xcode 27 and ad-hoc sign with com.apple.security.virtualization exactly as Homebrew's 1.5.0 formula does. Don't re-sign them on every MineVibe build, so their Local Network grant stays valid.\n- Contents/Runtime/jre: Temurin 25.0.4.1 JRE. The MineVibe mod jar goes in Resources.\n\nDOWNLOADED ON FIRST RUN, NEVER SHIPPED\n- Minecraft client, libraries and assets (the EULA forbids distributing them or a \"Modded Version\").\n- The Kata kernel and vminit image (`container system start --enable-kernel-install`).\n- ghcr.io/trycua/linux:24.04 (arm64, 1.19 GB).\n- ghcr.io/trycua/macos:26 (24 GB download, 150 GiB sparse disk).\n\nLINUX PCs\n- Set CONTAINER_INSTALL_ROOT and CONTAINER_APP_ROOT, and always call the real binary path inside the bundle.\n- The launchd label com.apple.container.apiserver is fixed, so run `system status` first and refuse an apiserver that belongs to a different install.\n- Wrap every `container` call in a Node-side timeout followed by SIGKILL. Issue #2275 hangs indefinitely, and `--timeout` only bounds the startup ping.\n- Run each PC with --cpus/--memory 4G, --shm-size 2G, -e CUA_ENV_TOKEN (inherited, so it stays out of argv but is stored in the container's config), -p 127.0.0.1:<port>:3211, and -v for project folders.\n- Poll spacesd health yourself; the image's HEALTHCHECK is ignored.\n- On quit, run `container system stop`. If the health check fails, the reaper should run `launchctl bootout gui/$UID/com.apple.container.apiserver` directly.\n\nMACOS PCs\n- Start `lume serve --port <free>` as a child process with LUME_TELEMETRY_ENABLED=0, and use `--storage` with a MineVibe path (the default is ~/.lume).\n- Start VMs through the serve API (POST /lume/vms/:name/run with sharedDirectories), not `lume run --detach`, which creates separate processes that outlive the app.\n- Mount a read-only folder named `setup` containing env-token (mode 0600). Use `--vnc disabled`, because `--display none` still starts a VNC server.\n- At most 2 macOS guests at once.\n\nNETWORK PRIVACY\n- Ports published on loopback need no Local Network grant for MineVibe, but on macOS 27 container-runtime-linux shows its own Local Network prompt.\n- Connecting to VM NAT IPs is local-network traffic for MineVibe. Set NSLocalNetworkUsageDescription and sign the outer bundle with an Apple-issued identity (the free Apple Development / Personal Team certificate), not a self-signed one, so the grant survives rebuilds.\n\nAGENTS\n- Set pathToClaudeCodeExecutable to Contents/Helpers/claude.\n- Set env to {...process.env, DISABLE_UPDATES=1, DISABLE_INSTALLATION_CHECKS=1, CLAUDE_AGENT_SDK_CLIENT_APP}. Options.env replaces the environment rather than merging, and PATH must keep /usr/bin because claude runs `security` by name.\n- Leave CLAUDE_CONFIG_DIR unset, so all agents share the existing 'Claude Code-credentials' keychain item.\n- Use settingSources ['project'], strictMcpConfig true and an explicit tool list.\n- Keep the app personal: Anthropic's claude.ai-login policy for Agent SDK products. Keep an ANTHROPIC_API_KEY option.\n\nWHAT \"RUNS IN THE APP\" MEANS\nWith the `container` CLI, the Linux VMs run under launchd agents whose binaries live inside MineVibe.app, started and stopped by MineVibe. They are not child processes, and if MineVibe crashes they keep running until MineVibe cleans them up on its next launch. If that must be literal, v2 links apple/containerization into a Swift helper (Xcode 27 and Swift 6.4 are installed).\n\nBEFORE BUILDING: a smoke test (needs the user's OK, because it starts VMs)\n- `container system start` without the #2275 hang.\n- The cua image boots: XFCE, spacesd on 3211 and /viewer.\n- uid 1000 can write into a bind mount.\n- The Local Network prompt appears.\n- A Lume macOS 26 VM runs at the same time as the containers.\n- Check memory and disk: 48 GB RAM and 182 GiB free.",
+  "findings": [
+   {
+    "topic": "Conflict between the two results: which Linux runtime",
+    "status": "confirmed",
+    "detail": "The packaging result proposed cua's built-in runtime: pinned Colima 0.10.3 and Lima 2.2.0 with gVisor, at most 4 vCPU and 4 GiB, driven through the Docker Engine API by bollard. cua's own source says 'No host files. The VM mounts no host directory.' That rules out mounting ~/Code/foo into Linux PCs, so the runtime result's choice (Apple container driven directly) is the right one. The CUA_HOME/Lima 104-character socket-path issue is real but no longer matters, and the 119 MB cua CLI does not need to ship. One wrinkle: the cua docs still say hosts with no container engine aren't supported locally, while managed.rs describes a built-in no-setup runtime. The docs lag the code.",
+    "source": "github.com/trycua/cua libs/cua/crates/cua-vmm/src/managed.rs (lines 2-27, 364-369), src/container/mod.rs (line 1: 'OCI container backend over the Docker Engine API (bollard)'), docs/content/docs/cua-sdk/guides/local-runtimes.mdx"
+   },
+   {
+    "topic": "cua SDK as a spacesd-only client",
+    "status": "confirmed",
+    "detail": "In @trycua/cua 0.4.1 (MIT, created 2026-10-01), CuaLike has spacesd(url, token), documented as 'Connects to cua-spacesd at url ... without a sandbox', and embedded() is an in-process SDK runtime. node-runtime.js finds libcua_sdk through @ubjs/node resolveLibPath({npmPackageBase:'@trycua/cua-'}). resolveLibPath does support an `override`, but cua never passes it, so a real node_modules tree is required.",
+    "source": "unpkg.com/@trycua/cua@0.4.1/dist/index.d.ts, dist/native/cua_sdk.d.ts (~line 14196), dist/native/node-runtime.js; unpkg.com/@ubjs/node@0.31.0-3/typescript/dist/resolve-lib.js; npm view @trycua/cua"
+   },
+   {
+    "topic": "Apple container version and OS support",
+    "status": "confirmed",
+    "detail": "1.5.0 was released 2026-09-29; assets are the installer-signed pkg, an unsigned pkg and dSYMs. It needs Apple silicon. The README says it is 'supported on macOS 26'. Homebrew ships a 1.5.0 bottle for arm64_golden_gate (macOS 27) alongside arm64_tahoe, which is good evidence it builds and runs on 27.",
+    "source": "GitHub API /repos/apple/container/releases; github.com/apple/container README; formulae.brew.sh/api/formula/container.json"
+   },
+   {
+    "topic": "Apple container embedded inside another .app",
+    "status": "confirmed",
+    "detail": "Install root is CONTAINER_INSTALL_ROOT, otherwise the grandparent of the executable, with symlinks NOT resolved. App root is CONTAINER_APP_ROOT, otherwise ~/Library/Application Support/com.apple.container. `system start` takes --app-root, --install-root, --log-root, --enable/--disable-kernel-install and --timeout. It resolves container-apiserver next to the CLI; a code comment notes amfid checks signatures relative to the enclosing .app. It writes a launchd plist with the FIXED label and Mach service com.apple.container.apiserver and registers it with `launchctl bootstrap` into gui/<uid> (Aqua session), with no KeepAlive. So there is no admin prompt, only one apiserver per user, and nothing survives a reboot. Additions the research missed: (1) start also pings the machine API server and fails if it doesn't answer, so the machine-apiserver plugin must be bundled (1.5.0 ships core-images, network-vmnet, runtime-linux, machine-apiserver and k8s). (2) Plugins are searched in userPluginsDir, Bundle.main/Resources/plugins and <installRoot>/libexec/container/plugins. (3) `system stop` stops containers with a 5 s timeout and then boots out every com.apple.container.* service, but it skips the bootout if the apiserver health check fails.",
+    "source": "apple/container@1.5.0 Sources/ContainerPlugin/{InstallRoot,ApplicationRoot,ServiceManager}.swift, Sources/ContainerCommands/System/{SystemStart,SystemStop}.swift, Sources/Services/ContainerAPIService/Client/Utility+PluginLoader.swift, Makefile lines 163-169"
+   },
+   {
+    "topic": "Ad-hoc signing with com.apple.security.virtualization",
+    "status": "confirmed",
+    "detail": "Upgraded from 'uncertain'. Apple's Makefile defaults to CODESIGN_OPTS '--force --sign - --timestamp=none' and applies signing/container-{runtime-linux,network-vmnet}.entitlements, which contain only com.apple.security.virtualization. Homebrew's 1.5.0 formula signs with `/usr/bin/codesign -f -s -` plus those entitlements and ships a macOS 27 bottle. The issue #2275 reporter ran Homebrew's ad-hoc build on macOS 27.0, and their second Mac on the same setup worked. Lima also ad-hoc signs limactl with vz.entitlements; a locally installed ad-hoc VZ tool carries the virtualization entitlement. Not run locally on 27: the last local VZ VM run was 2026-09-07, on 26.6.2. com.apple.vm.networking is the restricted one, needed only for Lume bridged networking.",
+    "source": "apple/container@1.5.0 Makefile + signing/*.entitlements; github.com/Homebrew/homebrew-core Formula/c/container.rb; lima-vm/lima@v2.2.0 Makefile lines 314/339; codesign -d on a local ad-hoc VZ binary; local VM mtimes; softwareupdate --history"
+   },
+   {
+    "topic": "Signing identity of binaries inside the installer-signed pkg",
+    "status": "uncertain",
+    "detail": "CI (common.yml) builds only container-installer-unsigned.pkg using the Makefile defaults (ad-hoc). The installer-signed pkg probably has the same payload plus an installer signature, but this was not checked because it would mean downloading the pkg. It doesn't matter for MineVibe: byte-identical copies keep their signatures, and an ad-hoc build from source is equivalent (Xcode 27 and Swift 6.4 are installed). Whether a bundle signed with an Apple Development identity and containing ad-hoc nested Mach-Os in Resources or Library passes `codesign --verify --strict` is a build-time check.",
+    "source": "apple/container@1.5.0 .github/workflows/{common,release}.yml"
+   },
+   {
+    "topic": "Apple container bind mounts with the non-root cua user",
+    "status": "confirmed",
+    "detail": "The docs show bind-mounted files as root:root inside the container. Issue #1344's repro, with `--user 1000:1000` on a virtiofs bind mount, successfully runs mkdir and creates a 0600 file; only O_CREAT with mode 0200 (no owner-read bit) fails with EACCES, which breaks std::filesystem::copy and Nix. UID/GID mapping (#165) and host-to-container inotify (#141) are still open. New in 1.5.0: `container machine` maps the host user and home directory into a persistent Linux environment, but it needs an image with /sbin/init, so it isn't a drop-in for the supervisord-based cua image.",
+    "source": "apple/container@1.5.0 docs/volumes.md, docs/container-machine.md; GitHub issues #1344, #165, #141 (all open)"
+   },
+   {
+    "topic": "Running ghcr.io/trycua/linux:24.04 under Apple container",
+    "status": "uncertain",
+    "detail": "Image facts checked against the registry: 24.04 is an OCI index (amd64 and arm64). The arm64 manifest has 25 layers, 1,188 MB compressed, created 2026-10-06. Config: no User (root), CMD /opt/cua/desktop/entrypoint.sh, ExposedPorts 3211/tcp, 3212/udp and 18080/tcp, HEALTHCHECK with a 30 s start period. The entrypoint only creates /run directories and runs supervisord, which starts dbus as messagebus and XFCE, audio and spacesd as cua (uid 1000). The token comes from CUA_ENV_TOKEN, otherwise /etc/cua/env-token, otherwise a generated /run/cua/env-token. Chromium sandbox flags are picked per runtime. image.json lists rootfs runtimes as docker and gvisor only, so nobody has published a run on Apple container. `container` 1.5.0 supports every flag needed (--shm-size, -p host-ip:host:ctr[/proto], -e KEY inherit, -v/--mount, --cap-add, --init). Nothing in the container source reads image HEALTHCHECKs; the only health checks are the apiserver's own.",
+    "source": "ghcr.io/v2/trycua/linux manifests/24.04 + arm64 config blob; trycua/cua libs/images/linux/{image.json, files/ensure-env-token.sh, files/start-spacesd.sh, files/supervisor/supervisord.conf, files/chromium.d/cua-sandbox}, libs/images/common/desktop/entrypoint.sh; apple/container@1.5.0 docs/command-reference.md"
+   },
+   {
+    "topic": "macOS 27 networking issues and this Mac's state",
+    "status": "confirmed",
+    "detail": "#2029 is closed: published 127.0.0.1 ports reset unless container-runtime-linux has the Local Network permission, fixed in 27 beta 7 (26A5421a), which added a toggle under Privacy & Security > Local Network. #2275 is open with a single reporter on 27.0 (26A428): with no pf starter reference (stealth mode off by default), pfd exits 3, InternetSharing blocks forever and every `container` command hangs. The reporter says it affects any VZ NAT VM, including Colima, and it needs a reboot after turning stealth mode on. This Mac (27.0.1) has stealth mode off, but it is NOT in the wedged state right now: launchctl shows com.apple.pfd with last exit code 0 and about 1 run per 200 s (569 runs in 32 h), InternetSharing has been running since boot, and OrbStack's <other-bridge> (<other-subnet>) is up. #2335 (host IPv4 broken through a no-df scrub) and #1881 (VPN or exit node removes the subnet route) are still open, and VPN clients are installed here.",
+    "source": "GitHub issues apple/container #2029 (comments), #2275 (body + 2 comments), #2335, #1881; local: launchctl print system/com.apple.pfd, system/com.apple.NetworkSharing, ifconfig <other-bridge>, socketfilterfw --getstealthmode"
+   },
+   {
+    "topic": "Apple container and Lume running at the same time",
+    "status": "confirmed",
+    "detail": "Issue #1219: Lume guests and Apple containers get separate subnets and coexist. The reported breakage on container 0.9.0 cleared after removing `container system dns create` (pf rules) and rebooting. Don't use `container system dns`.",
+    "source": "github.com/apple/container/issues/1219 and comments"
+   },
+   {
+    "topic": "Lume shared folders (macOS and Linux guests)",
+    "status": "confirmed",
+    "detail": "`--shared-dir path[:ro|:rw]` can be repeated. Every share uses the tag VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag and goes into one VZMultipleDirectoryShare keyed by folder name; a duplicate name becomes 'name (2)'. macOS guests also get a hidden '.lume-live-share' placeholder. In macOS guests the folders appear at '/Volumes/My Shared Files/<basename>'. cua writes its token to <root>/<vm>/setup/env-token, and the macOS image's start-spacesd.sh reads '/Volumes/My Shared Files/setup/env-token', falling back to '/Volumes/My Shared Files/env-token'. The token is then kept in the guest at ~/.cua/spacesd/token. Correction for Linux guests: nothing is automounted. The guest must mount virtiofs tag 'com.apple.virtio-fs.automount' itself and then sees each folder by name. Other corrections: `--display none` still starts a VNC server unless you pass `--vnc disabled`; the default VM store is ~/.lume (use --storage <path>); `lume run --detach` starts a separate DetachedVMRunner process, while the HTTP API (POST /lume/vms/:name/run with sharedDirectories and storage) keeps VMs under the serve process.",
+    "source": "trycua/cua@lume-v0.6.1 libs/lume/src/Virtualization/VMVirtualizationService.swift (278-325), libs/lume/src/Commands/Run.swift (39-160); libs/cua/crates/cua-vmm/src/lume/mod.rs (40-42, 716-768); libs/images/macos/files/start-spacesd.sh; docs/content/docs/lume/{guides/manage-vms.mdx, reference/cli/vms.mdx, reference/http-api.mdx}"
+   },
+   {
+    "topic": "Lume packaging, version, entitlements, limits",
+    "status": "confirmed",
+    "detail": "lume-v0.6.1 (2026-10-04) is the latest stable; 0.6.2 builds are nightlies. cua's built-in Lume pins VERSION and MIN_VERSION at 0.6.0 and checks team YCK386LBJ7. The release entitlements are com.apple.security.virtualization plus the restricted com.apple.vm.networking, with Contents/embedded.provisionprofile, hardened runtime and notarization, so it must never be re-signed. The local-build entitlements have only virtualization. The docs say 'Up to two macOS guests at a time (Apple's limit)'. LUME_TELEMETRY_ENABLED overrides the telemetry setting per process. `lume serve --port` defaults to 7777; `lume pull <image> [<name>]` defaults to ghcr.io/trycua.",
+    "source": "GitHub releases API trycua/cua; libs/lume/resources/{lume,lume.local}.entitlements; libs/lume/scripts/build/build-release-notarized.sh; libs/cua/crates/cua-vmm/src/lume/builtin.rs; docs/content/docs/lume/{index.mdx, concepts/how-lume-works.mdx, reference/cli/server.mdx, reference/cli/images.mdx}"
+   },
+   {
+    "topic": "macOS guest image size vs this Mac",
+    "status": "confirmed",
+    "detail": "ghcr.io/trycua/macos:26 has 301 layers totalling 23.95 GB, with annotations for a 161,061,273,600-byte (150 GiB) disk, 4 CPU, 8 GiB, NAT and spacesd. Host: Apple M5 Pro, 18 cores, 48 GiB RAM, 182 GiB free on /. That leaves room for one base image plus APFS clones, and only if the pull cache is pruned.",
+    "source": "ghcr.io/v2/trycua/macos/manifests/26; local sysctl hw.memsize/hw.ncpu, df -h /"
+   },
+   {
+    "topic": "Local Network privacy for VM traffic (new)",
+    "status": "confirmed",
+    "detail": "From Apple TN3179: a local network is any IP network on a broadcast-capable interface (vmnet bridges qualify; loopback and VPN don't). If an app spawns a helper that touches the local network, the app is the responsible code, so Node, lume and java under MineVibe all fall under MineVibe's grant. launchd daemons are exempt but launchd agents are not, which is why container-runtime-linux (a gui-domain agent) gets its own prompt. Apple says to 'sign it with an Apple-issued code-signing identity' and that the main executable's UUID must be unique. So use the free Apple Development (Personal Team) certificate, not the self-signed certificate the packaging result suggested.",
+    "source": "developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy (JSON form)"
+   },
+   {
+    "topic": "Node SEA / bun --compile with native addons",
+    "status": "confirmed",
+    "detail": "SEA is at Stability 1.1. The injected script can only require/import built-ins (the workaround is createRequire), addons must be written to a temp file and loaded with process.dlopen, --build-sea arrived in v25.5.0, and macOS needs --remove-signature followed by re-signing. Bun embeds .node files at $bunfs paths, but its docs say nothing about dylibs loaded by path, and the Agent SDK has to extract claude to /tmp for it. Neither fits cua's createRequire-based library resolution or a spawned claude binary.",
+    "source": "nodejs.org/api/single-executable-applications.html; bun.com/docs/bundler/executables; unpkg @ubjs/node resolve-lib.js"
+   },
+   {
+    "topic": "Official Node vs Homebrew Node",
+    "status": "confirmed",
+    "detail": "Official macOS Node entitlements: allow-jit, allow-unsigned-executable-memory, disable-executable-page-protection, allow-dyld-environment-variables, disable-library-validation and get-task-allow. v24.21.0 (2026-09-07) is the latest v24 LTS. Homebrew's node@24 here is a 50,320-byte binary linked to @rpath/libnode.137.dylib, libuv and simdjson from /opt/homebrew, so it can't be bundled.",
+    "source": "github.com/nodejs/node v24.x tools/osx-entitlements.plist; nodejs.org/dist/index.json; local ls/otool -L"
+   },
+   {
+    "topic": "Claude keychain auth from a non-default binary path",
+    "status": "confirmed",
+    "detail": "Claude Code 2.1.284 reads credentials through execSync of `security find-generic-password -a \"${user}\" -w -s \"${svc}\"` and writes them with `add-generic-password -U -a ... -s ... -X <hex>`. The keychain therefore sees /usr/bin/security as the accessing binary wherever claude lives. The binary also links SecItemCopyMatching, but that path was not traced. Caveat: `security` is run by name, so PATH must include /usr/bin, and the SDK's Options.env REPLACES the subprocess environment (sdk.d.ts: 'REPLACES the subprocess environment entirely'). The item exists in the login keychain (acct <user>). The bundled 2.1.293 binary was not inspected; this assumes it uses the same mechanism.",
+    "source": "strings of ~/.local/share/claude/versions/2.1.284 (Developer ID Q6L2SF6YDW, hardened runtime); unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.293/sdk.d.ts; security find-generic-password -s 'Claude Code-credentials' (no -g/-w)"
+   },
+   {
+    "topic": "CLAUDE_CONFIG_DIR and the keychain service name",
+    "status": "confirmed",
+    "detail": "Exact code: wN(n) adds suffix '-'+sha256(dir)[0:8] when CLAUDE_SECURESTORAGE_CONFIG_DIR is set to a non-empty value, or when it is unset and CLAUDE_CONFIG_DIR is set. Setting it to an empty string removes the suffix. The result is 'Claude Code'+OAUTH_FILE_SUFFIX+n+suffix. The docs confirm CLAUDE_CONFIG_DIR 'keys the macOS Keychain entry to that directory too'. Leaving it unset shares the existing login.",
+    "source": "claude 2.1.284 binary (function wN); code.claude.com/docs/en/authentication#credential-management; code.claude.com/docs/en/env-vars"
+   },
+   {
+    "topic": "Agent SDK isolation options",
+    "status": "confirmed",
+    "detail": "pathToClaudeCodeExecutable overrides the bundled CLI. settingSources: 'Must include project to load CLAUDE.md files'; [] means isolation mode. strictMcpConfig ignores .mcp.json, user settings and plugin MCP servers, so add it to the per-agent options. DISABLE_UPDATES blocks all updates, including manual ones ('Use when distributing Claude Code through your own channels'). DISABLE_INSTALLATION_CHECKS is documented. SDK 0.3.293 pairs with claudeCodeVersion 2.1.293.",
+    "source": "unpkg sdk.d.ts 0.3.293; npm view @anthropic-ai/claude-agent-sdk; code.claude.com/docs/en/env-vars"
+   },
+   {
+    "topic": "claude.ai login policy for Agent SDK apps",
+    "status": "confirmed",
+    "detail": "'Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. Use the API key authentication methods...' MineVibe must stay personal and not be distributed; offer ANTHROPIC_API_KEY as the compliant path.",
+    "source": "code.claude.com/docs/en/agent-sdk/overview"
+   },
+   {
+    "topic": "Minecraft EULA on redistribution",
+    "status": "confirmed",
+    "detail": "The EULA says 'Do not distribute or make commercial use of anything we've made without our permission'. It defines distributing as including to 'give copies of our game software or content to anyone else', and says 'You may not distribute any Modded Versions of our game or software'; mods without substantial Mojang code are fine. So client.jar, libraries and assets have to be downloaded from Mojang on first run, and only MineVibe's own mod ships in the bundle. Version 26.3 is the current release (piston-meta, released 2026-09-15). Temurin 25.0.4.1+1 aarch64 mac JRE is 56,208,642 bytes.",
+    "source": "minecraft.net/en-us/eula (fetched text); piston-meta.mojang.com/mc/game/version_manifest_v2.json; api.adoptium.net/v3/assets/latest/25/hotspot"
+   },
+   {
+    "topic": "Minecraft Microsoft account sign-in",
+    "status": "uncertain",
+    "detail": "Several consistent sources, including Microsoft Q&A, say new Azure app IDs get 403 'Invalid app registration' from api.minecraftservices.com until approved through aka.ms/mce-reviewappid. No Mojang primary page was found. Plan for offline singleplayer, or apply for approval; the EULA still requires owning the game.",
+    "source": "learn.microsoft.com/en-gb/answers/questions/5768276; mcproto.readthedocs.io/en/stable/usage/authentication/"
+   },
+   {
+    "topic": "Whether VMs literally run inside the app",
+    "status": "confirmed",
+    "detail": "With the `container` CLI, VMs run under container-apiserver and its plugins, which launchd starts in the gui/<uid> domain from binaries inside the bundle. They are not children of MineVibe and keep running after a MineVibe crash until it cleans up on the next launch. Lume VMs started through MineVibe's own `lume serve` are part of MineVibe's process tree. For literally in-process Linux VMs, link apple/containerization (VZ-backed, per-container IPs, needs macOS 26 and Xcode 26+, user-supplied kernel \u22656.14.9 with VIRTIO built in; a Kata kernel works). That needs com.apple.security.virtualization on the helper, which works ad-hoc.",
+    "source": "apple/container@1.5.0 SystemStart.swift/ServiceManager.swift; github.com/apple/containerization README; local xcodebuild -version (Xcode 27.0), swift 6.4"
+   },
+   {
+    "topic": "Local host baseline",
+    "status": "confirmed",
+    "detail": "macOS 27.0.1 (26A434), arm64 M5 Pro, 48 GiB RAM, 182 GiB free disk. Not installed: container, lume, Docker Desktop. OrbStack is running. No other VZ VM is running (last local run 2026-09-07). Only Temurin 17.0.20.1 is installed. ~/.local/bin/claude points to 2.1.284. bun is present. Firewall is on, stealth mode off, block-all off.",
+    "source": "local read-only: sw_vers, sysctl, df, which, java_home -V, socketfilterfw, pgrep, ls"
+   }
+  ],
+  "risks": [
+   "apple/container #2275 (open, macOS 27.0): if pfd wedges, `container system start` and every later CLI call hang forever, and `--timeout` only bounds the ping. MineVibe needs its own per-call timeout and kill, plus a clear error explaining the fix (turn on stealth mode, then reboot). The same fault would also stall Lume NAT VMs. This Mac is healthy right now (pfd exit 0, InternetSharing up), but stealth mode is off.",
+   "The launchd label com.apple.container.apiserver is fixed. A Homebrew or pkg install of `container` would collide with the bundled copy, and `system stop` would stop that install's containers too. Check the install root through `system status` before reusing an apiserver, and pin one version.",
+   "Linux PC lifecycle runs under launchd agents, not MineVibe child processes. After a crash, containers keep running until the reaper runs `container system stop`, or `launchctl bootout gui/$UID/com.apple.container.apiserver` if the health check fails.",
+   "`lume run --detach` creates VM processes that outlive the app. Use the MineVibe-owned `lume serve` HTTP API instead, and reap on startup. Lume's default store ~/.lume and port 7777 can clash with a user-installed Lume, so set --storage and a free port.",
+   "Local Network privacy: container-runtime-linux shows its own prompt (published ports reset without it), and MineVibe needs a grant to reach Lume or container VM IPs. Ad-hoc or self-signed signing can lose the grant on every rebuild, so sign with the free Apple Development identity and keep vendor binaries byte-identical.",
+   "The cua linux image has never been run on Apple container (cua tests it on docker, gVisor, KubeVirt and QEMU only). XFCE, PipeWire, Chromium and spacesd need a smoke test. Apple container ignores the image's HEALTHCHECK, so MineVibe must poll spacesd.",
+   "Bind mounts: files appear as root:root inside the container, creating a file with mode 0200 fails (#1344, which breaks std::filesystem::copy and Nix), and host-side edits fire no inotify events inside the container (#141). Watch-mode tools in the PCs won't see edits made on the Mac.",
+   "Lume Linux guests don't automount shared folders. They must run `mount -t virtiofs com.apple.virtio-fs.automount <dir>`, and folders with the same basename get ' (2)' names.",
+   "Resources: 48 GiB RAM. Container VMs don't hand freed memory back to macOS, each macOS guest takes 8 GiB, and there's a limit of 2 macOS guests. Disk: 182 GiB free versus a 24 GB macOS image download, a 150 GiB sparse disk and the pull cache, so prune after pulling.",
+   "VPN interaction: VPN clients are installed. apple/container #1881 (an exit node removes the container subnet route) and #2335 (host outbound IPv4 breaks on some networks) are both open.",
+   "CUA_ENV_TOKEN passed with -e stays out of argv but is stored in the container's config under the app root and shows in `inspect`. Use per-PC tokens and delete them along with the PC.",
+   "Keychain: claude runs `security` through PATH, and the SDK's env option replaces the whole environment. A stripped env that loses /usr/bin breaks login. N agents plus the user's CLI share one OAuth refresh token; how concurrent refreshes behave was not verified.",
+   "Claude.ai login in an Agent SDK product is against Anthropic policy unless approved. Keep MineVibe personal and offer an API-key mode.",
+   "Minecraft: distributing the client or a Modded Version is forbidden, so download on first run. Microsoft-account sign-in likely needs a Mojang-approved Azure app ID; otherwise only offline singleplayer works.",
+   "@trycua/cua 0.4.x is two weeks old and changing fast. cua pins Lume 0.6.0 while 0.6.1 is newest. Pin exact versions and re-run the smoke test on every bump.",
+   "Not verified without downloading or running: the signing identity of the binaries inside the installer-signed pkg, `codesign --verify --strict` of an outer bundle that contains ad-hoc nested code in Resources or Library, the bundled claude 2.1.293 using the same keychain mechanism as 2.1.284, and ad-hoc VZ actually starting on this Mac under 27.0.1."
+  ]
+ }
+}

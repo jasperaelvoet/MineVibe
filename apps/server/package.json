@@ -1,0 +1,29 @@
+{
+  "name": "@minevibe/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MineVibe orchestrator: bridge to the mod, agent runtime, PCs and launcher.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "minevibe-server": "./dist/main.mjs"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx --conditions=source src/main.ts dev",
+    "doctor": "tsx --conditions=source src/main.ts doctor",
+    "play": "tsx --conditions=source src/main.ts play"
+  },
+  "dependencies": {
+    "@minevibe/protocol": "*",
+    "pino": "^10.4.0",
+    "pino-pretty": "^13.2.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

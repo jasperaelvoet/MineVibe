@@ -1,0 +1,8 @@
+{
+  "t": "ui.toast",
+  "v": 1,
+  "text": "Ada has a question: press G",
+  "kind": "info",
+  "agentId": "ada",
+  "ttlMs": 5000
+}

@@ -1,0 +1,86 @@
+---
+title: MineVibe
+description: A hardcore Minecraft world where Claude Code agents live, survive and work at real computers. Pre-alpha, under construction.
+template: splash
+banner:
+  content: 'Pre-alpha: under construction. Nothing here is playable yet; these pages describe the plan.'
+hero:
+  tagline: One Mac app. One hardcore Minecraft world. A crew of Claude Code agents who keep you alive, and real computers on their desks.
+  actions:
+    - text: Getting started
+      link: /MineVibe/getting-started/
+      icon: right-arrow
+    - text: How it works
+      link: /MineVibe/architecture/
+      variant: secondary
+    - text: Source on GitHub
+      link: https://github.com/jasperaelvoet/MineVibe
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+:::caution[Pre-alpha: under construction]
+MineVibe is at milestone **M0** (foundations and spikes). There is no release and nothing to download yet.
+Everything on this site describes the approved design and is **planned** unless a page says otherwise.
+Pages will be updated as milestones land.
+:::
+
+## What MineVibe is
+
+You open `MineVibe.app` and you are standing in a Minecraft world with **hardcore survival** rules.
+There is no title screen, no multiplayer and no menu to quit to: the app is either open (you are in) or closed (you are out).
+
+<CardGrid stagger>
+	<Card title="A crew of Claude agents" icon="rocket">
+		Embodied Claude Code agents live in the world with real health and hunger. The first one, the
+		**CEO**, listens to you and can hire more agents once you approve.
+	</Card>
+	<Card title="Real computers in the world" icon="laptop">
+		In-game PCs are real sandboxes: Linux containers or macOS VMs. Their screens render live on the
+		monitors. You, or an agent, sit down and drive them with mouse and keyboard.
+	</Card>
+	<Card title="Talk in chat" icon="comment">
+		Agents speak in bubbles above their heads. You answer in normal chat: `@ada` reaches Ada, a
+		message with no mention reaches everyone. Agents with a question walk over to you.
+	</Card>
+	<Card title="Hardcore, with memory" icon="warning">
+		If you die, the world and its crew end and a new world begins. Your machines, the Vault (your
+		mounted folders) and the shared Codex survive.
+	</Card>
+	<Card title="Codex, Calendar, Meetings" icon="open-book">
+		A shared library where agents leave notes for each other, a calendar for scheduled work, and
+		meetings that gather the whole crew around a table.
+	</Card>
+	<Card title="Runs on your Mac" icon="star">
+		Agents, game, world and PCs all run locally. Agents use your own `claude` login through the
+		Claude Agent SDK. Minecraft and the mods are downloaded, never shipped.
+	</Card>
+</CardGrid>
+
+## Status
+
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| M0 | Foundations, monorepo, CI and docs skeleton, spikes S0 to S9 | In progress |
+| M1 | Bridge, boot straight into the world, Node launcher, mods installer | Planned |
+| M2 | CEO body, reflexes, bubbles, AgentScreen (scripted brain) | Planned |
+| M3 | Wandering brain, `@` chat routing, question cards, agents walking over to ask | Planned |
+| M4 | Linux PCs, sitting at a PC, PC config, budget, Vault | Planned |
+| M5 | Agents at PCs: model swap, PC tools, plan approval, kicking | Planned |
+| M6 | Crew: hiring, care reflexes, usage limits, roles | Planned |
+| M7 | Codex, Calendar, Meetings | Planned |
+| M8 | Hardcore loop: graves, diaries, succession, new worlds | Planned |
+| M9 | macOS PCs | Planned |
+| M10 | `MineVibe.app` bundle and first-run window | Planned |
+| M11 | Polish, soak test, Microsoft sign-in, binary releases | Planned |
+
+## Read next
+
+<CardGrid>
+	<LinkCard title="Getting started" href="/MineVibe/getting-started/" description="Requirements and what the first run downloads." />
+	<LinkCard title="Playing MineVibe" href="/MineVibe/playing/" description="Controls, the crew, hardcore rules and chat routing." />
+	<LinkCard title="PCs and the Vault" href="/MineVibe/pcs-and-vault/" description="PC types, resources and an honest security model." />
+	<LinkCard title="Development" href="/MineVibe/development/" description="Repo layout, dev loop, tests and spikes." />
+</CardGrid>

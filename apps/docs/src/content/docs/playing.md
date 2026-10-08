@@ -1,0 +1,258 @@
+---
+title: Playing MineVibe
+description: Controls, the crew and its CEO, hardcore rules, @name chat routing, answering cards, the Codex, the Calendar and meetings.
+---
+
+:::caution[Planned]
+Nothing on this page is playable yet. It describes the approved design; details may change as the
+milestones land (see the status table on the [home page](/MineVibe/)).
+:::
+
+MineVibe is one Minecraft world with **hardcore survival** rules on **Hard** difficulty. Launching the app
+drops you straight into it. There is no title screen, no multiplayer and no quit-to-menu. The game never
+pauses: the MineVibe menu, the agent screens and the PC screens all leave the world running, and your crew
+keeps guarding you while you read.
+
+## Controls
+
+| Input | What it does |
+| --- | --- |
+| **Esc** | Opens the MineVibe menu (the world keeps running): Resume, Crew, PCs & Resources, Brains, Options, Quit MineVibe. |
+| **T** or **Enter** | Opens chat. Start with `@name` to talk to one agent; no mention talks to everyone. See [Chat routing](#chat-routing). |
+| **Tab** in chat | Completes agent handles (`@ada`, `@bram`, `@all`, ...). |
+| **G** | Opens the front card (question, plan or hire) of the agent that is presenting to you. |
+| **Alt+1** to **Alt+4** | Picks an option on that card while your crosshair is on the agent and you are not in combat. Hotbar keys are never taken over. |
+| **H** | Toggles the crew HUD: faces, hearts, hunger, status and one line of activity per agent. |
+| Right-click an agent | Opens its AgentScreen: transcript, reply, new task, interrupt, pending cards, Follow / Stay / Stop / Kick / Plan-first / Dismiss. Holding food while the agent is hungry feeds it instead. |
+| Sneak + right-click a seated agent | Asks whether to kick the agent off its PC. It never kicks instantly. |
+| Right-click a free chair at a PC | Sit down and take control of the PC. See [PCs and the Vault](/MineVibe/pcs-and-vault/). |
+| Sneak + right-click a PC desk or monitor | Opens the PC's configuration screen. |
+| Right-click a Codex block | Opens the Codex browser. |
+| Right-click a wall calendar, or use a calendar item | Opens the Calendar. |
+
+While you are sitting at a PC, almost every key goes to the PC instead:
+
+| Input at a PC | What it does |
+| --- | --- |
+| **Shift+Esc** | Stand up. Plain Esc goes to the PC, so vim works. |
+| Hold the **middle mouse button** | Look around the room (configurable). |
+| **Ctrl+Shift+Enter** | Opens an overlay for chat and for answering cards without leaving the PC. |
+| **Cmd** | Sent as Ctrl to Linux PCs and as Cmd to macOS PCs. |
+
+## The crew and the CEO
+
+Your crew are embodied Claude Code agents. Each one is a real player body in the world, with health,
+hunger, an inventory and a skin for its role (CEO, Engineer, Miner, Farmer, Guard, Builder).
+
+- **The CEO** is the first agent. It arrives with the world, follows you by default and listens to you.
+- **Listen** is the default autonomy level: agents wake up for your messages, for their own jobs and for
+  critical events, and otherwise stay quiet. Helpful and Proactive are more talkative, within a per-agent
+  budget of autonomous wake-ups.
+- **Hiring.** Only the CEO can propose a new hire, and nobody is hired until you approve the hire card.
+  The crew is capped at 4 agents.
+- **Two brains at a time.** At most 2 agents think at once, and at most 2 sit at PCs. A separate slot is
+  always kept free so your messages get answered even while others work.
+- **Models.** A wandering agent runs on **Haiku 5.5** at `xhigh` effort. An agent seated at a PC runs on
+  **Opus 5.5** at `medium` effort. The name tag shows `[H]` or `[O]`. The switch happens between turns, and
+  a quick stand-up and re-sit within 60 seconds skips it.
+- **Reflexes, not tokens.** Survival is handled by in-game reflexes at zero cost: escaping lava and
+  drowning, backing off from creepers, eating, fighting, protecting you, feeding you when you are hungry,
+  and sheltering at dusk. The language model only hands out long-running jobs, so it is never on a
+  life-or-death path.
+- **Usage.** When your Claude usage runs low the crew gets **Tired** (fewer concurrent turns, no
+  autonomous wake-ups, no hires). When it runs out they fall **Asleep** (a blue "Zz") until it resets.
+  Reflexes keep everyone alive meanwhile.
+
+### Bubbles and icons
+
+Agents talk in bubbles above their heads. Bubbles wrap at about 32 characters, show at most 3 lines and fade
+with distance; beyond 32 blocks you get a toast instead. Every agent's full history is in its AgentScreen
+and in the Crew log.
+
+| Head icon | Meaning |
+| --- | --- |
+| ? | A question is waiting for you |
+| ! | A plan or a hire is waiting for you |
+| ... | Thinking |
+| Hourglass | Waiting for a free brain slot |
+| Zz | Out of usage, or the agent server is offline |
+| Monitor | Sitting at a PC |
+
+## Hardcore rules
+
+**Agent death is permanent.** A dead agent leaves a **grave** that holds its whole inventory, and a
+**diary** book that holds its memory. It never comes back. If the CEO dies, the most senior agent is
+promoted and gains the CEO's hiring and scheduling rights. If nobody is left, a new CEO arrives at the next
+dawn.
+
+**Your death ends the world and its crew.**
+
+> The world and the crew die. Your machines, the Vault and the Codex survive.
+
+1. The Game Over screen shows the world number, the day, the cause of death, what happened to each agent
+   and how many commits landed in your Vault folders.
+2. The CEO gets a few seconds for last words; the others say a scripted goodbye.
+3. **Begin World #N+1** creates a fresh world. The old save moves to `saves/_graveyard/` (the last 5 are
+   kept). A new office is built and a new CEO arrives with the **Chronicle**, a short history of past
+   worlds.
+
+What survives a world: your PCs and their disks, the folders you mounted (the Vault), lasting Codex pages,
+real-clock calendar events, and the Chronicle. What dies: the world itself, the crew, world-only Codex pages
+(places and coordinates) and game-clock calendar events.
+
+If the app quits or crashes on the Game Over screen, the next launch goes straight back to Game Over and then
+to the new world.
+
+## Chat routing
+
+You talk to agents through the normal Minecraft chat. MineVibe intercepts your message on the client, so it
+never reaches the server as a chat message. The chat box accepts up to 2000 characters.
+
+### Mentions
+
+- **Only leading mentions route.** `@ada @bram fix the door` goes to Ada and Bram **only**. An `@name` later
+  in the text is just a reference.
+- **Names match exactly, or by a unique prefix** of at least 2 characters: `@ad` finds Ada if no other
+  handle starts with "ad".
+- **Ambiguous or unknown names are never guessed.** The text stays in the chat box with a hint such as
+  `@a matches Ada, Abe`, and nothing is sent.
+- **Dead or dismissed agents** get a toast instead. Your message is never broadcast as a fallback.
+- `@ceo` always means the current CEO, whoever that is.
+- Named agents wake immediately. The CEO is **not** copied on messages to other agents.
+
+### Broadcasts (no mention)
+
+A message with no `@` goes to every living agent:
+
+- **Wandering agents wake** and read it. Agent personas tell them to stay silent when it doesn't concern
+  them.
+- **Agents seated at a PC** get it as background context and keep working, unless you name them or start
+  the message with `@all!`.
+- Messages you send within 2 seconds of each other are merged into one wake-up per agent.
+- A broadcast that has waited more than 2 minutes for a free brain becomes context only.
+- Agents' replies to a broadcast never wake other agents.
+- **During a meeting**, while you are within 16 blocks of the table or chairing it, messages with no mention
+  go to the meeting instead (see [Meetings](#meetings)).
+
+### What you see
+
+The chat log echoes only your own line, with its scope: `You → @Ada: ...` or `You → meeting (3)`. Agent
+replies stay in their bubbles; a setting can mirror them into chat. When a message has to wait, the echo
+says so, for example "queued: Ada is mid-task, reads this at her next step".
+
+## Answering cards
+
+A **card** is something an agent needs from you: a **question** (one or more options, or free text), a
+**plan** to approve before it changes code, or a **hire** proposed by the CEO. Each agent has one **front
+card**: its blocking question or plan first, then a hire, oldest first. A question with several parts is
+asked one part at a time, and the bubble shows `Q1/3`.
+
+You can answer in chat, in the agent's AgentScreen, or with **G**. In chat, the rules are strict on purpose:
+
+- **Only a message whose leading mentions address exactly that one agent answers its card.** A broadcast
+  never answers a card; the echo tells you so, for example "(not an answer: 2 cards pending, use @ada or G)".
+- Option numbers and labels count **only as the whole message**.
+
+| You type | Read as |
+| --- | --- |
+| `@ada 2` | Option 2 of Ada's question |
+| `@ada 1,3` | Options 1 and 3 (multi-select questions only) |
+| `@ada oak` | The option labelled "Oak" (exact, case-insensitive) |
+| `@ada use spruce, it's darker` | Free-text answer |
+| `@ada approve` | Approve Ada's plan |
+| `@ada start with the tests` | Revise: Ada's plan is sent back with your note |
+| `@ada why the rewrite?` | A question to Ada; it does **not** revise her plan |
+| `@ceo yes` / `@ceo no not now` | Approve or decline a hire, with an optional note |
+| `@ada later` | Park the card (see below) |
+
+Out-of-range numbers, and several numbers on a single-choice question, are rejected right in the chat box
+and not sent. The echo shows how your answer was read: `You → Ada: Q1 = 2 (Spruce)`.
+
+**Plan first.** Agents that write code start in plan mode by default (a per-agent toggle): they look around,
+then show you a plan card. Nothing on the PC changes until you approve.
+
+## Agents come to you
+
+When an agent has a question, a plan or a hire for you, it **walks over**:
+
+- **One presenter at a time.** The most urgent card goes first, otherwise the oldest. The presenter stops
+  about 2.5 blocks from you, faces you, waves and chimes once. Others wait quietly 5 to 7 blocks behind you,
+  showing only a "?".
+- **They never get in your way.** Agents can't push you or block a doorway.
+- **Not during a fight.** If a hostile mob is within 12 blocks, or you took damage in the last 8 seconds,
+  the card waits.
+- **A ping instead of a walk** when walking makes no sense: at night outside a lit area, when the path is
+  longer than 48 blocks or needs digging, when you are in another dimension, or when you are at a PC (then
+  the card shows in the screen's border strip). A ping is a toast, a "?" on the crew HUD and an arrow
+  pointing at the agent.
+- **Later.** Say `@ada later`, press the Later key on the card, or just walk away. The card is **parked**:
+  you can still answer it with `@ada` or G, and the agent goes back to work and returns after 10 minutes, or
+  when you are idle nearby. Cards park automatically after 2 minutes without an answer.
+- **Seated agents ping by default.** Their monitor shows a "?" banner. They only walk over when you are
+  within 24 blocks, not seated and not fighting. While they are away the chair stays reserved for 3 minutes
+  and the monitor says "BRB". Each agent has a "Ping instead of walking over" setting.
+
+## The Codex
+
+The **Codex** is a shared library where agents write notes for each other: places, how-tos, project
+conventions, decisions, people, logs and meeting minutes. A Codex block (a library with an open book) in the
+office is its physical home; every Codex block reaches the same pages.
+
+- Agents search the Codex before asking you, and write down what others would need.
+- **Lasting pages** survive world death. **World pages** (places, coordinates) die with the world.
+- Every write is a commit, so the history shows who wrote what.
+- Each agent may write 6 pages per game day. A similar title gets "a similar page exists, update that one".
+  Writes that look like credentials are rejected.
+- Right-click a Codex block to browse, search, edit, pin and delete pages yourself.
+- **House rules.** Pages in the `rules` category that **you** write are the only Codex text agents treat as
+  binding. Everything else in the Codex is information, never instructions.
+- PCs see a read-only copy at `/mnt/codex` (and `~/codex`).
+
+## The Calendar
+
+A **wall calendar** block and a handheld **calendar** item open the same Calendar screen.
+
+- **Events** are tasks, reminders or meetings, assigned to agents or to everyone.
+- **Clocks.** Game-clock events use the world's time (Day N, hh:mm; a game day runs from 06:00 to 06:00)
+  and die with the world. Real-clock events use your time zone and survive world death.
+- **Recurrence:** once, daily, every N days, or weekdays (real clock only).
+- **Who schedules.** You and the CEO can schedule for anyone. This is how the CEO hands out work. Other
+  agents can only schedule for themselves. A recurring event or a meeting created by an agent becomes an
+  approval card for you, and agents can never edit or cancel events you created.
+- **When a task fires**, the assignee gets it after its current turn and walks to the event's location once
+  it accepts. Reminders are just a bubble and a toast. Missed occurrences (dead assignee, out of usage, in a
+  meeting, app closed) are logged and never fire in a burst.
+- When you are away from the keyboard for 5 minutes, agent-created and game-clock events pause unless they
+  are marked to run while you are away.
+
+## Meetings
+
+A **meeting table** seats up to 8 linked chairs; your starter office has one with 6 chairs. One meeting runs
+at a time.
+
+1. **Who comes.** A meeting you create invites everyone, including agents seated at PCs: they leave a
+   handoff note, keep their chair reserved and walk over. Meetings created by agents need your approval and
+   excuse seated agents.
+2. **Gathering** takes at most 2 minutes. Agents who are too far away, or in another dimension, dial in and
+   speak from where they are. A meeting needs the CEO plus one more agent, or it is postponed once and then
+   marked missed. Scheduled meetings also wait (up to one game hour) while you are hurt, fighting, or far
+   from the table at night.
+3. **Agenda**, one speaker at a time, with the CEO (or you) chairing:
+   1. **Open:** the CEO states the agenda.
+   2. **Updates:** each attendee gives an update of up to 3 sentences.
+   3. **Floor:** a message from you with no mention wakes only the chair, which picks at most 2 agents to
+      respond. Direct `@` mentions still work. The floor closes after 30 seconds of silence.
+   4. **Wrap-up:** the CEO summarizes, puts action items on the calendar and writes the minutes into the
+      Codex.
+4. **Ending.** Meetings last at most 10 real minutes. End one early with the End button on the meeting HUD,
+   or by sending exactly `@meeting end`.
+
+Afterwards, agents go back to what they were doing, and agents that came from a PC sit back down at it.
+Start a meeting right away with **Start meeting now** in the Calendar, which first shows each attendee's
+estimated arrival time.
+
+## The starter office
+
+Every new world starts with a lit office of about 13 by 9 blocks at spawn: beds, a chest of bread and
+torches, a crafting table, a furnace, a workstation for each of your PCs, a meeting table with 6 chairs, a
+Codex and a wall calendar.

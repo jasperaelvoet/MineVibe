@@ -1,0 +1,24 @@
+{
+  "t": "world.next",
+  "v": 1,
+  "worldId": "world-8",
+  "gen": 8,
+  "summary": {
+    "worldId": "world-7",
+    "gen": 7,
+    "day": 5,
+    "cause": "Jasper was shot by Skeleton",
+    "killer": "minecraft:skeleton",
+    "crewFates": [
+      { "agentId": "ada", "name": "Ada", "role": "ceo", "fate": "lost_with_world" },
+      {
+        "agentId": "bram",
+        "name": "Bram",
+        "role": "miner",
+        "fate": "died",
+        "detail": "Fell into lava on Day 3"
+      }
+    ],
+    "vaultCommits": [{ "mount": "/Users/jasper/Code/foo", "commits": 14 }]
+  }
+}

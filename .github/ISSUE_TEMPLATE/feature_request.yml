@@ -1,0 +1,24 @@
+name: Idea or feature request
+description: Suggest something new, or a change to the design.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        MineVibe follows the plan in docs/design/PLAN.md. If your idea changes something there, say which section.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What do you propose?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

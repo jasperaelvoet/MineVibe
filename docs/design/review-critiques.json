@@ -1,0 +1,361 @@
+[
+ {
+  "issues": [
+   {
+    "severity": "blocker",
+    "area": "Security / sandbox boundary (7.4, 7.7, LumeMacDriver)",
+    "issue": "Linux PCs have outbound network on by default, and OrbStack lets containers reach Mac services through host.docker.internal / host.orb.internal. The OrbStack docs confirm this for Mac servers in general; whether it also reaches 127.0.0.1-only listeners is not stated and must be tested. If it does, `lume serve` on 127.0.0.1:7777 has NO auth and is exposed to every container. A prompt-injected agent could then use pc__bash to POST /lume/vms/<x>/run with sharedDirectories=[$HOME rw] and a 'setup' share pointed at a Vault folder it controls (holding its own env-token). It could also stop or delete VMs. That gives full host-home access and breaks 'agents are sandboxed inside PCs'. Section 7.7 only covers loopback publishing of spacesd and the bridge. It never considers container-to-host traffic.",
+    "fix": "(1) Never expose lume serve unauthenticated. Either the worker proxies it with a token on a random port, or it is bound somewhere containers can't route to. (2) Block container egress to the host gateway: a per-PC network with a firewall rule dropping the OrbStack host IP and host.docker.internal, or guest iptables owned by root and not the cua user. (3) Add an S5 pass criterion and a security test: from inside linux-1, curl host.docker.internal:7777, :<bridge port> and the other PCs' spacesd ports, and all must fail or be refused."
+   },
+   {
+    "severity": "major",
+    "area": "Security / host-side file tools (5.3, 5.4)",
+    "issue": "Host Read/Edit/Write/Glob/Grep run on the host against path-identical rw bind mounts the guest can write. The realpath check runs in PreToolUse, but Claude Code opens the file later. In between, an in-guest process (pc__bash, a run_in_background job, or a parallel tool call in the same turn) can swap a file for a symlink to ~/.ssh/id_ed25519 or ~/.zshrc. The link resolves on the host, so this is a TOCTOU race. Glob/Grep are also checked only on their root `path`. Entries reached through in-tree directory symlinks are not checked if CC's ripgrep follows links. The security test in 12.10 covers only a static symlink escape.",
+    "fix": "Either (a) route ALL file tools for Vault paths through in-guest PcFiles (spacesd upload/download, rg) so the host never opens agent-controlled paths, or (b) keep host tools but deny any call while that agent has a live guest process. Also block parallel pc__bash in the same turn, force no-follow for Glob/Grep, and re-check realpath plus inode after the call (PostToolUse) with a toast. Add a racing symlink-swap test loop to 12.10."
+   },
+   {
+    "severity": "major",
+    "area": "Requirement: 'full shell + file tools inside that PC' (5.3, 5.4)",
+    "issue": "File tools only work on Vault-mounted paths. If an agent clones a repo into /home/cua, edits /etc, or works in /tmp inside the PC, it only has bash (sed/cat heredocs). The PcFiles emulation (read/write/edit/glob/grep in the guest) exists only as the macOS fallback. The requirement says a full shell AND file tools inside the PC.",
+    "fix": "Register pc__read/write/edit/glob/grep (PcFiles) on every session as part of the stable alwaysLoad tool list. In ToolGate, Vault paths go to the host built-ins (or PcFiles, per the previous issue) and guest-only paths go to PcFiles. Keep them denied while wandering. Document this in the kickoff."
+   },
+   {
+    "severity": "major",
+    "area": "Seat transition state machine (5.5, 6.9)",
+    "issue": "There is no explicit per-agent seat FSM, and several races are undefined. (a) The P1 kickoff ('you're seated at linux-1') is already queued in GatedInbox when a kick, death, damage-unseat or PC-down arrives, so after the kick the agent receives a stale kickoff and runs it on Opus. (b) pendingTransition=seat is set but the kick lands before `result`. (c) A kick arrives while applyFlagSettings is still awaiting. (d) A voluntary stand and a kick both fire a swap. (e) A sit within the 60 s debounce window skips the swap, then a kick follows: which model and permission mode are now active? The bridgeSim test lists 'kick swap ordering' but nothing specifies the correct order.",
+    "fix": "Define SeatFSM states: wandering, walking_to_seat, seated_pending_swap, seated, standing_pending_swap. Add edges for stand, kick, damage, death, pc_down, world_end, dismiss, app_restart and worker_restart. Serialize transitions per agent with one async mutex and a monotonically increasing seatEpoch. Tag queued inbox items, pending cards and in-flight pc tool calls with the epoch, and drop or deny them when it changes. Unit-test every edge, including the debounce path."
+   },
+   {
+    "severity": "major",
+    "area": "sit_at_pc semantics and seat races (5.5, 4.2 agent.seat, 6.5)",
+    "issue": "Several sit_at_pc cases are undefined. (1) Walking to a distant PC can take far longer than an RPC timeout, but sit_at_pc has no wait_s/running/job.done semantics, unlike other long skills. (2) No error codes for: PC not running (off/booting/no_capacity/reimaging/error), maxSeated=2 reached, agent dead, NO_SERVER. agent.seat only lists OCCUPIED|UNREACHABLE|COOLDOWN. (3) Two agents racing, or the player vs an agent: there is no reservation, so the loser walks across the map and only then gets OCCUPIED, and the tool text for that case is unspecified. (4) The generic `ride{pos}` tool can startRiding a minevibe:seat and bypass sit_at_pc, PcRegistry and the model swap. (5) The ChairBlockEntity 'Use: spawn and mount a seat' must reuse the existing seat entity, or two seats at one chair give two occupants.",
+    "fix": "Make sit_at_pc a job: check PC status==running and the maxSeated cap before walking, then place a soft reservation (claimedBy + TTL, shown on the chair as 'Bram is coming'). It returns running and later job.done or a typed failure: PC_DOWN|SEAT_CAP|RESERVED|OCCUPIED_BY_PLAYER with a teaching message. Exclude minevibe:seat from `ride`. Chair use must find the existing seat first. Add GameTests and bridgeSim tests for agent-vs-agent and player-vs-agent races."
+   },
+   {
+    "severity": "major",
+    "area": "Guest processes after kick / death / dismiss / world end / quit (5.4, 5.5, 6.12)",
+    "issue": "pc__bash spawns (foreground up to 600 s, plus run_in_background jobs) keep running inside the PC after q.interrupt(), a kick, agent death, dismiss or world end. PCs persist across worlds, so an ownerless `npm test --watch`, build or script can keep writing to the Vault indefinitely. The ShellMirror terminal is also left open. None of the kick, death or world-end sequences say what happens to them.",
+    "fix": "Tag every spawn with agentId+seatEpoch. On any unseat, kill the process group via spacesd kill-by-tag or `pkill -g` and close the ShellMirror window. Alternatively, offer an explicit 'leave running' that records a handoff note. On world end and app quit, kill all agent-owned processes. Verify with `docker top` in the PC driver tests."
+   },
+   {
+    "severity": "major",
+    "area": "App/worker restart while an agent is seated (5.1, 5.10, 8)",
+    "issue": "The seat entity is 'not saved', and the session constructor hardcodes model claude-haiku-5-5. After an app restart, the body loads unseated, but the resumed transcript thinks it is mid-task at the PC, and the permission mode (plan/acceptEdits) is unknown. After a worker-only crash (P2 re-fork), the mod still says the agent is seated while Node has lost pendingTransition, model state and held-key state. Neither case is specified, and neither is tested.",
+    "fix": "App restart: every agent loads unseated on Haiku/xhigh with mode default, plus an injected '[App restarted: you are no longer seated at linux-1; your last work is in <mount>]'. Worker restart: Node rebuilds seat state from a PcRegistry snapshot in the mod's hello and re-applies Opus/medium for still-seated agents. Add both to bridgeSim and failure injection."
+   },
+   {
+    "severity": "major",
+    "area": "Hardcore reset robustness (6.12, 6.13)",
+    "issue": "The world advances only when the player clicks [Begin World #N+1]. If the user quits (Cmd+Q), the JVM crashes, or the worker is offline between player.died and the click, the next launch reopens current-world.json, which is the dead hardcore world. That gives the vanilla hardcore death or spectator state, so the 'no leave world / new world on death' loop breaks. If the worker is down at death, player.died is lost and the button never enables. The hello phase enum (boot|in_world) has no 'dead' value.",
+    "fix": "On player.died, Node durably marks the world dead and allocates the next worldId before anything else. The mod also writes a dead marker into world data and re-sends player.died until it is acked. BootScreen, on a dead world, goes straight to GameOver and then a fresh level. Enable the button after a timeout using a local fallback summary. Test: kill the app on the GameOver screen, relaunch, and land in World #N+1."
+   },
+   {
+    "severity": "major",
+    "area": "Interaction broker vs chat input (5.6, 5.8, 6.11)",
+    "issue": "While AskUserQuestion or ExitPlanMode is pending in canUseTool, the turn is still in flight. chat.send 'reply' is delivered with priority 'next', so a player who types the answer in the message box (the natural reaction) is ignored until the card is clicked. Cleanup is also unspecified for these cases: Interrupt with a pending card; kick while a plan card is pending; agent death, dismiss or world end with pending cards; a pending HIRE card when the Lead dies (who owns it, and who does the hire 'report to'?). The cards re-shown after an app restart have no canUseTool promise left to resolve, so it is unclear how the answer is delivered.",
+    "fix": "Define these rules. A Reply while a question is pending is submitted as the free-text answer to the oldest unanswered question. A Reply while a plan is pending is treated as Revise feedback. Interrupt, kick, death, dismiss or world end resolve the card as deny with a reason and remove it. A dead Lead's hire card transfers to the promoted Lead or is cancelled with a toast. An answer to a re-shown post-restart card is sent as a normal user message '[Answer to your earlier question] \u2026'."
+   },
+   {
+    "severity": "major",
+    "area": "Agent brain (P4) failure handling (5.1, 8)",
+    "issue": "Only worker and JVM crashes are covered. Unspecified: a claude subprocess crash or exit; result error subtypes; API overloaded or 5xx; auth expiry mid-session; and context-window overflow. The overflow case matters most: after a long seated Opus session full of screenshots, swapping back to Haiku re-reads everything uncached and may exceed Haiku 5.5's window. There is no 'brain broken' UI state and no retry policy.",
+    "fix": "AgentSession supervisor: resume with backoff, at most N restarts per 10 min, then a 'brain offline' head icon and toast with a Retry button in AgentScreen. Before swapping down, check context size against the Haiku window and trigger compaction, or trim screenshots. Add these failures to 12.9 failure injection and to the S3 measurements."
+   },
+   {
+    "severity": "major",
+    "area": "Survival while seated (6.3, 5.8)",
+    "issue": "P2 critical wakes ('starving with no food', 'own HP critical') are delivered with priority 'next', and a seated Opus turn may run up to 45 min. UnseatToFight fires only when attacked. On Hard difficulty starvation kills, so a seated agent with no food can starve to death mid-turn. The brief explicitly wants real survival stakes, but the agent should at least get a chance to react.",
+    "fix": "Add an UnseatToSurvive reflex: seated, food \u2264 6 and no food in inventory, or air or fire hazard \u2192 stand up and emit pc.unseat{reason:'survival'}. Deliver critical wakes for seated agents with priority 'now' (interrupt), within the existing rate limits."
+   },
+   {
+    "severity": "major",
+    "area": "Packaging: LaunchServices environment (8)",
+    "issue": "An .app launched by double-click gets PATH=/usr/bin:/bin:/usr/sbin:/sbin. Only the Node path is hardcoded in the zsh stub. The worker's execa('docker') (at /opt/homebrew/bin/docker), lume, the brew fallback, and the allowlisted PATH passed to claude agents will fail or differ from dev. In dev everything works because it runs from the shell.",
+    "fix": "Preflight resolves absolute paths for docker, git, lume, osascript and claude and stores them in settings. The stub exports an explicit PATH (/opt/homebrew/bin:~/.local/bin:\u2026). agentEnv builds PATH explicitly rather than inheriting it. Add an M9 check that the app works launched via `open MineVibe.app` from a clean env."
+   },
+   {
+    "severity": "major",
+    "area": "Offline PC toggle (6.11, 7.7)",
+    "issue": "Contradiction: 'Offline PC' applies `--network none`, but the driver reaches spacesd only through `-p 127.0.0.1::3211`. Port publishing does not work with network none, so an offline PC becomes unreachable (no screen, input or shell).",
+    "fix": "Implement offline as an egress-deny firewall on a per-PC network while keeping the published spacesd port. Alternatively, reach spacesd via the container IP on an internal network if S5 confirms OrbStack routes it. Otherwise drop the toggle until S5 validates an approach."
+   },
+   {
+    "severity": "major",
+    "area": "PC UI states and consent flows (4.2 pc.state, 6.6, 6.7, 7.1, M8)",
+    "issue": "The pc.state status enum (off|booting|running|error|no_capacity|reimaging) and the LED BlockState are missing these states: pulling/downloading with % (linux image, and the ~24 GB macOS pull); awaiting_consent (Lume install, macOS download, brew); stopping; restarting/remounting (Apply with mount change); engine_down (OrbStack not running or failed to start after 30 s); macos_slots_full (distinct from RAM no_capacity); unplugged/orphaned (item not placed). The plan says 'with user consent at M8' but specifies no in-game consent dialog for Lume or the macOS download.",
+    "fix": "Extend the enum and render each state on the monitor, LED, HUD hover line and PcConfigScreen. Spec an in-game consent modal showing what will be downloaded or installed, its size and source, a free-disk check, and Cancel. Define what an agent or player sees when sitting at a PC in each non-running state (input ignored, explanation shown)."
+   },
+   {
+    "severity": "major",
+    "area": "Budget enforcement at boot and under drift (7.2, 7.4)",
+    "issue": "The admission rule applies to edits and new PCs. It does not say which PCs boot when bootAll(enabled) exceeds the pools. That can happen if the OrbStack cap was lowered, other containers grew, maxAgents was raised (the claude reserve is hardcoded \u00d7 4 although the range is 1\u20136), or there are three macOS PCs. Containers without a memory limit (an unrelated restart-looping container) have no defined accounting. Runtime OOM-kill: 12.9 expects 'one auto-restart' but 7.4 sets no restart policy and no docker-events watcher. Disk is not budgeted for Linux PCs, and one agent can fill OrbStack's shared disk.",
+    "fix": "Deterministic boot priority (pinned or last-used first); the rest get no_capacity with a reason. Count unlimited containers by observed usage. Recompute reserves from the actual maxAgents setting. Add a docker events watcher: one restart, then error with a toast. Show OrbStack disk usage in the budget bars with a low-disk warning. Fix the 12.9 vs 7.4 contradiction."
+   },
+   {
+    "severity": "minor",
+    "area": "Third macOS PC (7.1, 7.4)",
+    "issue": "Refusing a third start is covered, but several cases are not. Which two macOS PCs boot at launch when three exist? There is no explicit 'stop mac-1 to start mac-3' swap UX. Apple's 2-VM limit is system-wide, so the user's other Lume/UTM/Parallels macOS guests also count; counting only MineVibe's running PCs is wrong, and VZ errors must be mapped too. macOS CPU/RAM edits need the VM stopped (`lume set`), but Apply only warns about restarts for mount changes. Two 150 GiB sparse disks can outgrow the 199 GiB free.",
+    "fix": "Spec the boot order, a Start button that offers 'Stop mac-1 and start mac-3?', counting via `lume ls` plus mapping VZ start errors to macos_slots_full, a restart warning for resource edits on macOS, and a disk-growth warning threshold."
+   },
+   {
+    "severity": "minor",
+    "area": "Player death while agents are mid-turn (6.12)",
+    "issue": "endWorld step 1 does not say to interrupt in-flight turns first; a seated agent may be mid-way through a 10-minute pc__bash. It does not say whether the 10 s last-words turns bypass maxConcurrentTurns (4 agents with 2 slots means \u2265 20 s), or what happens in Tired/Asleep usage mode or with the bridge or network down. In-flight mc skill calls will hit NO_SERVER after disconnect.",
+    "fix": "Spec this order: interrupt all turns and kill guest processes. Run last-words turns in parallel, outside the cap, under one global 10 s deadline. Use scripted last_words barks when usage is asleep or a brain is unavailable. Then close the queries. Treat NO_SERVER after world end as silent."
+   },
+   {
+    "severity": "minor",
+    "area": "Physical PC robustness in a survival world (6.6)",
+    "issue": "Creeper explosions (with mobExplosionDropDecay), lava, cactus or item despawn can destroy a desk without leaving the pc_id item, which orphans the sandbox. There is no recovery UI. Agents' mine, dig or collect jobs can break desks and unplug PCs. Agents can also craft and place workstation items, which creates new sandboxes and spends host resources without the player's consent.",
+    "fix": "Make desk, monitor and chair blast-proof and immune to mob griefing, always drop the item, and refuse agent skills that target minevibe blocks. Add an ESC \u2192 PCs 'Re-place / give item' action for orphaned pcIds. Require a player confirmation card (or player-only placement) before a new workstation item creates a sandbox."
+   },
+   {
+    "severity": "minor",
+    "area": "Dismiss and crew-size edge cases (5.7, 6.11)",
+    "issue": "Several dismiss cases are unspecified. Dismissing a seated or mid-turn agent: unseat, interrupt, kill guest processes, clear cards. The dismissed agent's inventory: dropped, or does it vanish? Dismissing the Lead: promotion, or a newcomer at dawn? Lowering maxAgents below the current crew size.",
+    "fix": "Dismiss runs the same teardown as death except grave, diary and memorial: drop the inventory at the agent's feet and promote the most senior agent if it was the Lead. Lowering the cap never evicts agents; it only blocks hires."
+   },
+   {
+    "severity": "minor",
+    "area": "Internal contradictions / ambiguities",
+    "issue": "(a) 5.1 sets both top-level settings.effortLevel='xhigh' and per-model modelSettings efforts, then swaps with applyFlagSettings({effortLevel}). The precedence between top-level and per-model effort is unspecified and could silently pin Opus to xhigh or Haiku to medium. (b) 5.10 says Claude's transcripts are 'left in place, archived with the world'. Archiving means moving files inside the user's ~/.claude, and dozens of MineVibe sessions will clutter the user's `claude --resume` and desktop session lists. (c) M2 says 'spawns at the desk', but agent.spawn.at only allows office_door|near_player|saved. (d) T is reused as Shout while release builds unbind the chat keys, with no KeyMapping registration and no shout input UI specified. (e) The claude_code preset injects host env (darwin, cwd in Application Support, not a git repo) while the agent's shell is Ubuntu in a container.",
+    "fix": "S3 tests effort precedence explicitly and uses one mechanism only. Decide whether transcripts stay in ~/.claude untouched or CLAUDE_CONFIG_DIR is used for isolation (the latter interacts with keychain login; S2). Add a spawn location 'desk'. Register a MineVibe KeyMapping for Shout with a small non-pausing input screen. Have the persona append override the env facts ('your shell runs in <PC> Ubuntu 24.04 as user cua')."
+   },
+   {
+    "severity": "minor",
+    "area": "Fake-player chat noise (6.2)",
+    "issue": "placeNewPlayer and remove broadcast vanilla 'Bram joined/left the game' messages, and agent deaths go to vanilla chat. In dev (chat enabled) this contradicts 'agents talk via bubbles, not vanilla chat'. In release the death message is invisible, yet 9.1 relies on it.",
+    "fix": "Add a mixin to suppress join/leave broadcasts for agent UUIDs. Route agent death text to a bubble plus toast instead of system chat."
+   },
+   {
+    "severity": "minor",
+    "area": "Missing agent/UI states (6.10, 6.11)",
+    "issue": "Several screen states are unspecified. AgentScreen open when the agent dies, despawns or the world ends. AgentScreen while the bridge is offline: is send disabled or queued? A 'walking to PC / reserved' activity state. The kick-cooldown state. While the player is in PcControlScreen (a 92% overlay), agent bubbles, questions and the G hotkey are hidden or captured by the PC, so the player can't see or answer without standing up. Whether the ESC Crew roster can open a far agent's AgentScreen. Whether Stop also interrupts an in-flight brain turn. AskUserQuestion with 2\u20134 questions in one call (the mock shows one).",
+    "fix": "Add an overlay toast strip and a reserved chord (e.g. Shift+G) in PcControlScreen to open pending cards. Disable send with a 'queued' label when the bridge is offline. Roster rows open AgentScreen. Stop = job cancel plus optional brain interrupt. Show a dead or archived read-only transcript view. Use a multi-question card layout."
+   },
+   {
+    "severity": "minor",
+    "area": "'No other UI' / first launch (8, 6.11)",
+    "issue": "First launch requires `npm run setup` in Terminal, and double-clicking the app before setup is undefined. The Vault picker uses osascript `choose folder`, a native dialog spawned from an LSUIElement process. It can open behind a fullscreen Minecraft window or in another Space. The brew, Lume and JDK consents also happen outside the game. There is no onboarding for the custom controls (G/H/T, right-click an agent, Shift+Esc) because tutorialStep is none.",
+    "fix": "The .app detects missing setup and runs it with a minimal progress window, or opens Terminal with an explanation. Make an in-game folder browser the primary picker and osascript optional (activate it or leave fullscreen first). The first world's Lead greeting includes a scripted zero-token controls tour."
+   },
+   {
+    "severity": "minor",
+    "area": "Vault path policy and macOS TCC (6.11, 7.3)",
+    "issue": "The refusal list blocks ~/.ssh, ~/.aws, ~/.config, ~/.claude, ~/Library and / as mount targets. It does not refuse $HOME itself or any ancestor of those directories: mounting ~ rw exposes everything. TCC-protected folders (~/Documents, where this project lives, plus ~/Desktop, ~/Downloads and iCloud Drive) will trigger privacy prompts or silent failures for OrbStack, node and the claude binary, and this isn't planned for.",
+    "fix": "Refuse any path that equals or contains a sensitive directory, including $HOME. Detect TCC-protected locations and show which app needs Files & Folders access before mounting. Add this to the security tests."
+   },
+   {
+    "severity": "minor",
+    "area": "Claude binary choice vs requirement (5.2)",
+    "issue": "The brief says spawn the user's own logged-in claude binary, as T3 Code does. The local CLI is 2.1.284, so the plan will silently use the SDK-bundled 2.1.293 by default. That is technically justified (Haiku 5.5 effort), but it is a deviation the user never approved, and keychain behaviour for a different binary path is only assumed.",
+    "fix": "Make it an explicit setup step: offer `claude update` with consent, falling back to the bundled binary with a visible notice. S2 must confirm the bundled binary gets no keychain prompt across several launches."
+   },
+   {
+    "severity": "minor",
+    "area": "Agent interactivity coverage (6.5)",
+    "issue": "'Full interactivity' is mostly covered by coarse jobs, but there is no path for villager trading or other merchant menus, enchanting, anvil, brewing, smithing, stonecutter or loom, or for generic container slots beyond chest list/deposit/withdraw (barrel, shulker, hopper). Following the player through a Nether portal, and agents changing dimension in general, is not addressed.",
+    "fix": "Add a low-level generic `menu{at|entity, action: open|list|click_slot|quick_move|close}` tool for menus without a dedicated job. Specify follow and goto across dimensions (portal travel for fake players), and add a GameTest."
+   },
+   {
+    "severity": "minor",
+    "area": "Start-up 'listens to the player' behaviour (5.8)",
+    "issue": "The brief says the default agent 'at the start listens to the player'. The default autonomy is Helpful, which adds an idle nudge after 2 minutes and social wakes, so the Lead may act and spend usage before the player says anything.",
+    "fix": "Start each new world's Lead in Listen autonomy until the first player message (or keep Listen as the default) and make the choice explicit."
+   },
+   {
+    "severity": "minor",
+    "area": "Frame transport on the single control WebSocket (2.3, 4.3, 7.5)",
+    "issue": "Tier B sends raw BGRA at 4 MB per frame and 30 fps (about 123 MB/s) over the same WebSocket as control traffic. Control messages are 'never dropped' but are delayed behind multi-MB binary frames. That adds latency to skill results, seat and kick events, and bubbles exactly while the player is seated.",
+    "fix": "Use a second authenticated WebSocket for frames only (the 'one WebSocket' principle is about control), or default focus mode to JPEG. S4 should measure control-message latency under frame load."
+   },
+   {
+    "severity": "minor",
+    "area": "Crash loops and lume serve lifecycle (6.13, 7.4, 8)",
+    "issue": "An integrated-server crash (a mod exception in a tick) leads to DisconnectedScreen \u2192 BootScreen \u2192 reopen, an endless crash loop with no safe mode. `lume serve` runs as a child of the worker. If the worker crashes and is re-forked, it is unspecified whether running macOS VMs die with lume serve.",
+    "fix": "Add a crash counter: after 2 crashes in 5 min, reopen with agents frozen and show a toast and a log path. Run lume serve under the supervisor (P1) or as a detached daemon, and add 'kill worker while mac-1 runs' to S6 and the failure tests."
+   },
+   {
+    "severity": "minor",
+    "area": "Verification gaps (10, 12)",
+    "issue": "The plan has no tests for: agent-vs-agent and player-vs-agent seat races through the full Node+mod path; a kick with a queued kickoff or a pending plan card; agent death while seated (Node teardown); app restart and worker restart while seated; quitting at GameOver and relaunching; guest processes killed on unseat; symlink-swap TOCTOU; container-to-host loopback reachability; agents caring for each other (ShareFood, protect ally); three macOS PCs at boot; budget drift. S6 lacks macOS screenshot, stream, input and spawn checks. Effort verification relies on a weak 'thinking-token proxy'.",
+    "fix": "Add GameTests agent_shares_food and agent_protects_ally. Add bridgeSim cases for every SeatFSM edge and the restart and reconnect variants. Add security tests for TOCTOU and host-loopback access, an E2E 'quit at GameOver \u2192 relaunch', and S6 criteria for screen, stream, input and spawn on the macOS guest. For effort, record the applied effort from a deterministic source (init or settings echo after each applyFlagSettings) instead of inferring it."
+   }
+  ],
+  "missingRequirements": [
+   "PARTIAL - 'Agents are sandboxed inside PCs; no direct host shell': there is no host shell, but host-side file tools on writable bind mounts allow a symlink TOCTOU race, and Linux PCs can reach host services through OrbStack's host.docker.internal (likely including the unauthenticated Lume REST API, to be verified in S5). Both undermine the sandbox.",
+   "PARTIAL - 'PC control: full shell + file tools inside that PC': file tools only work on Vault-mounted paths. Guest-only paths (e.g. /home/cua) are reachable only through bash (PcFiles exists only as the macOS fallback).",
+   "PARTIAL - 'Player can kick an agent off a PC' (mid-task): interrupt, model swap and the [KICKED] message are specified. Purging the queued kickoff, resolving a pending plan card, cancelling pendingTransition, and killing guest processes the agent started are not.",
+   "PARTIAL - 'Only one occupant per PC': non-forced startRiding plus PcRegistry is sound. There is no reservation or race UX (agent vs agent, player vs agent), the `ride` tool can bypass sit_at_pc, sit_at_pc has no long-walk job semantics, and there is no check that the PC is running.",
+   "PARTIAL - 'Player replies / answers plan-mode and multiple-choice questions': cards are specified, but a typed Reply while a question or plan is pending is blocked (priority 'next' behind the pending canUseTool). Card cleanup on interrupt, kick, death or world end, and answering after a restart, are undefined.",
+   "PARTIAL - 'When the PLAYER dies, MineVibe restarts in a NEW world': the happy path is specified, but quitting or crashing on the GameOver screen (or the worker being offline at death) reopens the dead hardcore world.",
+   "PARTIAL - 'Launching drops you straight into ONE world; no other UI': first launch requires Terminal `npm run setup`. The Vault picker is a native osascript dialog, Lume, macOS and JDK consents happen outside the game, and the double-click PATH environment is unhandled (docker not found).",
+   "PARTIAL - 'Starting the game boots the world's PCs' / capacity indicator: boot order is undefined when enabled PCs exceed the pools or when there are three macOS PCs. The status enum lacks downloading, awaiting-consent, stopping, remounting, engine-down, macOS-slots-full and orphaned states.",
+   "PARTIAL - 'Spawn the user's own logged-in claude binary (T3 Code model)': the plan defaults to the SDK-bundled 2.1.293 because the local CLI is 2.1.284. Justified, but it is a silent deviation the user should approve (or setup should offer `claude update`).",
+   "PARTIAL - 'Full interactivity with the Minecraft world': no path for trading, enchanting, anvil, brewing, smithing, stonecutter or other menus, generic container slots, or dimension travel and following through portals.",
+   "PARTIAL - 'At the start it listens to the player': the default autonomy is Helpful (idle nudges), not Listen.",
+   "PARTIAL - 'Agents must take care of the player and each other' (hardcore): the reflexes are specified, but seated agents can starve during a 45-minute Opus turn because critical wakes are 'next'. Agent-to-agent care has no verification (no ShareFood or protect-ally test).",
+   "UNSPECIFIED FLOWS - agent death while seated (pending cards, guest processes, transition state); app or worker restart while seated; world end while agents are mid-turn (interrupt order, cap bypass, asleep fallback); claude subprocess crash or context overflow after the Opus\u2192Haiku swap; dismissing a seated agent or the Lead; desk destroyed by an explosion (orphaned PC); agents crafting or placing workstations, which creates sandboxes without consent.",
+   "COVERED concretely: Fabric mod + Node agentic server architecture; boot-to-world mixins, non-pausing ESC menu, no multiplayer or LAN; a single Lead at world start; fake-ServerPlayer bodies with real HP, hunger and inventory; head bubbles and AgentScreen (read, reply, new task, interrupt); confirmed embodied hires (Lead only, crew cap); Agent SDK subscription auth with env allowlist and init assertions; Haiku/xhigh \u2194 Opus/medium turn-boundary swapping with a close+resume fallback; Linux and macOS PC types with the 2-VM limit and a greyed Windows; per-PC config screen with host budget bars; Vault mounts with path identity and ro options; cua screen control + pc__bash; agent permadeath decision plus an explicit persist/reset table; concurrency cap, usage governor, crew cap and seated cap."
+  ]
+ },
+ {
+  "issues": [
+   {
+    "severity": "blocker",
+    "area": "Security / PC network isolation (OrbStack loopback, Lume REST, macOS guest creds)",
+    "issue": "OrbStack forwards host.docker.internal / host.orb.internal to services bound only to the Mac's 127.0.0.1. In orbstack/orbstack#2413, a Postgres listening on 127.0.0.1 was reached from inside a VM. The v2.1.2 fix covered only --isolated Linux machines, not Docker containers. `lume serve` binds 127.0.0.1:7777 with no authentication (libs/lume/src/Server/Server.swift: bind(host:\"127.0.0.1\"); no auth or token code anywhere in it). Its POST /lume/vms/:name/run accepts any `sharedDirectories[].hostPath`, `storage` or `diskPath` (Requests.swift RunVMRequest). Linux PCs have outbound network by default, so an agent shell in any Linux PC can stop and re-run a macOS PC with $HOME shared read-write. Second problem: cua's macOS image uses account `lume` with password `lume` and passwordful sudo (libs/images/macos/files/install-guest.sh and sanitize-guest.sh; SSH is used by `lume ssh`). OrbStack traffic exits through the Mac's network stack, so a Linux-PC agent can probably SSH into the mac VM's NAT IP and get root there without sitting in the seat. That breaks single occupancy and exposes the mac PC's Vault. Containers on the default bridge can also reach each other's spacesd on :3211; it is token-protected but needlessly exposed. Section 7.7's claim that \"loopback only + tokens\" is enough does not hold.",
+    "fix": "1. Do not run a long-lived unauthenticated `lume serve`. Drive the VMs with the lume CLI, one call at a time, or put the API behind a unix socket or authenticating proxy.\n2. At macOS provisioning, rotate the `lume` password (including kcpassword and the keychain), disable password SSH / Remote Login, and run VMs with `vnc:\"disabled\"`.\n3. Put each Linux PC on its own user-defined network. Block egress to host.docker.internal, host.orb.internal, 192.168.64.0/24 and other RFC1918 / link-local ranges with an egress proxy or firewall that the agent cannot change. In-container iptables is not enough, because the agent has NOPASSWD sudo.\n4. Add to S5: from inside a PC, connections to host.docker.internal:<bridge port>, host.docker.internal:7777, the mac VM IP:22 and another PC's IP:3211 must all fail."
+   },
+   {
+    "severity": "major",
+    "area": "Security / rw Vault lets the agent run code on the host",
+    "issue": "Inside the PC the agent has bash and root on the read-write mount, so it can plant code that runs on the host. Examples:\n- In .git/config: core.fsmonitor, core.hooksPath, gpg.program + log.showSignature, filter.* or diff.*.textconv, include.path.\n- .envrc (direnv), .vscode/tasks.json (runOn folderOpen), .husky/, package scripts.\n\nThe user's zsh git prompt or VS Code then runs `git status` on the host, which executes fsmonitor. MineVibe's own WorldLifecycle also runs host `git -C <mount> log` against config the agent controls.\n\nThe read-only `.git/hooks` overlay exists only in the container's mount namespace. `mv .git .git.old && cp -a .git.old .git` replaces it on the host side. vaultTripwire checks only hooksPath and the hooks directory mtime, and only after the session ends. ToolGate's .git/hooks and .git/config denials apply only to host Edit; container bash bypasses them. In addition, a hook 'allow' approves writes to Claude Code's own protected paths (.vscode, .husky, .envrc, .npmrc, gradle-wrapper.properties).",
+    "fix": "1. In the UI, describe a read-write mount honestly: the agent can run code on your Mac. Default new mounts to read-only, or give the PC its own worktree or clone and bring changes back with a host-side helper.\n2. Run every host git call with `-c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false`, or run the Chronicle commit count inside the PC.\n3. Make vaultTripwire continuous (fs watch) and quarantine on change. It should scan for exec-capable git keys (core.fsmonitor, sshCommand, pager, gpg.program, filter.*, diff.*.textconv, include*.path, `!` aliases) and for .envrc, .vscode/, .devcontainer, .husky, .pre-commit-config.yaml and package-script changes.\n4. Have ToolGate deny, or ask the player about, writes to Claude Code's protected-path list."
+   },
+   {
+    "severity": "major",
+    "area": "Security / Vault mount validation and host file tools",
+    "issue": "The refused-path list (anything outside $HOME, ~/Library, ~/.ssh, ~/.aws, ~/.config, ~/.claude, /) does not refuse $HOME itself or any folder that contains a refused one. Mounting ~ read-write hands container root ~/.ssh, ~/.zshrc (host code on the next shell), ~/.docker, ~/.gnupg, ~/.netrc, ~/.npmrc and ~/.orbstack.\n\nHost-side Read/Edit rely only on ToolGate's realpath check. A background process in the container can swap a path component for a symlink to an absolute host path between the hook and the tool. Path identity makes such symlinks resolve on the host. Claude Code re-confirms the approved location and refuses symlinked targets, which narrows this race, but Glob/Grep traversal is not covered.",
+    "fix": "1. Reject a candidate mount if it equals, contains or sits inside any refused path. Refuse $HOME, the roots of ~/Documents and ~/Desktop, and any folder that holds dotfile configuration. Prefer an allowlist, for example a git repo or a folder under a chosen projects root.\n2. Add defense in depth with flag-layer `settings.permissions.deny` rules, such as Read(~/.ssh/**), Edit(~/.zshrc) and Read(//Users/<u>/Library/**). Deny rules still apply after a hook allow, and the permissions docs say they check both the requested path and its symlink target."
+   },
+   {
+    "severity": "major",
+    "area": "Agent runtime / plan mode is not enforced",
+    "issue": "ToolGate returns `allow` for Edit/Write under read-write mounts. According to hooks.md, a PreToolUse 'allow' skips the permission prompt; the only exceptions are ask/deny rules, AskUserQuestion, ExitPlanMode and critical-path rm. Even if a plan-mode Edit still reaches canUseTool (the SDK permissions doc says plan mode sends edits there), the broker runs the same gate check again and allows it. Edits can therefore land before Jasper approves the plan, which contradicts \"Plan mode is enforced by Claude Code itself\". The 'Approve + auto-edits' option (acceptEdits) also changes nothing: acceptEdits covers only working directories (agentHome), and the gate already auto-allows every Vault edit.",
+    "fix": "1. Read `permission_mode` from the PreToolUse input; BaseHookInput.permission_mode is present in 0.3.293.\n2. When it is 'plan', deny Edit/Write and mutating pc tools.\n3. For allowed file tools, return no decision rather than 'allow', and have the broker deny edits while the agent's tracked mode is plan.\n4. Either drop 'Approve + auto-edits' or redefine it as a MineVibe-level flag (\"don't ask per edit\")."
+   },
+   {
+    "severity": "major",
+    "area": "Bridge / Java WebSocket receive flow control",
+    "issue": "Section 4.4 says the listener \"accumulates partial frames until `last`, then calls `request(1)`\". java.net.http.WebSocket counts every onText/onBinary invocation, partial ones included, against request(n). The WebSocket.Listener javadoc example calls request(1) for each part. A 4 MB BGRA frame, or any message the JDK delivers in parts, would stall the socket for good after the first fragment, freezing agent control, the UI and frames. Buffers are also reclaimed once the returned CompletionStage completes.",
+    "fix": "1. Call webSocket.request(1) on every invocation (or request a large n once).\n2. Copy each part into a pooled direct ByteBuffer. This also fits STBImage.stbi_load_from_memory, which needs a direct buffer.\n3. Add a JUnit test that receives a 4 MB binary message from a local ws server."
+   },
+   {
+    "severity": "major",
+    "area": "PC shell / pc__bash wrapper",
+    "issue": "The wrapper `{ <cmd> ; } 2>&1 | tee -a ~/.mv/shell.log; ...; printf '__MV_PWD__%s' \"$PWD\"` puts the brace group in a pipeline. Bash always runs that element in a subshell; lastpipe only affects the last element. A `cd` or `export` inside <cmd> never reaches the shell that prints $PWD. The promised per-agent, per-PC persistent cwd and env therefore silently does not work, and later commands (git commit, npm test) run in the old directory.",
+    "fix": "1. Run the command in the current shell, with output going through process substitution: `exec > >(tee -a ~/.mv/shell.log) 2>&1; cd \"$MV_CWD\"; <cmd>; ec=$?; printf '__MV_PWD__%s' \"$PWD\"; exit $ec`. Alternatively, write pwd and env to a file from inside the group.\n2. Add a test: `cd /tmp`, then a separate `pwd` call must print /tmp.\n3. Rotate shell.log."
+   },
+   {
+    "severity": "major",
+    "area": "PC manager / 'Offline PC' toggle",
+    "issue": "\"Offline PC\" maps to `docker run --network none`. With no network endpoint, `-p 127.0.0.1::3211` publishes nothing, MineVibe cannot reach spacesd, and the PC stays in booting/error. The offline promise is also hollow, because host-side WebFetch/WebSearch stay allowed while seated. WebFetch refuses only `localhost` and hostnames without a dot (tools-reference), so dotted loopback names are not clearly blocked.",
+    "fix": "1. Implement offline as an `--internal` user-defined network. Reach spacesd either through OrbStack's direct container-IP access (verify in S5 that it works on internal networks) or through a sidecar proxy on a second network.\n2. Gate WebFetch/WebSearch off when the seated PC is offline.\n3. Deny WebFetch URLs that resolve to loopback, RFC1918 or link-local addresses."
+   },
+   {
+    "severity": "major",
+    "area": "Vault / Linux build artifacts written into host repos",
+    "issue": "Path-identical read-write mounts mean `npm install`, `pip install -e`, `cargo build` and similar commands run inside the linux-arm64 container and write Linux-native artifacts into the host repo: node_modules with esbuild/sharp/rollup Linux binaries, a .venv with a Linux interpreter, target/. The user's own macOS tooling in that repo then fails, and it fails the other way after the host reinstalls. M5's own demo (`npm test` in the container on a host repo) will hit this.",
+    "fix": "1. Overlay per-PC named volumes on dependency and build directories inside the container, for example `-v mv-pc-<id>-nm-<hash>:<mount>/node_modules`, plus .venv, target, build and .gradle.\n2. Make the overlays configurable per mount in PcConfigScreen.\n3. Document that the host and the PC keep separate dependency trees."
+   },
+   {
+    "severity": "major",
+    "area": "Agent runtime / subscription auth with many concurrent sessions",
+    "issue": "(a) Policy: the Agent SDK overview says that unless previously approved, \"Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK.\" MineVibe can rely on subscription login only as a personal tool; it must not be distributed that way.\n(b) Concurrency: four or more agent CLIs on 2.1.293 plus the user's interactive 2.1.284 (which auto-updates) share one keychain OAuth credential. The changelog shows repeated fixes in exactly this area: 2.1.277 (logged out when an older build runs on the same machine), 2.1.248 (login screen when another process holds the refresh lock), 2.1.281 (keychain locked after wake), 2.1.290 (/login keychain issue). S2 tests only one session, and the auth assertion runs only at init.",
+    "fix": "1. Keep MineVibe personal-use only, and add an optional API-key mode that passes ANTHROPIC_API_KEY only into agentEnv.\n2. Extend S2 with a multi-hour soak: four concurrent sessions plus the user's own `claude`, across an access-token expiry and a sleep/wake cycle.\n3. Treat a mid-session 401 or \"not logged in\" as retryable with backoff (show the Zz state), not fatal.\n4. Re-check accountInfo periodically."
+   },
+   {
+    "severity": "major",
+    "area": "Agent tools / no file tools for files that live only in the PC",
+    "issue": "Host Read/Edit/Write/Glob/Grep are gated to Vault paths. Anything the agent clones or creates inside the PC (/home/cua/work, /tmp, guest config) can be read or edited only through pc__bash with sed or heredocs. That falls short of \"agents get a shell and file tools inside the PC\" and weakens Opus' editing on work outside the Vault, which is common: seated agents will often `git clone` inside the PC.",
+    "fix": "Choose one or both:\n- Register the PcFiles tools (pc__read/write/edit/glob/grep over spacesd and rg) on every PC type for non-Vault paths, alongside the host tools for Vault paths.\n- Give each PC a scratch work directory under MineVibe's data folder, mounted at the identical absolute path, and make it the default cwd, so the host file tools cover it."
+   },
+   {
+    "severity": "minor",
+    "area": "Mod / 26.3 gamerule ids",
+    "issue": "The gamerules `announceAdvancements` and `spawnRadius` do not exist in 26.3. The 26.3 client.jar GameRules class uses snake_case ids: show_advancement_messages, respawn_radius, players_sleeping_percentage, keep_inventory, and so on.",
+    "fix": "Use the 26.3 GameRules constants or snake_case ids. Consider players_sleeping_percentage as a simpler complement to SleepStatusMixin."
+   },
+   {
+    "severity": "minor",
+    "area": "Toolchain / S0 Gradle daemon JVM",
+    "issue": "Gradle daemon JVM auto-provisioning needs `toolchainUrl.*` entries, which `updateDaemonJvm` generates when a toolchain repository is configured (Gradle 9.7.1 daemon docs). `toolchainVersion=25` alone only requires a locally installed JDK 25. Running updateDaemonJvm in a build that already applies Loom 1.18 (Java 25 bytecode) fails on the JDK 17 daemon.",
+    "fix": "Generate and commit gradle-daemon-jvm.properties (`./gradlew updateDaemonJvm --jvm-version=25` with foojay) before adding the Loom plugin, or in a bare settings-only project. Then add Loom."
+   },
+   {
+    "severity": "minor",
+    "area": "Packaging / LaunchServices environment",
+    "issue": "An app launched from Finder gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, so `execa('docker')` fails; on this machine docker is at /usr/local/bin, /opt/homebrew/bin and ~/.orbstack/bin. The unsigned bundle's TCC grants (for example for ~/Documents, where the project lives) re-prompt after every rebuild. Clicking an already-running LSUIElement app only activates the windowless node process, so the \"focus the Java window\" single-instance path never runs.",
+    "fix": "1. Resolve absolute tool paths during setup and store them in settings, or run path_helper in the stub.\n2. Sign the app with a stable identity so TCC grants survive rebuilds.\n3. Have the stub detect a running instance and activate the Java process itself.\n4. Move a double-click .app smoke test up to M1."
+   },
+   {
+    "severity": "minor",
+    "area": "Mod threading / monitor textures",
+    "issue": "Decode threads write a staging NativeImage that the render thread then `copyFrom`s, with no double buffering. That causes tearing. On world reset or PC removal, a texture or NativeImage closed on the render thread while a decoder still writes into it is a native use-after-free, which crashes the JVM.",
+    "fix": "1. Give each PC a triple buffer owned by FrameDecoder, swapped atomically.\n2. Release textures only on the render thread, after that slot's decoder has stopped.\n3. Never close a buffer the decoder can still touch."
+   },
+   {
+    "severity": "minor",
+    "area": "Seating / kick races and held keys",
+    "issue": "InputRouter checks the occupant before enqueuing, but agent work already in flight keeps going after a kick and interleaves with the player's input: clicks and typing, spawned pc__bash processes and background jobs. A worker crash loses the held-key table, so keys can stay stuck in the guest. 'Kick Bram and sit?' queues the kick and the player's ride as separate steps, so the ride can hit the still-occupied seat.",
+    "fix": "1. Add a per-PC lease epoch and check it when each queued call is dequeued.\n2. Kill the agent's spawn tags on unseat.\n3. When the worker starts, send key-up for all modifiers and buttons to every PC.\n4. Do the kick and the player's sit in one server task."
+   },
+   {
+    "severity": "minor",
+    "area": "Mod / CraftJob",
+    "issue": "In 26.3, ServerGamePacketListenerImpl.handlePlaceRecipe checks the player's recipe book: `contains` follows ServerboundPlaceRecipePacket in the class's constant pool. A fresh agent has no unlocked recipes, so the recipe-placement path fails.",
+    "fix": "Award all recipes to agents at spawn (awardRecipes), or go straight to the manual slot-transfer path."
+   },
+   {
+    "severity": "minor",
+    "area": "Lume operations",
+    "issue": "Lume telemetry is on by default and is controlled by LUME_TELEMETRY_ENABLED, not DO_NOT_TRACK (libs/lume/src/Telemetry/TelemetryClient.swift). `run` starts a VNC server unless `vnc:\"disabled\"` is passed. VMs started over REST live inside the `lume serve` process, so running it as a child of the worker means a worker crash or restart hard-kills the macOS PCs.",
+    "fix": "Set LUME_TELEMETRY_ENABLED=0, pass `vnc:\"disabled\"`, and if lume stays, make it a child of the supervisor or detach it."
+   },
+   {
+    "severity": "minor",
+    "area": "Agent SDK configuration details",
+    "issue": "(a) supportedModels() rows are aliases (value 'haiku'), so the check must match `resolvedModel` and `supportedEffortLevels`.\n(b) With settingSources: [] the PreModelSwitch hook is unnecessary, and it adds a failure mode: a callback that times out (30 s) blocks the switch.\n(c) The docs don't say what happens when a hook callback throws, so the 'fail-closed' ToolGate needs an explicit try/catch that returns deny.\n(d) S2 must record whether PreToolUse sees 'Bash' or 'mcp__pc__bash' for aliased calls, because the gate matches on names.\n(e) Using the user's auto-updating ~/.local/bin/claude lets the CLI version drift away from the pinned SDK 0.3.293.",
+    "fix": "Match models by resolvedModel, drop the PreModelSwitch hook, wrap ToolGate in try/catch that denies, record the alias name the hook sees in S2, and always use the SDK-bundled binary."
+   },
+   {
+    "severity": "minor",
+    "area": "Session persistence",
+    "issue": "Claude Code's transcript cleanup (cleanupPeriodDays, default 30) can delete MineVibe agent transcripts in ~/.claude/projects after about a month idle. The user's own `claude` runs that cleanup with its own settings. After that, `resume: sessionId` fails.",
+    "fix": "When resume fails, start a fresh session seeded with memory.md, a summary of chat.jsonl and the Chronicle. Optionally archive transcripts into the world folder."
+   },
+   {
+    "severity": "minor",
+    "area": "Performance / frame path",
+    "issue": "Tier B defaults to raw BGRA at about 123 MB/s. Each 4 MB frame passes through the cua native addon into the single Node event loop, which also carries every agent's SDK stream, the PreToolUse hooks and the input RPCs. The frames then become heap garbage in the 6 GB Minecraft JVM, risking input latency and GC hitches.",
+    "fix": "Run FrameService in a worker_thread. Make JPEG (sharp q80, roughly 5-8 MB/s) the default focus tier and keep BGRA as the S4/S5 experiment."
+   },
+   {
+    "severity": "minor",
+    "area": "Hardcore loop robustness",
+    "issue": "(a) If the app crashes or quits between the player's death and 'Begin World #N+1', the next boot reopens the dead hardcore world.\n(b) GameOverScreen waits forever for `world.next` if the worker is down.\n(c) Tasks posted with server.execute to an integrated server that is shutting down are silently dropped, so Node waits out timeouts of up to 120 s.",
+    "fix": "Write `ended:true` to current-world.json on player.died. Enable the Begin button after a 30 s timeout even without Node. Reject all pending mod RPCs on world.state{closing}."
+   },
+   {
+    "severity": "minor",
+    "area": "Milestone ordering",
+    "issue": "M3 runs live Claude sessions with Read/Edit/Write/WebFetch enabled, but ToolGate is scheduled for M5. Failures that only appear in the packaged app (PATH, TCC, node path, lume parenting) surface only at M9. The new security checks (host-loopback reachability, the git-config tripwire, offline networking) belong to no spike.",
+    "fix": "Ship a fail-closed ToolGate baseline in M3 that denies all file and web tools while wandering. Add the network-isolation and Vault host-exec checks to S5, and add a .app smoke test to M1."
+   },
+   {
+    "severity": "minor",
+    "area": "Usage cost of model swaps",
+    "issue": "Every sit makes Opus re-read the agent's whole long-lived wandering context with no cache, and every stand-up makes Haiku do the same. After hours of wandering that is a large uncached Opus prefill per PC task, and the debounce does not help.",
+    "fix": "Run seated work in a separate Opus session per agent and PC task (resumed, or fresh with a short brief), or compact before sitting. Measure the cost in S3."
+   },
+   {
+    "severity": "minor",
+    "area": "Monitor rendering",
+    "issue": "The plan's 'custom render bounding box' is not a vanilla or Fabric BlockEntityRenderer API in 26.3, so the 2-block-wide monitor can be culled together with its origin section.",
+    "fix": "Override shouldRenderOffScreen() (with getViewDistance) on PcBlockEntityRenderer."
+   },
+   {
+    "severity": "minor",
+    "area": "Seated input forwarding",
+    "issue": "OS shortcuts (Cmd+Q, Cmd+Tab, Cmd+H) never reach the JVM, and vanilla handles some keys globally (F2 screenshot, F11 fullscreen). The claim that F1-F12 are forwarded therefore does not hold for every key.",
+    "fix": "Show the keys that can't be forwarded in the hint bar, and add an on-screen palette or chord menu for them."
+   }
+  ],
+  "missingRequirements": [
+   "\"Agents get a shell and file tools inside the PC\": file tools only cover Vault paths, through host-side Read/Edit. Files that exist only in the PC (clones, /home/cua, guest config) can be reached only through pc__bash.",
+   "\"Minecraft is the only UI\": the first run needs `npm run setup` in a terminal. An auth failure tells the user to run `claude` and /login in Terminal. The Vault folder picker is an osascript dialog outside the game. OrbStack capacity changes go through OrbStack settings, and the JDK 25 and Lume installs need consent outside the game.",
+   "\"Each PC is its own cua sandbox\": Linux PCs are raw `docker run` containers built from the cua image and driven over spacesd. They are not cua-managed sandboxes (absent from `cua sb ls`, no cua lifecycle). macOS PCs with a Vault would be driven through raw Lume REST. The deviation is justified, but the plan should state it explicitly."
+  ]
+ }
+]

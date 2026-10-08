@@ -1,0 +1,17 @@
+{
+  "t": "hello.ok",
+  "v": 1,
+  "re": "m-1",
+  "server": { "version": "0.0.0", "protocol": 1 },
+  "world": { "id": "world-7", "gen": 7, "fresh": false },
+  "player": { "name": "Jasper" },
+  "settings": { "mirrorAgentRepliesToChat": false },
+  "pcs": [],
+  "budget": null,
+  "crew": [
+    { "agentId": "ada", "handle": "ada", "name": "Ada", "role": "ceo", "ceo": true, "status": "alive" },
+    { "agentId": "bram", "handle": "bram", "name": "Bram", "role": "miner", "ceo": false, "status": "dead" }
+  ],
+  "brains": { "inFlight": 0, "queued": 0, "max": 2, "mode": "normal", "utilization": null, "resetsAt": null },
+  "pending": []
+}

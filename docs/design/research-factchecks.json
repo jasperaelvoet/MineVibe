@@ -1,0 +1,557 @@
+[
+ {
+  "claims": [
+   {
+    "claim": "(1a) Query.setModel exists and switches the model mid-turn",
+    "status": "confirmed",
+    "detail": "`setModel(model?: string): Promise<void>`, streaming-input mode only. It takes effect during the current turn: the response already being generated finishes on the old model, and the next model call uses the new one. Before CC v2.1.212 the switch waited for the next turn. Subagents keep their own model. Passing undefined or 'default' resets to Claude Code's default model. Since SDK 0.3.268 the CLI checks an unknown id with the API at the first switch. A PreModelSwitch hook fires with source 'sdk'; if it returns 'ask', a headless session refuses the switch. Each model has its own prompt cache, so every Haiku<->Opus swap re-reads the whole context with no cache hits.",
+    "source": "npm @anthropic-ai/claude-agent-sdk@0.3.293 package/sdk.d.ts (Query interface ~L2897, PreModelSwitchHookInput ~L2694); code.claude.com/docs/en/agent-sdk/typescript (setModel 'When it takes effect'); code.claude.com/docs/en/prompt-caching.md#switching-models; SDK CHANGELOG 0.3.268"
+   },
+   {
+    "claim": "(1b) Query.applyFlagSettings({effortLevel, model}): effort applies from the next turn, model during the current turn",
+    "status": "confirmed",
+    "detail": "`applyFlagSettings(settings: { [K in keyof Settings]?: K extends 'effortLevel' ? EffortLevel | null : Settings[K] | null }): Promise<void>`, streaming-input mode only, and it shallow-merges top-level keys. Applied on the next turn: effortLevel, ultracode, permissions, hooks, skillOverrides, fastMode, agent. Applied during the current turn: model (same as setModel). System-prompt options have no effect mid-session. Passing null resets effortLevel to the model's default effort and model to Claude Code's default model, not settings.model. effortLevel also accepts 'max', session-only. Only the TypeScript signature was checked; the Python equivalent was not.",
+    "source": "sdk.d.ts 0.3.293 ~L2930-2954; code.claude.com/docs/en/agent-sdk/typescript#applyflagsettings"
+   },
+   {
+    "claim": "(1c) An explicit session effort (Options.effort / --effort) carries over to the new model after setModel",
+    "status": "uncertain",
+    "detail": "The documented effort order is: CLAUDE_CODE_EFFORT_LEVEL / --effort / /effort first, then saved per-model settings (modelSettings.<model>.effortLevel, top-level effortLevel), then the model default (Opus 5.5 / Haiku 5.5 default to 'medium'). Since CC 2.1.251, effort is saved per model 'so each model keeps its own setting when you switch'. No source says whether an explicit session level survives a setModel. Safe pattern: call `applyFlagSettings({ model, effortLevel })` on every swap, and remember the effort only lands on the next turn. Note that CLAUDE_CODE_EFFORT_LEVEL in the child env overrides everything.",
+    "source": "code.claude.com/docs/en/model-config.md (Adjust effort level, L596-604); anthropics/claude-code CHANGELOG 2.1.251"
+   },
+   {
+    "claim": "(1d) T3 Code closes and re-opens the query (resume) when model or effort changes",
+    "status": "confirmed",
+    "detail": "In compileClaudeModelSelection, `queryIdentity: JSON.stringify({ apiModelId, effort: effort ?? null, settings })`. The adapter reuses a live query only when `existing.selectionKey === compiledSelection.queryIdentity`; otherwise it opens a new query with resume. Comments note that a new selection kills background shells and agents. T3 wraps `setModel` in its runner but does not use it for selection changes.",
+    "source": "github.com/pingdotgg/t3code apps/server/src/claudeModelOptions.ts L57; apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts ~L7262-7290, L664-667"
+   },
+   {
+    "claim": "(2a) Query.setMcpServers attaches and detaches stdio and in-process SDK MCP servers mid-session",
+    "status": "confirmed",
+    "detail": "`setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult>`, which resolves to `{ added: string[]; removed: string[]; errors: Record<string,string> }`. McpServerConfig = McpStdioServerConfig ({type?:'stdio', command, args?, env?, timeout?, alwaysLoad?}) | SSE | HTTP | McpSdkServerConfigWithInstance. The call REPLACES the whole set of dynamically managed servers, including in-process SDK servers, so to add 'cua' and keep the in-process 'mc' server you must pass both. Plugin-owned servers and servers from settings files are untouched. Since SDK 0.3.287, a pending call to a removed in-process server no longer hangs. Stdio servers are not reconnected automatically; use reconnectMcpServer(name).",
+    "source": "sdk.d.ts 0.3.293 L3185-3208, L1195-1216, L1303-1350; code.claude.com/docs/en/agent-sdk/typescript (setMcpServers); code.claude.com/docs/en/mcp (Automatic reconnection); SDK CHANGELOG 0.3.287"
+   },
+   {
+    "claim": "(2b) Tools from a server added mid-session are immediately visible to the model",
+    "status": "refuted",
+    "detail": "With tool search on (the default on the first-party API), Claude Code keeps the tool list from the conversation's first request. A server that connects later supplies only deferred definitions, which Claude must load through ToolSearch; the prompt cache is not disturbed. Without tool search, for example when a custom ANTHROPIC_BASE_URL is set, a server connecting adds its definitions and invalidates the cache. `createSdkMcpServer({ name, version?, instructions?, tools?, alwaysLoad?, timeout? })` and `tool(name, desc, zodShape, handler, { annotations?, searchHint?, alwaysLoad? })` take an alwaysLoad flag that keeps a server's tools out of deferral.",
+    "source": "code.claude.com/docs/en/prompt-caching.md 'Connecting or removing an MCP server' L109-125; code.claude.com/docs/en/mcp 'Tool availability'; sdk.d.ts L615-645, L9784-9788"
+   },
+   {
+    "claim": "(3a) canUseTool returning {behavior:'allow', updatedInput} can rewrite a Bash command",
+    "status": "confirmed",
+    "detail": "`PermissionResult = { behavior:'allow'; updatedInput?: Record<string,unknown>; updatedPermissions?: PermissionUpdate[]; toolUseID?; decisionClassification? } | { behavior:'deny'; message: string; interrupt?; toolUseID?; decisionClassification? }`. The docs show an 'Approve with changes' example that rewrites `input.command`, and Claude isn't told about the change. Caveat: canUseTool NEVER fires for auto-approved calls: allow rules, acceptEdits/bypass modes, built-in read-only Bash commands, and reads inside the working directories. It cannot reliably intercept every Bash call.",
+    "source": "sdk.d.ts 0.3.293 L213 (CanUseTool), L2508-2520; code.claude.com/docs/en/agent-sdk/user-input (Respond to tool requests, warning 'The callback never fires for auto-approved tools')"
+   },
+   {
+    "claim": "(3b) PreToolUse hooks can rewrite tool input the same way",
+    "status": "confirmed",
+    "detail": "The hook returns `hookSpecificOutput: { hookEventName:'PreToolUse', permissionDecision?: 'allow'|'deny'|'ask'|'defer', permissionDecisionReason?, updatedInput?: Record<string,unknown>, additionalContext? }`. updatedInput replaces the ENTIRE input object, and permission rules and Bash auto-background eligibility are evaluated against the returned input. Hooks run first, on every call; deny and ask rules still apply after a hook 'allow'. In the SDK the hook is an in-process `HookCallback` passed through `Options.hooks.PreToolUse`.",
+    "source": "sdk.d.ts 0.3.293 L2749-2755, L9682-9695; code.claude.com/docs/en/hooks.md L1807-1809; code.claude.com/docs/en/agent-sdk/permissions (How permissions are evaluated)"
+   },
+   {
+    "claim": "(4a) CLAUDE_CODE_SHELL, sandbox settings, or 'remote' settings can make the built-in Bash tool run in a remote or container shell",
+    "status": "refuted",
+    "detail": "CLAUDE_CODE_SHELL only accepts a path to a working local bash or zsh binary and is ignored otherwise. Options.sandbox / Settings.sandbox is OS-level restriction (Seatbelt / bubblewrap) of host commands, not relocation. Settings.remote.defaultEnvironmentId is for Anthropic cloud sessions. Settings.sshConfigs and Desktop SSH remote sessions run the whole Claude Code engine on the remote host and send the inference credential there. No setting runs the Bash tool remotely while the CLI stays on the host.",
+    "source": "code.claude.com/docs/en/env-vars.md L376; sdk.d.ts Settings (sandbox, remote, sshConfigs ~L8690-8740 region); claude.com/docs/third-party/claude-desktop/ssh-remote-sessions; code.claude.com/docs/en/sandbox-environments.md"
+   },
+   {
+    "claim": "(4b) CLAUDE_CODE_SHELL_PREFIX is a viable remote-shell hook",
+    "status": "uncertain",
+    "detail": "It wraps every Bash tool call, AND hook commands, AND stdio MCP server startup commands. `$1` is the full shell invocation Claude Code builds, including host env setup. A `docker exec` wrapper would therefore also wrap `cua mcp` startup and break host-side cwd tracking. It is technically possible but fragile and not a supported remote mechanism; avoid it.",
+    "source": "code.claude.com/docs/en/env-vars.md L377"
+   },
+   {
+    "claim": "(4c) Supported way to send 'Bash' to an MCP shell: Options.toolAliases plus disallowedTools",
+    "status": "confirmed",
+    "detail": "`toolAliases?: Record<string,string>`, for example `{ Bash: 'mcp__workspace__bash' }`. The docs give exactly this use case: a host that runs Bash inside a remote sandbox via an MCP tool. Model-emitted 'Bash' calls are routed to the MCP tool. Pair it with `disallowedTools: ['Bash']`; the alias only affects name lookup. Fixed for deny/ask wildcards in SDK 0.3.290. Alternative: `spawnClaudeCodeProcess(options: SpawnOptions) => SpawnedProcess` runs the whole CLI inside a container or VM, but in Linux it would need CLAUDE_CODE_OAUTH_TOKEN or .credentials.json (no keychain), which breaks the 'never handle tokens' rule.",
+    "source": "sdk.d.ts 0.3.293 Options.toolAliases (~L1595-1620), Options.spawnClaudeCodeProcess (~L2465); code.claude.com/docs/en/agent-sdk/typescript.md L530; SDK CHANGELOG 0.3.290"
+   },
+   {
+    "claim": "(4d) Disallowing Bash and providing an MCP shell tool degrades agent behavior",
+    "status": "uncertain",
+    "detail": "No primary source measures this. Known losses you would have to rebuild in the MCP tool: persistent cwd tracking, run_in_background, Monitor and Query.backgroundTasks(), read-only command auto-approval, the 30k-char output cap with spill-to-file, and the 2-minute default timeout. MCP tools are deferred behind ToolSearch by default, so mark the shell server or tool `alwaysLoad: true`. MCP results over 25k tokens or 50k chars are saved to a file.",
+    "source": "code.claude.com/docs/en/agent-sdk/mcp (Tool output exceeds maximum); sdk.d.ts Options.toolAliases docs; inference"
+   },
+   {
+    "claim": "(5a) additionalDirectories and working directories scope Read/Edit/Write",
+    "status": "confirmed",
+    "detail": "`additionalDirectories?: string[]` is passed as `--add-dir` and also loads that directory's skills, commands and agents under the 'project' source. Files in working dirs are readable without prompts; edits follow the permission mode, so in 'default' mode an edit outside them reaches canUseTool, where you can deny it. `Settings.permissions.blockReadsOutsideWorkingDirectories?: boolean` refuses Read, Grep, Glob and LSP outside the working dirs in every mode. These are HOST-filesystem tools: they cannot see container-only paths.",
+    "source": "sdk.d.ts Options.additionalDirectories L1530; Settings.permissions (~L6868-6884); code.claude.com/docs/en/permissions.md 'Working directories', 'Additional directories grant file access, not configuration'"
+   },
+   {
+    "claim": "(5b) Permission rules passed through Options.settings restrict file tools to directories",
+    "status": "confirmed",
+    "detail": "`settings?: string | Settings` goes into the flag layer (same as --settings), with `permissions: { allow?, deny?, ask?, defaultMode?, additionalDirectories?, blockReadsOutsideWorkingDirectories? }`. Use `Edit(path)` and `Read(path)` rules only: Edit covers Write and NotebookEdit, and a `Write(path)` rule is never consulted. Use `//abs/path/**` for absolute paths, because a single leading `/` anchors at the settings source; for an inline object the anchor is not documented, so prefer `//`. Deny beats allow. Read/Edit deny rules also hit recognized Bash file commands (cat, head, sed, tee, redirections) but NOT arbitrary subprocesses; only the sandbox enforces at OS level.",
+    "source": "sdk.d.ts Options.settings; code.claude.com/docs/en/permissions.md 'Read and Edit' L335-372; code.claude.com/docs/en/agent-sdk/permissions"
+   },
+   {
+    "claim": "(6a) AskUserQuestion arrives in canUseTool and is answered with allow plus updatedInput {questions, answers}",
+    "status": "confirmed",
+    "detail": "Input: `{ questions: 1-4 x { question: string; header: string (<=12 chars); options: 2-4 x { label; description; preview? }; multiSelect: boolean } }`. Answer: `{ behavior:'allow', updatedInput: { questions: input.questions, answers: { [questionText]: label } } }`. sdk-tools.d.ts types `answers?: {[k:string]: string}` and the hooks doc says multi-select labels are comma-joined. The user-input doc also allows an array, but use `labels.join(', ')`. Free text ('Other') goes in as the value. Optional `annotations: {[q]: {preview?, notes?}}`; the docs also mention a `response` freeform field that is absent from the d.ts. AskUserQuestion always falls through to the callback even with allow rules. It is unavailable in Agent-tool subagents. Include it if you pass a `tools` array. The callback may stay pending indefinitely, so honour `options.signal`.",
+    "source": "sdk-tools.d.ts 0.3.293 AskUserQuestionInput (L1127-2703); code.claude.com/docs/en/agent-sdk/user-input (Handle clarifying questions, Limitations); code.claude.com/docs/en/hooks.md L1787"
+   },
+   {
+    "claim": "(6b) ExitPlanMode arrives in canUseTool with input.plan",
+    "status": "confirmed",
+    "detail": "`ExitPlanModeInput { allowedPrompts?: deprecated; [k: string]: unknown }`. Claude Code injects `plan` (markdown, read from the plan file) and `planFilePath` before passing the input on (documented for hooks). T3 reads `Reflect.get(input,'plan')` in canUseTool, denies with a 'client captured your plan' message, and later calls setPermissionMode itself. To approve, return allow WITH updatedInput; per the hooks doc 'allow' alone is not enough for this tool. The SDK docs do not say which permission mode follows approval, so set it explicitly via setPermissionMode or `updatedPermissions: [{ type:'setMode', mode:'default', destination:'session' }]`.",
+    "source": "sdk-tools.d.ts L843-858, ExitPlanModeOutput L3379; code.claude.com/docs/en/hooks.md 'ExitPlanMode' and 'Tools that require user interaction'; t3code ClaudeAdapterV2.ts L2985, L7032-7051"
+   },
+   {
+    "claim": "(7a) The 'haiku' alias resolves to Haiku 5.5 (claude-haiku-5-5), which supports xhigh and needs Claude Code >= 2.1.293",
+    "status": "confirmed",
+    "detail": "On the Anthropic API: opus -> Opus 5.5, sonnet -> Sonnet 5.5, haiku -> Haiku 5.5. Haiku 5.5 was added in CC 2.1.293 ('Use v2.1.293 or later with Haiku 5.5'; 1M context). Levels low/medium/high/xhigh/max; default medium. An unsupported level falls back to the highest supported level AT OR BELOW the one requested. The local CLI (2.1.284) is too old; the bundled binary in SDK 0.3.293 is 2.1.293. CC 2.1.294 is already in the GitHub changelog, but npm latest is still 0.3.293 (published 2026-10-07).",
+    "source": "code.claude.com/docs/en/model-config.md L42-64, L584-600; anthropics/claude-code CHANGELOG.md '## 2.1.293'; registry.npmjs.org dist-tags + claudeCodeVersion"
+   },
+   {
+    "claim": "(7b) A Haiku session in plan mode stays on Haiku",
+    "status": "uncertain",
+    "detail": "The docs say 'A Haiku session that would normally upgrade to Sonnet in plan mode ...', and CC 2.0.17 made Haiku 4.5 'automatically use Sonnet in plan mode'. It is unconfirmed whether this applies to Haiku 5.5 set via the SDK, but plan-mode turns may silently run on Sonnet.",
+    "source": "code.claude.com/docs/en/model-config.md L478; claude-code CHANGELOG 2.0.17"
+   },
+   {
+    "claim": "(7c) pathToClaudeCodeExecutable versus the bundled binary does not affect subscription keychain auth",
+    "status": "confirmed",
+    "detail": "The claude binary reads its OAuth login by shelling out to `security find-generic-password -a \"<user>\" -w -s \"<service>\"`. The service name is derived from CLAUDE_CONFIG_DIR with a '-credentials' suffix, so the keychain ACL belongs to /usr/bin/security and not to a particular claude binary. What matters is keeping HOME (keychain location) and CLAUDE_CONFIG_DIR the same; T3's ClaudeHome.ts warns that overriding HOME gives 'Not logged in'. `pathToClaudeCodeExecutable` is 'only needed if optional dependencies were skipped'; T3 defaults binaryPath to 'claude'.",
+    "source": "strings of ~/.local/share/claude/versions/2.1.284 (local, read-only); code.claude.com/docs/en/authentication.md L204-207; t3code apps/server/src/provider/Drivers/ClaudeHome.ts; packages/contracts/src/settings.ts L656"
+   },
+   {
+    "claim": "(7d) permissionMode must be passed explicitly as 'default'",
+    "status": "confirmed",
+    "detail": "If omitted, Claude Code uses permissions.defaultMode from loaded settings, or else 'auto' where available. 'auto' drops broad allow rules and routes calls through a classifier. Before SDK 0.3.286, omitting it meant 'default'.",
+    "source": "sdk.d.ts Options.permissionMode docs; code.claude.com/docs/en/agent-sdk/permissions 'Permission modes'"
+   },
+   {
+    "claim": "(8) Per-session memory and CPU footprint, and limits for 4-8 concurrent sessions",
+    "status": "confirmed",
+    "detail": "One query() = one claude subprocess. Anthropic's sizing guidance is '1 GiB RAM, 5 GiB disk, and 1 CPU per agent' as a starting floor; memory grows with session length and tool activity, so measure peak RSS and recycle long sessions. Local measurement on this Mac: native claude 2.1.289/2.1.291 processes at 105-342 MB RSS and 0-6% CPU. 8 sessions is about 1-3 GB typical (budget 8 GiB worst case), plus each session's stdio MCP children. RAM is not the binding limit on 48 GB; the subscription usage window is. Use `rate_limit_event` messages (`SDKRateLimitInfo { status:'allowed'|'allowed_warning'|'rejected', resetsAt?, rateLimitType?: 'five_hour'|'seven_day'|'seven_day_opus'|..., utilization? }`) for the concurrency governor.",
+    "source": "code.claude.com/docs/en/agent-sdk/hosting.md L23, L210, L258-268; local `ps -axo rss` on host; sdk.d.ts L5664-5690"
+   },
+   {
+    "claim": "(9) SDKUserMessage priority 'now'/'next'/'later' and shouldQuery semantics",
+    "status": "confirmed",
+    "detail": "`priority?: 'now'|'next'|'later'`. 'next' (or no field): read in the same turn once the running tool calls finish, or starts the next turn if the turn ends first. 'later': held until the turn ends, then sent as a new turn. 'now' with `origin:{kind:'human'}` (CC >= 2.1.286): movable work (shell, subagents, MCP calls, and on 2.1.287+ WebFetch/WebSearch) goes to the background and the message joins the turn; otherwise the turn is interrupted. 'now' without human origin interrupts the turn. `shouldQuery: false`: appended to the transcript with no model call and merged into the next user message that does query. `origin` is human, channel with server, or peer.",
+    "source": "code.claude.com/docs/en/agent-sdk/typescript (SDKUserMessage key fields); sdk.d.ts L6282-6330, L5363; SDK CHANGELOG 0.2.110, 0.3.286, 0.3.287"
+   },
+   {
+    "claim": "(extra) The env option replaces the child environment, and the dev shell carries variables that must be stripped",
+    "status": "confirmed",
+    "detail": "`env` REPLACES process.env for the subprocess. Variables present in this shell (names only): ANTHROPIC_BASE_URL (a non-first-party host disables tool search and routes inference to a proxy), CLAUDECODE, CLAUDE_EFFORT, CLAUDE_AGENT_SDK_MCP_NO_PREFIX, CLAUDE_CODE_SIMPLE, CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_TOKEN, MCP_CONNECTION_NONBLOCKING, MCP_SERVER_CONNECTION_BATCH_SIZE, DISABLE_MICROCOMPACT, and others. Strip /^(ANTHROPIC_|CLAUDE|MCP_)/ and DISABLE_MICROCOMPACT; keep HOME and PATH. A stray CLAUDE_CODE_EFFORT_LEVEL would override --effort and applyFlagSettings. Auto memory loads regardless of settingSources unless CLAUDE_CODE_DISABLE_AUTO_MEMORY=1.",
+    "source": "sdk.d.ts Options.env; local `env | cut -d= -f1`; code.claude.com/docs/en/env-vars.md L143, L464; code.claude.com/docs/en/agent-sdk/hosting.md L278-306"
+   }
+  ],
+  "designImplications": [
+   "Do the model/effort swap at a turn boundary: when the sit_at_pc tool succeeds, call `applyFlagSettings({ model: 'opus', effortLevel: 'medium' })`, have the tool result tell the agent to end its turn, and have the orchestrator start the next turn ('PC acquired') so the effort lands. Do the reverse on stand-up. Debounce swaps, because each one re-reads the whole context uncached on the other model. T3-style close+resume is the fallback if mid-session swapping misbehaves.",
+   "Pass `settingSources: []`, explicit `model`/`effort`, `permissionMode: 'default'` and `strictMcpConfig: true`. Otherwise the user's ~/.claude/settings.json (model opus, effortLevel xhigh, per-model effort, any PreModelSwitch hooks) leaks into agents and can block or alter swaps.",
+   "Use the SDK-bundled 2.1.293 binary (omit pathToClaudeCodeExecutable), or check `supportedModels()` at boot and refuse to start if the haiku row does not resolve to claude-haiku-5-5. The local CLI 2.1.284 cannot run Haiku 5.5. Keychain auth is unaffected by the choice as long as HOME and CLAUDE_CONFIG_DIR are left alone.",
+   "Avoid setMcpServers churn. Register one in-process SDK MCP server (e.g. 'pc', `alwaysLoad: true`) at query start. Its screenshot/click/type/key/scroll/bash/read/write tools route to whichever PC the agent currently occupies, and return an error such as 'not seated at a PC' otherwise. The tool list stays stable (cache intact, no ToolSearch). If you do use `cua mcp` stdio per PC, always pass the FULL server map, including the minecraft SDK server, because setMcpServers replaces the set.",
+   "No host shell: set `disallowedTools: ['Bash']` and `toolAliases: { Bash: 'mcp__pc__bash' }`. Implement the PC bash tool with persistent cwd and env per agent+PC, a timeout, background jobs and output truncation, since those built-in features are lost. Don't rely on CLAUDE_CODE_SHELL or CLAUDE_CODE_SHELL_PREFIX.",
+   "File tools: built-in Read/Edit/Write only see the host filesystem. Either disallow them and alias them to PC-side MCP file tools, or, for Linux containers, bind-mount each chosen host folder at the IDENTICAL absolute path inside the container. Then set cwd/additionalDirectories to those mounts, `blockReadsOutsideWorkingDirectories: true`, and deny edits outside via canUseTool. macOS Lume shares mount under a different path, so they need the MCP route.",
+   "Use a PreToolUse hook callback, not canUseTool, as the universal guard and rewriter: it runs on every call, including auto-approved ones. Keep canUseTool for the human-in-the-loop prompts.",
+   "Hold AskUserQuestion and ExitPlanMode as pending canUseTool promises until the player answers via the agent's in-world UI, and honour `options.signal`. Answer with `{ questions, answers: { [question]: label } }`, joining multi-select labels with ', '. For ExitPlanMode read `input.plan` and, on approval, explicitly set the next permission mode. Expect plan-mode turns on Haiku to possibly run on Sonnet.",
+   "Inject game events as SDKUserMessages: ambient telemetry with `shouldQuery: false`; normal events with 'next'; emergencies (taking damage, player died, kicked off PC) with 'now' to interrupt; low-priority chatter with 'later'.",
+   "Concurrency governor: about 4 agents with active turns at a time (idle sessions cost only ~150-350 MB). Throttle or pause new turns from `rate_limit_event` utilization (five_hour / seven_day) and pause on status 'rejected'. RAM budget is about 1 GiB per agent plus about 4 GiB per Linux PC container.",
+   "Build the child env from a scrubbed copy of process.env: drop /^(ANTHROPIC_|CLAUDE|MCP_)/ and DISABLE_MICROCOMPACT, keep HOME and PATH, and add CLAUDE_AGENT_SDK_CLIENT_APP='minevibe/x'. Decide CLAUDE_CODE_DISABLE_AUTO_MEMORY per the memory-persistence design: auto memory loads regardless of settingSources.",
+   "Agent memory across world resets can use persisted sessions (`resume: sessionId`, or a fresh session seeded with a summary) and per-agent cwd/CLAUDE_CONFIG_DIR-free project dirs. Pick a stable per-agent `cwd` so ~/.claude/projects/<dir> transcripts and memory group per agent."
+  ]
+ },
+ {
+  "claims": [
+   {
+    "claim": "Local Docker engine: type, CPUs, memory, contexts (read-only checks)",
+    "status": "confirmed",
+    "detail": "`docker info`: OperatingSystem=OrbStack (orb 2.2.3), ServerVersion 29.4.0, Architecture=aarch64, NCPU=18, MemTotal=16817168384 B (about 15.66 GiB), Driver overlayfs, cgroup v2, Runtimes = io.containerd.runc.v2 + runc only (no runsc/gVisor), DefaultRuntime runc. `orb config show`: memory_mib=16384, cpu=18. `docker context ls`: orbstack is the current context. DOCKER_HOST and DOCKER_CONTEXT are unset. Host: Apple M5 Pro, 18 cores, 48 GiB RAM, 199 GiB free on the Data volume. /opt/homebrew/bin/ffmpeg is present. ~/.cua and ~/.lume do not exist, and neither `cua` nor `lume` is on PATH. Unrelated: container <other-container> is stuck in a restart loop (Restarting (127)).",
+    "source": "local: docker info --format json; docker context ls; orb config show; sysctl; df; docker ps -a"
+   },
+   {
+    "claim": "cua picks the container engine from DOCKER_HOST, then the current docker context, then well-known sockets (so here it uses OrbStack)",
+    "status": "confirmed",
+    "detail": "engine.rs `discover()`: DOCKER_HOST \u2192 DOCKER_CONTEXT/currentContext \u2192 sockets (~/.colima/default/docker.sock, ~/.colima/docker.sock, ~/.orbstack/run/docker.sock). It classifies the engine as Colima / Docker Desktop / OrbStack / Podman. The current context is orbstack, so cua uses OrbStack.",
+    "source": "github.com/trycua/cua libs/cua/crates/cua-vmm/src/container/engine.rs"
+   },
+   {
+    "claim": "'auto' runtime for the Linux container is gVisor; on this Mac it will silently be runc",
+    "status": "confirmed",
+    "detail": "ContainerConfig defaults are prefer_gvisor=true, allow_install_runsc=false, require_gvisor=false. Without runsc it logs 'gVisor (runsc) not available \u2026; using runc'. gvisor.rs says installing runsc is 'not automatable' on OrbStack and Docker Desktop. On Colima it restarts the VM, which stops every container, and does so only when opted in. Docs: 'gvisor when installed, else runc'. Pass runtime \"runc\" explicitly. `--runtime gvisor` would fail here.",
+    "source": "libs/cua/crates/cua-vmm/src/container/mod.rs (L112-128, L240-270), container/gvisor.rs header, docs/content/docs/cua-sdk/guides/local-runtimes.mdx"
+   },
+   {
+    "claim": "Create local Linux/macOS sandboxes from Node via @trycua/cua with CPU/memory limits",
+    "status": "confirmed",
+    "detail": "npm @trycua/cua@0.4.1 (latest, 2026-10-05). `import { embedded, Image, SandboxCreateOptions } from \"@trycua/cua\"`; `await embedded().sandboxes().create(SandboxCreateOptions.create({ on: \"local\", image: Image.linux(), runtime: \"runc\", name: \"pc1\", cpus: 2, memoryMb: 4096n }))`. memoryMb is a bigint in MiB. Other fields: kind ('auto'|'container'|'vm'), ports, services, env (Map), waitFor, readyTimeoutMs, gpu, network, overlays, keepOnFailure. All are optional through `SandboxCreateOptions.create(partial)`. `Image.linux()` = ghcr.io/trycua/linux:24.04 (CUA_IMAGE_LINUX overrides it). `Image.macos()` = ghcr.io/trycua/macos:26. Spaces variant: `embedded().spaces().create(SpaceCreateOptions{cpus (local default 2), memoryMb (local default 4096), diskGb (VMs only)})`.",
+    "source": "registry.npmjs.org/@trycua/cua/-/cua-0.4.1.tgz: dist/index.d.ts, dist/native/cua_sdk.d.ts (SandboxCreateOptions, SpaceCreateOptions)"
+   },
+   {
+    "claim": "Start/stop/delete from Node: Sandbox has stop/start methods",
+    "status": "refuted",
+    "detail": "SandboxLike has suspend(), resume(), restart(), delete_(), refresh(), info(), spacesd(probeTimeoutMs), forward(port), viewerUrl(opts), mcp/mcpConfig, and guestSh/guestScreenshot/guestDisplay (local Lume only). It has no stop() or start(). SandboxesLike has create, connect(name), connectUrl(url, token, name), delete_(name), get, list(location), cancelCreate. Power off/on for registered Spaces is SpacesLike.stop(space) / start(space).",
+    "source": "@trycua/cua 0.4.1 dist/native/cua_sdk.d.ts (SandboxLike, SandboxesLike, SpacesLike)"
+   },
+   {
+    "claim": "CLI lifecycle: 'cua sb create linux --name pc1 --runtime runc --cpu 2 --memory 4GB', 'cua sb create macos --name mac', ls/suspend/resume/restart/rm/exec/screenshot/view/port-forward",
+    "status": "confirmed",
+    "detail": "Both create commands are valid. `--cpu` (alias `--cpus`). `--memory` accepts e.g. 8GB or 4096MB, and a bare number is GB. `--disk` is accepted but ignored ('the image decides today'). Image aliases: linux, ubuntu, windows, macos[:tahoe|sequoia], omarchy. Subcommands: create, launch (deprecated), connect, ls, info, suspend, resume, restart, keep-alive, rm. Access subcommands: exec, shell (PTY), cp, overlay, logs, port-forward, url, screenshot (PNG only), mcp, view. There is no `cua sb stop/start`; use suspend/resume or `cua spaces stop/start`. `cua sb rm` needs `-f/--force` without a TTY, otherwise 'nothing is deleted'. CLI and SDK share state in ~/.cua/sandboxes.",
+    "source": "docs/content/docs/cua-cli/reference/cli/sandbox.mdx and sandbox-access.mdx (auto-generated, v0.4.1); docs/content/docs/cua-sdk/guides/lifecycle.mdx"
+   },
+   {
+    "claim": "How cua applies CPU/memory limits to local containers",
+    "status": "confirmed",
+    "detail": "bollard HostConfig sets nano_cpus = cpus*1e9 (capped at the engine's CPUs), memory = memory_mb MiB (hard limit), shm_size = half of memory clamped to 64 MiB..2 GiB. Ports are published on 127.0.0.1 with a random host port. It sets no binds or mounts. cap_add SYS_ADMIN applies only under runsc.",
+    "source": "libs/cua/crates/cua-vmm/src/container/mod.rs L1580-1665 (container create body, cap_nano_cpus, shm_size_bytes)"
+   },
+   {
+    "claim": "Host folder bind mounts are supported through cua (SDK/CLI)",
+    "status": "refuted",
+    "detail": "SandboxCreateOptions, SpaceCreateOptions and `cua sb create` have no mount, volume or shared-dir field, and the container HostConfig has no binds or mounts. The only file paths are: Cua Volume (FSL FUSE drive, mountable only in gVisor sandboxes per test `only_gvisor_sandboxes_can_mount_the_volume`), `Space.upload/download/sendFile/write`, `cua sb cp`, and the HTML5 viewer's `--files` upload/folder sharing.",
+    "source": "@trycua/cua d.ts; cua-vmm/src/container/mod.rs; docs cua-cli reference sandbox.mdx/sandbox-access.mdx"
+   },
+   {
+    "claim": "Raw 'docker run -v \u2026 ghcr.io/trycua/linux:24.04' works and can be driven by the SDK",
+    "status": "confirmed",
+    "detail": "The image is a plain OCI rootfs with CMD ['/opt/cua/desktop/entrypoint.sh'] (supervisord as PID 1), no USER, Env DISPLAY=:1 CUA_X_SERVER=xvfb, EXPOSE 3211/tcp 3212/udp 18080/tcp, and a HEALTHCHECK. The repo's own smoke test runs `docker run -d --name N --runtime=runc --shm-size=512m --memory=4g --memory-swap=4g -e CUA_ENV_TOKEN=$TOKEN -p 127.0.0.1::3211 IMAGE`. Add `-v ~/Code/foo:/home/cua/work/foo` (standard Docker, not tested by cua). Connect from Node with `embedded().spacesd('http://127.0.0.1:<port>', token)` or `embedded().sandboxes().connectUrl(url, token, name)` (location 'direct'). Such containers do not appear in `cua sb ls`.",
+    "source": "libs/images/linux/smoke-test.sh L65-68; ghcr.io/v2/trycua/linux arm64 config blob; @trycua/cua d.ts CuaLike.spacesd / SandboxesLike.connectUrl"
+   },
+   {
+    "claim": "File ownership/permissions of OrbStack bind mounts for container uid 1000 (cua user)",
+    "status": "uncertain",
+    "detail": "OrbStack docs say bind mounts 'work seamlessly as they would on Linux' over VirtioFS, and recommend volumes for speed. They do not document uid mapping. Secondary sources say OrbStack presents bind-mounted files as owned by whichever uid asks. Needs a spike: write as uid 1000 and check host ownership.",
+    "source": "https://docs.orbstack.dev/docker/file-sharing (+ secondary search results)"
+   },
+   {
+    "claim": "Lume shared directories (--shared-dir / VirtioFS) and guest mount path",
+    "status": "confirmed",
+    "detail": "CLI: `lume run <vm> --shared-dir PATH[:ro|:rw]` (repeatable). REST: `POST /lume/vms/:name/run` with body `sharedDirectories: [{hostPath, readOnly}]`; the host path must exist. Every share uses tag VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag ('com.apple.virtio-fs.automount') in one VZMultipleDirectoryShare, so a macOS guest sees each directory at `/Volumes/My Shared Files/<basename>` (duplicate names get ' (2)'). A Linux guest has to mount that tag itself (mount -t virtiofs). The REST API has no endpoint to add a share to a running VM; only the native viewer's 'Share Folder' does that, for one run.",
+    "source": "libs/lume/src/Server/Requests.swift (RunVMRequest), libs/lume/src/Virtualization/VMVirtualizationService.swift L280-325, docs/content/docs/lume/reference/cli/vms.mdx, docs/content/docs/lume/guides/manage-vms.mdx"
+   },
+   {
+    "claim": "cua-created macOS sandboxes can get user host-folder shares",
+    "status": "refuted",
+    "detail": "cua's Lume backend fills shared_directories with only its setup share (~/.cua/vmm/lume/<name>/setup with env-token, read-only). The guest reads `/Volumes/My Shared Files/setup/env-token` and persists it to ~/.cua/spacesd/token. A restart reuses that share, and there is no user-share option. Workaround (uncertain): MineVibe drives `lume run`/REST itself, passing the setup dir plus repo dirs, or relies on the persisted guest token.",
+    "source": "libs/cua/crates/cua-vmm/src/lume/mod.rs L714-770 (macos_setup_share, macos_run); libs/images/macos/files/start-spacesd.sh"
+   },
+   {
+    "claim": "Unary screenshot RPC from Node: JPEG/quality/max_dimension/include_cursor, returns scale/logical bounds",
+    "status": "confirmed",
+    "detail": "`SpacesdClient.screenshot({ format: ImageFormat.Jpeg, quality: 1-100, maxDimension, includeCursor })` returns `Screenshot { image: ArrayBuffer, format, width, height, scale, screenshotId }`. Proto ScreenshotRequest takes display_id|window, region, format, quality (0 means 80), max_dimension and include_cursor. ScreenshotResponse adds native_size, logical_bounds, display_id and captured_at. `Space.screenshot(opts)` and `Space.thumbnail(maxAgeMs)` (cached small JPEG) also exist.",
+    "source": "libs/cua/proto/cua/env/v1/computer.proto L37-110; @trycua/cua d.ts ScreenshotOptions/Screenshot/ImageFormat {Png=0,Jpeg=1,Webp=2}"
+   },
+   {
+    "claim": "WebP screenshots are supported",
+    "status": "refuted",
+    "detail": "spacesd's encode_image says 'WebP encoding is not bundled; PNG is returned and reported'. JPEG uses the pure-Rust `image` crate JpegEncoder.",
+    "source": "libs/cua-spacesd/crates/cua-spacesd-desktop/src/grpc/computer.rs L270-310"
+   },
+   {
+    "claim": "Realistic screenshot-polling fps",
+    "status": "uncertain",
+    "detail": "No published benchmark. On Linux each Screenshot call runs `grab_once()`, which builds a new X11 Grabber connection with an XShm grab, then does a BGRA\u2192RGB swap and a CPU JPEG encode in Rust. Expect roughly 5-15 fps per PC at 1280x800, as an estimate only. Measure in a spike. For seated 30 fps use StreamService instead.",
+    "source": "cua-spacesd-desktop/src/linux_stream.rs L740-746 (grab_once), grpc/computer.rs"
+   },
+   {
+    "claim": "StreamService/OpenMedia supports bgra and png codecs for Linux desktop streaming",
+    "status": "confirmed",
+    "detail": "Split answer. BGRA works on Linux; PNG does not. Linux `formats()` returns [H264AnnexB, Bgra8] and ListTargets advertises [H264, BGRA]. select_codec walks the client's list in order, so requesting only PNG fails with FailedPrecondition 'no acceptable codec', while [png, bgra] falls back to BGRA. The proto calls BGRA 'Raw top-down BGRA, tightly packed. Loopback / debugging only'. The Linux X11 capture is XDamage-gated (a static screen costs about nothing), downscales BGRA to max_dimension, and clamps max_fps to 1..120 (0 means 30). bitrate_kbps 250..100000 applies to H.264 only. A BGRA frame at 1280x800 is about 4.1 MB, so 30 fps is about 123 MB/s over loopback; at 960x600 about 69 MB/s.",
+    "source": "libs/cua-spacesd/crates/cua-spacesd-desktop/src/lib.rs L1640-1668; grpc/stream.rs L254, L311-320; cua-spacesd-session/src/media/session.rs L388-400, L518-529; linux_stream.rs; libs/cua/proto/cua/env/v1/stream.proto"
+   },
+   {
+    "claim": "Node SDK media API delivers decoded frames (so Node/JVM can avoid H.264 decoding via the SDK)",
+    "status": "refuted",
+    "detail": "The open-source npm SDK delivers encoded frames only: `SpacesdClient.openMedia(MediaOpenOptions{display?, windowHandle?, maxFps, maxDimension, audio, disableVideo, requestJson?}, FrameSink{onFrame(VideoFrame{sequence, keyframe, width, height, captureTimestampUs, codecEpoch, geometryEpoch, data, headerJson}), onEvent})`. MediaOpenOptions has no codecs field, so BGRA must be requested through the escape hatch `requestJson: '{\"codecs\":[\"MEDIA_CODEC_BGRA\"]}'`. Decoded BGRA/PCM (`spacesd_open_media_decoded`) is Swift-only FSL (cua-spaces-ffi) and is not in npm 0.4.1. examples/streaming/typescript-node/README mentions `openMediaDecodedWithAudio`, but that is not in the published typings or the TS source on main. `Space.openStream(SpaceStreamOptions{codecs:['h264'|'bgra'|'png'], maxFps, policy})` mints a ticket and wsUrl that another client can attach to.",
+    "source": "@trycua/cua 0.4.1 d.ts; docs/content/docs/cua-sdk/reference/spaces/decoded-media.mdx; LICENSING.md; libs/cua/typescript/src/native/cua_sdk.ts (no openMediaDecoded)"
+   },
+   {
+    "claim": "A JVM client can attach to the media socket directly with a ticket (avoiding Node relaying frames)",
+    "status": "uncertain",
+    "detail": "Documented wire: WebSocket `/media?ticket=<t>` on port 3211, or subprotocols `rcdp.v2` plus `cua.ticket.<t>`. The ticket is validated at upgrade (401/410), TTL 60 s default and 10 min max, and the root token never goes on the socket. Control messages are JSON `{type,payload}`. Video packets are length-prefixed (`header_len: u32`, `payload_len: u32`, big-endian) with a JSON header, and flow control keeps only the latest frame. MEDIA.md also describes v2 fragments (RVD2/RAU2 magic), so a hand-written Java client needs a spike. The Kotlin UniFFI binding (package ai.cua.sdk, JNA) exists, but 'no Gradle package or release artifact is produced yet' and as checked in it does not compile without a patch.",
+    "source": "libs/cua/proto/MEDIA.md; libs/cua/kotlin/README.md; examples/streaming/kotlin/README.md"
+   },
+   {
+    "claim": "Pointer/keyboard input RPCs from Node, including key down/up and named keys",
+    "status": "confirmed",
+    "detail": "Typed SpacesdClient methods: click(x,y), doubleClick, rightClick, moveTo, drag(fx,fy,tx,ty), scroll(dx,dy) (in lines), typeText, press(key), hotkey(keys[]), cursorPosition, getClipboard/setClipboard. Down/up are reachable only through proto3 JSON: `pointerJson('{\"down\":{\"button\":\"MOUSE_BUTTON_LEFT\"}}')` (actions click/move/down/up/drag/scroll; buttons LEFT/RIGHT/MIDDLE/BACK/FORWARD; ScrollUnit LINE/PIXEL; modifiers) and `keyboardJson('{\"down\":{\"key\":{\"named\":\"KEY_SHIFT\"}}}')` (actions type/press/hotkey/down/up; KeyInput = named Key enum or a single `character`). KeySpec.parse accepts KEY_* names, their suffix in any case, aliases ctrl, option/opt, cmd/command/super/win, up/down/left/right, esc, return, del, or one character. InputTarget supports COORDINATE_SPACE_SCREENSHOT with screenshot_id. Media-plane input is `MediaSession.sendControl(json)` and needs SessionPolicy ALLOW_ACTIVATION.",
+    "source": "computer.proto (PointerRequest, KeyboardRequest, KeyInput, Key enum); libs/cua/crates/cua-spacesd-client/src/computer.rs L66-110; @trycua/cua d.ts SpacesdClientLike"
+   },
+   {
+    "claim": "No documented multi-controller locking",
+    "status": "confirmed",
+    "detail": "Only the media plane has input leases: 'at most one principal drives a given window at a time', with an idle-expiring lease that releases held keys on handover. Unary ComputerService Pointer/Keyboard calls have no occupancy lock, so MineVibe must enforce one occupant per PC itself.",
+    "source": "libs/cua-spacesd/crates/cua-spacesd-session/src/media/leases.rs header"
+   },
+   {
+    "claim": "'cua mcp --sandbox <name>' tool list includes computer_shell",
+    "status": "confirmed",
+    "detail": "Exact computer tools: computer_screenshot (PNG, long edge at most 1200 px, sets the coordinate space), computer_click, computer_double_click, computer_move_cursor, computer_mouse_down, computer_mouse_up, computer_type, computer_key, computer_key_down, computer_key_up, computer_hotkey ('ctrl+c' joined by +), computer_scroll, computer_drag, computer_clipboard_get/_set, computer_file_read/_write/_list, computer_shell (sh -c, 120 s timeout), computer_window_list/open/focus/unfocus/minimize/maximize/close/resize/move/get_info, computer_launch, computer_get_screen_size, computer_get_cursor_position, computer_get_current_window, computer_get_accessibility_tree, computer_accessibility_act. Sandbox tools: sandbox_list/create/get/start(=resume)/stop(=suspend)/restart/suspend/delete/view/vnc (deprecated)/open_browser. Permission groups: computer:all (includes computer:shell), computer:readonly, sandbox:all, sandbox:readonly, spaces:*, skills:*, images:all, teleport:all. An empty list grants everything; an unknown permission fails closed.",
+    "source": "docs/content/docs/cua-cli/reference/mcp-tools/computer.mdx, sandbox.mdx; docs/content/docs/cua-cli/guides/mcp-server.mdx; libs/cua/crates/cua-cli/src/mcp.rs"
+   },
+   {
+    "claim": "'--sandbox' pins an MCP instance to one sandbox",
+    "status": "refuted",
+    "detail": "`--sandbox` (CUA_SANDBOX) is only the default target. `Server::target()` reads `a[\"sandbox\"]` from each tool call first, so any call can drive another sandbox by name or ref ('each call can pass sandbox').",
+    "source": "libs/cua/crates/cua-cli/src/mcp.rs L809-820; docs cua-cli/guides/mcp-server.mdx"
+   },
+   {
+    "claim": "Multiple 'cua mcp' instances for different sandboxes can run concurrently",
+    "status": "uncertain",
+    "detail": "Each instance is a separate stdio process using the embedded runtime, or the `cua daemon` when ~/.cua/daemon.json exists. State files are written by atomic rename, and each process keeps its own screenshot coordinate mapping per sandbox. There is no explicit lock, and concurrency is not documented or tested. Docs recommend `cua daemon mcp` 'so several agents share Spaces, streams and sandboxes'.",
+    "source": "libs/cua/crates/cua-cli/src/lib.rs (embedded vs daemon topology), cua-sandbox-core/src/state.rs, docs mcp-server.mdx"
+   },
+   {
+    "claim": "spacesd serves an HTTP MCP endpoint at /mcp",
+    "status": "confirmed",
+    "detail": "Streamable-HTTP MCP over the in-process cua-driver tool registry, with bearer auth, Mcp-Session-Id sessions, and an optional `X-Cua-Agent-Session` header (one driver session and cursor per agent; DELETE /mcp ends it). It is served from inside the guest, so it is inherently bound to that one PC. Its tool names are cua-driver's, not the `computer_*` set. Whether it includes a shell tool was not verified.",
+    "source": "libs/cua-spacesd/crates/cua-spacesd-server/src/http/mcp.rs header"
+   },
+   {
+    "claim": "Running shell commands in a sandbox from the host",
+    "status": "confirmed",
+    "detail": "CLI: `cua sb exec NAME -- cmd` (one sh -c line, exits with the command's status; Lume without spacesd uses lume ssh) and `cua sb shell NAME` (PTY, --cols/--rows). SDK: `SpacesdClient.sh(line, timeoutMs)`, `run(SpacesdCommand)`, `spawn(SpacesdCommand{program, args, env, cwd, user, timeoutMs, tag, stdin, pty:{cols,rows}})` returning SpacesdProcess (writeStdin, writePty, resize, signal, kill, wait, nextEvent, detach), and `attach(pid, tag, replay)` to reattach by tag. Also `Space.bash(cmd, timeoutMs)`. Raw: `docker exec -u cua <ctr> desktop-env <cmd>` (the image's desktop-env script loads DISPLAY and the session bus and drops to user cua).",
+    "source": "docs cua-cli/reference/cli/sandbox-access.mdx; docs/content/docs/cua-sdk/reference/spacesd/shell.mdx; @trycua/cua d.ts; libs/images/common/desktop/desktop-env.sh"
+   },
+   {
+    "claim": "A visible terminal (tmux attached in an XFCE terminal) is feasible in linux:24.04",
+    "status": "confirmed",
+    "detail": "xfce4-terminal is installed. tmux is not: it is absent from the Dockerfile apt list and the full-tier software manifest. User cua (uid 1000) has `NOPASSWD:ALL` sudo, so `sudo apt-get install -y tmux` at runtime or a derived image both work. Then spawn `xfce4-terminal -e 'tmux new -A -s agent'` on DISPLAY :1 and run agent commands in that session. xdotool, wmctrl, xclip and imagemagick are also present.",
+    "source": "libs/images/linux/Dockerfile L70-95; libs/images/software/linux-24.04-full.json; libs/images/common/desktop/install-desktop-user.sh L13-16"
+   },
+   {
+    "claim": "cua CLI is installable via brew/npm/uv",
+    "status": "confirmed",
+    "detail": "Two of three work: npm and uv do, brew does not. npm: @trycua/cua@0.4.1 has `\"bin\": {\"cua\": \"bin/cua.js\"}`, a shim that runs the Rust binary from optional dependency @trycua/cua-darwin-arm64@0.4.1 (contains `cua`, libcua_sdk.dylib and cua_node_runtime.node; about 215 MB unpacked), so the server's own dependency also provides the CLI. PyPI: cua 0.4.1 with a macosx_11_0_arm64 wheel and console_script `cua = cua._cli:main`, so `uv tool install cua` works. Script: `curl -fsSL https://cua.ai/install.sh | sh -s -- --cli-only`. Homebrew has no `cua` formula (formulae.brew.sh 404; the trycua/homebrew-lume tap has only Formula/lume.rb). `lume` 0.6.1 is in homebrew/core. cua also downloads a pinned, codesign-verified 'built-in Lume' to $CUA_HOME/runtimes/lume/<version> on the first macOS create (runtime.lume=auto), so lume does not need to be preinstalled.",
+    "source": "npm registry tarballs; pypi.org/pypi/cua/json + wheel entry_points.txt; formulae.brew.sh; github.com/trycua/homebrew-lume; docs cua-cli/quickstart.mdx; libs/cua/crates/cua-vmm/src/lume/builtin.rs"
+   },
+   {
+    "claim": "The Linux image runs natively on arm64",
+    "status": "confirmed",
+    "detail": "ghcr.io/trycua/linux:24.04 is an OCI index (annotations ai.cua.image.variant=rootfs, tier=full, doctor.status=pass) with linux/amd64 and linux/arm64 manifests. The arm64 build is from 2026-10-06, about 1.19 GB compressed (24.04-slim about 0.49 GB). `24.04-disk` is the QEMU/KubeVirt containerDisk. image.json: Xvfb :1 at 1280x800 (CUA_RESOLUTION=WxH overrides), user cua uid 1000, min_memory_mib 1024, min_shm_mib 256. The tags are rebuilt often, so pin a digest.",
+    "source": "ghcr.io/v2/trycua/linux manifests (24.04, 24.04-slim, 24.04-disk) and arm64 config blob; libs/images/linux/image.json; libs/images/common/desktop/start-desktop.sh"
+   },
+   {
+    "claim": "No VNC in linux:24.04, and trycua/cua-xfce is amd64-only",
+    "status": "confirmed",
+    "detail": "The apt list installs xvfb only (no tigervnc/x11vnc). The desktop is reached through spacesd /viewer/ (HTML5) and the media socket. Docker Hub trycua/cua-xfce tags list only amd64.",
+    "source": "libs/images/linux/Dockerfile; hub.docker.com/v2/repositories/trycua/cua-xfce/tags"
+   },
+   {
+    "claim": "spacesd auth and ports",
+    "status": "confirmed",
+    "detail": "spacesd listens on 0.0.0.0:3211 (gRPC, gRPC-Web, HTTP /viewer/, /media, /mcp) and 3212/udp (QUIC). Bearer token comes from CUA_ENV_TOKEN, then CUA_ENV_TOKEN_FILE, /run/cua/env-token, /etc/cua/env-token. If none is set, the entrypoint generates a random token. CUA_ENV_ALLOW_ANONYMOUS defaults to 0.",
+    "source": "libs/images/linux/files/start-spacesd.sh, ensure-env-token.sh; image.json services"
+   },
+   {
+    "claim": "Persistence semantics across stop/start",
+    "status": "confirmed",
+    "detail": "Local container: suspend = `docker pause` (memory kept and still occupies RAM; becomes a plain stop if OrbStack or the Mac restarts). resume = unpause, or `docker start` when stopped. The writable layer survives stop/start and is lost on delete. Port bindings are fixed at create; cua recreates the container from a `docker commit` if ports change. Lume: 'Lume has no in-memory pause', so suspend = stop (disk kept) and resume boots it. macOS bases are pulled once into a stopped `cua-base-<sha12>` VM and cloned per sandbox with APFS clonefile. Local sandboxes have no TTL and run until deleted.",
+    "source": "cua-vmm/src/container/mod.rs L789-1000; cua-vmm/src/lume/mod.rs L1-20, L1477-1490; cua-sandbox-core/src/power.rs; docs cua-sdk/guides/lifecycle.mdx"
+   },
+   {
+    "claim": "Mounting a named volume on /home/cua keeps per-PC home state",
+    "status": "uncertain",
+    "detail": "Only possible with raw docker, because cua cannot add volumes. Standard Docker behaviour copies the image's /home/cua (XFCE config etc.) into an empty named volume on first mount. A host bind mount at /home/cua would hide that content. Not verified against this image.",
+    "source": "Docker volume semantics; libs/images/common/desktop/install-desktop-user.sh (home populated at build)"
+   },
+   {
+    "claim": "macOS PC: Lume only, 2-VM hard limit, defaults 4 CPU/8GB/100GB sparse, first pull ~23GB",
+    "status": "confirmed",
+    "detail": "Partly confirmed. Confirmed: Image.macos() = ghcr.io/trycua/macos:26 (Tahoe, ships cua-spacesd), Lume VM on Apple silicon only, no cloud variant. The ghcr manifest is a single-arch Lume image of 301 layers, about 23.95 GB compressed (26-slim 23.53 GB). The two-VM limit is in cua-host: `max_macos_vms` 'at most two, Apple's license' (MACOS_VM_LICENSE_LIMIT). Corrected: the image annotations are disk-size 161061273600 B (150 GiB, not 100 GB) and memory 8 GiB. `lume create` defaults (--cpu 4, --memory 8GB, --disk-size 100GB macOS / 50GB Linux) apply only to fresh lume creates. cua's own CPU/memory default for macOS sandboxes was not verified, so pass cpus/memoryMb explicitly. macos:15 ships the legacy agent, not spacesd.",
+    "source": "ghcr.io/v2/trycua/macos/manifests/26 annotations; docs cua-sdk/reference/os-image-catalog.mdx; libs/cua/crates/cua-host/src/host.rs L164-212; docs lume/reference/cli/vms.mdx"
+   },
+   {
+    "claim": "Windows PC via QEMU on Apple Silicon is realistic",
+    "status": "refuted",
+    "detail": "ghcr.io/trycua/windows:2022 is amd64 only (tags *-amd64). Docs: 'Image.windows() is amd64 and runs under slow TCG emulation on Apple silicon'. No Windows license is included.",
+    "source": "docs cua-sdk/guides/local-runtimes.mdx and os-image-catalog.mdx; ghcr tags list trycua/windows"
+   },
+   {
+    "claim": "Other PC types worth offering (kasm 'browser-only', Linux VM, Omarchy, Android)",
+    "status": "uncertain",
+    "detail": "Realistic: a Linux VM PC (`cua sb create linux --kind vm` runs the arm64 24.04-disk under QEMU with HVF, or a Linux arm64 VM under Lume) gives stronger isolation and native speed. A 'browser PC' is the same Linux image with `--browser` / sandbox_open_browser (Chromium). The kasm image is not browser-only: trycua/cua-ubuntu on Docker Hub (amd64+arm64, Ubuntu 22.04 XFCE + KasmVNC, built from libs/kasm, older line with spacesd 0.1.x). Not realistic on Apple silicon: Omarchy is an amd64 VM (TCG). The Android image (libs/qemu-docker/android, FROM budtmo/docker-android, x86 + KVM) is very unlikely to run here, though not tested.",
+    "source": "docs local-runtimes.mdx; libs/kasm/Dockerfile + README; hub.docker.com trycua/cua-ubuntu; libs/qemu-docker/android/Dockerfile; ghcr trycua/omarchy tags"
+   },
+   {
+    "claim": "Licenses: SDK/CLI/Lume MIT; spacesd/viewers FSL-1.1-MIT",
+    "status": "confirmed",
+    "detail": "MIT covers the SDK, its language packages, the cua CLI, cua daemon, Cua Driver and Lume. FSL-1.1-MIT covers cua-spacesd, cua-media-client/codec/transport/protocol, viewers, cua-spaces-ext/ffi/cli and Cua Volume. FSL allows any use except a 'Competing Use', and each release becomes MIT after 2 years.",
+    "source": "LICENSING.md"
+   },
+   {
+    "claim": "Telemetry is on by default",
+    "status": "confirmed",
+    "detail": "Disable with DO_NOT_TRACK=1, CUA_TELEMETRY=0, or `telemetrySetEnabled(false)` in TS. It is off by default only in CI.",
+    "source": "docs/content/docs/cua-sdk/concepts/telemetry.mdx"
+   },
+   {
+    "claim": "cua is stable enough to track 'latest'",
+    "status": "refuted",
+    "detail": "Releases between 2026-10-02 and 10-08 include cua-sdk 0.3.0\u21920.3.1\u21920.4.0\u21920.4.1, cua-spacesd 0.1.2\u21920.5.3 (about 10 releases), cua-spaces 0.2.0\u21920.7.2, and lume-v0.6.1 plus nightlies. Image tags are rebuilt every few days.",
+    "source": "gh api repos/trycua/cua/releases"
+   }
+  ],
+  "designImplications": [
+   "Linux PCs on this Mac run as runc containers inside OrbStack's VM, not gVisor. Treat docker info MemTotal (about 15.66 GiB; OrbStack memory_mib=16384) and NCPU=18 as the Linux-PC capacity budget for the resource indicator. Lume macOS VMs draw from the remaining host RAM (48 GiB total) and are capped at 2. Subtract other running containers (one is in a restart loop now).",
+   "Mounts are fixed at container create and cua cannot set them. Let the agentic server own Linux PC containers directly (dockerode or docker CLI): `docker run -d --runtime=runc --memory=\u2026 --memory-swap=\u2026 --cpus=\u2026 --shm-size=\u2026 -e CUA_ENV_TOKEN=\u2026 -p 127.0.0.1::3211 -v <host repo>:/home/cua/work/<name> -v minevibe-<pc>-home:/home/cua <pinned digest>`, labelled minevibe.pc=<id>. Then connect with `embedded().spacesd(url, token)` or `sandboxes().connectUrl`. Changing mounts means recreating the container, so keep state in a named volume. Use the cua SDK for create/suspend/resume only for PCs that need no mounts.",
+   "Build a thin derived image FROM ghcr.io/trycua/linux@sha256:<digest> that adds tmux (and optionally the agent tooling). Pin both the image digest and @trycua/cua@0.4.1 exactly; cua ships several releases a day.",
+   "Monitor video: for the seated PC, open StreamService with codecs [BGRA] (through MediaOpenOptions.requestJson) at max_dimension around 960-1280 and max_fps 30. The capture is XDamage-gated, so idle screens are nearly free. Either forward the BGRA in Node (optionally zstd/lz4) or, after a spike, have the Java mod attach to /media itself with a ticket from Space.openStream / OpenMedia. Never request PNG-only on Linux; it fails. If H.264 is kept, decode in Node with the installed ffmpeg or in Java, because the npm SDK does not decode. For visible-but-unseated monitors, use JPEG screenshots (quality around 60, maxDimension around 640) at 1-2 fps or Space.thumbnail.",
+   "Input: map SDL3 key events to proto Key enum names and send them with `keyboardJson({down|up:{key:{named:'KEY_\u2026'}}})` / `pointerJson({down|up|move|scroll})`, so held keys and drags behave like a real keyboard. Track pressed keys per occupant and release all of them on unseat or kick, since unary RPCs have no lease.",
+   "Agent tools: do not give agents raw `cua mcp`. Its `sandbox` argument overrides --sandbox, and sandbox_* tools can create or delete PCs, which breaks single occupancy. Register MineVibe's own SDK-MCP tools (createSdkMcpServer) bound to the PC the agent is seated at: screenshot (JPEG, returns scale), click/move/drag/scroll, key_down/up/press/hotkey, type, shell (spawn with PTY and tag inside a tmux session shown in xfce4-terminal), and file read/write. Enable them only while seated, by toggling mcpServers or rejecting in canUseTool. Alternative: point a per-PC HTTP MCP config at that PC's spacesd /mcp with X-Cua-Agent-Session, which is naturally pinned to one PC.",
+   "Run one embedded cua runtime inside the Node agentic server, not one `cua mcp` process per agent. Set CUA_TELEMETRY=0 / DO_NOT_TRACK=1 in the server and in spawned agent environments.",
+   "Ship cua as an npm dependency of the server (@trycua/cua plus @trycua/cua-darwin-arm64, which also provides the `cua` binary). No Homebrew is needed. cua downloads its pinned built-in Lume on the first macOS create, so the macOS PC's first boot means a ~24 GB download and a sparse 150 GiB disk (199 GiB free now). Gate it behind a confirmation with a progress UI.",
+   "macOS PCs with host folders are a stretch goal. cua exposes no share option, so MineVibe would drive `lume run`/REST with `--shared-dir <setup dir containing env-token>` plus repo dirs (guest path /Volumes/My Shared Files/<basename>), or fall back to Space.upload/download sync. Lume 'suspend' is a full stop, so macOS PCs cold-boot on resume. Show that in the UI.",
+   "Persistence across a world reset: containers, named volumes and Lume disks survive app restarts (pause becomes stop after an engine restart; resume handles both). Decide explicitly whether a new world reuses the PCs (cheap) or recreates them from the base image. Host-mounted repos always persist.",
+   "PC type menu: Linux container (default, fast, arm64-native), macOS (Lume, at most 2, heavy), optional Linux VM (QEMU-HVF/Lume, stronger isolation). Hide Windows, or label it 'emulated, very slow' (amd64 TCG). Skip Android and Omarchy. A 'browser PC' is just the Linux image with Chromium kiosk."
+  ]
+ },
+ {
+  "claims": [
+   {
+    "claim": "(1a) Minecraft 26.3 is the current stable release (15 Sep 2026). It is unobfuscated and requires Java 25 through Mojang runtime component java-runtime-epsilon.",
+    "status": "confirmed",
+    "detail": "version_manifest_v2 reports latest.release=26.3 (releaseTime 2026-09-15T11:23:02Z) and latest snapshot=26.4-snapshot-3. 26.3.json has javaVersion {component:'java-runtime-epsilon', majorVersion:25} and mainClass net.minecraft.client.main.Main. Its downloads list only client and server jars, with no client_mappings. The osx JVM args include -XstartOnFirstThread.",
+    "source": "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json ; https://piston-meta.mojang.com/v1/packages/702fe59163c6ee6578607daa85811d9bc9c7cc40/26.3.json"
+   },
+   {
+    "claim": "(1b) Fabric for 26.3 uses loader 0.19.5 and Fabric API 0.161.0+26.3.",
+    "status": "confirmed",
+    "detail": "The fabric-example-mod 26.3 branch gradle.properties pins minecraft_version=26.3, loader_version=0.19.5 and fabric_api_version=0.161.0+26.3. Fabric meta lists 0.19.5 as the stable loader for 26.3. A newer 0.162.0+26.3 is already on maven.fabricmc.net, and the fabric-api 26.3 branch gradle.properties says version=0.162.0. Either version works.",
+    "source": "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.3/gradle.properties ; https://meta.fabricmc.net/v2/versions/loader/26.3 ; https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml"
+   },
+   {
+    "claim": "(1c) The Loom plugin id is net.fabricmc.fabric-loom. The blog says 1.17 and the example mod uses 1.18-SNAPSHOT.",
+    "status": "confirmed",
+    "detail": "The example build.gradle uses `id 'net.fabricmc.fabric-loom' version \"${loom_version}\"` with loom_version=1.18-SNAPSHOT. The 26.3 blog lists Loom 1.17 and Gradle 9.6.0. Loom 1.18 was released on 2026-09-20 and maven has 1.18.3. Loom 1.18 is compiled with jvmTarget/release 25, so the Gradle daemon must run on JDK 25. Loom 1.17 targets Java 21.",
+    "source": "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.3/build.gradle ; https://fabricmc.net/2026/09/15/263.html ; https://github.com/FabricMC/fabric-loom/releases (1.18) ; https://raw.githubusercontent.com/FabricMC/fabric-loom/dev/1.18/build.gradle"
+   },
+   {
+    "claim": "(1d) The Gradle version to use is 9.6.",
+    "status": "refuted",
+    "detail": "9.6.0 is the version in the blog, which pairs it with Loom 1.17. The current 26.3 template uses distributionUrl=https://services.gradle.org/distributions/gradle-9.7.1-bin.zip, and Loom's own dev/1.18 wrapper is 9.7.0. Use Gradle 9.7.1 with Loom 1.18.x.",
+    "source": "https://raw.githubusercontent.com/FabricMC/fabric-example-mod/26.3/gradle/wrapper/gradle-wrapper.properties"
+   },
+   {
+    "claim": "(1e) Java 25 is required to build the mod.",
+    "status": "confirmed",
+    "detail": "The example sets options.release=25 and source/targetCompatibility=JavaVersion.VERSION_25. fabric.mod.json declares depends java '>=25', minecraft '~26.3' and fabricloader '>=0.19.5'. The local Temurin 17 cannot compile this or run Loom 1.18.",
+    "source": "fabric-example-mod 26.3 build.gradle and src/main/resources/fabric.mod.json"
+   },
+   {
+    "claim": "(2a) Carpet's EntityPlayerMPFake creation for 26.3 uses placeNewPlayer(new FakeClientConnection(SERVERBOUND), fake, CommonListenerCookie).",
+    "status": "confirmed",
+    "detail": "Carpet tag v26.3 (MIT): `new EntityPlayerMPFake(server, level, profile, ClientInformation.createDefault(), false)` calls super ServerPlayer(MinecraftServer server, ServerLevel level, GameProfile gameProfile, ClientInformation clientInformation). Then `server.getPlayerList().placeNewPlayer(new FakeClientConnection(PacketFlow.SERVERBOUND), instance, new CommonListenerCookie(profile, 0, instance.clientInformation(), false))`. CommonListenerCookie is a record (GameProfile gameProfile, int latency, ClientInformation clientInformation, boolean transferred). FakeClientConnection extends Connection, sets an EmbeddedChannel through an accessor mixin (ClientConnectionInterface.setChannel), and no-ops send(Packet, ChannelFutureListener, boolean), setReadOnly, handleDisconnection, setListenerForServerboundHandshake and setupInboundProtocol. PlayerList_fakePlayersMixin @Redirects `new ServerGamePacketListenerImpl(...)` in placeNewPlayer to NetHandlerPlayServerFake, and `new ServerPlayer(...)` in respawn. GameProfile is now a record: `new GameProfile(UUID,String)`, profile.name(), profile.id().",
+    "source": "https://github.com/gnembon/fabric-carpet/tree/v26.3/src/main/java/carpet/patches (EntityPlayerMPFake, FakeClientConnection, NetHandlerPlayServerFake) ; carpet/mixins/PlayerList_fakePlayersMixin.java"
+   },
+   {
+    "claim": "(2b) How a Carpet fake player handles death and respawn.",
+    "status": "confirmed",
+    "detail": "EntityPlayerMPFake.die(DamageSource) runs shakeOff(), super.die(cause), setHealth(20), foodData=new FoodData(), then kill(getCombatTracker().getDeathMessage()). kill() schedules connection.onDisconnect(new DisconnectionDetails(reason)) on the next tick, which leads to PlayerList.remove and a playerdata save. The fake is removed and never respawns. Inventory drops through vanilla die unless keepInventory is on. Saved playerdata has health 20, and Carpet's loadPlayerData restores it if the same UUID spawns again.",
+    "source": "carpet v26.3 EntityPlayerMPFake.java"
+   },
+   {
+    "claim": "(2c) EntityPlayerActionPack provides use/attack/jump/drop/swap, setForward/strafing/look/sneak/sprint, and riding.",
+    "status": "confirmed",
+    "detail": "ActionType has USE, ATTACK, JUMP, DROP_ITEM, DROP_STACK and SWAP_HANDS. Methods include setForward, setStrafing, look(yaw,pitch), lookAt(Vec3), turn, setSneaking, setSprinting, stopMovement, mount(boolean) and dismount(). Movement sets player.zza and player.xxa, and vanilla server-side physics does the rest, so you only supply steering inputs. Caveat: mount() calls player.startRiding(e, true, true), and force=true bypasses canRide/canAddPassenger.",
+    "source": "carpet v26.3 helpers/EntityPlayerActionPack.java ; mixins/ServerPlayer_actionPackMixin.java"
+   },
+   {
+    "claim": "(3a) In hardcore, the local player's death shows a death screen and the player becomes a spectator on respawn.",
+    "status": "confirmed",
+    "detail": "ClientPacketListener.handlePlayerCombatKill calls gui.setScreen(new DeathScreen(msg, levelData.isHardcore(), player)), or player.respawn() if !shouldShowDeathScreen. The hardcore DeathScreen has 'deathScreen.spectate' (\"Spectate World\", calls LocalPlayer.respawn()) and 'deathScreen.titleScreen'. The title button exits without confirmation through disconnectWithSavingScreen and then a TitleScreen. The server's ServerGamePacketListenerImpl.handleClientCommand(PERFORM_RESPAWN) calls respawn(player,false,KILLED) and then, if server.isHardcore(), player.setGameMode(GameType.SPECTATOR). Vanilla never deletes the world. Gui.setScreen re-creates the DeathScreen if a null screen is set while the player is dead.",
+    "source": "26.3 client.jar bytecode: ClientPacketListener, DeathScreen, Gui.setScreen, ServerGamePacketListenerImpl"
+   },
+   {
+    "claim": "(3b) A mod can replace a hardcore world without showing the title screen (createWorldOpenFlows().createFreshLevel).",
+    "status": "confirmed",
+    "detail": "All the APIs exist; the full flow has not been tested at runtime. Step 1: `mc.disconnect(Screen screen, boolean keepResourcePacks)` with a GenericMessageScreen. It halts the IntegratedServer and loops renderFrame until isShutdown(), which means the server thread has exited. stopServer closes the LevelStorageAccess before that happens. Step 2: `try(var a = mc.getLevelSource().createAccess(oldId)){ a.deleteLevel(); }`. Step 3: `mc.createWorldOpenFlows().createFreshLevel(String levelId, LevelSettings levelSettings, WorldOptions options, Function<HolderLookup.Provider,WorldDimensions> dimensionsProvider, Screen parentScreen)`. Build the settings with `new LevelSettings(name, GameType.SURVIVAL, new LevelSettings.DifficultySettings(Difficulty.HARD, true /*hardcore*/, false), false, WorldDataConfiguration.DEFAULT)`, `WorldOptions.defaultWithRandomSeed()` and `WorldPresets::createNormalWorldDimensions`. Vanilla does the same delete-then-createFreshLevel in SelectWorldScreen's debug 'recreate' button, using FileUtil.findAvailableName. Alternatives are the public static QuickPlay.connect and WorldOpenFlows.openWorld(String, Runnable). Detect the death with Fabric ServerLivingEntityEvents.ALLOW_DEATH or AFTER_DEATH, or a client mixin on handlePlayerCombatKill.",
+    "source": "26.3 client.jar bytecode: Minecraft.disconnect, MinecraftServer.isShutdown/stopServer, WorldOpenFlows, SelectWorldScreen; fabric-api 26.3 ServerLivingEntityEvents.java"
+   },
+   {
+    "claim": "(3c) A fake player that dies in a hardcore world becomes a spectator.",
+    "status": "refuted",
+    "detail": "The hardcore spectator switch exists only in handleClientCommand(PERFORM_RESPAWN), which a fake player never sends. PlayerList.respawn has no isHardcore check, so a manual PlayerList.respawn would revive the fake in survival. With Carpet's die() override, the fake is removed cleanly through disconnect. For permadeath, also delete its playerdata or use a fresh UUID.",
+    "source": "26.3 bytecode (callers of isHardcore: only handleClientCommand, placeNewPlayer, Gui.setScreen, etc.) ; carpet v26.3 EntityPlayerMPFake.die"
+   },
+   {
+    "claim": "(4a) LWJGL STB (stb_image) is on the 26.3 classpath and can decode JPEG.",
+    "status": "confirmed",
+    "detail": "26.3.json includes org.lwjgl:lwjgl-stb:3.4.3 plus natives-macos-arm64, and NativeImage itself calls org.lwjgl.stb.STBImage.stbi_load_from_memory. To decode JPEG, call STBImage.stbi_load_from_memory(buf, w, h, comp, 4) and wrap the result with the public `new NativeImage(NativeImage.Format.RGBA, width, height, true /*useStbFree*/, MemoryUtil.memAddress(pixels))`. The constructor's parameters are format, width, height, useStbFree, pixels.",
+    "source": "26.3.json libraries; client.jar NativeImage bytecode and MethodParameters"
+   },
+   {
+    "claim": "(4b) NativeImage.read is PNG-only.",
+    "status": "confirmed",
+    "detail": "NativeImage.read(ByteBuffer) calls net.minecraft.util.PngInfo.validateHeader(buffer) before STB, so JPEG input fails. The overloads read(InputStream), read(byte[]) and read(ByteBuffer) all route through this check.",
+    "source": "client.jar NativeImage.read bytecode"
+   },
+   {
+    "claim": "(4c) DynamicTexture constructor and upload API in 26.3.",
+    "status": "confirmed",
+    "detail": "Constructors: DynamicTexture(Supplier<String> label, NativeImage image), which creates the GPU texture and uploads it; DynamicTexture(String label, int width, int height, boolean zero); and DynamicTexture(Supplier<String> label, int width, int height, boolean zero). Methods are upload(), getPixels() and setPixels(NativeImage), which closes the old image while the GPU texture keeps its size. upload() runs RenderSystem.getDevice().createCommandEncoder().writeToTexture(texture, pixels). The texture is GpuFormat.RGBA8_UNORM with sampler SamplerCache.getRepeat(FilterMode.NEAREST), held in the protected field AbstractTexture.sampler. getClampToEdge(FilterMode.LINEAR) is available. The GPU API is now in com.mojang.renderpearl.api.*. Partial updates: CommandEncoder.writeToTexture(GpuTexture destination, NativeImage source, int mipLevel, int depthOrLayer, int destX, int destY) and writeToTexture(GpuTexture destination, ByteBuffer source, int mipLevel, int depthOrLayer, int destX, int destY, int width, int height). Register with TextureManager.register(Identifier, AbstractTexture) and remove with release(Identifier).",
+    "source": "client.jar DynamicTexture, AbstractTexture, com/mojang/renderpearl/api/commands/CommandEncoder, SamplerCache, TextureManager"
+   },
+   {
+    "claim": "(5) BlockEntityRenderer uses a render-state API with submit(state, PoseStack, SubmitNodeCollector, CameraRenderState), and a fullbright textured quad can be drawn with it.",
+    "status": "confirmed",
+    "detail": "The interface is BlockEntityRenderer<T extends BlockEntity, S extends BlockEntityRenderState>. Methods: S createRenderState(); default extractRenderState(T blockEntity, S state, float partialTicks, Vec3 cameraPosition, ModelFeatureRenderer.CrumblingOverlay breakProgress); submit(S state, PoseStack poseStack, SubmitNodeCollector submitNodeCollector, CameraRenderState camera), with CameraRenderState in net.minecraft.client.renderer.state.level; plus shouldRenderOffScreen(), getViewDistance() and shouldRender(T, Vec3). Register with BlockEntityRenderers.register(type, ctx -> ...), which Fabric transitive access wideners expose; Fabric's BlockEntityRendererRegistry is @Deprecated. For a fullbright quad, copy vanilla MapRenderer: `collector.submitCustomGeometry(poseStack, RenderTypes.text(textureId), (pose, vc) -> vc.addVertex(pose,x,y,z).setColor(-1).setUv(u,v).setLight(LightCoordsUtil.FULL_BRIGHT))` four times. LightCoordsUtil.FULL_BRIGHT = 15728880. Entity renderers use the same submit signature, and submitNameTag(PoseStack, Vec3, int offset, Component, boolean seeThrough, int lightCoords, CameraRenderState) exists.",
+    "source": "client.jar BlockEntityRenderer, OrderedSubmitNodeCollector, RenderTypes, LightCoordsUtil, MapRenderer; fabric-api 26.3 BlockEntityRendererRegistry.java"
+   },
+   {
+    "claim": "(6) 26.3 replaced GLFW with SDL3, and Screen input event signatures changed.",
+    "status": "confirmed",
+    "detail": "No lwjgl-glfw library and zero org/lwjgl/glfw references; input uses lwjgl-sdl 3.4.3. GuiEventListener signatures: keyPressed(KeyEvent event), keyReleased(KeyEvent), charTyped(CharacterEvent event), preeditUpdated(PreeditEvent), mouseClicked(MouseButtonEvent event, boolean doubleClick), mouseReleased(MouseButtonEvent), mouseDragged(MouseButtonEvent event, double dx, double dy), mouseScrolled(double x, double y, double scrollX, double scrollY), and mouseMoved(double x, double y). KeyEvent(int key, int keycode, int modifiers) is built from SDL_KeyboardEvent.scancode(), key() and mod(), so key is the SDL scancode. InputConstants: KEY_A=4, KEY_RETURN=40, KEY_ESCAPE=41, KEY_BACKSPACE=42, KEY_LCONTROL=224, KEY_LSHIFT=225, MOUSE_BUTTON_LEFT=1, MIDDLE=2, RIGHT=3, MOD_SHIFT=3, MOD_CONTROL=192, MOD_ALT=768, MOD_SUPER=3072. CharacterEvent(int codepoint) carries no modifiers; characters come only from SDL text-input events, which require Minecraft.getInstance().onTextInputFocusChange(listener, true) (SDL_StartTextInput). Gui.setScreen calls stopTextInput() on screen changes. Open screens with Minecraft.getInstance().gui.setScreen(s); Minecraft.setScreen no longer exists.",
+    "source": "26.3.json libraries; client.jar GuiEventListener, KeyEvent, InputConstants, SDLEventHandler.handleKeyEvent, KeyboardHandler.textInput, TextInputManager, Gui.setScreen; https://fabricmc.net/2026/09/15/263.html"
+   },
+   {
+    "claim": "(7) What --quickPlaySingleplayer does when the world folder is missing.",
+    "status": "confirmed",
+    "detail": "QuickPlay.joinSingleplayerWorld: if !levelSource.levelExists(id), it calls gui.setScreen(new DisconnectedScreen(new SelectWorldScreen(new TitleScreen()), 'quickplay.error.title' (\"Failed to Quick Play\"), 'quickplay.error.invalid_identifier' (\"Could not find a world with the provided identifier\"), 'gui.toWorld')). It never creates a world. A blank id uses getLatestSingleplayerWorld, and cancelling openWorld goes to the TitleScreen.",
+    "source": "client.jar QuickPlay bytecode + en_us.json"
+   },
+   {
+    "claim": "(8a) 26.3 + Fabric can be installed and launched from Node with @xmcl/installer and @xmcl/core.",
+    "status": "confirmed",
+    "detail": "Versions: @xmcl/installer 6.3.5 (2026-10-03) and @xmcl/core 2.16.2. The 6.x API is workflow-based. Fabric: executeInstallWorkflow(createFabricInstallWorkflow({minecraftVersion:'26.3', version:'0.19.5', minecraft}), createDefaultNodeInstallRuntime()). This uses the meta profile JSON: inheritsFrom 26.3, mainClass KnotClient, no intermediary. Vanilla files come from resolveMinecraftVersionJsonInstallFile, resolveMinecraftJarInstallFile, resolveLibraryInstallFiles and resolveAssetInstallFiles, run with executeInstallManifest. Avoid the legacy getVersionJsonFromLoaderArtifact for 26.3: it sets inheritsFrom to the intermediary version '0.0.0'. Launch with @xmcl/core launch({gamePath, javaPath, version, gameProfile:{name,id}, accessToken, quickPlaySingleplayer, extraJVMArgs, extraMCArgs}). MCLC 3.18.2 (Dec 2024) has no Java runtime download and only legacy natives-classifier handling, so it is not recommended.",
+    "source": "npm tarballs @xmcl/installer@6.3.5 (README, dist/*.d.ts, index.js), @xmcl/core@2.16.2 launch.d.ts, minecraft-launcher-core@3.18.2"
+   },
+   {
+    "claim": "(8b) Mojang's Java runtime for macOS arm64 can be downloaded (component name and manifest URL).",
+    "status": "confirmed",
+    "detail": "Index all.json: https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json. Key 'mac-os-arm64', component 'java-runtime-epsilon', version 25.0.1. Manifest: https://piston-meta.mojang.com/v1/packages/5643d63e75d54da43c9501cdb1988530a9bc5d7f/manifest.json, with 446 entries (file/link/directory; files have raw and lzma downloads and an executable flag). The executable is jre.bundle/Contents/Home/bin/java, and bin/javac is also present. xmcl maps osx+arm64 to 'mac-os-arm64'. fetchJavaRuntimeManifest defaults to java-runtime-beta, so pass target 'java-runtime-epsilon'; the enum lacks Epsilon but accepts a string. Use createJavaRuntimeInstallWorkflow({target, destination}).",
+    "source": "Mojang all.json + manifest (fetched); @xmcl/installer index.js fetchJavaRuntimeManifest"
+   },
+   {
+    "claim": "(9a) Fake player skins can be set with an unsigned GameProfile textures property.",
+    "status": "refuted",
+    "detail": "GameProfile is record(UUID id, String name, PropertyMap properties), and PropertyMap is immutable (ImmutableMultimap.copyOf). Build it as `new GameProfile(uuid, name, new PropertyMap(ImmutableMultimap.of(\"textures\", new Property(\"textures\", value, signature))))`. authlib marks unsigned textures as SignatureState.UNSIGNED. However, PlayerInfo.createSkinLookup uses SkinManager.createLookup(profile, requireSecure = !minecraft.isLocalPlayer(id)), so non-local players with insecure skins fall back to the default skin. Use a signed value and signature pair (for example from a real or MineSkin-generated profile), or a client mixin on PlayerInfo.getSkin() or AbstractClientPlayer.getSkin() that returns PlayerSkin.insecure(...) with a locally registered texture. Texture URLs must also pass authlib's discovery-service allowlist (isAllowedTextureDomain); behaviour in offline mode is unverified.",
+    "source": "authlib-10.0.77.jar (GameProfile, PropertyMap, MinecraftServicesSessionService.unpackTextures); client.jar PlayerInfo.createSkinLookup, SkinManager, PlayerSkin"
+   },
+   {
+    "claim": "(9b) Fake players can be hidden from the tab list.",
+    "status": "confirmed",
+    "detail": "This is possible, but only with a mixin. ClientboundPlayerInfoUpdatePacket.Entry(ServerPlayer) hard-codes listed=true, and the packet has no public way to send listed=false. The client requires PlayerInfo before spawning a player entity (\"Server attempted to add player prior to sending player info\"), so a REMOVE packet would stop the agent from rendering. Options: mixin the Entry constructor to set listed=false for agents (Action.UPDATE_LISTED exists), or a client mixin filtering PlayerTabOverlay.getPlayerInfos() / ClientPacketListener.getListedOnlinePlayers(). ServerPlayer.allowsListing() only affects the server-status sample.",
+    "source": "client.jar ClientboundPlayerInfoUpdatePacket$Entry/$Action, ClientPacketListener.createEntityFromPacket, PlayerTabOverlay.getPlayerInfos"
+   },
+   {
+    "claim": "(10) 26.3 added a vanilla cushion entity that players sit on, usable for chairs.",
+    "status": "confirmed",
+    "detail": "The class is net.minecraft.world.entity.decoration.Cushion extends BlockAttachedEntity, registered as EntityTypes.CUSHION (entity type constants moved from EntityType to EntityTypes). It comes in 16 dye colours via DATA_COLOR. interact(Player, InteractionHand, Vec3): if !player.isSecondaryUseActive() && !isVehicle(), the server calls player.startRiding(this), plays SoundEvents.CUSHION_SIT and returns SUCCESS_SERVER. Entity.canAddPassenger defaults to passengers.isEmpty(), giving one rider unless startRiding(e, force=true, ...) is used. The cushion only survives with a block anchor below it (wouldSurviveAt/hasAnchorBelow) and breaks in fire. The wiki says it is not experimental, only players sit, and seated riders ignore knockback and portals. The wiki's 'dismount by using again' is not verified in code; stopRiding or sneaking works.",
+    "source": "client.jar Cushion, EntityTypes, Entity.startRiding/canAddPassenger; https://minecraft.wiki/w/Cushion"
+   },
+   {
+    "claim": "Other brief claims: Fabric API renamed WorldRenderEvents to LevelRenderEvents and Screens.getButtons to getWidgets, PayloadTypeRegistry is available, there is an experimental Vulkan backend, and the launch flags and options.txt keys listed in the brief exist.",
+    "status": "confirmed",
+    "detail": "Fabric API: net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents (START_MAIN, COLLECT_SUBMITS, AFTER_TRANSLUCENT_FEATURES, END_MAIN, ...), Screens.getWidgets, ScreenEvents.AFTER_INIT, UseEntityCallback.interact(Player, Level, InteractionHand, Entity, EntityHitResult), and PayloadTypeRegistry.clientboundPlay()/serverboundPlay(). Vulkan: com/mojang/renderpearl/backend/vulkan, option preferredGraphicsBackend ('Prefer Vulkan (Experimental)') and CLI --graphicsBackend. Main accepts --disableMultiplayer, --disableChat and --quickPlaySingleplayer. Options contains pauseOnLostFocus, onboardAccessibility, tutorialStep (TutorialSteps 'none') and skipMultiplayerWarning.",
+    "source": "fabric-api 26.3 branch sources; client.jar Main/Options/en_us.json"
+   }
+  ],
+  "designImplications": [
+   "Toolchain: install a JDK 25 (Temurin 25) and use Gradle 9.7.1 with Loom 1.18.x (or 1.18-SNAPSHOT), MC 26.3, loader 0.19.5 and Fabric API 0.161.0+26.3 (or 0.162.0+26.3). Loom 1.18 is Java-25 bytecode, so the Gradle daemon must run on JDK 25. The local Temurin 17 is not enough. Mojang's java-runtime-epsilon includes javac, but using it as JAVA_HOME for Gradle is untested.",
+   "Agent bodies: copy Carpet v26.3's pattern (MIT) rather than depending on all of Carpet. That means a Connection subclass with an accessor mixin for the Netty channel, a PlayerList mixin that swaps in a custom ServerGamePacketListenerImpl, and the action-pack tick mixin. Override die() to run MineVibe's agent-death logic: drop loot, disconnect, delete the agent's playerdata, and issue a fresh UUID so the death is permanent.",
+   "Seats: put a vanilla Cushion entity (EntityTypes.CUSHION) on each desk's seat block. Seat agents with non-forced fake.startRiding(cushion) or with the USE action on the cushion entity, so canAddPassenger enforces one occupant. Do not use Carpet's mount(), which forces the ride and bypasses that check. To kick an agent, call agent.stopRiding() on the server.",
+   "Hardcore reset: detect the host ServerPlayer's death on the server (ServerLivingEntityEvents.ALLOW_DEATH/AFTER_DEATH, excluding fakes) and suppress the vanilla DeathScreen with a client mixin. Then, on the client thread: disconnect to a GenericMessageScreen (this blocks until the server thread exits), deleteLevel() via LevelStorageSource.createAccess, and createFreshLevel(newId, hardcore DifficultySettings, WorldOptions.defaultWithRandomSeed(), WorldPresets::createNormalWorldDimensions, fallback). Agent memory and PC sandboxes are kept or wiped by the Node server, not by the world save.",
+   "Startup: --quickPlaySingleplayer shows an error screen when the world is missing, so either the launcher passes it only for a world that exists, or the mod intercepts the first TitleScreen (or DisconnectedScreen) and calls openWorld or createFreshLevel itself. Keep the 'current world id' in a MineVibe config file.",
+   "Monitor rendering: decode JPEG with STBImage.stbi_load_from_memory into a NativeImage(Format.RGBA, w, h, true, ptr), or have Node send raw RGBA. Upload dirty rects on the render thread with CommandEncoder.writeToTexture(GpuTexture, ByteBuffer, 0, 0, x, y, w, h). Draw with submitCustomGeometry and RenderTypes.text(id) plus LightCoordsUtil.FULL_BRIGHT, as vanilla MapRenderer does. Subclass DynamicTexture to set a LINEAR clamp-to-edge sampler. Use only the com.mojang.renderpearl API (no raw GL) so the experimental Vulkan backend keeps working.",
+   "PC input screen: on open, call Minecraft.getInstance().onTextInputFocusChange(screen, true) so charTyped events arrive. Forward KeyEvent.key() (SDL scancode) through an SDL-scancode-to-X11/cua key table, and send text from CharacterEvent codepoints. Mouse buttons are 1/2/3. Override keyPressed fully so Tab and Escape go to the PC, and reserve Shift+Esc to release control. Return false from isPauseScreen().",
+   "Skins and tab list: render agent skins with a client mixin on PlayerInfo.getSkin()/AbstractClientPlayer.getSkin() returning PlayerSkin.insecure(...) with locally registered textures; unsigned profile textures are ignored for remote players. Hide agents from the tab list by forcing Entry.listed=false or filtering on the client. Never send a REMOVE packet, because the agent would stop rendering.",
+   "Node launcher: use the @xmcl/installer 6.x workflow API (createFabricInstallWorkflow, the resolve*InstallFiles functions and executeInstallManifest) plus createJavaRuntimeInstallWorkflow with the all.json entry for mac-os-arm64 / java-runtime-epsilon. Launch with @xmcl/core using javaPath=<dest>/jre.bundle/Contents/Home/bin/java, offline gameProfile, quickPlaySingleplayer, and extraJVMArgs for the WebSocket token. Do not use MCLC.",
+   "26.x API renames to expect in code: Identifier (not ResourceLocation); EntityTypes.* and BlockEntityTypes.* constants; Gui.setScreen; GuiGraphicsExtractor/extractRenderState; LevelRenderEvents; PayloadTypeRegistry.clientboundPlay()/serverboundPlay(); GameProfile and Property are records."
+  ]
+ }
+]

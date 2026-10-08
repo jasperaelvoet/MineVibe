@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/jasperaelvoet/MineVibe/security/advisories/new
+    about: Please report vulnerabilities privately, never in a public issue.
+  - name: Documentation
+    url: https://jasperaelvoet.github.io/MineVibe
+    about: Getting started, playing, PCs and the Vault, troubleshooting.

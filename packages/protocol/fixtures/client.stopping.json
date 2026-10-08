@@ -1,0 +1,5 @@
+{
+  "t": "client.stopping",
+  "v": 1,
+  "reason": "quit"
+}

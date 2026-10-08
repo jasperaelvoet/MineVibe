@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish MineVibe.app
+    # Binary releases stay disabled until Microsoft sign-in ships (PLAN §2).
+    # Public binaries need Microsoft sign-in with a Mojang-approved app ID; until then MineVibe is
+    # source-only. The steps below are the intended shape (PLAN §11) and are wired up in M10/M11.
+    if: false
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      # Developer ID signing and notarization run only when these secrets are configured.
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build MineVibe.app
+        run: npm run build:app # TODO(M10): packaging/build-app.ts (vendor.lock.json, sha256-verified)
+      - name: Notarize
+        if: env.APPLE_TEAM_ID != '' && env.APPLE_NOTARY_KEY_ID != ''
+        run: npm run notarize:app # TODO(M11): xcrun notarytool submit --wait, then xcrun stapler staple
+      - name: Zip
+        run: ditto -c -k --keepParent out/MineVibe.app "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "MineVibe $GITHUB_REF_NAME" \
+            --generate-notes \
+            "MineVibe-${GITHUB_REF_NAME}-macos-arm64.zip" \
+            THIRD_PARTY_NOTICES.md

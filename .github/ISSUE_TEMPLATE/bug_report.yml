@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in MineVibe doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security problems go through private reporting instead**: see SECURITY.md.
+        Please remove tokens, credentials and anything else private from logs before pasting them.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agents and chat
+        - Game and mod
+        - PCs and the Vault
+        - Codex, Calendar or meetings
+        - Install, launcher or first run
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: MineVibe commit
+      placeholder: output of git rev-parse --short HEAD
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: e.g. macOS 26.1, MacBook Pro M4
+  - type: input
+    id: claude
+    attributes:
+      label: claude --version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from ~/Library/Logs/MineVibe/ or the terminal, with secrets removed.
+      render: text

@@ -1,0 +1,8 @@
+{
+  "t": "agent.say",
+  "v": 1,
+  "agentId": "bram",
+  "bark": "reporting_for_duty",
+  "style": "bark",
+  "ttlMs": 4000
+}

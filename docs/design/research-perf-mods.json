@@ -1,0 +1,652 @@
+{
+ "matrix": {
+  "mods": [
+   {
+    "name": "Fabric API",
+    "modrinthSlug": "fabric-api",
+    "purpose": "Core library. Entity Culling and Chunky declare the whole \"fabric-api\" mod as a dependency. spark needs fabric-command-api-v2. Modrinth lists Fabric API as required for Entity Culling, Dynamic FPS, Clumps, Mod Menu, Chunky and Language Reload.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "0.162.0+26.3 (id v2j28coa, release, 2026-10-06, fabric-api-0.162.0+26.3.jar; sha512 verified). Previous release: 0.161.0+26.3 (id bNnaTiuM, release, 2026-09-18; sha512 verified), which also satisfies every mod listed here. CORRECTION: the claim that the project currently pins 0.161.0 could not be verified, because /Users/jasperaelvoet/Documents/MineVibe is empty with no build files. Use 0.162.0 unless a pin turns up elsewhere.",
+    "license": "Apache-2.0",
+    "deps": "fabricloader >=0.19.3, java >=25, minecraft ~26.3- (from 0.162.0 fabric.mod.json; bundles 44 modules)",
+    "macOSNotes": "Pure Java.",
+    "recommend": "include",
+    "reason": "Required. CORRECTION: Sodium does not need Fabric API installed, because sodium-fabric-0.9.2+mc26.3.jar bundles the 9 modules it uses (api-base, block-getter-api-v2, lifecycle-events-v1, renderer-api-v1, rendering-fluids-v1, rendering-v1, resource-loader-v0, resource-loader-v1, transitive-access-wideners-v1). The hard requirement comes from Entity Culling 1.11.2 and Chunky 1.5.3 (both declare \"fabric-api\": \"*\") and from spark (fabric-command-api-v2). Sodium breaks fabric-api <0.145.1 and More Culling breaks fabric-api <=0.145.2. Both 0.161.0 and 0.162.0 are fine."
+   },
+   {
+    "name": "Sodium",
+    "modrinthSlug": "sodium",
+    "purpose": "Replaces the client terrain/chunk rendering engine. It is the largest client FPS and stutter improvement.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "Pin mc26.3-0.9.2-fabric (id bAZQdGpg, RELEASE, 2026-09-15, sodium-fabric-0.9.2+mc26.3.jar; sha512 verified). A newer mc26.3-0.9.3-alpha.1-fabric exists (id v4PSXean, ALPHA, 2026-09-20, mod version 0.9.3-alpha.1+mc26.3), and the API lists it first. Do not use it: Reese's Sodium Options (=0.9.2+mc26.3) and Nvidium (0.9.2) both pin 0.9.2 exactly. On Modrinth, Iris, Better Block Entities and Nvidium also declare version bAZQdGpg as their required Sodium version.",
+    "license": "LicenseRef-Polyform-Shield-1.0.0 (source-available, noncompete)",
+    "deps": "minecraft 26.3.x, fabricloader >=0.16.0, fabric-block-getter-api-v2 *, fabric-rendering-fluids-v1 >=2.0.0, fabric-resource-loader-v0 *. All three Fabric API modules are bundled in the jar, along with 6 others. Breaks: embeddium, canvas, optifabric, vulkanmod, iris <=1.11.2, reeses-sodium-options <=2.2.0, sodium-extra <0.8.0, moreculling <1.6.0-beta.2, fabric-api <0.145.1, notenoughcrashes <4.4.8, cullleaves <=3.4.0-fabric, bobby <5.2.4 and others.",
+    "macOSNotes": "Sodium 0.9.0+ moved all rendering onto Mojang's Blaze3D API and experimentally supports both vanilla backends (Graphics API option, options.txt preferredGraphicsBackend). On macOS, Vulkan runs through MoltenVK to Metal. Apple's OpenGL stops at 4.1, below Sodium's official GL 4.5 support target, but it works in practice. The 0.9.3-alpha.1 changelog lists only an Intel iGPU glitch fix, a fluid-culling fix for unusual block shapes, and a macOS fullscreen-menu visibility option, so it is not needed on Apple Silicon.",
+    "recommend": "include",
+    "reason": "Main FPS gain. It does not replace BlockEntityRenderer drawing: MineVibe's monitors still go through the vanilla BER path, but Sodium skips block entities in non-visible chunk sections. For monitors that render beyond their block bounds, make the BER report it (shouldRenderOffScreen or larger bounds). Upload monitor frames through Blaze3D (DynamicTexture/GpuDevice), not raw LWJGL GL calls, so they keep working if the Vulkan backend is enabled."
+   },
+   {
+    "name": "Lithium",
+    "modrinthSlug": "lithium",
+    "purpose": "Optimizes game logic on the server side, including the integrated server: entity collisions and movement, AI sensors and pathing, block ticking, hoppers, chunk access. It keeps vanilla behavior.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "mc26.3-0.26.2-fabric (id xS0Q8LSi, release, 2026-09-28, lithium-fabric-0.26.2+mc26.3.jar; sha512 verified)",
+    "license": "LGPL-3.0-only",
+    "deps": "fabricloader >=0.19.5, minecraft ~26.3, mixinextras >=0.5.5 (supplied by Fabric Loader). Breaks optifabric.",
+    "macOSNotes": "Pure Java.",
+    "recommend": "include",
+    "reason": "This is where several fake ServerPlayers and the mobs near them spend tick time, so it is the most important mod for keeping agents' MSPT low, and it has no gameplay changes. Use at least 0.26.2. Per the changelogs, 0.26.1 disabled an optimization that caused chunk corruption, and 0.26.2 fixed a vibration-system memory leak. NUANCE: the 0.26.2 changelog also says it re-enabled a previously disabled optimization after fixing an initialization crash, and it does not say whether that is the corruption-related one. Keep automatic backups of the hardcore world regardless, since Lithium's own changelog tells users to back up first."
+   },
+   {
+    "name": "FerriteCore",
+    "modrinthSlug": "ferrite-core",
+    "purpose": "Reduces memory use (deduplicated blockstate and model data).",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "9.0.0-fabric (id d5ddUdiB, release, 2026-03-24, ferritecore-9.0.0-fabric.jar; one build is tagged for 26.1.1, 26.1.2, 26.2 and 26.3; sha512 verified)",
+    "license": "MIT",
+    "deps": "fabricloader >=0.14.21, minecraft >=26.1 <27. Breaks hydrogen <=0.3.",
+    "macOSNotes": "Pure Java. With 48 GB of RAM the benefit is mostly less GC pressure, not avoiding out-of-memory.",
+    "recommend": "include",
+    "reason": "Free, low-risk memory and GC win that works on client and integrated server. Moonrise, if ever used, disables the parts of FerriteCore it overlaps with."
+   },
+   {
+    "name": "ModernFix",
+    "modrinthSlug": "modernfix",
+    "purpose": "All-in-one launch-time, memory and bug-fix mod.",
+    "supports263": "no",
+    "latestVersionFor263": "None from the official project. Official ModernFix stopped Fabric builds (last Fabric build 5.25.2+mc1.20.1 / 1.21.1; for 26.x it only ships NeoForge 26.1.2). An unofficial fork, ModernFix-mVUS (slug modernfix-mvus), has 5.27.20-build.2 for 26.3 Fabric (id pa9cAfYg, release, 2026-09-25, no changelog). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only (the mVUS fork is the same)",
+    "deps": "mVUS fork: minecraft ~26.3, fabricloader >=0.16.10, Fabric API (per Modrinth).",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Its gains are mostly launch time and memory in large modpacks. With about 10 mods the gain is negligible, and the only 26.3 Fabric build is a third-party fork with no changelog."
+   },
+   {
+    "name": "ImmediatelyFast",
+    "modrinthSlug": "immediatelyfast",
+    "purpose": "Speeds up immediate-mode rendering: batches HUD, text, items, signs and maps, and speeds up text lookup and font atlases.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.17.1+26.3-fabric (id 3MP9UR23, release, 2026-09-17, ImmediatelyFast-Fabric-1.17.1+26.3.jar; sha512 verified). The changelog's only entry is a NeoForge crash fix; 1.17.0 (ugNfVpVH) is the prior release.",
+    "license": "LGPL-3.0-or-later",
+    "deps": "java >=25, minecraft 26.3.x, fabricloader >=0.19.3",
+    "macOSNotes": "Verified in the jar: immediatelyfast-common.mixins.json registers fix_slow_buffer_upload_on_apple_gpu.MixinGlCommandEncoder, a direct Apple Silicon win on the OpenGL backend. Has Iris compatibility mixins.",
+    "recommend": "include",
+    "reason": "Client-only, widely used, and it helps the text-heavy parts of MineVibe (chat bubbles above agents, name tags, HUD). Every feature can be toggled in its config if a custom render path misbehaves."
+   },
+   {
+    "name": "Entity Culling",
+    "modrinthSlug": "entityculling",
+    "purpose": "Uses asynchronous ray tracing on spare cores to skip rendering, and optionally client ticking, of entities and block entities that are hidden behind walls.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.11.2 (id F4loCvYt, release, 2026-09-21, entityculling-fabric-1.11.2-mc26.3.jar; sha512 verified). Avoid 1.11.0 (pIZeEXM0): 1.11.1 (YuGJTeFm) fixed a 26.3 bug where tick-culled entities lost interpolation, causing invisibility and fast movement.",
+    "license": "LicenseRef-tr7zw-Protective-License (custom; do not rehost, download from Modrinth)",
+    "deps": "fabric-api * (the whole mod, not single modules), minecraft ~26.3. Bundles TRansition 1.0.25 and TRender 1.0.17. Breaks tlskincape.",
+    "macOSNotes": "Ray tracing runs on spare cores, which an M5 Pro has plenty of. Since 1.11.0 it gathers data on the main thread, costing under about 1 ms every 5 ticks (per the 1.11.0 changelog).",
+    "recommend": "include",
+    "reason": "Several agents plus monitor block entities is exactly the case it is built for. Tick culling is client-only, so server ticking of agents is unaffected. Ship config/entityculling.json and add the MineVibe monitor block-entity id to blockEntityWhitelist if a screen renders beyond its block. CLARIFICATION: the built-in defaults (versionless/Config.class) whitelist minecraft:text_display, item_display, block_display, firework_rocket, boats and beacon. The display types are entity ids, not block entities. Chat bubbles drawn from the player renderer disappear when the agent is occluded (renderNametagsThroughWalls exists); draw them in a separate world-render pass if they should show through walls. A safeMode flag exists if async lookups cause trouble."
+   },
+   {
+    "name": "More Culling",
+    "modrinthSlug": "moreculling",
+    "purpose": "Additional culling: leaves and block faces, item frames and paintings, beacon beams, signs and more.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.9.0 (id t7vAlfgO, release, 2026-10-03, moreculling-fabric-26.3-1.9.0.jar; sha512 verified). A 1.9.0-beta.1 (zL2UEFXS, beta, 2026-09-15) also exists; use the release.",
+    "license": "GPL-3.0-only (author allows modpack use with credit)",
+    "deps": "cloth-config >=16.0.0 (required; use 26.3.159+fabric), java >=25, minecraft >=26.3, fabricloader >=0.15.0. Bundles conditional-mixin 0.6.3. Suggests sodium >=0.6.7 and fabric-api >=0.145.3; breaks sodium <=0.6.6 and fabric-api <=0.145.2.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "include",
+    "reason": "Client-only and complements Sodium, especially leaf culling in forests. Make sure MineVibe's PC and monitor blocks declare correct occlusion (noOcclusion or proper shapes) so their faces are not culled wrongly. It replaces Cull Leaves, which has no 26.3 Fabric build."
+   },
+   {
+    "name": "Cloth Config API",
+    "modrinthSlug": "cloth-config",
+    "purpose": "Config library.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "26.3.159+fabric (id fg2uyxOW, release, 2026-09-23, cloth-config-fabric-26.3.159.jar; sha512 verified)",
+    "license": "LGPL-3.0-only",
+    "deps": "fabricloader >=0.14.0, minecraft >=26.3- (bundles basic-math 0.6.1)",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "include",
+    "reason": "Required by More Culling. Also gives Dynamic FPS its in-game config screen (Dynamic FPS recommends it)."
+   },
+   {
+    "name": "Dynamic FPS",
+    "modrinthSlug": "dynamic-fps",
+    "purpose": "Lowers the frame rate and volume when the window is unfocused, hidden, idle or on battery.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "3.11.10 (id Jwq069rR, release, 2026-09-15, dynamic-fps-3.11.10+minecraft-26.3.0-fabric.jar; sha512 verified; the version also has a -sources.jar, so pick the primary file)",
+    "license": "MIT",
+    "deps": "fabricloader >=0.18.4, minecraft >=26.2.0-, fabric-resource-loader-v0 *, fabric-lifecycle-events-v1 *. Bundles battery 2.1.0 and a common jar. Recommends modmenu and cloth-config. Conflicts with optifabric and smoothmenu.",
+    "macOSNotes": "Verified in the bundled default_config.json: \"download_natives\": true, used for the battery tracker, which is off by default. Set it to false so nothing is fetched at runtime. Window-state detection works with 26.3's SDL3 windowing (26.3-specific build).",
+    "recommend": "include",
+    "reason": "Safe for agents. It only drops rendered frames: the client loop keeps running, and the integrated server thread is untouched, so server ticks continue. The shipped defaults, verified, are too aggressive for watching agents: unfocused 1 FPS with master volume x0.25, invisible 0 FPS with volume 0, idle condition 'vanilla' with a 300 s timeout leading to abandoned at 10 FPS, and hovered (unfocused but under the cursor) 60 FPS. Ship config/dynamic_fps.json with states.unfocused.frame_rate_target around 30 so monitors and agents stay watchable on a second screen, keep invisible at 0, set idle.condition to \"none\" (or a long timeout), keep graphics_state \"default\" (reduced/minimal triggers chunk rebuilds), and set download_natives false."
+   },
+   {
+    "name": "BadOptimizations",
+    "modrinthSlug": "badoptimizations",
+    "purpose": "Client CPU micro-optimizations: lightmap update caching, skipping idle debug-renderer logic, sky and other caching.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "2.4.1 (id Sp0ctspw, release, 2026-09-16, BadOptimizations-2.4.1-26.3-fabric.jar; the changelog calls it a direct port of 2.4.1; sha512 verified)",
+    "license": "MIT",
+    "deps": "minecraft >=26.3, fabricloader >=0.18.4",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "include",
+    "reason": "Low risk, client-only, each optimization can be turned off in its config, and it stacks with Sodium and ImmediatelyFast."
+   },
+   {
+    "name": "Sodium Extra",
+    "modrinthSlug": "sodium-extra",
+    "purpose": "Sodium add-on with extra performance and visual toggles (animations, particles, fog, sky, weather, FPS overlay), including Reduce Resolution on macOS.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "mc26.3-0.9.4+fabric (id te2y9qZn, release, 2026-09-16, sodium-extra-fabric-0.9.4+mc26.3.jar; sha512 verified)",
+    "license": "LGPL-3.0-only",
+    "deps": "sodium >=0.9.2+mc26.3, fabricloader >=0.19.5, minecraft 26.3. Bundles greenlight-api 0.1.0+mc26.3. Suggests reeses-sodium-options >=2.2.0 and greenlight >=0.1.0. Breaks iris <1.7.0 and reeses-sodium-options <1.8.4.",
+    "macOSNotes": "Per the 0.9.4 changelog, it reworked Reduce Resolution on macOS to use SDL's high pixel-density window handling and removed the legacy macOS OpenGL/Vulkan framebuffer workarounds. Rendering the world at 1x instead of Retina 2x is one of the largest GPU savings on a MacBook display.",
+    "recommend": "include",
+    "reason": "The macOS reduce-resolution option alone justifies it on an M5 Pro with a Retina display, and the FPS overlay and toggles help tuning. Client-only."
+   },
+   {
+    "name": "Reese's Sodium Options",
+    "modrinthSlug": "reeses-sodium-options",
+    "purpose": "Alternative tabbed UI for Sodium's video settings.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "mc26.3-2.2.5+fabric (id EfchygKx, release, 2026-09-24, reeses-sodium-options-fabric-2.2.5+mc26.3.jar; sha512 verified; the version also has a -dev.jar, so pick the primary file)",
+    "license": "MIT",
+    "deps": "sodium =0.9.2+mc26.3 (exact pin, verified), minecraft ~26.3. Recommends sodium-extra >=0.4.2; suggests controlify >=3.0.2. Breaks iris <1.1.4, sodium-extra <0.5.3, sodium <0.5.8.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "UI only, with no performance effect. Its exact pin rejects Sodium 0.9.3-alpha.1+mc26.3, so the game refuses to load with it. If it is included, the launcher must pin Sodium 0.9.2, which is the recommendation anyway."
+   },
+   {
+    "name": "Iris Shaders",
+    "modrinthSlug": "iris",
+    "purpose": "Loads OptiFine-compatible shader packs on top of Sodium.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.11.7+26.3-fabric (id vTN4NRGW, release, 2026-09-30, iris-fabric-1.11.7+mc26.3.jar; the whole changelog is 'Fixes a lot of 26.3 bugs'; sha512 verified)",
+    "license": "LGPL-3.0-only",
+    "deps": "fabric.mod.json: sodium 0.9.x, fabricloader >=0.12.3. CORRECTION/ADDITION: on Modrinth, the required Sodium dependency is pinned to version id bAZQdGpg (0.9.2), so Modrinth-based resolvers pull exactly 0.9.2. Bundles fabric-api-base, fabric-key-mapping-api-v1, glsl-transformer, antlr4-runtime and jcpp. Breaks embeddium, canvas, optifabric, batchedentityrendering, iris-explorer, distanthorizons <=3.2.0, physicsmod <=3.0.13, immersive_portals <=1.4.2 and others.",
+    "macOSNotes": "Iris is OpenGL-only. With the Vulkan backend selected, shaders simply turn off. On macOS, OpenGL tops out at 4.1 (no compute shaders), so some shader packs will not load.",
+    "recommend": "optional",
+    "reason": "Not a performance mod: shaders cost a lot of GPU time. Ship it only as an opt-in with no shader pack enabled by default. Shader packs may also light the DynamicTexture monitors and chat bubbles differently. If shipped, test it with the monitors."
+   },
+   {
+    "name": "Concurrent Chunk Management Engine (C2ME)",
+    "modrinthSlug": "c2me-fabric",
+    "purpose": "Multithreaded chunk generation, I/O and loading on the server and integrated server, with vanilla parity.",
+    "supports263": "yes-beta/alpha",
+    "latestVersionFor263": "0.4.2-alpha.0.90+26.3 (id ODMLK8M9, ALPHA devbuild, 2026-10-07, c2me-fabric-mc26.3-0.4.2-alpha.0.90.jar; sha512 verified). CORRECTION: it is wrong that every C2ME build is alpha with no release-channel build. Only the 26.3 builds are alpha-only (6 versions, 0.84 through 0.90). Across all Minecraft versions the project has 682 alpha, 22 beta and 10 release builds, for example 0.4.1-beta.1.0+26.2 (beta, 2026-06-21) and 0.3.6.0.0 for 1.21.11 (release, 2025-12-31). A beta or release for 26.3 may still come.",
+    "license": "MIT",
+    "deps": "fabricloader >=0.18.3, java >=25, minecraft >1.21.11, c2me-base (bundled; 28 bundled sub-jars). Breaks tic_tacs and optifabric; conflicts with dynview and betterchunkloading. Moonrise 1.2.0 declares breaks c2me (verified).",
+    "macOSNotes": "The natives-math module (c2me-fabric-opts-natives-math, bundled) has an aarch64 target, with a Java fallback otherwise. Thread counts are configurable in config/c2me.toml; leave cores free for the render thread and MineVibe's remote-desktop and LLM pipeline.",
+    "recommend": "optional",
+    "reason": "The biggest server-side gain if agents explore: each fake ServerPlayer loads its own view-distance ring, so several exploring agents multiply chunk-generation load. However, on 26.3 it is alpha-only and rewrites chunk I/O and the serializer, which is a corruption risk for a single irreplaceable hardcore world. Enable only with automatic world backups, after spark shows chunk generation is the bottleneck, and consider waiting for a 26.3 beta, since the project did ship betas for 26.1.2 and 26.2. Pair it with ScalableLux. Do not combine with Moonrise."
+   },
+   {
+    "name": "ScalableLux",
+    "modrinthSlug": "scalablelux",
+    "purpose": "Maintained Starlight-based light engine with optional parallel light updates; the successor to Starlight.",
+    "supports263": "yes-beta/alpha",
+    "latestVersionFor263": "0.3.0-alpha.0.6+26.3 (id g4eqNSKd, ALPHA devbuild uploaded by GitHub Actions, 2026-09-16, ScalableLux-fabric-mc26.3-0.3.0-alpha.0.6-all.jar; sha512 verified). Only alpha builds exist for 26.3. CLARIFICATION: the project does publish release builds for older versions, for example 0.2.1+fabric.2b08348 for 26.2 (release, 2026-06-12) and 0.2.0+fabric.2b63825 for 26.1 to 26.1.2.",
+    "license": "LGPL-3.0-only",
+    "deps": "fabricloader >=0.19.5, minecraft >=26.3-rc.1. Breaks phosphor. No Fabric API dependency.",
+    "macOSNotes": "Pure Java.",
+    "recommend": "optional",
+    "reason": "Use only together with C2ME (same developer, recommended pairing) for heavy world generation and lighting from exploring agents. Alpha-only on 26.3. Mutually exclusive with Moonrise, which bundles its own Starlight engine."
+   },
+   {
+    "name": "Starlight (Fabric)",
+    "modrinthSlug": "starlight",
+    "purpose": "Light engine rewrite.",
+    "supports263": "no",
+    "latestVersionFor263": "None. The project was archived in 2023-12; last build is for 1.20.4. Not re-verified in this pass (skip entry); Moonrise 1.2.0 declares breaks starlight.",
+    "license": "LGPL-3.0-only",
+    "deps": "Not applicable.",
+    "macOSNotes": "Not applicable.",
+    "recommend": "skip",
+    "reason": "Dead. Its successors are ScalableLux (Fabric, pairs with C2ME) or Moonrise (bundles Starlight)."
+   },
+   {
+    "name": "Moonrise",
+    "modrinthSlug": "moonrise-opt",
+    "purpose": "Port of Paper's chunk system, Starlight lighting, and entity, collision and lookup optimizations, aimed at the integrated and dedicated server with vanilla parity.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.2.0+61c1328 (id 5WWnR77M, release, 2026-09-27; verified)",
+    "license": "GPL-3.0-only",
+    "deps": "fabricloader >=0.18.4, minecraft >26.2 <26.4, fabric-command-api-v2 * (verified). Breaks c2me, starlight and notenoughcrashes (verified). Async declares breaks moonrise (not re-verified). Compatible with Lithium and FerriteCore (it disables their overlapping parts).",
+    "macOSNotes": "Pure Java. Lowers worker thread count on low-core systems; config is in config/moonrise.yml.",
+    "recommend": "skip",
+    "reason": "A viable release-channel alternative to C2ME + ScalableLux, but you can only run one chunk system. It is far less used on Fabric (about 0.24M downloads versus C2ME's about 39M, both verified), a separate 'Moonrise Compats' mod exists because the rewrite breaks other mods' assumptions, and it reduces TPS catch-up by default. Consider it only instead of C2ME, never alongside."
+   },
+   {
+    "name": "Krypton",
+    "modrinthSlug": "krypton",
+    "purpose": "Optimizes the Netty networking stack (native compression and encryption from Velocity, flush consolidation).",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "0.3.2 (id UugdIYJw, release, 2026-09-30, krypton-0.3.2.jar). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only",
+    "deps": "fabricloader >=0.18.4, minecraft >=26.2. Bundles velocity-native.",
+    "macOSNotes": "The developer says it is tuned for Linux; native acceleration targets Linux.",
+    "recommend": "skip",
+    "reason": "In singleplayer the integrated server uses an in-memory local connection, and fake players use fake connections, so there is essentially nothing to optimize. Hooking the Connection pipeline adds risk around fake-player connections, and the developer offers best-effort support only."
+   },
+   {
+    "name": "Very Many Players (VMP)",
+    "modrinthSlug": "vmp-fabric",
+    "purpose": "Server performance at high player counts: area maps, entity-tracker caches, a custom chunk-sending mechanism.",
+    "supports263": "yes-beta/alpha",
+    "latestVersionFor263": "0.2.0+beta.7.238+26.3 (id 2TFDVjDf, ALPHA devbuild, 2026-09-15). Not re-verified in this pass (skip entry).",
+    "license": "MIT",
+    "deps": "fabricloader >=0.14.13, java >=17. Breaks optifabric.",
+    "macOSNotes": "Its only client change swaps the GLFW time source; nothing else client-side.",
+    "recommend": "skip",
+    "reason": "Built for dozens or hundreds of real players. It replaces chunk sending and per-player tracking, which is risky with fake ServerPlayers on fake connections, and a handful of agents gains little. Alpha, and self-described as early development."
+   },
+   {
+    "name": "ServerCore",
+    "modrinthSlug": "servercore",
+    "purpose": "Dedicated-server optimizations: entity activation range, dynamic view and simulation distance, mob-cap and merge tweaks.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.5.20+26.3 (id LCG1Bm84, release, 2026-09-16). Not re-verified in this pass (skip entry).",
+    "license": "MIT",
+    "deps": "fabricloader >=0.19.5, Fabric API (base, command-api-v2, lifecycle-events-v1). Breaks cardboard.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Aimed at dedicated servers, and its main levers change vanilla behavior. Activation range freezes distant entities, and dynamic distances shrink what agents can see and simulate under load. Both are bad for LLM agents and for hardcore predictability."
+   },
+   {
+    "name": "Async",
+    "modrinthSlug": "async",
+    "purpose": "Ticks entities in parallel across threads.",
+    "supports263": "yes-beta/alpha",
+    "latestVersionFor263": "0.2.5+alpha-26.3 (id gcduhoHv, ALPHA, 2026-10-04). Not re-verified in this pass (skip entry).",
+    "license": "GPL-3.0-or-later",
+    "deps": "fabric-api, java >=25, minecraft >=26.1. Breaks moonrise, openpartiesandclaims and acceleratedrecoiling.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "The latest changelog is mostly race-condition, deadlock and lock-order fixes. Parallel entity ticking next to custom fake-player logic in a hardcore world is unacceptable risk."
+   },
+   {
+    "name": "Clumps",
+    "modrinthSlug": "clumps",
+    "purpose": "Merges XP orbs and lets players pick them up instantly, so fewer orb entities exist.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "26.3.2 (id J4I1wxJZ, release, 2026-09-16, Clumps-fabric-26.3-26.3.2.jar; sha512 verified)",
+    "license": "MIT",
+    "deps": "fabricloader >=0.19.5, java >=25, minecraft 26.3 (fabric.mod.json). Modrinth metadata lists fabric-api as required, but the jar's fabric.mod.json does not declare it.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "Small entity-count savings when agents mine or fight. It slightly changes XP pickup (instant pickup of merged orbs), and vanilla already merges orbs, so the gain is modest. Fine to include if pure vanilla parity is not required."
+   },
+   {
+    "name": "Noisium",
+    "modrinthSlug": "noisium",
+    "purpose": "World-generation noise optimizations.",
+    "supports263": "no",
+    "latestVersionFor263": "None. The project is unlisted; last build is 2.7.0+mc1.21.6 (2025-06). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only",
+    "deps": "Not applicable.",
+    "macOSNotes": "Not applicable.",
+    "recommend": "skip",
+    "reason": "Abandoned. C2ME covers worldgen optimization if needed."
+   },
+   {
+    "name": "Mod Menu",
+    "modrinthSlug": "modmenu",
+    "purpose": "In-game mod list and access to mods' config screens.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "21.0.0 (id kyy7dbrZ, release, 2026-09-23, modmenu-21.0.0.jar; sha512 verified). A 21.0.0-beta.1 (lcxkZSq6, beta, 2026-09-11) also exists; use the release.",
+    "license": "MIT",
+    "deps": "fabricloader >=0.19.2, minecraft >=26.3-, fabric-resource-loader-v1, fabric-screen-api-v1, fabric-key-mapping-api-v1, fabric-lifecycle-events-v1. All of these modules plus placeholder-api 3.2.0+26.3 are bundled. Modrinth still lists Fabric API and Text Placeholder API as required.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "No performance effect, but it gives easy in-game access to the Dynamic FPS, More Culling, Entity Culling and Sodium Extra configs while tuning."
+   },
+   {
+    "name": "spark",
+    "modrinthSlug": "spark",
+    "purpose": "CPU, tick and memory profiler (/spark tps, /spark profiler, /spark health).",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.10.187-fabric (id e3hsPc1o, release, 2026-09-19, spark-1.10.187-fabric.jar; one build is tagged for 26.1.1 through 26.3; sha512 verified)",
+    "license": "GPL-3.0-only",
+    "deps": "fabricloader >=0.18.4, minecraft >=26.1, fabric-api-base, fabric-command-api-v2, fabric-lifecycle-events-v1 (from Fabric API), fabric-permissions-api-v0. CORRECTION: permissions-api-v0 is lucko's fabric-permissions-api 0.7.0, which spark bundles. It is not a Fabric API module.",
+    "macOSNotes": "The Java sampler works everywhere.",
+    "recommend": "optional",
+    "reason": "Recommended for development: measure integrated-server MSPT with N agents before deciding whether C2ME or ScalableLux are worth their alpha risk. Negligible cost while idle."
+   },
+   {
+    "name": "Chunky",
+    "modrinthSlug": "chunky",
+    "purpose": "Pre-generates chunks.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.5.3 (id 4Eotm6ov, release, 2026-05-04, Chunky-Fabric-1.5.3.jar; one build is tagged for 26.1.1, 26.1.2, 26.2 and 26.3; sha512 verified)",
+    "license": "GPL-3.0-only",
+    "deps": "fabric-api * (whole mod), fabricloader >=0.18.1, java >=25, minecraft >=26.1.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "One-time pre-generation of a radius around spawn, before agents roam, removes chunk-generation spikes during play without adding a risky runtime chunk-system rewrite. A lower-risk alternative or complement to C2ME. The build predates 26.3 (May 2026) but is explicitly tagged for 26.3 on Modrinth."
+   },
+   {
+    "name": "Better Block Entities",
+    "modrinthSlug": "better-block-entities",
+    "purpose": "Bakes vanilla block entities (chests, signs, beds, shulkers and so on) into Sodium chunk meshes.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.3.9+mc26.3 (id 9VvhfLcA, release, 2026-09-15, bbe-fabric-1.3.9+mc26.3-mod.jar; sha512 verified)",
+    "license": "LGPL-3.0-or-later",
+    "deps": "fabric.mod.json: sodium >=0.9.2-beta.2, fabricloader >=0.16.7, minecraft >=26.3-rc.1. Breaks optifabric. ADDITION: Modrinth metadata pins its required Sodium dependency to version id bAZQdGpg (0.9.2).",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "Helps only in bases with many chests or signs. It does not touch MineVibe's custom monitor block entities."
+   },
+   {
+    "name": "Language Reload",
+    "modrinthSlug": "language-reload",
+    "purpose": "Faster language loading and resource-load time.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.7.8+26.3 (id QVn4cccd, release, 2026-10-04, language-reload-1.7.8+26.3.jar; sha512 6366596875e9fa33b6b8119d08e5c18f3514662e319a735cedc8addb00bff4cf3179f3a33533b2070c1ddd776f23e6a5f22b69d0da0589f3091f0db9eead1d43; the version also has a -sources.jar, so pick the primary file)",
+    "license": "MIT",
+    "deps": "fabric-resource-loader-v0, fabric-key-mapping-api-v1, fabric-lifecycle-events-v1 (Fabric API), fabricloader >=0.19.0, minecraft >=26.3. Suggests modmenu.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "optional",
+    "reason": "Small startup-time gain. It adds a language-selection UI, which is irrelevant for quick-play."
+   },
+   {
+    "name": "Nvidium",
+    "modrinthSlug": "nvidium",
+    "purpose": "NVIDIA mesh-shader terrain renderer for Sodium.",
+    "supports263": "yes-beta/alpha",
+    "latestVersionFor263": "0.4.4-beta7-26.3 (id 8mVK1zbk, BETA, 2026-09-23; verified)",
+    "license": "LGPL-3.0-only",
+    "deps": "sodium 0.9.2 (exact; verified in fabric.mod.json, and the Modrinth dependency is pinned to bAZQdGpg), minecraft 26.3, fabricloader >=0.18.4",
+    "macOSNotes": "Apple Silicon has no NVIDIA GPU, so it would do nothing.",
+    "recommend": "skip",
+    "reason": "Unusable on the target hardware."
+   },
+   {
+    "name": "VulkanMod",
+    "modrinthSlug": "vulkanmod",
+    "purpose": "Third-party Vulkan renderer.",
+    "supports263": "no",
+    "latestVersionFor263": "None (latest is 0.6.8+26.1.2). Not re-verified in this pass (skip entry); Sodium 0.9.2 declares breaks vulkanmod (verified).",
+    "license": "LGPL-3.0-only",
+    "deps": "Not applicable.",
+    "macOSNotes": "Not needed: vanilla 26.2+ has its own Vulkan backend (MoltenVK on macOS).",
+    "recommend": "skip",
+    "reason": "No 26.3 build, Sodium explicitly breaks vulkanmod, and vanilla plus Sodium already support Vulkan."
+   },
+   {
+    "name": "FastQuit",
+    "modrinthSlug": "fastquit",
+    "purpose": "Returns to the title screen while the world saves in the background.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "3.1.5+mc26.2 (id ZZ5dfboC, release; a 26.2 build tagged as working on 26.3). Not re-verified in this pass (skip entry).",
+    "license": "MIT",
+    "deps": "cloth-config, Fabric API (resource-loader-v0), java >=25, minecraft >=26.2",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Not useful for a single-world quick-play launcher, and backgrounded saving of an irreplaceable hardcore world is not worth the risk."
+   },
+   {
+    "name": "Ixeris",
+    "modrinthSlug": "ixeris",
+    "purpose": "Buffered raw input and threaded window-event polling.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "4.6.8+26.3-fabric (id QocCYDs0, release, 2026-09-21). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only",
+    "deps": "minecraft >=26.3, fabricloader >=0.16.0",
+    "macOSNotes": "macOS requires windowing calls on the main thread, and 26.3's SDL3 input layer is new. Moving polling off-thread is risky on Mac.",
+    "recommend": "skip",
+    "reason": "Small input-latency gain does not justify windowing and input risk on macOS with SDL3."
+   },
+   {
+    "name": "Distant Horizons",
+    "modrinthSlug": "distanthorizons",
+    "purpose": "Level-of-detail rendering for far render distances.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "3.3.4-26.3 (id TGgEbP9A, release, 2026-09-29). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only",
+    "deps": "None listed (Iris 1.11.7 breaks distanthorizons <=3.2.0, verified).",
+    "macOSNotes": "Adds GPU, disk and CPU load.",
+    "recommend": "skip",
+    "reason": "A visual feature that adds LOD generation work. The opposite of what is wanted here."
+   },
+   {
+    "name": "FPS Reducer",
+    "modrinthSlug": "fps-reducer",
+    "purpose": "Lowers FPS when there is no input or the window is unfocused.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "26.3-2.18 (id fY8E5FjE, release). Not re-verified in this pass (skip entry).",
+    "license": "LicenseRef-All-Rights-Reserved",
+    "deps": "fabric-api, java >=25, fabricloader >=0.19.0",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Duplicates Dynamic FPS, which is MIT and more configurable. All-rights-reserved license."
+   },
+   {
+    "name": "Let Me Despawn",
+    "modrinthSlug": "lmd",
+    "purpose": "Changes despawn rules so mobs that picked up items can despawn.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.26.9.2 (id VC5LRxai, release). Not re-verified in this pass (skip entry).",
+    "license": "LGPL-3.0-only",
+    "deps": "almanac >=1.26.7.3, fabric-api, fabricloader >=0.19.5, java >=25",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Changes gameplay (mobs holding an agent's dropped gear would despawn). Not appropriate for a hardcore world."
+   },
+   {
+    "name": "Alternate Current",
+    "modrinthSlug": "alternate-current",
+    "purpose": "Faster redstone dust with non-locational update order.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "mc26.3-1.9.0 (id nSBWPz6x, release). Not re-verified in this pass (skip entry).",
+    "license": "MIT",
+    "deps": "minecraft 26.3.x",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Changes redstone update order. Little benefit unless agents build heavy redstone."
+   },
+   {
+    "name": "Ksyxis",
+    "modrinthSlug": "ksyxis",
+    "purpose": "Faster world load by skipping preloading of the spawn area.",
+    "supports263": "yes-stable",
+    "latestVersionFor263": "1.4.5 (id 9CU8nnVG, release). Not re-verified in this pass (skip entry).",
+    "license": "MIT",
+    "deps": "None.",
+    "macOSNotes": "Nothing specific.",
+    "recommend": "skip",
+    "reason": "Saves only a little time on a single world load. Not worth a mixin into world startup."
+   },
+   {
+    "name": "Cull Leaves / Particle Core / Exordium / Memory Leak Fix",
+    "modrinthSlug": "cull-leaves, particle-core, exordium, memoryleakfix",
+    "purpose": "Leaf culling, particle optimizations, GUI rendered at lower FPS, memory-leak fixes.",
+    "supports263": "no",
+    "latestVersionFor263": "None for 26.3 Fabric. Cull Leaves 4.1.2 is 26.2 only, Particle Core 0.3.3 is 26.2, Exordium 2.1.1 is 26.1.2 and archived, Memory Leak Fix v1.1.5 is 1.20.4. Not re-verified in this pass (skip entry).",
+    "license": "MIT / MIT / GPL-3.0-only / LGPL-2.1-only",
+    "deps": "Not applicable.",
+    "macOSNotes": "Not applicable.",
+    "recommend": "skip",
+    "reason": "Not available. More Culling covers leaf culling."
+   }
+  ],
+  "notes": [
+   "Re-verification done on 2026-10-08. For all 21 include/optional mods I queried https://api.modrinth.com/v2/project/<slug>/version?game_versions=[\"26.3\"]&loaders=[\"fabric\"] independently, fetched /v2/projects for licenses, and read each pinned jar's fabric.mod.json in memory without saving any jar to disk. Every version id, version number, release channel, date, filename and license in the include/optional rows matched. All 21 sha512 hashes listed in the original notes match the primary file on Modrinth. Fabric Loader 0.19.5 is confirmed as the newest stable on meta.fabricmc.net, and 26.3 is a stable game version there. Skip rows were not re-verified, except Moonrise and Nvidium, which the include rows depend on.",
+   "Corrections, item 1. Fabric API reasoning: Sodium 0.9.2 bundles the 9 Fabric API modules it uses, so Sodium alone does not need Fabric API. Fabric API stays required because Entity Culling 1.11.2 and Chunky 1.5.3 declare \"fabric-api\": \"*\" (the whole mod) and spark needs fabric-command-api-v2. The claim that the project currently pins 0.161.0+26.3 is unverified, because /Users/jasperaelvoet/Documents/MineVibe is empty. Default to 0.162.0+26.3 (v2j28coa); 0.161.0 also works.",
+   "Corrections, item 2. C2ME: 'every C2ME build is alpha, no release-channel build exists' is wrong. Only the 26.3 builds are alpha-only (6 builds). Across all versions the project has 682 alpha, 22 beta and 10 release builds, including 0.4.1-beta.1.0+26.2 (beta) and 0.3.6.0.0 for 1.21.11 (release). ScalableLux is also alpha-only for 26.3, but it has releases for 26.2 (0.2.1) and 26.1 (0.2.0). The version-pinning note should say 'for 26.3, C2ME and ScalableLux publish only alpha devbuilds'.",
+   "Corrections, item 3. Modrinth-level Sodium pins: Iris 1.11.7, Better Block Entities 1.3.9 and Nvidium declare their required Sodium dependency on Modrinth as version id bAZQdGpg (0.9.2), even though Iris's fabric.mod.json accepts 0.9.x and BBE's accepts >=0.9.2-beta.2. Resolvers that follow Modrinth dependency metadata (the Modrinth App, packwiz, mrpack tooling) will select Sodium 0.9.2, which agrees with the recommendation. A launcher that resolves from fabric.mod.json alone would accept 0.9.3-alpha.1 for Iris and BBE, but not for Reese's Sodium Options or Nvidium.",
+   "Corrections, item 4. spark's 'fabric-permissions-api-v0' is lucko's fabric-permissions-api 0.7.0, which spark bundles. It is not a Fabric API module.",
+   "Corrections, item 5. Clumps: Modrinth lists fabric-api as required, but the jar's fabric.mod.json does not depend on it. Mod Menu bundles every module it needs plus placeholder-api 3.2.0+26.3, even though Modrinth lists Fabric API and Text Placeholder API as required.",
+   "Lithium nuance: the 0.26.2 changelog says it re-enabled a previously disabled optimization after fixing an initialization crash. It does not say whether that is the chunk-corruption optimization that 0.26.1 disabled. Keep automatic world backups in any case.",
+   "Verified jar contents that back other claims. ImmediatelyFast registers fix_slow_buffer_upload_on_apple_gpu.MixinGlCommandEncoder. Dynamic FPS's default_config.json has download_natives true, idle 'vanilla' with a 300 s timeout, unfocused 1 FPS with master volume 0.25, invisible 0 FPS, abandoned 10 FPS, and a 'hovered' state at 60 FPS. Entity Culling's built-in defaults include the display entities text/item/block_display, boats, firework_rocket and beacon, and it has safeMode and renderNametagsThroughWalls options.",
+   "Multi-file versions: Dynamic FPS 3.11.10 and Language Reload 1.7.8 also ship a -sources.jar, and Reese's Sodium Options 2.2.5 also ships a -dev.jar. The launcher must select the file with primary=true, never files[0] blindly or every .jar in the version.",
+   "Version-pinning trap confirmed: the Modrinth /version endpoint returns versions newest-first regardless of channel, so element [0] for Sodium is mc26.3-0.9.3-alpha.1-fabric (v4PSXean, mod version 0.9.3-alpha.1+mc26.3). That version breaks Reese's Sodium Options (=0.9.2+mc26.3) and Nvidium (0.9.2). Pin exact version ids and verify sha512.",
+   "Recommended core set, all release channel, unchanged and hash-verified. fabric-api 0.162.0+26.3 v2j28coa (or 0.161.0+26.3 bNnaTiuM), sodium bAZQdGpg, lithium xS0Q8LSi, ferrite-core d5ddUdiB, immediatelyfast 3MP9UR23, entityculling F4loCvYt, moreculling t7vAlfgO, cloth-config fg2uyxOW, dynamic-fps Jwq069rR, badoptimizations Sp0ctspw, sodium-extra te2y9qZn. The sha512 values in the original notes are correct.",
+   "Optional add-ons, hash-verified. reeses-sodium-options EfchygKx, modmenu kyy7dbrZ, spark e3hsPc1o, chunky 4Eotm6ov, clumps J4I1wxJZ, iris vTN4NRGW, c2me-fabric ODMLK8M9, scalablelux g4eqNSKd, better-block-entities 9VvhfLcA, plus language-reload QVn4cccd (sha512 6366596875e9fa33b6b8119d08e5c18f3514662e319a735cedc8addb00bff4cf3179f3a33533b2070c1ddd776f23e6a5f22b69d0da0589f3091f0db9eead1d43, which the original list omitted).",
+   "Licenses re-verified from /v2/projects: Sodium is LicenseRef-Polyform-Shield-1.0.0, Entity Culling is LicenseRef-tr7zw-Protective-License, and all other include/optional mods are OSI licenses (MIT, Apache-2.0, LGPL-3.0, GPL-3.0). Download from the Modrinth CDN at install time rather than rehosting. Send a descriptive User-Agent.",
+   "Unchanged from the original and still valid: keep agents running when alt-tabbed (pauseOnLostFocus:false; Esc pause in singleplayer freezes the integrated server; inactivityFpsLimit:minimized). The Dynamic FPS config overrides apply. Graphics backend: ship OpenGL or 'default' first, Vulkan as opt-in, and upload monitors via Blaze3D. Monitor upload gating and culling-aware design apply. Chunky pre-generation plus Lithium comes before C2ME/ScalableLux, and never pair C2ME or ScalableLux with Moonrise. Java 25 is required."
+  ]
+ },
+ "risks": {
+  "risks": [
+   {
+    "mod": "Iris 1.11.7+mc26.3 (with Minecraft 26.x Vulkan backend)",
+    "feature": "(5) Graphics backend on Apple Silicon / whole client",
+    "risk": "Iris only works on OpenGL. Its shader override mixin hard-casts to GlDevice and calls GL33C directly. Iris #3357 (26.3, Iris 1.11.6, Sodium 0.9.2, macOS Apple M3) shows a startup crash, 'No context is current', when the game runs with --graphicsBackend vulkan. In the third-party 26.2 decompile, PreferredGraphicsApi.DEFAULT tries the Vulkan backend before OpenGL ({vulkan, gl}). If 26.3 behaves the same, a fresh options.txt on the Mac could start on Vulkan via MoltenVK, and any install that includes Iris would crash before reaching the world. I did not confirm the 26.3 default ordering.",
+    "severity": "high",
+    "mitigation": "Do not ship Iris by default; it lowers FPS and is not an optimization mod. Make it opt-in. Whenever Iris is in the lock, or always for determinism, the launcher passes '--graphicsBackend opengl' (a forced CLI value beats options.txt) and writes 'preferredGraphicsBackend:opengl' into options.txt. Offer Vulkan only as an explicit opt-in, and only when Iris is absent.",
+    "source": "https://github.com/IrisShaders/Iris/issues/3357 ; https://github.com/IrisShaders/Iris/blob/26.3/common/src/main/java/net/irisshaders/iris/mixin/MixinShaderManager_Overrides.java ; https://github.com/Renekovski/26.2-mcp/blob/HEAD/src/net/minecraft/client/PreferredGraphicsApi.java (third-party 26.2 decompile, unverified for 26.3)"
+   },
+   {
+    "mod": "C2ME 0.4.2-alpha.0.90+26.3",
+    "feature": "(2) Fake ServerPlayer agents and chunk loading in the single hardcore world",
+    "risk": "C2ME rewrites the chunk system, chunk I/O and the serializer, and the 26.3 build is still alpha (published 2026-10-07). Its README says 'Backup your worlds'. A recent 26.3 build produced worldgen seams along x=0/z=0 (#603, now fixed). C2ME makes asynchronous world access much more likely to crash. In #539, a Carpet fork that killed and respawned fake players from its own executor crashed singleplayer only when C2ME was installed; the maintainer blamed the fork for calling non-thread-safe methods asynchronously. MineVibe's LLM callbacks have the same shape. C2ME also adds a CheckedThreadLocalRandom sanitizer for the world random. Its native-math module has no darwin-aarch64 target (only darwin-x86_64, linux-aarch_64, linux-x86_64, windows-x86_64), so the M5 loses part of the speedup. One corrupted chunk can end the only hardcore world.",
+    "severity": "high",
+    "mitigation": "Leave C2ME out of the default set. If agents generate a lot of terrain, offer it as an opt-in, and only after the launcher makes an automatic world backup. Independently of C2ME, MineVibe must run every agent action (movement, inventory, block interaction, spawn, kill, respawn, getChunk, level.random) on the server thread via server.execute(...). It must never touch ServerPlayer or ServerLevel from HTTP or LLM futures. Declare c2me under 'conflicts' (a warning) so the logs flag it.",
+    "source": "https://github.com/RelativityMC/C2ME-fabric/issues/539 ; https://github.com/RelativityMC/C2ME-fabric/issues/603 ; https://github.com/RelativityMC/C2ME-fabric/blob/dev/26.3.0/README.md ; https://github.com/RelativityMC/C2ME-fabric/tree/dev/26.3.0/c2me-opts-natives-math/src/c/targets"
+   },
+   {
+    "mod": "Entity Culling 1.11.2 (mc26.3)",
+    "feature": "(1) Monitor BlockEntityRenderer drawing the live desktop quad",
+    "risk": "Entity Culling ray-traces block entities within 64 blocks and also frustum-culls each one in BlockEntityRenderDispatcher.tryExtractRenderState. On Fabric, the box it tests comes from BlockEntityRenderFabricExtension.getRenderBoundingBox(be), which defaults to new AABB(blockPos), i.e. one block. A monitor screen that extends past its anchor block, or a multi-block wall, is culled as soon as that one block leaves the frustum or is occluded. The screen then vanishes while the frame stays visible. CC:Tweaked monitors hit exactly this on 26.2 (EntityCulling #313 / CC:T #2483). Two cases skip culling entirely: block entities whose renderer returns shouldRenderOffScreen()==true, and those rendered globally.",
+    "severity": "high",
+    "mitigation": "Whitelisting is not required. Return the true box instead, following CC:T commit f2314178: declare 'interface BoundedBlockEntityRenderer<T extends BlockEntity> extends BlockEntityRenderer<T> { AABB getRenderBoundingBox(T be); }' and implement it in MonitorRenderer. javac then emits the erased getRenderBoundingBox(BlockEntity) bridge, which overrides Entity Culling's default with no compile dependency. Keep occlusion culling on, because it tells you which monitors are hidden so you can pause their streams. Only if testing still shows popping, add 'minevibe:monitor' to blockEntityWhitelist in config/entityculling.json (configVersion 9), or set shouldRenderOffScreen() true for large walls.",
+    "source": "https://github.com/tr7zw/EntityCulling/issues/313 ; https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/mixin/BlockEntityRenderDispatcherMixin.java ; https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/BlockEntityRenderFabricExtension.java ; https://github.com/cc-tweaked/CC-Tweaked/commit/f2314178a5e5a3e6c0f6d7400c467ad12b1f6650"
+   },
+   {
+    "mod": "Sodium 0.9.2+mc26.3",
+    "feature": "(1) Monitor BlockEntityRenderer: section culling and when block entities are collected",
+    "risk": "Sodium collects block entities when it meshes a chunk section. ChunkBuilderMeshingTask adds a block entity only if blockState.hasBlockEntity(), the dispatcher returns a renderer, and every BlockEntityRenderHandler predicate passes. It calls renderData.addBlockEntity(entity, !renderer.shouldRenderOffScreen()). Non-global block entities are drawn only when their own 16^3 section is in Sodium's visible render list, so a multi-block screen anchored in an occluded or off-frustum section disappears even though part of it is visible. Render predicates are evaluated only at bake time, so using them to toggle a monitor on and off would not update until the next section rebuild. Sodium calls the renderer every frame through tryExtractRenderState, so DynamicTexture contents update normally. Per-frame block updates (setBlock, sendBlockUpdated, setBlocksDirty) to refresh a monitor would trigger section rebuild storms.",
+    "severity": "medium",
+    "mitigation": "Have the renderer return shouldRenderOffScreen()=true only for monitors whose quad crosses a section boundary or exceeds about one section; that puts them on Sodium's global list, which also bypasses Entity Culling. Keep it false for normal monitors. Raise getViewDistance() above the vanilla default of 64 if monitors must be visible from further away. Stream frames to the client-side texture directly, not through block-entity NBT sync or block updates. Do not use BlockEntityRenderHandler.addRenderPredicate for dynamic on/off state; branch inside extractRenderState instead.",
+    "source": "https://github.com/CaffeineMC/sodium/blob/dev/common/src/main/java/net/caffeinemc/mods/sodium/client/render/chunk/compile/tasks/ChunkBuilderMeshingTask.java ; https://github.com/CaffeineMC/sodium/blob/dev/common/src/main/java/net/caffeinemc/mods/sodium/client/render/SodiumWorldRenderer.java ; https://github.com/CaffeineMC/sodium/blob/dev/common/src/api/java/net/caffeinemc/mods/sodium/api/blockentity/BlockEntityRenderHandler.java"
+   },
+   {
+    "mod": "Iris 1.11.7+mc26.3 (when a shader pack is active)",
+    "feature": "(1) Full-bright DynamicTexture monitor quad and (3) custom bubble pipelines",
+    "risk": "Iris maps each vanilla RenderPipeline to a shader-pack program. A custom RenderPipeline that is not in its map logs 'Missing program <id> in override list ... could lead to weird rendering' and draws with the vanilla program into Iris's gbuffers. The result can be wrong colours, missing output, or ignored full-bright. Iris also renders a shadow pass that extracts and submits block entities again. If MineVibe uploads the DynamicTexture inside extractRenderState or submit, each frame is uploaded twice, and the flat screen casts shadows for no benefit.",
+    "severity": "medium",
+    "mitigation": "Prefer vanilla RenderTypes that Iris already maps, such as an entity-cutout or emissive/eyes-style type bound to the DynamicTexture's Identifier, with LightTexture.FULL_BRIGHT. If a custom pipeline is unavoidable, register it from an iris-only compat class guarded by FabricLoader.isModLoaded(\"iris\"), e.g. IrisApi.getInstance().assignPipeline(MONITOR_PIPELINE, IrisProgram.EMISSIVE_ENTITIES); this is API v0.3+ and throws if the pipeline is already assigned. Skip the screen quad when IrisApi.isRenderingShadowPass() is true. Upload textures once per frame from a frame-start hook keyed on a frame counter, never from submit().",
+    "source": "https://github.com/IrisShaders/Iris/blob/26.3/common/src/main/java/net/irisshaders/iris/mixin/MixinShaderManager_Overrides.java ; https://github.com/IrisShaders/Iris/blob/26.3/common/src/api/java/net/irisshaders/iris/api/v0/IrisApi.java ; https://github.com/IrisShaders/Iris/blob/26.3/common/src/main/java/net/irisshaders/iris/pipeline/IrisPipelines.java"
+   },
+   {
+    "mod": "Lithium 0.26.2+mc26.3",
+    "feature": "(2) Fake ServerPlayers that die, respawn or are re-created",
+    "risk": "Open issue #791 was filed 2026-10-08 against exactly this version (Lithium 0.26.2, Fabric API 0.161.0, MC 26.3). With mixin.entity.framed_maps enabled, a map in an item frame never drops removed players from MapItemSavedData.carriedByPlayers. Every removed ServerPlayer, with its inventory, advancements and stats, stays reachable. The reporter reproduced it by spawning and killing Carpet fake players. MineVibe agents die in hardcore and get respawned or re-created, and PlayerList.respawn creates a new ServerPlayer object each time. Any framed map in that dimension would accumulate dead agent objects and keep stale references alive. Lithium has no networking mixins, and its AI and collision optimizations aim for vanilla parity, so no other agent-specific problem turned up.",
+    "severity": "medium",
+    "mitigation": "Disable the mixin from MineVibe's own metadata, which Lithium's FabricMixinOverrides reads: \"custom\": { \"lithium:options\": { \"mixin.entity.framed_maps\": false } }. Remove the override once a fixed Lithium is pinned. Add a debug check: after an agent respawns, `jcmd <pid> GC.class_histogram | grep -E 'ServerPlayer|HoldingPlayer'` should stay flat.",
+    "source": "https://github.com/CaffeineMC/lithium/issues/791 ; https://github.com/CaffeineMC/lithium/blob/develop/fabric/src/main/java/net/caffeinemc/mods/lithium/fabric/FabricMixinOverrides.java"
+   },
+   {
+    "mod": "Entity Culling 1.11.2 (mc26.3)",
+    "feature": "(3) Chat bubbles above agents and client-side agent animation",
+    "risk": "When an entity is occluded, Entity Culling's LevelExtractor mixin replaces its render state with an invisible INTERACTION-type state. Only the vanilla name tag survives, via renderNametagsThroughWalls. Any bubble implemented as a render layer or feature of the agent's player renderer, or as a mixin on AvatarRenderState, vanishes whenever the agent is behind a wall. Tick culling (tickCulling=true by default) also skips client ticks for out-of-camera or culled entities other than the local player and camera. Remote agent players then freeze their limb and head interpolation and snap when they reappear, and client-side bubble timers driven by entity ticks stall. The dynamic-whitelist path in CullTask uses 'continue' without clearing a stale culled flag, so the predicate must hold from the start.",
+    "severity": "medium",
+    "mitigation": "Render bubbles independently of the entity renderer. Collect bubble state in a LevelExtractionEvents/LevelRenderEvents extraction hook, then submit in LevelRenderEvents.COLLECT_SUBMITS through vanilla SubmitNodeCollector text and name-tag calls, with your own frustum test on an AABB that includes the bubble height. Neither Entity Culling nor Sodium touches those. If frozen agents bother you, add \"minecraft:player\" to entityWhitelist and tickCullingWhitelist in config/entityculling.json; with only a few agents the cost is negligible. Alternatively, guarded by isModLoaded(\"entityculling\"), call EntityCullingModBase.instance.addDynamicEntityWhitelist(e -> isAgent(e)) once at client init. That is a public but undocumented internal class.",
+    "source": "https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/mixin/WorldRendererMixin.java ; https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/mixin/ClientWorldMixin.java ; https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/CullTask.java ; https://github.com/tr7zw/EntityCulling/blob/main/EntityCulling-Versionless/src/main/java/dev/tr7zw/entityculling/versionless/Config.java"
+   },
+   {
+    "mod": "Dynamic FPS 3.11.10 (minecraft-26.3.0)",
+    "feature": "(1) Live monitor frames, (3) bubbles and (4) raw-input screens",
+    "risk": "Default states are: unfocused = 1 FPS, invisible (minimized or macOS-occluded) = 0 FPS, abandoned = 10 FPS after 300 s idle. In 26.3, idle activity comes from SDL events seen in its SDLEventHandler.pollEvents hook. Only mouse, wheel, joystick and gamepad events count, not key or text-input events. Someone typing into a remote-desktop screen without moving the mouse is treated as idle after 5 minutes and drops to 10 FPS. While someone watches agents from another app, monitors and bubbles update once per second. If frames are queued for upload on the render thread, the queue grows without bound at 1 or 0 FPS. Dynamic FPS does not throttle the integrated server, but vanilla pauseOnLostFocus would pause the world.",
+    "severity": "medium",
+    "mitigation": "Keep one 'latest frame' slot per monitor and drop older frames. Pause capture for monitors that were not extracted in the last ~1 s. Declare a 'frex_flawless_frames' entrypoint, which Dynamic FPS reads with no compile dependency. It is a Consumer<Function<String, Consumer<Boolean>>>; call the returned toggle with true while a MineVibe capture screen is open and false on close. Seed config/dynamic_fps.json only if it is absent: copy the mod's default_config.json, set idle.timeout=0 (or condition \"none\"), and raise states.unfocused.frame_rate_target to e.g. 30. Write pauseOnLostFocus:false into options.txt.",
+    "source": "https://github.com/juliand665/Dynamic-FPS/blob/main/platforms/common/src/main/java/dynamic_fps/impl/mixin/SDLEventHandlerMixin.java ; https://github.com/juliand665/Dynamic-FPS/blob/main/platforms/common/src/main/java/dynamic_fps/impl/feature/state/WindowObserver.java ; https://github.com/juliand665/Dynamic-FPS/blob/main/platforms/common/src/main/resources/assets/dynamic_fps/data/default_config.json ; https://github.com/juliand665/Dynamic-FPS/blob/main/platforms/fabric/src/main/java/net/lostluma/dynamic_fps/impl/fabric/compat/FREX.java"
+   },
+   {
+    "mod": "Sodium 0.9.x on the Minecraft 26.x Vulkan backend (MoltenVK on macOS)",
+    "feature": "(5) Sodium on Apple Silicon / experimental Vulkan",
+    "risk": "Sodium 0.9.0 moved all rendering onto Mojang's Blaze3D and called its Vulkan support experimental. Open and recent reports include a GLSL 'non-opaque uniforms outside a block' compile failure under Vulkan (#3909, said to be fixed on dev, i.e. 0.9.3-alpha) and black screens at startup with the Vulkan Graphics API (#3887, #3754, driver-related). On macOS, Vulkan runs through MoltenVK on Metal and is the least-tested path. Sodium on the OpenGL backend is actively maintained for macOS; 0.9.3-alpha.1 even adds a macOS fullscreen-menu option. I found no open 26.3 Apple Silicon blockers.",
+    "severity": "medium",
+    "mitigation": "Pin the OpenGL backend by default ('--graphicsBackend opengl' plus 'preferredGraphicsBackend:opengl'). Pin Sodium 0.9.2+mc26.3 (release), not 0.9.3-alpha.1, unless a specific fix is needed. Treat Vulkan as an opt-in experiment, tested without Iris.",
+    "source": "https://github.com/CaffeineMC/sodium/issues/3909 ; https://github.com/CaffeineMC/sodium/issues/3887 ; https://modrinth.com/mod/sodium/version/mc26.2-0.9.0-fabric ; https://github.com/CaffeineMC/sodium/blob/dev/buildSrc/src/main/kotlin/BuildConfig.kt"
+   },
+   {
+    "mod": "ImmediatelyFast 1.17.1+26.3 / Minecraft Vulkan backend",
+    "feature": "(1) and (3) Any raw OpenGL in MineVibe rendering (texture uploads, LevelRenderEvents drawing)",
+    "risk": "Fabric's LevelRenderEvents Javadoc says drawing events 'support OpenGL calls', but raw GL only works on the GL backend and crashes or corrupts state under Vulkan. ImmediatelyFast's avoid_redundant_framebuffer_switching (default on, Apple GPUs included) removes the _glBindFramebuffer unbind after each render pass, so the last pass's framebuffer stays bound. Raw glReadPixels, glCopyTexSubImage or PBO code that expects framebuffer 0 would read or write the wrong target. fix_slow_buffer_upload_on_apple_gpu also turns on for M-series GPUs under GL and rewrites whole-buffer uploads; it is harmless for Blaze3D users.",
+    "severity": "medium",
+    "mitigation": "Use only Blaze3D: DynamicTexture/NativeImage plus the device's CommandEncoder texture writes for uploads, and SubmitNodeCollector/RenderTypes for drawing. No GL11/GL30, GlStateManager or PBO code. If bisecting a rendering glitch, toggle avoid_redundant_framebuffer_switching and enhanced_batching in config/immediatelyfast.json.",
+    "source": "https://github.com/FabricMC/fabric/blob/26.3/fabric-rendering-v1/src/client/java/net/fabricmc/fabric/api/client/rendering/v1/level/LevelRenderEvents.java ; https://github.com/RaphiMC/ImmediatelyFast/blob/26.3/common/src/main/java/net/raphimc/immediatelyfast/injection/mixins/avoid_redundant_framebuffer_switching/MixinGlCommandEncoder.java ; https://github.com/RaphiMC/ImmediatelyFast/blob/26.3/common/src/main/java/net/raphimc/immediatelyfast/ImmediatelyFast.java"
+   },
+   {
+    "mod": "Launcher pinning (all mods)",
+    "feature": "Install and pin",
+    "risk": "A 'latest for 26.3' resolver would pick Sodium 0.9.3-alpha.1 (alpha, 2026-09-20) and C2ME alpha builds that ship almost daily. It would also pick Fabric API 0.162.0+26.3 (2026-10-06), whose jar is much smaller than 0.161.0 (1.77 MB vs 2.62 MB) and so may bundle different modules, while MineVibe targets 0.161.0. Two jars with the same mod id in mods/ crash Fabric at startup. Modrinth also allows a version's files to be replaced, so pinning by version id alone does not guarantee identical bytes.",
+    "severity": "medium",
+    "mitigation": "Ship a lockfile with Modrinth version_id, filename, size and sha512 per jar. Fetch metadata with one GET /v2/versions?ids=[...] call and refuse to install if Modrinth's sha512 differs from the lock. Stream each download into a .part file while hashing, then check size and sha512 before an atomic rename. Track managed jars in a manifest, and scan mods/ for duplicate fabric.mod.json ids before launch. Bump pins deliberately after running the test matrix.",
+    "source": "https://api.modrinth.com/v2/project/sodium/version?loaders=[%22fabric%22]&game_versions=[%2226.3%22] ; https://api.modrinth.com/v2/project/fabric-api/version?loaders=[%22fabric%22]&game_versions=[%2226.3%22]"
+   },
+   {
+    "mod": "ImmediatelyFast 1.17.1+26.3",
+    "feature": "(3) Bubble background/text layering and (1) any translucent overlay on monitors",
+    "risk": "enhanced_batching (default true) forces every RenderTypeFeatureRenderer$Group to be reorderable via @ModifyVariable canReorder=true. Submissions are then merged by RenderType regardless of submit order. A hand-built bubble (translucent background quad, then text) or a translucent bezel or glare over the monitor can draw in the wrong order. skip_text_translucency_sorting also removes sortOnUpload from the TEXT_POLYGON_OFFSET, TEXT_INTENSITY_POLYGON_OFFSET and TEXT_INTENSITY_SEE_THROUGH render types, so overlapping see-through bubbles from several agents may blend in the wrong order. Its font atlas resizing and fast text lookup help bubble-heavy scenes.",
+    "severity": "low",
+    "mitigation": "Draw the monitor screen as an opaque or cutout quad, which is order-independent. Build bubbles with vanilla text submission and its built-in background colour and polygon-offset display mode instead of separate quads. If artifacts remain, set enhanced_batching=false and/or skip_text_translucency_sorting=false in config/immediatelyfast.json.",
+    "source": "https://github.com/RaphiMC/ImmediatelyFast/blob/26.3/common/src/main/java/net/raphimc/immediatelyfast/injection/mixins/enhanced_batching/MixinRenderTypeFeatureRenderer_Group.java ; https://github.com/RaphiMC/ImmediatelyFast/blob/26.3/common/src/main/java/net/raphimc/immediatelyfast/injection/mixins/skip_text_translucency_sorting/MixinRenderTypes.java ; https://github.com/RaphiMC/ImmediatelyFast/blob/26.3/common/src/main/java/net/raphimc/immediatelyfast/feature/core/ImmediatelyFastConfig.java"
+   },
+   {
+    "mod": "Dynamic FPS 3.11.10 / Iris 1.11.7",
+    "feature": "(4) Custom Screens capturing raw SDL3 input",
+    "risk": "Dynamic FPS injects right after SDL_PollEvent in SDLEventHandler.pollEvents and can cancel handleMouseButtonEvent when ignore_initial_click is not 'disabled' (default disabled). If MineVibe drains SDL's queue itself (its own SDL_PollEvent or SDL_PeepEvents loop), vanilla and Dynamic FPS miss focus and occlusion events, which leaves stale FPS states and lost input. Iris registers key mappings R (reload shaders, a multi-second stall), K (toggle) and I (pack screen). They fire if MineVibe captures typing while no Screen is open, e.g. an in-world 'focus monitor' mode. Sodium, Lithium, ImmediatelyFast, FerriteCore and Entity Culling do not touch input; Entity Culling's keybinds are unbound by default.",
+    "severity": "low",
+    "mitigation": "Implement capture as a vanilla Screen subclass, so key mappings are not dispatched, and read events through vanilla's handler or an SDL_AddEventWatch-style observer. Never consume the queue. Keep ignore_initial_click 'disabled' in the seeded dynamic_fps.json so the first click lands in the remote desktop. Request FREX flawless frames while the screen is open.",
+    "source": "https://github.com/juliand665/Dynamic-FPS/blob/main/platforms/common/src/main/java/dynamic_fps/impl/mixin/SDLEventHandlerMixin.java ; https://github.com/IrisShaders/Iris/blob/26.3/common/src/main/java/net/irisshaders/iris/Iris.java ; https://github.com/tr7zw/EntityCulling/blob/main/src/main/java/dev/tr7zw/entityculling/KeybindHolder.java"
+   },
+   {
+    "mod": "Krypton 0.3.2",
+    "feature": "(2) Fake Connection used for agents",
+    "risk": "Krypton only optimizes Netty pipelines: compression, encryption, varint framing. In singleplayer the integrated server uses an in-memory connection, so it gains almost nothing. Its setupCompression hook dereferences this.channel.pipeline(), so a fake Connection with a null channel NPEs if anything ever enables compression on it (e.g. a LAN or remote-join feature). Carpet's current FakeClientConnection avoids this by installing an EmbeddedChannel and no-op'ing send, setupInboundProtocol, handleDisconnection and setReadOnly.",
+    "severity": "low",
+    "mitigation": "Leave Krypton out. It adds no benefit for this singleplayer launcher. Build MineVibe's fake Connection like Carpet's: super(PacketFlow.SERVERBOUND), set an EmbeddedChannel via accessor, override send(...) as a no-op, and override setupInboundProtocol, handleDisconnection and setReadOnly.",
+    "source": "https://github.com/astei/krypton/blob/master/src/main/java/me/steinborn/krypton/mixin/shared/network/pipeline/compression/ConnectionMixin.java ; https://github.com/gnembon/fabric-carpet/blob/master/src/main/java/carpet/patches/FakeClientConnection.java"
+   },
+   {
+    "mod": "ModernFix",
+    "feature": "(2) Dynamic resources / general",
+    "risk": "No Fabric build exists for 26.x. Modrinth lists only NeoForge 5.27.x+mc26.1.2 builds for 26.x; the newest Fabric builds are for 1.20.1 and 1.21.1. It cannot be shipped, and an old jar would fail Fabric's minecraft dependency check. Its dynamic_resources behaviour (lazy model loading) is therefore not a factor.",
+    "severity": "low",
+    "mitigation": "Drop it from the set. FerriteCore covers the memory side, and 48 GB makes memory a non-issue anyway. Re-check Modrinth before future version bumps.",
+    "source": "https://api.modrinth.com/v2/project/modernfix/version"
+   },
+   {
+    "mod": "FerriteCore 9.0.0",
+    "feature": "(2) Agents and threading safety nets",
+    "risk": "The jar was built from the 26.1 branch and later retagged on Modrinth as supporting 26.3 (issue #243), not rebuilt for 26.3. Its options (replaceNeighborLookup, property map, blockstate cache dedup, data components) are low-risk for standard block properties. The opt-in THREADING_DETECTOR option shrinks vanilla's chunk ThreadingDetector, which is the safety net that catches off-thread chunk access from agent code.",
+    "severity": "low",
+    "mitigation": "Ship it with defaults; it is cheap and widely used. Never enable the threading-detector option. Do not mutate BlockState property maps or reflect into StateHolder internals.",
+    "source": "https://github.com/malte0811/FerriteCore/issues/243 ; https://github.com/malte0811/FerriteCore/blob/26.1/Common/src/main/java/malte0811/ferritecore/mixin/config/FerriteConfig.java"
+   },
+   {
+    "mod": "Sodium 0.9.2 (entity culling) / Fabric API LevelRenderEvents",
+    "feature": "(3) Bubbles and agents under Sodium",
+    "risk": "Sodium's EntityRenderer.shouldRender wrapper skips its section-visibility test for entities with shouldShowName() or glowing, so agents with name tags always render. Sodium does not overwrite the Fabric LevelRenderEvents hook points, and I found no Sodium issues about LevelRenderEvents or WorldRenderEvents. The remaining risk is MineVibe's own frustum logic: a bubble 1\u20132 blocks above the head lies outside the entity's culling box and pops at screen edges if culled with that box.",
+    "severity": "low",
+    "mitigation": "Frustum-test bubbles with an AABB expanded upward by the bubble height. Use COLLECT_SUBMITS rather than END_MAIN so bubbles go through feature renderers that Iris and ImmediatelyFast understand.",
+    "source": "https://github.com/CaffeineMC/sodium/blob/dev/common/src/main/java/net/caffeinemc/mods/sodium/mixin/features/render/entity/cull/EntityRendererMixin.java ; https://github.com/CaffeineMC/sodium/blob/dev/common/src/main/java/net/caffeinemc/mods/sodium/client/render/SodiumWorldRenderer.java ; https://github.com/FabricMC/fabric/blob/26.3/fabric-rendering-v1/src/client/java/net/fabricmc/fabric/api/client/rendering/v1/level/LevelRenderEvents.java"
+   },
+   {
+    "mod": "Entity Culling 1.11.2 (config handling)",
+    "feature": "Launcher config seeding",
+    "risk": "Entity Culling reads new File(\"config\",\"entityculling.json\"), which resolves against the JVM's working directory, not --gameDir. It deletes and rewrites the file on load, and its ConfigUpgrader can reset lists when configVersion is below 9. If the launcher spawns java with a different cwd, seeded whitelists are silently ignored and a stray config/ folder appears elsewhere.",
+    "severity": "low",
+    "mitigation": "Spawn java with cwd = instance directory, the same as --gameDir. When seeding, merge keys into any existing JSON and write configVersion: 9.",
+    "source": "https://github.com/tr7zw/EntityCulling/blob/main/EntityCulling-Versionless/src/main/java/dev/tr7zw/entityculling/versionless/EntityCullingVersionlessBase.java"
+   }
+  ],
+  "integration": [
+   "Context: /Users/jasperaelvoet/Documents/MineVibe is currently empty, so everything below is design-time guidance. Nothing was created or installed. Each jar's fabric.mod.json was read in memory, and every sha512 below was checked against the downloaded bytes on 2026-10-08.",
+   "Default set to ship. Format per jar: project_id / version_id / file / size / sha512.\n- Fabric API (already required): P7dR8mSH / bNnaTiuM / fabric-api-0.161.0+26.3.jar / 2620967 / ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d\n- Sodium 0.9.2+mc26.3 (mod id sodium, client): AANobbMI / bAZQdGpg / sodium-fabric-0.9.2+mc26.3.jar / 1908068 / f3f260f204b8ce5e8777c2c73f537956755ec61f3817b0b78b5e5568e8aa40f14891f146475075109747665c7c88a45ca0ca9a8df3c68d79c58ecdaa8d8c4b93\n- Lithium 0.26.2+mc26.3 (lithium; needs fabricloader >=0.19.5 and mixinextras >=0.5.5, which Loader 0.19.5 bundles as 0.5.5): gvQqBUqZ / xS0Q8LSi / lithium-fabric-0.26.2+mc26.3.jar / 914543 / 4d7fee66132eedc71feab9390b92c95d7058edbdad0fecfac1d836a2950b97a7ca463afbede61c7ef361ce65e1f927ab9e89dde5bf2e0e0ce486afb5c5dbee40\n- FerriteCore 9.0.0 (ferritecore): uXXizFIs / d5ddUdiB / ferritecore-9.0.0-fabric.jar / 72677 / d81fa97e11784c19d42f89c2f433831d007603dd7193cee45fa177e4a6a9c52b384b198586e04a0f7f63cd996fed713322578bde9a8db57e1188854ae5cbe584\n- ImmediatelyFast 1.17.1+26.3 (immediatelyfast): 5ZwdcRci / 3MP9UR23 / ImmediatelyFast-Fabric-1.17.1+26.3.jar / 99586 / 8e139589fd995bce3d485a34d92a07243964212f7ed2e4fc2f6de5b9a74d0f59b03252e7ce40c64e006cf3e21bed5de27b830d33ef048b286e041f6178ad8428\n- Entity Culling 1.11.2 (entityculling; needs fabric-api): NNAgCjsB / F4loCvYt / entityculling-fabric-1.11.2-mc26.3.jar / 1508273 / c5d8947cb022f8baed4bf17e38ca598c56b8049871e7e47fb462bcecc9bc01e7eb75290494199fcb1aa73f5e37f93a296211ba78c9dd2a5bff30d5eed497ebcc\n- Dynamic FPS 3.11.10 (dynamic_fps; needs fabric-api): LQ3K71Q1 / Jwq069rR / dynamic-fps-3.11.10+minecraft-26.3.0-fabric.jar / 189474 / 7976d11411babfa3ac0c38898f26ee6192f22a4f595b637eeae3cc5185f326c0e4b9fd7d00b3d7e8d020dd861295f0df52f9a9d7c67e88946d0ba9fff4a9f894",
+   "Opt-in only (off by default): Iris and C2ME. Excluded: Krypton and ModernFix.\n- Iris 1.11.7+mc26.3 (iris; depends on sodium 0.9.x; OpenGL only): YL57xq9U / vTN4NRGW / iris-fabric-1.11.7+mc26.3.jar / 2850938 / d8d3312f77fc52a48e4a6cd836fda33669bdebcb4de0b8c0d30adc808b287330a533e0baef355cc1ce6336a26851d9775369a802a4666b7b7a6266af20088f42. When enabled, force the OpenGL backend.\n- C2ME 0.4.2-alpha.0.90+26.3 (c2me; alpha): VSNURh3q / ODMLK8M9 / c2me-fabric-mc26.3-0.4.2-alpha.0.90.jar / 3950720 / d0140ebdad22b7ee002c4e17685dbb254d667562840000ef98cedabafa53bc67d1011b9fc4d70f26f964fc781373e61583d39b001e7e15644ba97dd19ea1c2ce. Enable only with an automatic world backup taken before launch.\n- Krypton 0.3.2 (krypton): fQEb0iXm / UugdIYJw / krypton-0.3.2.jar / 268849 / d1d57ebd41395b75b01f130cd9503eb8d208212424a399ff9f367f50be8fbc1c6472442b33c686e777c3148f6a609520e8fb732c755157c358cb207fd4d1123a. Excluded: no benefit in singleplayer.\n- ModernFix: no Fabric 26.x build exists.",
+   "Lockfile: commit e.g. launcher/mods.lock.json as { minecraft: '26.3', loader: '0.19.5', mods: [{ slug, projectId, versionId, modId, filename, size, sha512, side: 'client'|'both', optional: bool }] }. modId is the fabric.mod.json id (sodium, lithium, ferritecore, immediatelyfast, entityculling, dynamic_fps, iris, c2me, fabric-api), which the duplicate check uses. Do not resolve 'latest' at runtime. Pins change only through a separate 'update-pins' script that queries GET /v2/project/{slug}/version?loaders=[\"fabric\"]&game_versions=[\"26.3\"]&include_changelog=false, filters version_type=='release' (allowlist exceptions explicitly), prints the diff, and is committed after the test matrix passes.",
+   "Launcher install algorithm (Node):\n1. Read the lock. Compute the target set as the defaults plus any opt-ins the user enabled.\n2. One request: GET https://api.modrinth.com/v2/versions?ids=[...]. For each version, assert project_id matches, then take files[primary]. Abort if its hashes.sha512 or size differs from the lock (re-upload or tampering).\n3. Use a content-addressed cache at ~/Library/Caches/MineVibe/mods/<sha512>.jar. On a cache miss, stream files[primary].url (cdn.modrinth.com) through crypto.createHash('sha512') into <cache>/<sha512>.part. Verify size and digest, fsync, then rename. Retry 3 times with backoff and honour x-ratelimit-remaining/x-ratelimit-reset (limit is 300/min).\n4. Materialize into <instance>/mods/ by copying, or hardlinking from the cache onto the same volume, using the lock's filename. Write to a temp name in mods/, then rename.\n5. Keep <instance>/mods/.minevibe-managed.json listing the files the launcher owns. Delete managed jars no longer in the target set, and never delete unmanaged user jars.\n6. Before launch, open every jar in mods/ (e.g. yauzl), read fabric.mod.json ids, and fail with a clear message on duplicate ids or on a jar whose id is a known conflict (optifabric, vulkanmod, an older sodium).\n7. Offline: if every target jar already hashes correctly locally, skip the network entirely. Re-verify sha512 of the installed jars each launch; it is about 9 MB, so it is cheap.",
+   "Modrinth etiquette: send a unique User-Agent such as 'jasperaelvoet/MineVibe/<launcherVersion> (+https://github.com/<repo>)'. Do not put the user's email in it. No API key is needed for public reads. POST /v2/version_files {algorithm:'sha512', hashes:[...]} can map local jars back to versions for diagnostics.",
+   "Launch arguments and options. Spawn java with cwd = instance directory, the same as --gameDir; Entity Culling resolves 'config/' against cwd. Add '--graphicsBackend opengl' to the game args; this is the vanilla forced-backend flag, and Iris #3357 confirms lowercase values parse. In options.txt, ensure 'preferredGraphicsBackend:opengl' and 'pauseOnLostFocus:false', and keep any existing user values for everything else. Expose a launcher setting graphicsBackend=vulkan that is allowed only when Iris is not enabled.",
+   "Configs to seed. Write only if absent, or merge keys; never clobber.\n- config/dynamic_fps.json: copy the mod's default_config.json, then set idle.timeout=0 (or idle.condition='none'), states.unfocused.frame_rate_target=30 (instead of 1), keep ignore_initial_click='disabled', and keep invisible=0 FPS (MineVibe pauses streams when nothing renders).\n- config/entityculling.json: nothing is required if monitors implement getRenderBoundingBox. Optionally add 'minecraft:player' to entityWhitelist and tickCullingWhitelist so agents never freeze. Always write configVersion: 9.\n- config/immediatelyfast.json: defaults. Document enhanced_batching=false and skip_text_translucency_sorting=false as the fallbacks if bubble or overlay ordering glitches appear.\n- Lithium needs no config file; MineVibe's fabric.mod.json override handles it.",
+   "MineVibe fabric.mod.json, suggested:\n{\n  \"depends\": { \"fabricloader\": \">=0.19.5\", \"minecraft\": \"~26.3\", \"java\": \">=25\", \"fabric-api\": \">=0.161.0\" },\n  \"recommends\": { \"sodium\": \">=0.9.2 <0.10\", \"lithium\": \">=0.26.2\", \"ferritecore\": \">=9.0.0\", \"immediatelyfast\": \">=1.17.1\", \"entityculling\": \">=1.11.2\", \"dynamic_fps\": \">=3.11.10\" },\n  \"suggests\": { \"iris\": \">=1.11.7\" },\n  \"conflicts\": { \"c2me\": \"*\", \"krypton\": \"*\" },\n  \"breaks\": { \"optifabric\": \"*\", \"vulkanmod\": \"*\", \"sodium\": \"<0.9.2\", \"iris\": \"<1.11.7\", \"entityculling\": \"<1.11.2\" },\n  \"custom\": { \"lithium:options\": { \"mixin.entity.framed_maps\": false } },\n  \"entrypoints\": { \"frex_flawless_frames\": [\"dev.minevibe.client.compat.FlawlessFramesCompat\"] }\n}\nNotes:\n- 'conflicts' only warns, so the C2ME and Krypton opt-ins still load but are flagged in the log.\n- 'breaks' refuses to start, so use it only for real hard incompatibilities.\n- Build metadata such as '+mc26.3' is ignored in version comparison.\n- Drop the lithium:options override once a Lithium release fixes #791.",
+   "Compat code in MineVibe, monitors:\n(a) MonitorRenderer implements a BoundedBlockEntityRenderer<MonitorBlockEntity> interface that declares 'AABB getRenderBoundingBox(T be)' (CC:Tweaked pattern). This fixes Entity Culling on Fabric with no compile dependency, and is the same method NeoForge would use.\n(b) shouldRenderOffScreen() returns true only for monitors larger than about one section or crossing a section boundary; raise getViewDistance() if needed.\n(c) Use a vanilla RenderType with the DynamicTexture's Identifier and LightTexture.FULL_BRIGHT, opaque or cutout. If a custom RenderPipeline is unavoidable, call IrisApi.getInstance().assignPipeline(pipeline, IrisProgram.EMISSIVE_ENTITIES) from an iris-guarded class (compileOnly dep, FabricLoader.isModLoaded(\"iris\")).\n(d) Upload at most once per frame from a frame-start hook. Keep a single latest-frame slot per monitor, drop stale frames, and never upload from submit(). Skip the quad when IrisApi.isRenderingShadowPass().\n(e) Record lastExtractedFrame in extractRenderState, and pause or throttle remote-desktop capture for monitors not extracted for about 1 s. Culling by Sodium or Entity Culling then directly saves bandwidth.\n(f) Use only Blaze3D APIs; no raw GL. Downscale frames (e.g. 1280x720 or less), because 1080p RGBA is about 8 MB per upload.",
+   "Compat code in MineVibe, bubbles and agents:\n- Bubbles: extract bubble text and position in a LevelExtractionEvents/LevelRenderEvents extraction hook (immutable snapshot only). Submit in LevelRenderEvents.COLLECT_SUBMITS through vanilla SubmitNodeCollector text and name-tag submission with a background colour, and frustum-test an AABB that includes the bubble height. Do not attach bubbles as player-renderer layers; Entity Culling replaces culled agents' render state.\n- Agents: build the fake Connection like Carpet's FakeClientConnection (EmbeddedChannel set via accessor, with send, setupInboundProtocol, handleDisconnection and setReadOnly as no-ops). Funnel every LLM-driven action through server.execute(...), and never call getChunk or level.random off-thread. Optionally register EntityCullingModBase.instance.addDynamicEntityWhitelist(e -> isAgent(e)) once at init, guarded by isModLoaded(\"entityculling\").\n- Input: capture screens are Screen subclasses that read input via vanilla's SDL handler or an event watch, never by draining SDL_PollEvent. The FREX entrypoint stores provider.apply(\"minevibe\") and toggles true or false on screen open and close.",
+   "Verification matrix before bumping any pin. Configurations:\n(1) vanilla + Fabric API + MineVibe\n(2) + Sodium\n(3) + full default set\n(4) + Iris with a common pack\n(5) default set on Vulkan without Iris (expected experimental).\nChecks in each:\n- Monitors stay visible when their lower-left block leaves the view or sits behind a corner. Use Entity Culling's F3 culled-block-entities entry and its debug cull boxes.\n- No 'Missing program minevibe:...' lines in latest.log under Iris.\n- Bubbles stay correctly layered when several agents overlap.\n- After 20 agent deaths and respawns near a framed map, 'jcmd <pid> GC.class_histogram | grep -E \"ServerPlayer|HoldingPlayer\"' stays flat.\n- 5 minutes of keyboard-only typing in a capture screen keeps full FPS.\n- Window unfocused or minimized keeps memory flat (no frame-queue growth).\nRecord frame times with F3 or spark to confirm the gains are real on the M5 Pro."
+  ]
+ }
+}

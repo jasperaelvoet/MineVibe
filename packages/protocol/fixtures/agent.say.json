@@ -1,0 +1,8 @@
+{
+  "t": "agent.say",
+  "v": 1,
+  "agentId": "ada",
+  "text": "On it. Heading to the birch grove for logs.",
+  "style": "speech",
+  "ttlMs": 8000
+}

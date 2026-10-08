@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  server:
+    name: Server (lint, typecheck, test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      # vitest: unit, contract and brainless integration (bridgeSim + scripted brain). Zero tokens.
+      - run: npm test
+
+  mod:
+    name: Mod (Gradle build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/mod
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      # Server GameTests boot a Minecraft server, which requires accepting the Minecraft EULA
+      # (https://aka.ms/MinecraftEULA). The maintainer accepted it for this repository's CI on 2026-10-08,
+      # so the flag is passed here. Forks/local builds skip GameTests unless they opt in themselves.
+      - name: Build and test (incl. server GameTests)
+        run: ./gradlew build -Pminevibe.acceptMinecraftEula=true --stacktrace
+
+  mod-client:
+    name: Mod client GameTests
+    # TODO(M1): client GameTests arrive with M1. They run runProductionClientGameTest under Xvfb and drive
+    # BootScreen against an in-JVM fake bridge. Remove `if: false` once they exist. Allowed to fail until
+    # they are stable.
+    if: false
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/mod
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      # EULA accepted by the maintainer for CI (see the mod job).
+      - name: Client GameTests (Xvfb)
+        run: ./gradlew runProductionClientGameTest -Pminevibe.acceptMinecraftEula=true --stacktrace
+
+  docs:
+    name: Docs (Starlight build + link check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # starlight-links-validator fails the build on broken internal links and anchors.
+      - run: npm run build -w apps/docs
+
+  app:
+    name: MineVibe.app (macOS)
+    # TODO(M10): enable once the Swift stub (apps/launcher-mac) and packaging/build-app.ts exist. The job
+    # compiles the stub with swiftc, assembles the bundle from packaging/vendor.lock.json (sha256-verified),
+    # signs it ad hoc, verifies the signature, runs the --selftest handshake and uploads the artifact.
+    if: false
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build MineVibe.app (ad-hoc signed)
+        run: npm run build:app # TODO(M10): wire up packaging/build-app.ts
+      - name: Verify signature
+        run: codesign --verify --deep --strict --verbose=2 out/MineVibe.app
+      - name: Self-test (stub to Node handshake, no game)
+        run: out/MineVibe.app/Contents/MacOS/MineVibe --selftest
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MineVibe-app
+          path: out/MineVibe.app
+          if-no-files-found: error
+
+  pc-image:
+    name: Linux PC image
+    # TODO: enable once images/linux-pc/Containerfile exists (FROM ghcr.io/trycua/linux:24.04@sha256:<pin>).
+    # Then replace `false` with: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Publishing to GHCR needs the maintainer's go-ahead first (PLAN §14).
+    if: false
+    # Native arm64 runner: the image is arm64-only, so no QEMU emulation is needed.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: images/linux-pc
+          file: images/linux-pc/Containerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/jasperaelvoet/minevibe-linux-pc:24.04
+            ghcr.io/jasperaelvoet/minevibe-linux-pc:sha-${{ github.sha }}
+      - name: Record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "Pushed ghcr.io/jasperaelvoet/minevibe-linux-pc@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"

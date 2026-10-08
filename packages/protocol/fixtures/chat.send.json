@@ -1,0 +1,7 @@
+{
+  "t": "chat.send",
+  "v": 1,
+  "id": "m-90",
+  "to": "all",
+  "text": "@ada 1,3"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "minevibe",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A Minecraft world where Claude Code agents live, survive hardcore, and work at real computers.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/protocol",
+    "apps/server",
+    "apps/docs"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "dev": "npm run dev -w apps/server",
+    "play": "npm run play -w apps/server"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "^24.19.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

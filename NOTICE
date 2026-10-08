@@ -1,0 +1,12 @@
+MineVibe
+Copyright (c) 2026 Jasper Aelvoet and MineVibe contributors. Licensed under the MIT License.
+
+This project contains code adapted from the following projects:
+
+- fabric-carpet (https://github.com/gnembon/fabric-carpet), MIT License,
+  Copyright (c) gnembon and contributors — fake-player connection and
+  action-pack patterns (apps/mod/src/main/java/dev/minevibe/agent/).
+
+MineVibe does not redistribute Minecraft, Claude Code, or third-party mods.
+Minecraft files are downloaded from Mojang on first run; mods are fetched from
+Modrinth at install time. See THIRD_PARTY_NOTICES.md.

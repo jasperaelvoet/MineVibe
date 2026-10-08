@@ -1,0 +1,15 @@
+/* MineVibe accent: grass green. Starlight reads these custom properties. */
+
+/* Dark theme (Starlight's default root). */
+:root {
+  --sl-color-accent-low: #12301a;
+  --sl-color-accent: #3d9c4c;
+  --sl-color-accent-high: #b9ecc1;
+}
+
+/* Light theme. */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #cdeed3;
+  --sl-color-accent: #1f6e2c;
+  --sl-color-accent-high: #0e3716;
+}

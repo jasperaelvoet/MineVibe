@@ -1,0 +1,10 @@
+{
+  "t": "player.died",
+  "v": 1,
+  "id": "m-42",
+  "worldId": "world-7",
+  "cause": "Jasper was shot by Skeleton",
+  "killer": "minecraft:skeleton",
+  "day": 5,
+  "ticksAlive": 98765
+}

@@ -1,0 +1,59 @@
+name: Docs
+
+# Builds the Starlight site in apps/docs and publishes it to GitHub Pages at
+# https://jasperaelvoet.github.io/MineVibe. Plain steps instead of withastro/action, which can't find the
+# root lockfile of an npm workspaces repo. Requires Settings → Pages → Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/docs/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; let an in-progress deployment finish rather than cancelling it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    # Forks don't publish.
+    if: github.repository == 'jasperaelvoet/MineVibe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w apps/docs
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: apps/docs/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

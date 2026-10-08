@@ -1,0 +1,16 @@
+{
+  "t": "world.state",
+  "v": 1,
+  "worldId": "world-7",
+  "phase": "ready",
+  "fresh": true,
+  "spawn": { "x": 12, "y": 64, "z": -40 },
+  "office": {
+    "origin": { "x": 6, "y": 64, "z": -44 },
+    "slots": [
+      { "kind": "pc", "pos": { "x": 8, "y": 64, "z": -42 }, "pcId": "linux-1" },
+      { "kind": "meeting_table", "pos": { "x": 12, "y": 64, "z": -38 } }
+    ]
+  },
+  "clockTime": 1000
+}

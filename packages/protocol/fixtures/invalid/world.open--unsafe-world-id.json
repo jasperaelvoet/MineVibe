@@ -1,0 +1,9 @@
+{
+  "t": "world.open",
+  "v": 1,
+  "worldId": "../saves",
+  "gen": 7,
+  "fresh": true,
+  "hardcore": true,
+  "difficulty": "hard"
+}

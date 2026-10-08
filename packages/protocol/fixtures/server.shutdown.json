@@ -1,0 +1,5 @@
+{
+  "t": "server.shutdown",
+  "v": 1,
+  "reason": "quit"
+}
