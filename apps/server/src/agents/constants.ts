@@ -79,6 +79,12 @@ export const FORBIDDEN_INIT_TOOLS = [
 export const MCP_TOOL_TIMEOUT_MS = 600_000;
 
 /** Crew cap and seat cap (PLAN §2). */
+/**
+ * Agent ids the mod accepts (`AgentService.ID`, `SkillService.AGENT_ID`): it names each body's fake player after the
+ * id, so at most 16 characters of `[a-z0-9_]`, starting with a letter. Node mints ids inside it.
+ */
+export const MOD_AGENT_ID = /^[a-z][a-z0-9_]{0,15}$/;
+
 export const CREW_CAP = 4;
 export const MAX_SEATED = 2;
 

@@ -53,7 +53,7 @@ import { formatAnswerEcho, frontCard } from './chat/answerGrammar.js';
 import { type ChatContext, ChatInbox, ChatRouter, type Delivery } from './chat/ChatRouter.js';
 import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
-import { CREW_CAP, LAST_WORDS_MS } from './constants.js';
+import { CREW_CAP, LAST_WORDS_MS, MOD_AGENT_ID } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
@@ -618,10 +618,23 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     return [...this.#records.map((r) => r.handle), ...fromCards];
   }
 
+  /**
+   * A new agent id inside the mod's rule (`MOD_AGENT_ID`): the mod names the body's fake player after it, so it is at
+   * most 16 characters of `[a-z0-9_]` starting with a letter. The handle (`[a-z][a-z0-9]{1,11}`) plus 4 hex digits,
+   * unique among this world's records (ids of the dead and dismissed included).
+   */
+  #mintAgentId(handle: string): string {
+    const taken = new Set(this.#records.map((r) => r.agentId));
+    for (;;) {
+      const id = `${handle}${randomUUID().replaceAll('-', '').slice(0, 4)}`;
+      if (!taken.has(id) && MOD_AGENT_ID.test(id)) return id;
+    }
+  }
+
   #newRecord(input: { name: string; handle: string; role: AgentRole; ceo: boolean }): AgentRecord {
     const seniority = this.#records.reduce((m, r) => Math.max(m, r.seniority), 0) + 1;
     return {
-      agentId: `${input.handle}-${randomUUID().slice(0, 6)}`,
+      agentId: this.#mintAgentId(input.handle),
       handle: input.handle,
       name: input.name,
       role: input.role,

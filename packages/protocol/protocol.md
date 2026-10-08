@@ -625,7 +625,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   anything else is `BAD_ARGS`.
 - **Agent ids in the mod.** The mod names each body's fake player after its `agentId`, so `agent.spawn` only accepts
   ids whose lowercase form matches `[a-z][a-z0-9_]{0,15}` (a subset of `AgentId`) and refuses others with
-  `BAD_ARGS`. No body exists for such an id, so `skill.run` and `obs.query` for it answer `UNKNOWN_AGENT`.
+  `BAD_ARGS`. No body exists for such an id, so `skill.run` and `obs.query` for it answer `UNKNOWN_AGENT`. Node mints
+  every agent id inside that rule: the handle plus 4 hex digits (`ada1f3c`), at most 16 characters.
 
 ### 7.5 seats
 

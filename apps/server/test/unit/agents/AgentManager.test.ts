@@ -51,6 +51,8 @@ describe('AgentManager: world lifecycle', () => {
       handle: 'ada',
     });
     const [ceo] = h.manager.listAgents();
+    // The mod accepts only [a-z][a-z0-9_]{0,15} (AgentService.ID): the handle plus 4 hex digits.
+    expect(ceo?.agentId).toMatch(/^ada[0-9a-f]{4}$/);
     expect(ceo).toMatchObject({
       name: 'Ada',
       handle: 'ada',
@@ -328,6 +330,9 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
       bark: 'reporting_for_duty',
     });
     expect(w.manager.listAgents().map((a) => a.handle)).toEqual(['ada', 'bram']);
+    // Every minted id fits the mod's rule (it names the body's fake player after it): a CEO and a hire alike.
+    for (const a of w.manager.listAgents()) expect(a.agentId).toMatch(/^[a-z][a-z0-9_]{0,15}$/);
+    expect(w.skills.spawned.map((s) => s.agentId)).toEqual(w.manager.listAgents().map((a) => a.agentId));
     const bram = w.manager.listAgents()[1]?.agentId ?? '';
     const bq = w.queryOf(bram);
     expect((bq.options.systemPrompt as { append: string }).append).toContain(
