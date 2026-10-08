@@ -175,7 +175,11 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
       await waitFor(() => results.length > before, `${label}: result`);
       await waitFor(() => brain()?.session?.inTurn === false, `${label}: settled`, 30_000);
       const record = turns.at(-1) as TurnRecord;
-      record.opened = sent.slice(sentBefore).find((t) => !t.startsWith('/'))?.split('\n')[0] ?? '';
+      record.opened =
+        sent
+          .slice(sentBefore)
+          .find((t) => !t.startsWith('/'))
+          ?.split('\n')[0] ?? '';
       return record;
     };
     const say = (text: string) => () => manager.deliverChat({ to: 'all', text: `@ada ${text}` });
