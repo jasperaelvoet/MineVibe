@@ -116,8 +116,9 @@ fails in folders macOS privacy protection guards (`~/Documents`, `~/Desktop`, `~
 | `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation | Local only |
 | `npm run test:live` | A small live smoke test of the Claude Agent SDK. **Uses a little of your subscription quota.** | Local only |
 | `node spikes/s7-boot/run.mjs` | The end-to-end scenario (E2E mode): boot, death, Begin, a Node restart, a kill on Game Over | Local only |
+| `node --conditions=source --import tsx scripts/e2e/run-scenario.ts` | The live acceptance run through `npm run play`: boot, the CEO, a task, a question, the PC flow and model swaps, a kick, the Codex and the calendar, death, quit with no orphans ([ACCEPTANCE.md](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/ACCEPTANCE.md)). **Uses your subscription quota**; `--crew scripted` runs the zero-token part. | Local only |
 
-The last three need this Mac, real VMs or a Claude subscription, so they never run in CI.
+The last four need this Mac, real VMs or a Claude subscription, so they never run in CI.
 
 ### GameTests and the Minecraft EULA
 

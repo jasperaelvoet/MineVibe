@@ -4,19 +4,42 @@ These are verified issues, deferred to a cleanup sweep so they don't block miles
 source. Fixed items are removed (the git history keeps them); the I4 sweep of 2026-10-08 fixed M1 N2 (run-lock
 empty-file window, time-zone-dependent start times), M1 N3 (dead save left unburied after a crash), the "Node's
 seed" PLAN wording, the `world.state` office slot kind (`pc` vs `workstation`), the flaky `devServer` and
-`approach` tests and the flaky `skill_craft_places_atable_for3x3` GameTest.
+`approach` tests and the flaky `skill_craft_places_atable_for3x3` GameTest. The live acceptance run of 2026-10-09
+(docs/design/ACCEPTANCE.md) fixed the I4 agent-id blocker (Node now mints `<handle><4 hex>`), the blank head icon
+during a new agent's first turn, speech bubbles that dropped text before a dotted token, agents mining the starter
+office, and a game that never left BootScreen when its window started hidden.
+
+## Found in the live acceptance run (2026-10-09)
+- **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to
+  18 blocks away on seeds `minevibe-e2e` and `42`, from inside the office and again from the porch outside the door;
+  seed `mv-forest-1` works. In live run 1 the CEO then mined other logs (and, before the office fix, the office's
+  corner posts). A plain `mine oak_log` without `radius` answered `NOT_FOUND` ("found only 0 of 10") while `find`
+  (radius 64) listed oak at 10.7 blocks. Zero-token repro: `node --conditions=source --import tsx
+  scripts/e2e/run-scenario.ts --crew scripted --steps 1,0 --seed 42` (`oakMineJob`, `oakFromPorch` in the result).
+  - **Suspects:** `Miner` picks the nearest *exposed* log, which can be high in the canopy; `AgentNavigator` counts
+    segments that do not get closer as fruitless and gives up after 4 (`MAX_FRUITLESS_SEGMENTS`), so a detour fails.
+  - **Fix:** prefer trunk logs reachable from the ground (or rank targets by path cost), and let `mine`'s default
+    radius match what `find` reports.
+- **PCs have no `/mnt/codex`.** PLAN §6.6 promises the Codex export read-only at `/mnt/codex` (and `~/codex`), but
+  `PcManager` never mounts `paths.codexExport` and `PcGuestApi.info` returns `codexPath: null`; the CEO's
+  `ls /mnt/codex` failed in the PC flow. The export lives under `MINEVIBE_HOME`, which in development is inside
+  `~/Documents` (TCC-protected, so Apple `container` cannot mount it): the mount source must sit outside, like the
+  container roots.
+- **The mod's `ok` replies drop nested nulls.** `ProtocolCodec.encodeOk` converts each value with `GSON`, which has no
+  `serializeNulls`, so a null inside a nested map or `JsonObject` is left out, although the method's comment says nulls
+  are kept. `debug.state`'s per-agent and per-monitor keys are `nullish` because of it.
+  - **Fix:** convert with the null-keeping `WRITER`, after checking Node's reply schemas for nested keys that are
+    optional but not nullable.
+- **A plan card without a plan.** A seated, plan-first agent that states its plan in prose and calls `ExitPlanMode`
+  without writing `~/.claude/plans/*.md` gets a card reading "(No plan file was captured…)", and the player approves
+  blind (live run 1, kick step). Fix: fall back to the turn's last assistant text.
+- **Throwaway homes leak PC instances into the dev engine.** Every fresh `MINEVIBE_HOME` mints a new PC instance id;
+  its container, network and three volumes stay in `~/Library/Application Support/MineVibe-dev/container` after quit
+  (the VM stops; the network's vmnet helper runs as long as the engine does). The acceptance harness removes its own
+  (`scripts/e2e/out/leaked-instances.txt`); `npm run play` with a scratch home does not.
+  - **Fix:** prune instances whose `pcs.json` no longer exists, or name the instance after something stable.
 
 ## Found in the I4 sweep (2026-10-08)
-- **Agent ids: Node mints ids the mod refuses (blocks spawning; not low severity).** `AgentManager#newRecord`
-  (`apps/server/src/agents/AgentManager.ts:548`) mints `${handle}-${6 hex}`: a hyphen, and up to 19 characters. The
-  mod names each body's fake player after its id and accepts only `[a-z][a-z0-9_]{0,15}`
-  (`AgentService.ID`, `SkillService.AGENT_ID`), so every `agent.spawn` Node sends for such an id is answered
-  `BAD_ARGS`, and with no body, every `skill.run` and `obs.query` for it `UNKNOWN_AGENT`. The protocol's `AgentId`
-  allows both. Documented in protocol.md §7.4.2.
-  - **Fix (pick one):** Node mints ids inside the mod's rule (for example `${handle}${4 hex}`, at most 16), and the
-    protocol's `AgentId` narrows to match; or the mod accepts any `AgentId` and derives the fake player's name and
-    UUID from it separately.
-  - **Test gap:** no test sends a Node-minted id through the mod's validation.
 - **The status footer is sent twice.** The mod puts `footer` into every job `result` and observation; Node also
   appends its own footer (from `agent.state`) to every `mcp__mc__*` result. `summarizeResult` and `compactJson`
   (`apps/server/src/agents/EventRouter.ts:325`, `tools/results.ts`) JSON-encode the mod's result as is, so the
