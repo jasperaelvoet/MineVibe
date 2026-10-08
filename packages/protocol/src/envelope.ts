@@ -85,5 +85,76 @@ export const ERROR_CODES = {
   CHAT_INVALID_ANSWER: 'CHAT_INVALID_ANSWER',
   /** chat.send: the message cannot be sent as written (empty, mixed @all with names, ...). */
   CHAT_REJECTED: 'CHAT_REJECTED',
+
+  // Bodies and skills
+  /** The agent id names no living body. */
+  UNKNOWN_AGENT: 'UNKNOWN_AGENT',
+  /** skill.run: the skill name is not known to the mod. */
+  UNKNOWN_SKILL: 'UNKNOWN_SKILL',
+  /** skill.run / obs.query: `args` do not fit the skill. */
+  BAD_ARGS: 'BAD_ARGS',
+  /** skill.run: the agent already runs a job and `replace` is false. */
+  BUSY: 'BUSY',
+  /** skill.cancel / job_status: no such job. */
+  UNKNOWN_JOB: 'UNKNOWN_JOB',
+
+  // Seats (PLAN §6.3 "Sitting")
+  /** The PC is not running. */
+  PC_DOWN: 'PC_DOWN',
+  /** `maxSeated` agents already sit at PCs. */
+  SEAT_CAP: 'SEAT_CAP',
+  /** The chair is reserved for another agent. */
+  RESERVED: 'RESERVED',
+  /** The player sits there. */
+  OCCUPIED_BY_PLAYER: 'OCCUPIED_BY_PLAYER',
+  /** No path to the chair. */
+  UNREACHABLE: 'UNREACHABLE',
+  /** No free chair at the meeting table. */
+  NO_SEAT: 'NO_SEAT',
+
+  // Cards and commands
+  /** The card is no longer pending (answered, resolved or withdrawn). */
+  CARD_GONE: 'CARD_GONE',
+  /** The actor may not do this (rights: CEO only, player-created event, rules page, ...). */
+  FORBIDDEN: 'FORBIDDEN',
+
+  // PCs (PLAN §8)
+  PC_UNKNOWN: 'PC_UNKNOWN',
+  /** The change does not fit the host budget. */
+  OVER_BUDGET: 'OVER_BUDGET',
+  /** A new PC does not fit at all. */
+  NO_CAPACITY: 'NO_CAPACITY',
+  /** Apple allows at most 2 running macOS VMs. */
+  MACOS_SLOTS_FULL: 'MACOS_SLOTS_FULL',
+  /** A Vault folder was refused (`$HOME`, `~/.ssh`, ...). */
+  BAD_MOUNT: 'BAD_MOUNT',
+  /** The container engine is down or belongs to another install. */
+  ENGINE_DOWN: 'ENGINE_DOWN',
+
+  // Codex (PLAN §6.6)
+  CODEX_NOT_FOUND: 'CODEX_NOT_FOUND',
+  /** `baseRev` is stale; `msg` carries the current revision. */
+  CODEX_CONFLICT: 'CODEX_CONFLICT',
+  /** A page with a similar title exists; `msg` names it. */
+  CODEX_SIMILAR: 'CODEX_SIMILAR',
+  /** Over 8 KB, or appending to a full page. */
+  CODEX_TOO_LARGE: 'CODEX_TOO_LARGE',
+  /** The text looks like a credential. */
+  CODEX_SECRET: 'CODEX_SECRET',
+  /** Invalid content (coordinates in a lasting page, places outside world scope, ...). */
+  CODEX_INVALID: 'CODEX_INVALID',
+  /** The agent's write budget for this game day is used up. */
+  CODEX_BUDGET: 'CODEX_BUDGET',
+
+  // Calendar and meetings (PLAN §6.6)
+  CALENDAR_NOT_FOUND: 'CALENDAR_NOT_FOUND',
+  CALENDAR_INVALID: 'CALENDAR_INVALID',
+  /** Rate limits: 1 open CEO task per assignee, 6 CEO events per real hour. */
+  CALENDAR_LIMIT: 'CALENDAR_LIMIT',
+  /** A meeting is already running. */
+  MEETING_BUSY: 'MEETING_BUSY',
+  MEETING_NOT_FOUND: 'MEETING_NOT_FOUND',
+  /** Fewer than the CEO plus one attendee can come. */
+  NO_QUORUM: 'NO_QUORUM',
 } as const;
 export type KnownErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

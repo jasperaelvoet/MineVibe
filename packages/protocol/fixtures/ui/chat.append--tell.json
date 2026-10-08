@@ -1,0 +1,12 @@
+{
+  "t": "chat.append",
+  "v": 1,
+  "agentId": "bram",
+  "entry": {
+    "seq": 42,
+    "at": 1791484806000,
+    "kind": "tell",
+    "text": "Bram, the iron is in the chest by the door.",
+    "fromAgentId": "cleo"
+  }
+}

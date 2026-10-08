@@ -1,0 +1,11 @@
+{
+  "t": "pending.answer",
+  "v": 1,
+  "id": "m-74",
+  "agentId": "ada",
+  "pendingId": "card-10",
+  "answer": {
+    "kind": "decline",
+    "note": "Every other day is enough"
+  }
+}

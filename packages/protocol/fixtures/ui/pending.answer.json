@@ -1,0 +1,11 @@
+{
+  "t": "pending.answer",
+  "v": 1,
+  "id": "m-72",
+  "agentId": "ada",
+  "pendingId": "card-7",
+  "answer": {
+    "kind": "options",
+    "picks": [1, 3]
+  }
+}

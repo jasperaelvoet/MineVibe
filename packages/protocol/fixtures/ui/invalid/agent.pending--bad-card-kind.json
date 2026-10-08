@@ -1,0 +1,16 @@
+{
+  "t": "agent.pending",
+  "v": 1,
+  "agentId": "ada",
+  "cards": [
+    {
+      "id": "card-8",
+      "agentId": "bram",
+      "createdAt": 1791484802000,
+      "parked": false,
+      "presenting": false,
+      "kind": "poll",
+      "plan": "# Fix the failing test\n\n1. Run `npm test`\n2. Fix `sum()` in src/math.ts\n3. Re-run the tests"
+    }
+  ]
+}

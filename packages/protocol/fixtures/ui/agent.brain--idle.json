@@ -1,0 +1,11 @@
+{
+  "t": "agent.brain",
+  "v": 1,
+  "agentId": "ada",
+  "model": "haiku",
+  "status": "idle",
+  "activity": null,
+  "autonomy": "helpful",
+  "planFirst": false,
+  "pingInstead": true
+}

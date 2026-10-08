@@ -1,0 +1,11 @@
+{
+  "t": "codex.put",
+  "v": 1,
+  "id": "m-1",
+  "mode": "create",
+  "title": "Gossip",
+  "body": "x",
+  "tags": [],
+  "category": "gossip",
+  "scope": "world"
+}

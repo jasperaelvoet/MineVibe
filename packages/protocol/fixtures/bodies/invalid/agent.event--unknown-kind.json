@@ -1,0 +1,8 @@
+{
+  "t": "agent.event",
+  "v": 1,
+  "agentId": "ada",
+  "kind": "danced",
+  "urgency": 0,
+  "text": "Danced"
+}
