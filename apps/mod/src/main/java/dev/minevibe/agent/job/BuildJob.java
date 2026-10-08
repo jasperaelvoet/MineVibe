@@ -202,6 +202,11 @@ public final class BuildJob extends SkillJob {
 				for (String key : this.farm.result().keySet()) {
 					this.result.add(key, this.farm.result().get(key));
 				}
+				if (s == Status.FAILED) {
+					// The field's failure (PROTECTED soil, say) is the build's: not a success with a note in it.
+					String code = this.farm.failureCode();
+					return this.fail(code == null ? "FAILED" : code, this.farm.failureMessage());
+				}
 				return this.finish();
 			}
 			return Status.RUNNING;
@@ -296,10 +301,15 @@ public final class BuildJob extends SkillJob {
 				case CLEAR, WATER -> !s.isAir();
 				case SOLID, TORCH -> !s.isAir() && s.canBeReplaced();
 			};
-			if (!changes) {
+			dev.minevibe.world.provenance.Protection.Verdict v;
+			if (changes) {
+				v = dev.minevibe.world.provenance.Protection.check(agent.level(), st.pos(), agent.agentId());
+			} else if (st.kind() != Kind.TORCH) {
+				// Walls, roofs and water inside the Base change the Base even where they fill air (torches only light it).
+				v = dev.minevibe.world.provenance.Protection.checkZoneCell(agent.level(), st.pos(), agent.agentId());
+			} else {
 				continue;
 			}
-			dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.check(agent.level(), st.pos(), agent.agentId());
 			if (v != null) {
 				prot.add(st.pos());
 				if (nearest == null || st.pos().distSqr(agent.blockPosition()) < nearest.pos().distSqr(agent.blockPosition())) {

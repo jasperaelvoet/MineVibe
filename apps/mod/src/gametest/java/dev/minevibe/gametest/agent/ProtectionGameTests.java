@@ -44,16 +44,20 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.LadderBlock;
 import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -473,6 +477,7 @@ public final class ProtectionGameTests {
 		BlockPos placeAt = spawn.offset(1, 0, 0);
 		AtomicReference<CompletableFuture<Map<String, Object>>> place = new AtomicReference<>();
 		AtomicReference<CompletableFuture<Map<String, Object>>> mineOwn = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> ring = new AtomicReference<>();
 		helper.startSequence()
 			.thenWaitUntil(() -> helper.assertTrue(status(mine) != null, "mine still running"))
 			.thenExecute(() -> {
@@ -492,9 +497,339 @@ public final class ProtectionGameTests {
 				helper.assertTrue(level.getBlockState(placeAt).isAir(), "its own block is gone");
 				helper.assertTrue(Provenance.ownerAt(level, placeAt) == null, "and its mark with it");
 				helper.assertTrue(level.getBlockState(corner).is(Blocks.STRIPPED_SPRUCE_LOG), "the office is intact");
+				// A blueprint inside the Base fills its rooms and doorways even where it only meets air.
+				ring.set(run(helper, agent, "build", "{\"blueprint\":\"wall_ring\",\"origin\":" + pos(spawn) + "}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ring.get() != null && status(ring.get()) != null, "build still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, ring.get(), "PROTECTED", "a wall ring inside the Base");
+				helper.assertValueEqual(result(ring.get()).getAsJsonObject("protected").get("what").getAsString(), "base", "what");
+				helper.assertTrue(error(ring.get()).contains("Building there changes part of"), "says why: " + error(ring.get()));
+				helper.assertValueEqual(Inv.count(agent, Items.COBBLESTONE), 4, "no block placed");
 				assertValid(helper, agent);
 			})
 			.thenSucceed();
+	}
+
+	// ------------------------------------------------------------------ review fixes: ways round the protection
+
+	/** A null-safe "the job behind {@code ref} has ended" (a failed step before it leaves {@code ref} unset). */
+	private static boolean ended(final AtomicReference<CompletableFuture<Map<String, Object>>> ref) {
+		return ref.get() != null && status(ref.get()) != null;
+	}
+
+	private static Owner steve() {
+		return Owner.player(UUID.nameUUIDFromBytes("steve".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "Steve");
+	}
+
+	/** Sets {@code state} at the absolute position {@code abs} and records it as Steve's. */
+	private static void steves(final GameTestHelper helper, final BlockPos abs, final BlockState state) {
+		helper.getLevel().setBlockAndUpdate(abs, state);
+		Provenance.mark(helper.getLevel(), abs, steve());
+	}
+
+	/**
+	 * A log cabin from before provenance (nothing marked) with a real oak growing against its corner, and natural
+	 * leaves brushing its wall. The trunk joins the cabin's logs into one cluster that touches natural leaves: that
+	 * used to count as a tree and the agent would have felled the cabin. A cluster that touches planks or glass is a
+	 * building, so there is no tree to fell and the cabin stands.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 600)
+	public void anUnmarkedLogCabinIsNeverATree(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		Map<BlockPos, BlockState> cabin = new LinkedHashMap<>();
+		BlockPos corner = new BlockPos(8, 1, 8);
+		for (int x = 0; x <= 4; x++) {
+			for (int z = 0; z <= 4; z++) {
+				for (int y = 0; y <= 2; y++) {
+					boolean edgeX = x == 0 || x == 4;
+					boolean edgeZ = z == 0 || z == 4;
+					BlockState state;
+					if (edgeX && edgeZ) {
+						state = Blocks.OAK_LOG.defaultBlockState();
+					} else if (z == 0 && x == 2 && y == 1) {
+						state = Blocks.GLASS_PANE.defaultBlockState();
+					} else if (edgeX || edgeZ) {
+						state = Blocks.OAK_PLANKS.defaultBlockState();
+					} else {
+						continue;
+					}
+					helper.setBlock(corner.offset(x, y, z), state);
+					cabin.put(helper.absolutePos(corner.offset(x, y, z)), helper.getLevel().getBlockState(helper.absolutePos(corner.offset(x, y, z))));
+				}
+			}
+		}
+		BlockState leaf = Blocks.OAK_LEAVES.defaultBlockState().setValue(LeavesBlock.DISTANCE, 1).setValue(LeavesBlock.PERSISTENT, false);
+		helper.setBlock(corner.offset(0, 1, -1), leaf);
+		// A natural oak diagonally against the far corner: its trunk joins the cabin's corner logs.
+		List<BlockPos> oak = plantTree(helper, corner.offset(5, 0, 5), 5, Blocks.OAK_LOG, Blocks.OAK_LEAVES);
+		BlockPos cornerLog = helper.absolutePos(corner);
+		helper.assertTrue(Trees.treeAt(level, cornerLog) == null, "the cabin is no tree");
+		Trees.Cluster joined = Trees.clusterAt(level, oak.getFirst());
+		helper.assertTrue(joined.tree() == null && "building".equals(joined.notTree()), "the oak against the cabin joins it: " + joined.notTree());
+		helper.assertTrue(joined.logs().contains(helper.absolutePos(corner.offset(4, 0, 4))), "one cluster with the cabin's corner");
+		AgentPlayer agent = spawnAgent(helper, "Ada", AgentRole.CEO, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "collect", "{\"item\":\"oak_log\",\"count\":3,\"radius\":20}");
+		// Blocks, not states: the window pane connects to its walls a tick later.
+		Runnable standing = () -> cabin.forEach((p, st) -> helper.assertTrue(level.getBlockState(p).is(st.getBlock()), "the cabin changed at " + p.toShortString()));
+		helper.onEachTick(standing);
+		helper.succeedWhen(() -> {
+			assertFailed(helper, r, "NO_NATURAL_SOURCE", "collect oak_log with only a log cabin around");
+			standing.run();
+			assertAll(helper, oak, true, "the oak grown into the cabin");
+			helper.assertValueEqual(Inv.count(agent, Items.OAK_LOG), 0, "oak logs taken");
+			assertValid(helper, agent);
+		});
+	}
+
+	/**
+	 * Steve's torch on a natural dirt block and his ladder on a natural stone block: the dirt and the stone are natural,
+	 * but breaking them would pop Steve's blocks off, so mining and digging leave them alone.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 600)
+	public void naturalBlocksHoldingUpThePlayersBlocksAreLeftAlone(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		BlockPos dirt = helper.absolutePos(new BlockPos(16, 1, 20));
+		level.setBlockAndUpdate(dirt, Blocks.DIRT.defaultBlockState());
+		steves(helper, dirt.above(), Blocks.TORCH.defaultBlockState());
+		BlockPos stone = helper.absolutePos(new BlockPos(16, 1, 16));
+		BlockPos ladderAt = helper.absolutePos(new BlockPos(17, 1, 16));
+		level.setBlockAndUpdate(stone, Blocks.STONE.defaultBlockState());
+		Direction away = Direction.getNearest(ladderAt.getX() - stone.getX(), 0, ladderAt.getZ() - stone.getZ(), Direction.NORTH);
+		steves(helper, ladderAt, Blocks.LADDER.defaultBlockState().setValue(LadderBlock.FACING, away));
+		helper.assertTrue(level.getBlockState(ladderAt).is(Blocks.LADDER), "the ladder hangs on the stone");
+		Protection.Verdict v = Protection.check(level, dirt, null);
+		helper.assertTrue(v != null && v.hint().contains("holds up part of Steve's build (torch at"), "the dirt holds up Steve's torch: " + (v == null ? null : v.hint()));
+		helper.assertTrue(Provenance.ownerAt(level, dirt) == null, "the dirt itself stays natural");
+		// The natural floor under Steve's roof (a plank three blocks up) and the ground under his wall are his too.
+		BlockPos floor = helper.absolutePos(new BlockPos(12, 1, 20));
+		level.setBlockAndUpdate(floor, Blocks.DIRT.defaultBlockState());
+		steves(helper, floor.above(4), Blocks.OAK_PLANKS.defaultBlockState());
+		Protection.Verdict roof = Protection.check(level, floor, null);
+		helper.assertTrue(roof != null && roof.hint().contains("inside part of Steve's build, under its roof (oak_planks at"), "the floor under the roof: " + (roof == null ? null : roof.hint()));
+		BlockPos footing = helper.absolutePos(new BlockPos(12, 1, 24));
+		level.setBlockAndUpdate(footing, Blocks.DIRT.defaultBlockState());
+		steves(helper, footing.above(), Blocks.COBBLESTONE.defaultBlockState());
+		Protection.Verdict wall = Protection.check(level, footing, null);
+		helper.assertTrue(wall != null && wall.hint().contains("holds up part of Steve's build (cobblestone at"), "the ground under the wall: " + (wall == null ? null : wall.hint()));
+		BlockPos open = helper.absolutePos(new BlockPos(12, 1, 16));
+		level.setBlockAndUpdate(open, Blocks.DIRT.defaultBlockState());
+		helper.assertTrue(Protection.check(level, open, null) == null, "dirt under the open sky stays free");
+		AgentPlayer agent = spawnAgent(helper, "Digger", AgentRole.MINER, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_SHOVEL));
+		agent.getInventory().setItem(1, new ItemStack(Items.IRON_PICKAXE));
+		CompletableFuture<Map<String, Object>> mine = run(helper, agent, "mine", "{\"block\":\"dirt\",\"count\":2,\"radius\":10}");
+		AtomicReference<CompletableFuture<Map<String, Object>>> dig = new AtomicReference<>();
+		helper.onEachTick(() -> {
+			helper.assertTrue(level.getBlockState(dirt.above()).is(Blocks.TORCH), "Steve's torch fell");
+			helper.assertTrue(level.getBlockState(ladderAt).is(Blocks.LADDER), "Steve's ladder fell");
+		});
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(status(mine) != null, "mine still running"))
+			.thenExecute(() -> {
+				// Only the open dirt was free: one of two, then nothing natural left.
+				String s = status(mine);
+				helper.assertTrue("failed".equals(s) && (error(mine).contains("PROTECTED") || error(mine).contains("NO_NATURAL_SOURCE")),
+					"mine found one free dirt of two: " + s + " " + error(mine) + " " + result(mine));
+				helper.assertValueEqual(result(mine).get("mined").getAsInt(), 1, "mined the open dirt");
+				helper.assertTrue(level.getBlockState(open).isAir(), "the open dirt was taken");
+				helper.assertTrue(level.getBlockState(dirt).is(Blocks.DIRT), "the dirt under the torch is still there");
+				helper.assertTrue(level.getBlockState(floor).is(Blocks.DIRT), "the floor under the roof is still there");
+				helper.assertTrue(level.getBlockState(footing).is(Blocks.DIRT), "the ground under the wall is still there");
+				dig.set(run(helper, agent, "dig", "{\"from\":" + pos(stone) + ",\"to\":" + pos(stone) + "}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ended(dig), "dig still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, dig.get(), "PROTECTED", "dig out the stone behind the ladder");
+				helper.assertTrue(error(dig.get()).contains("holds up part of Steve's build (ladder at"), "says why: " + error(dig.get()));
+				helper.assertTrue(level.getBlockState(stone).is(Blocks.STONE), "the stone is still there");
+				assertValid(helper, agent);
+			})
+			.thenSucceed();
+	}
+
+	/**
+	 * Fire and lava next to Steve's house: flint and steel on the ground two blocks from it, a lava bucket poured beside
+	 * it. Neither touches a protected block itself, but both would burn the house down: refused, by the job and by the
+	 * backstop under it.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 600)
+	public void fireAndLavaAreRefusedNearThePlayersBuild(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		Map<BlockPos, BlockState> house = buildHouse(helper, HOUSE);
+		AgentPlayer agent = spawnAgent(helper, "Ada", AgentRole.CEO, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		agent.getInventory().setItem(0, new ItemStack(Items.FLINT_AND_STEEL));
+		agent.getInventory().setItem(1, new ItemStack(Items.LAVA_BUCKET));
+		BlockPos ground = helper.absolutePos(new BlockPos(20, 0, 21));
+		BlockPos pourAt = helper.absolutePos(new BlockPos(21, 0, 19));
+		CompletableFuture<Map<String, Object>> flint = run(helper, agent, "use_item", "{\"item\":\"flint_and_steel\",\"pos\":" + pos(ground) + "}");
+		AtomicReference<CompletableFuture<Map<String, Object>>> lava = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> tnt = new AtomicReference<>();
+		helper.onEachTick(() -> {
+			helper.assertFalse(level.getBlockState(ground.above()).is(Blocks.FIRE), "fire was lit next to the house");
+			helper.assertTrue(level.getBlockState(pourAt.above()).getFluidState().isEmpty(), "lava was poured next to the house");
+		});
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(status(flint) != null, "use_item still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, flint, "PROTECTED", "flint and steel next to the house");
+				helper.assertTrue(error(flint).contains("Fire or lava there could reach part of Steve's build"), "says why: " + error(flint));
+				lava.set(run(helper, agent, "use_item", "{\"item\":\"lava_bucket\",\"pos\":" + pos(pourAt) + "}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ended(lava), "use_item still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, lava.get(), "PROTECTED", "a lava bucket next to the house");
+				helper.assertValueEqual(Inv.count(agent, Items.LAVA_BUCKET), 1, "the lava is still in the bucket");
+				agent.getInventory().setItem(2, new ItemStack(Items.TNT));
+				tnt.set(run(helper, agent, "place", "{\"block\":\"tnt\",\"pos\":" + pos(ground.above()) + "}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ended(tnt), "place still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, tnt.get(), "PROTECTED", "TNT next to the house");
+				helper.assertTrue(error(tnt.get()).contains("An explosion there could reach part of Steve's build"), "says why: " + error(tnt.get()));
+				helper.assertFalse(level.getBlockState(ground.above()).is(Blocks.TNT), "no TNT placed");
+				// The backstop: a right-click with flint and steel that no job checked.
+				ProtectionGuard.takeRefusal(agent.agentId());
+				agent.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.FLINT_AND_STEEL));
+				agent.controls().useBlock(ground, Direction.UP);
+				helper.assertTrue(ProtectionGuard.lastRefusal(agent.agentId()) != null, "the guard refused the raw use");
+				assertIntact(helper, house, "the house");
+				assertValid(helper, agent);
+			})
+			.thenSucceed();
+	}
+
+	/**
+	 * Steve's chest, opened with a plain right-click ({@code use_block}) rather than {@code open_menu}: shift-clicking
+	 * his diamonds out is still refused. His flower pot keeps its poppy.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 600)
+	public void thePlayersChestAndFlowerPotStayTheirs(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		BlockPos chestAt = helper.absolutePos(new BlockPos(17, 1, 20));
+		steves(helper, chestAt, Blocks.CHEST.defaultBlockState());
+		ChestBlockEntity chest = (ChestBlockEntity)level.getBlockEntity(chestAt);
+		chest.setItem(0, new ItemStack(Items.DIAMOND, 3));
+		BlockPos potAt = helper.absolutePos(new BlockPos(17, 1, 23));
+		steves(helper, potAt, Blocks.POTTED_POPPY.defaultBlockState());
+		AgentPlayer agent = spawnAgent(helper, "Ada", AgentRole.CEO, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		CompletableFuture<Map<String, Object>> open = run(helper, agent, "use_block", "{\"pos\":" + pos(chestAt) + "}");
+		AtomicReference<CompletableFuture<Map<String, Object>>> click = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> pot = new AtomicReference<>();
+		helper.startSequence()
+			.thenWaitUntil(() -> assertDone(helper, open, "use_block on the chest"))
+			.thenExecute(() -> {
+				helper.assertTrue(agent.containerMenu != agent.inventoryMenu, "the chest is open: " + result(open));
+				click.set(run(helper, agent, "menu_click", "{\"slot\":0,\"button\":0,\"type\":\"quick_move\"}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ended(click), "menu_click still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, click.get(), "PROTECTED", "shift-click Steve's diamonds");
+				helper.assertValueEqual(chest.countItem(Items.DIAMOND), 3, "diamonds in Steve's chest");
+				helper.assertValueEqual(Inv.count(agent, Items.DIAMOND), 0, "diamonds taken");
+				agent.closeContainer();
+				pot.set(run(helper, agent, "use_block", "{\"pos\":" + pos(potAt) + "}"));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(ended(pot), "use_block still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, pot.get(), "PROTECTED", "take the poppy from Steve's pot");
+				helper.assertTrue(level.getBlockState(potAt).is(Blocks.POTTED_POPPY), "the poppy is still potted");
+				helper.assertValueEqual(Inv.count(agent, Items.POPPY), 0, "poppy taken");
+				assertValid(helper, agent);
+			})
+			.thenSucceed();
+	}
+
+	/** Bessie, a named cow, is nobody's dinner: attacking her is refused, and hunting cows takes the other one. */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 1200)
+	public void namedAnimalsAreNeverHunted(final GameTestHelper helper) {
+		AgentPlayer agent = spawnAgent(helper, "Hunter", AgentRole.GUARD, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_SWORD));
+		var bessie = helper.spawn(EntityTypes.COW, new BlockPos(18, 1, 20));
+		bessie.setCustomName(Component.literal("Bessie"));
+		bessie.setNoAi(true);
+		var other = helper.spawn(EntityTypes.COW, new BlockPos(14, 1, 20));
+		other.setNoAi(true);
+		// Pets and the player's golems count too.
+		var wolf = helper.spawn(EntityTypes.WOLF, new BlockPos(10, 1, 10));
+		wolf.setNoAi(true);
+		wolf.tame(spawnHumanStandIn(helper, 8, 1, 8));
+		var golem = helper.spawn(EntityTypes.IRON_GOLEM, new BlockPos(30, 1, 30));
+		golem.setNoAi(true);
+		helper.assertFalse(Protection.isPetOrNamed(golem), "a village's golem is nobody's");
+		golem.setPlayerCreated(true);
+		helper.assertTrue(Protection.isPetOrNamed(wolf) && Protection.isPetOrNamed(golem) && Protection.isPetOrNamed(bessie), "pets, named animals, built golems");
+		helper.assertFalse(Protection.isPetOrNamed(other), "a plain cow is livestock");
+		CompletableFuture<Map<String, Object>> attack = run(helper, agent, "attack", "{\"entity\":\"" + bessie.getStringUUID() + "\"}");
+		AtomicReference<CompletableFuture<Map<String, Object>>> hunt = new AtomicReference<>();
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(status(attack) != null, "attack still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, attack, "BAD_TARGET", "attack a named cow");
+				hunt.set(run(helper, agent, "hunt", "{\"entity\":\"minecraft:cow\",\"count\":1,\"radius\":16}"));
+			})
+			.thenWaitUntil(() -> {
+				helper.assertTrue(hunt.get() != null, "hunt not started");
+				assertDone(helper, hunt.get(), "hunt a cow");
+			})
+			.thenExecute(() -> {
+				helper.assertTrue(bessie.isAlive(), "Bessie lives");
+				helper.assertFalse(other.isAlive(), "the other cow was hunted");
+			})
+			.thenSucceed();
+	}
+
+	/** Planks, stripped logs and wood are crafted: {@code collect oak_planks} never takes them out of a wall. */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 300)
+	public void collectingPlanksNeverTakesThemFromAWall(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		List<BlockPos> wall = new ArrayList<>();
+		for (int y = 1; y <= 3; y++) {
+			BlockPos p = helper.absolutePos(new BlockPos(16, y, 20));
+			level.setBlockAndUpdate(p, Blocks.OAK_PLANKS.defaultBlockState());
+			wall.add(p);
+		}
+		AgentPlayer agent = spawnAgent(helper, "Ada", AgentRole.CEO, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "collect", "{\"item\":\"oak_planks\",\"count\":2,\"radius\":16}");
+		helper.succeedWhen(() -> {
+			assertFailed(helper, r, "NO_NATURAL_SOURCE", "collect oak_planks next to an unmarked plank wall");
+			helper.assertTrue(error(r).contains("craft"), "points at crafting: " + error(r));
+			for (BlockPos p : wall) {
+				helper.assertTrue(level.getBlockState(p).is(Blocks.OAK_PLANKS), "the wall lost a plank at " + p.toShortString());
+			}
+		});
+	}
+
+	/**
+	 * A farm plot whose field holds Steve's dirt: the nested farm refuses it, and the build reports that refusal
+	 * instead of a success.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 1200)
+	public void aFarmPlotOnThePlayersSoilFailsTheBuild(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		// The field one block up, on the smooth stone floor (the water goes on top of the floor).
+		BlockPos centre = new BlockPos(12, 1, 12);
+		for (int x = -4; x <= 4; x++) {
+			for (int z = -4; z <= 4; z++) {
+				helper.setBlock(centre.offset(x, 0, z), Blocks.DIRT);
+			}
+		}
+		BlockPos stevesDirt = helper.absolutePos(centre.offset(3, 0, 3));
+		Provenance.mark(level, stevesDirt, steve());
+		AgentPlayer agent = spawnAgent(helper, "Farmer", AgentRole.FARMER, 12, 2, 9);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_HOE));
+		agent.getInventory().setItem(1, new ItemStack(Items.WATER_BUCKET));
+		agent.getInventory().setItem(2, new ItemStack(Items.WHEAT_SEEDS, 16));
+		agent.getInventory().setItem(3, new ItemStack(Items.IRON_SHOVEL));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "build", "{\"blueprint\":\"farm_plot\",\"origin\":" + pos(helper.absolutePos(centre.above())) + "}");
+		helper.succeedWhen(() -> {
+			assertFailed(helper, r, "PROTECTED", "a farm plot over Steve's dirt");
+			helper.assertTrue(level.getBlockState(stevesDirt).is(Blocks.DIRT), "Steve's dirt is untilled");
+			helper.assertTrue(result(r).has("protected"), "the farm's refusal is in the result: " + result(r));
+			assertValid(helper, agent);
+		});
 	}
 
 	// ------------------------------------------------------------------ provenance itself

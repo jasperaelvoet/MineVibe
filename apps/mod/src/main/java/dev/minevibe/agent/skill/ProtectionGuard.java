@@ -23,7 +23,9 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>Breaking a block ({@code PlayerBlockBreakEvents.BEFORE}, from {@code ServerPlayerGameMode#destroyBlock}).</li>
  *   <li>Using an item on a block ({@code UseBlockCallback}, from {@code ServerPlayerGameMode#useItemOn}): tools that
- *       change the block, fire and buckets in front of it, block items replacing a protected plant or snow layer.</li>
+ *       change the block, fire and lava near a protected block, buckets in front of it, block items replacing a
+ *       protected plant or snow layer, and right-clicks that take from or retune a protected block (flower pot,
+ *       lectern, repeater...).</li>
  *   <li>Using an item in the air ({@code UseItemCallback}): buckets and fire charges aimed at a protected block.</li>
  * </ul>
  * Attacks on decoration (item frames, paintings, armor stands) are refused in {@code AgentControls#attack}'s callers
@@ -49,6 +51,10 @@ public final class ProtectionGuard {
 		UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
 			if (player instanceof AgentPlayer agent && level instanceof ServerLevel serverLevel) {
 				Protection.Verdict v = Protection.checkUse(serverLevel, hit.getBlockPos(), hit.getDirection(), player.getItemInHand(hand), agent.agentId());
+				if (v == null) {
+					// Taking the flower from the player's pot, the book from their lectern, retuning their repeaters.
+					v = Protection.checkInteract(serverLevel, hit.getBlockPos(), agent.agentId());
+				}
 				if (v != null) {
 					refused(agent, v, "use");
 					return InteractionResult.FAIL;

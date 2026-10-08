@@ -164,16 +164,17 @@ public abstract class SkillJob implements Job {
 		JsonObject p = new JsonObject();
 		p.add("pos", pos(v.pos()));
 		p.addProperty("what", v.what().wire);
-		p.addProperty("owner", v.owner());
-		p.addProperty("block", v.block());
+		// Clipped to the protocol's bounds (a hand-edited zones.json can hold long names).
+		p.addProperty("owner", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.owner(), 48));
+		p.addProperty("block", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.block(), 128));
 		if (v.zone() != null) {
-			p.addProperty("zone", v.zone());
+			p.addProperty("zone", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.zone(), 48));
 		}
 		p.addProperty("count", positions.size());
 		if (token != null) {
 			p.addProperty("consentId", token);
 		}
-		p.addProperty("hint", v.hint());
+		p.addProperty("hint", dev.minevibe.bridge.protocol.ProtocolCodec.clip(v.hint(), 400));
 		this.result.add("protected", p);
 		String more = positions.size() > 1 ? ", and " + (positions.size() - 1) + " more" : "";
 		String where = v.block().replace("minecraft:", "") + " at " + v.pos().getX() + " " + v.pos().getY() + " " + v.pos().getZ();
@@ -191,8 +192,8 @@ public abstract class SkillJob implements Job {
 		final AgentPlayer agent, final String what, final int radius, final java.util.List<dev.minevibe.agent.perception.Sources.Candidate> candidates
 	) {
 		JsonObject d = new JsonObject();
-		d.addProperty("what", what);
-		d.addProperty("radius", radius);
+		d.addProperty("what", dev.minevibe.bridge.protocol.ProtocolCodec.clip(what, 160));
+		d.addProperty("radius", Math.max(1, Math.min(64, radius)));
 		JsonArray arr = new JsonArray();
 		for (dev.minevibe.agent.perception.Sources.Candidate c : candidates) {
 			arr.add(c.toJson());
@@ -224,6 +225,11 @@ public abstract class SkillJob implements Job {
 
 	public @Nullable String failureCode() {
 		return this.failureCode;
+	}
+
+	/** The message of the failure (empty when there is none). */
+	public String failureMessage() {
+		return this.failureMessage;
 	}
 
 	@Override

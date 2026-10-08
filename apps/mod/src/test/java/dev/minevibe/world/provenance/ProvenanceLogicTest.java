@@ -18,7 +18,13 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock;
+import net.minecraft.world.level.block.LadderBlock;
+import net.minecraft.world.level.block.LanternBlock;
+import net.minecraft.world.level.block.WallTorchBlock;
+import net.minecraft.world.level.block.state.properties.AttachFace;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -153,5 +159,39 @@ class ProvenanceLogicTest {
 		assertEquals("That's part of Steve's build — ask Steve before changing it.", built.hint());
 		assertTrue(built.message().endsWith("(oak_planks at 1 2 3)"), built.message());
 		assertEquals("player-built", Protection.What.PLAYER_BUILT.wire);
+	}
+
+	@Test
+	void verdictsExplainWhyANaturalBlockIsProtected() {
+		Protection.Verdict holds = new Protection.Verdict(new BlockPos(1, 2, 3), Protection.What.PLAYER_BUILT, "Steve", "minecraft:stone", null,
+			"That holds up %s (ladder at 2 2 3)");
+		assertEquals("That holds up part of Steve's build (ladder at 2 2 3) — ask Steve before changing it.", holds.hint());
+		assertTrue(holds.message().endsWith("(stone at 1 2 3)"), holds.message());
+		Protection.Verdict fire = new Protection.Verdict(new BlockPos(1, 2, 3), Protection.What.BASE, "Steve", "minecraft:oak_planks", "Base")
+			.withLead("Fire or lava there could reach %s");
+		assertEquals("Fire or lava there could reach part of Steve's base — ask Steve before changing it.", fire.hint());
+	}
+
+	/** What a block needs from the block next to it: support from below, a wall to hang on, a ceiling to hang from. */
+	@Test
+	void dependentsKnowWhatHoldsThemUp() {
+		assertTrue(Protection.dependsOn(Blocks.TORCH.defaultBlockState(), Direction.UP), "a torch stands on the block below");
+		assertFalse(Protection.dependsOn(Blocks.TORCH.defaultBlockState(), Direction.NORTH));
+		assertTrue(Protection.dependsOn(Blocks.WALL_TORCH.defaultBlockState().setValue(WallTorchBlock.FACING, Direction.EAST), Direction.EAST),
+			"a wall torch facing east hangs on the block to its west");
+		assertFalse(Protection.dependsOn(Blocks.WALL_TORCH.defaultBlockState().setValue(WallTorchBlock.FACING, Direction.EAST), Direction.WEST));
+		assertFalse(Protection.dependsOn(Blocks.WALL_TORCH.defaultBlockState().setValue(WallTorchBlock.FACING, Direction.EAST), Direction.UP),
+			"a wall torch does not stand on anything");
+		assertTrue(Protection.dependsOn(Blocks.LADDER.defaultBlockState().setValue(LadderBlock.FACING, Direction.SOUTH), Direction.SOUTH));
+		assertTrue(Protection.dependsOn(Blocks.OAK_DOOR.defaultBlockState(), Direction.UP), "doors stand on the ground");
+		assertTrue(Protection.dependsOn(Blocks.SAND.defaultBlockState(), Direction.UP), "sand falls without support");
+		assertTrue(Protection.dependsOn(Blocks.RAIL.defaultBlockState(), Direction.UP));
+		assertTrue(Protection.dependsOn(Blocks.MOSS_CARPET.defaultBlockState(), Direction.UP));
+		assertTrue(Protection.dependsOn(Blocks.LANTERN.defaultBlockState().setValue(LanternBlock.HANGING, true), Direction.DOWN), "a hanging lantern");
+		assertFalse(Protection.dependsOn(Blocks.LANTERN.defaultBlockState().setValue(LanternBlock.HANGING, true), Direction.UP));
+		assertTrue(Protection.dependsOn(Blocks.LEVER.defaultBlockState().setValue(FaceAttachedHorizontalDirectionalBlock.FACE, AttachFace.CEILING), Direction.DOWN));
+		assertFalse(Protection.dependsOn(Blocks.STONE.defaultBlockState(), Direction.UP), "stone needs nothing");
+		assertFalse(Protection.dependsOn(Blocks.OAK_FENCE.defaultBlockState(), Direction.UP), "fences stand on their own");
+		assertFalse(Protection.dependsOn(Blocks.OAK_PLANKS.defaultBlockState(), Direction.DOWN));
 	}
 }

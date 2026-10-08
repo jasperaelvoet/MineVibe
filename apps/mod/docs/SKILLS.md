@@ -52,16 +52,38 @@ What the agents know about the world around them, and what they must leave alone
   placed are theirs. Jobs check first and fail with `PROTECTED` (the teaching line, the owner, a consent offer):
   `mine`, `collect`, `dig` (the whole box first), `place` over a protected plant, `build`, `farm` (till, harvest,
   bone meal), `use_item` (tools that till or strip, buckets, fire), `attack` on item frames, paintings and armor
-  stands, `container{take}` and `menu_click` in a chest the player placed (the office's own chest is shared).
+  stands, `container{take}` and `menu_click` in a chest the player placed (either half of a double chest; the
+  office's own chest is shared).
   `ProtectionGuard` is the backstop for any code driving an agent's hands: `PlayerBlockBreakEvents.BEFORE`,
-  `UseBlockCallback` and `UseItemCallback` refuse protected changes for agents and remember the refusal.
+  `UseBlockCallback` and `UseItemCallback` refuse protected changes for agents and remember the refusal (`use_block`
+  and `use_item` report it as `PROTECTED`).
+  - A **natural block counts as the player's** when breaking it would harm their build: it holds up a protected
+    block (the ground under their torch, door, rail, carpet, sand or wall, the stone behind their ladder or wall
+    torch, the ceiling their lantern hangs from), or it is the floor under their roof (the first solid block above
+    it, at most 6 up, is theirs). Only that one layer: the ground below it is free.
+  - **Fire and lava** (flint and steel, fire charges, lava buckets) are refused within 5 blocks of a protected block,
+    whatever they are aimed at (TNT next to a house included), and so is placing TNT there.
+  - **Right-clicks** that take from or retune a protected block are refused (`use_block`, `use_item` and the guard):
+    flower pots, lecterns, chiseled bookshelves, shelves, jukeboxes, decorated pots, cakes, candles, repeaters,
+    comparators, daylight detectors, note blocks, respawn anchors. Doors, levers, chests and workstations work as
+    usual. `menu_click` knows whose container a menu shows however it was opened (`AgentControls#useBlock` records
+    every menu a right-click opens).
+  - **`build`** refuses walls, roofs, clearing and water inside a zone even where they only fill air (a `wall_ring`
+    in the office); torches are fine. A `farm_plot`'s field that holds protected soil fails the build with the
+    field's `PROTECTED`.
+  - **Pets**: `hunt` and `attack` never target tamed or name-tagged animals or golems a player built (`attack` on
+    one: `BAD_TARGET`; by kind it takes the nearest one that is nobody's).
 - **Consent** (`Consents`). A `PROTECTED` failure offers a 32-hex token bound to the agent and the box of the
   protected blocks, valid 10 minutes, single use. `skill.run{args.allow_protected:true, consent:{token}}` redeems it
   (else `BAD_ARGS`) and the job runs with a grant `Protection` honours inside that box until the job ends.
   `allow_protected` alone does nothing; Node attaches `consent` only after the player agreed.
 - **Natural resources** (`agent.perception`). Tags leave out building variants (`Sources.naturalTag`: stripped logs,
-  wood, hyphae, planks). Requests for logs work on natural trees (`Trees`: log clusters touching non-persistent
-  leaves, nobody's blocks): `Miner` picks the nearest tree the agent can walk to (`Reach`: one A* per tree), fells it
+  wood, hyphae, planks); `collect` of planks, stripped logs or wood finds nothing in nature (`NO_NATURAL_SOURCE`:
+  craft them). Requests for logs work on natural trees (`Trees`: log clusters touching non-persistent leaves, nobody's
+  blocks, and no building block: planks, glass, doors, trapdoors, stairs, slabs, fences, gates, walls, wool, beds,
+  bricks, cobblestone, chests, barrels, crafting tables, furnaces, bookshelves. A log cabin is never a tree, even in a
+  world from before provenance and even when a real tree grows against it; the whole cluster is searched once):
+  `Miner` picks the nearest tree the agent can walk to (`Reach`: one A* per tree), fells it
   bottom-up (stepping into the cut trunk, pillaring at most 2 blocks with dirt or cobblestone, clearing the pillar),
   picks up the logs at the stump and replants on request. Nothing natural in reach: `NO_NATURAL_SOURCE` with the
   candidates it saw (unreachable, too far, protected, not a tree); it never substitutes another block.

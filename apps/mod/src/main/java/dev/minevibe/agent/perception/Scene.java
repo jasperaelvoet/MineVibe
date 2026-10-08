@@ -437,7 +437,7 @@ public final class Scene {
 			BlockPos first = crops.getFirst();
 			String kind = Refs.blockId(level.getBlockState(first).getBlock()).replace("minecraft:", "");
 			parts.add("crops: " + kind + (crops.size() > 1 ? " x" + crops.size() : "") + " (" + ripe + " ripe) " + Compass.where(here, first)
-				+ (Protection.isProtected(level, first) ? " in the Base" : ""));
+				+ (Protection.isProtected(level, first) ? " (" + player(level) + "'s, protected)" : ""));
 		}
 		if (full) {
 			List<Entity> animals = level.getEntities(agent, agent.getBoundingBox().inflate(radius), e -> e.isAlive() && e instanceof Animal);
@@ -453,6 +453,10 @@ public final class Scene {
 			}
 		}
 		return parts.isEmpty() ? "" : "Resources: " + String.join("; ", parts) + ".";
+	}
+
+	private static String player(final ServerLevel level) {
+		return Protection.playerName(level.getServer());
 	}
 
 	private static String ground(final AgentPlayer agent, final int radius, final boolean full) {

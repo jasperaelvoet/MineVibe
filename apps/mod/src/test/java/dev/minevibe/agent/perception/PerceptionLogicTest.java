@@ -13,6 +13,7 @@ import java.util.function.Predicate;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import org.junit.jupiter.api.BeforeAll;
@@ -98,5 +99,21 @@ class PerceptionLogicTest {
 		nns.add("candidates", arr);
 		nns.addProperty("hint", "Don't take anything else instead.");
 		assertEquals(List.of(), Skills.NO_NATURAL_SOURCE.validate(nns));
+	}
+
+	/** What a log may never touch to count as a tree (a cabin's planks, windows, doors), and what trees do touch. */
+	@Test
+	void buildingBlocksAreNotWhatTreesGrowAgainst() {
+		for (net.minecraft.world.level.block.Block b : List.of(Blocks.OAK_PLANKS, Blocks.STRIPPED_OAK_LOG, Blocks.GLASS, Blocks.GLASS_PANE, Blocks.STAINED_GLASS.pick(DyeColor.WHITE),
+			Blocks.OAK_DOOR, Blocks.SPRUCE_TRAPDOOR, Blocks.OAK_STAIRS, Blocks.COBBLESTONE_SLAB, Blocks.OAK_FENCE, Blocks.OAK_FENCE_GATE, Blocks.COBBLESTONE_WALL,
+			Blocks.COBBLESTONE, Blocks.STONE_BRICKS, Blocks.BRICKS, Blocks.WOOL.pick(DyeColor.WHITE), Blocks.CARPET.pick(DyeColor.RED), Blocks.BED.pick(DyeColor.RED), Blocks.CHEST, Blocks.BARREL,
+			Blocks.CRAFTING_TABLE, Blocks.FURNACE, Blocks.BOOKSHELF, Blocks.CONCRETE.pick(DyeColor.WHITE))) {
+			assertTrue(Trees.isBuildingBlock(b.defaultBlockState()), b + " is a building block");
+		}
+		for (net.minecraft.world.level.block.Block b : List.of(Blocks.OAK_LOG, Blocks.OAK_LEAVES, Blocks.GRASS_BLOCK, Blocks.DIRT, Blocks.PODZOL, Blocks.VINE,
+			Blocks.MOSS_CARPET, Blocks.PALE_MOSS_CARPET, Blocks.BEE_NEST, Blocks.COCOA, Blocks.MANGROVE_ROOTS, Blocks.MUD, Blocks.SNOW, Blocks.MOSSY_COBBLESTONE,
+			Blocks.SHROOMLIGHT, Blocks.CREAKING_HEART, Blocks.TERRACOTTA, Blocks.SHORT_GRASS, Blocks.STONE)) {
+			assertFalse(Trees.isBuildingBlock(b.defaultBlockState()), b + " grows or lies next to trees");
+		}
 	}
 }

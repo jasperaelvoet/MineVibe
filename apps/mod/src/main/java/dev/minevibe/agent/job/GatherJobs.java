@@ -280,7 +280,8 @@ public final class GatherJobs {
 		List<Predicate<BlockState>> out = new ArrayList<>();
 		Refs.BlockMatcher self = item.asBlock();
 		if (self != null) {
-			out.add(item.tag() != null ? Sources.naturalTag(self) : self);
+			// Planks, stripped logs and wood are made, not found: collecting them would take them out of buildings (W1).
+			out.add(Sources.naturalTag(self));
 		}
 		if (item.item() != null) {
 			Set<Block> extra = DROPS.getOrDefault(item.item(), Set.of());
@@ -381,7 +382,8 @@ public final class GatherJobs {
 					this.target = null;
 					return Status.RUNNING;
 				}
-				Entity e = Refs.nearestOfType(agent, this.type, this.radius, x -> x instanceof LivingEntity && !(x instanceof Player) && !Protection.isDecoration(x));
+				Entity e = Refs.nearestOfType(agent, this.type, this.radius,
+					x -> x instanceof LivingEntity && !(x instanceof Player) && !Protection.isDecoration(x) && !Protection.isPetOrNamed(x));
 				if (e == null) {
 					this.finish(agent);
 					return this.fail("NOT_FOUND", "killed " + this.killed + " of " + this.count + "; no " + this.ref + " within " + this.radius + " blocks");

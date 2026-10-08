@@ -327,9 +327,12 @@ public final class Observations {
 		if (notTree.contains(p) || !Trees.isNaturalLogBlock(s)) {
 			return false;
 		}
-		Trees.Tree t = Trees.treeAt(level, p);
+		Trees.Cluster c = Trees.clusterAt(level, p);
+		Trees.Tree t = c.tree();
 		if (t == null) {
+			// The whole cluster (a log cabin) at once, not once per log.
 			notTree.add(p.immutable());
+			notTree.addAll(c.logs());
 			return false;
 		}
 		for (BlockPos log : t.logs()) {

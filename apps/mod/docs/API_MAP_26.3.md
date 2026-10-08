@@ -781,6 +781,16 @@ Verified by the W1 GameTests (`ProtectionGameTests`) and by reading the 26.3 sou
   `LeavesBlock.DISTANCE` 7 (the default state) decays on the next random tick unless a scheduled tick recomputes it.
 - GameTest selection: `-Dfabric-api.gametest.filter=<selector>` takes a vanilla resource selector
   (`minevibe-gametest:protection_game_tests_*`); `JAVA_TOOL_OPTIONS` passes it through `./gradlew runGameTest`.
+- **Dyed blocks are collections**: there is no `Blocks.WHITE_WOOL` / `RED_CARPET` / `RED_BED` / `WHITE_CONCRETE` /
+  `WHITE_STAINED_GLASS`; `Blocks.WOOL`, `CARPET`, `BED`, `CONCRETE`, `STAINED_GLASS` are `ColorCollection<Block>`
+  (`Blocks.WOOL.pick(DyeColor.WHITE)`). Carpets are `WoolCarpetBlock extends CarpetBlock`; `MOSS_CARPET` is a plain
+  `CarpetBlock`. Glass and tinted glass are `TransparentBlock`, panes `IronBarsBlock`. Wall-attached blocks
+  (`WallTorchBlock`, `RedstoneWallTorchBlock`, `LadderBlock`, `WallSignBlock`, `WallBannerBlock`, `TripWireHookBlock`)
+  carry `HORIZONTAL_FACING` pointing away from the block they hang on; buttons and levers say where with
+  `FaceAttachedHorizontalDirectionalBlock.FACE` (`AttachFace` FLOOR / WALL / CEILING).
+- `FireChargeItem` has no `use` override (only `useOn` and the dispenser's `ProjectileItem`): a player cannot throw
+  one, so fire charges only light the clicked face. `OwnableEntity#getOwnerReference()` is non-null for tamed animals
+  and horses.
 
 ## 8. Not found / open
 - `Minecraft#setScreen` - NOT FOUND (use `Gui#setScreen`).

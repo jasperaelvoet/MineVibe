@@ -607,7 +607,7 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 | `INTERRUPTED` | Cancelled: replaced by another job, `skill.cancel`, or the agent died or left (`msg` says which). Status `cancelled`. |
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `PC_DOWN`, `NO_SEAT` | The end of an `agent.seat` job (section 7.5) |
 | `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
-| `PROTECTED` | W1: the job would change a player-built block or one in a protected zone (the Base), knock down a decoration, or take from a chest the player placed. Nothing was changed. `result.protected` is a `ProtectedDetail` (`pos`, `what`: `player-built` or `base`, `owner`, `block`, `zone?`, `count`, `consentId?`, `hint`); `msg` starts with the teaching line ("That's part of Steve's base — ask Steve before changing it.") |
+| `PROTECTED` | W1: the job would change a player-built block or one in a protected zone (the Base), a natural block that holds one up or lies under its roof, light fire or pour lava within 5 blocks of one, build inside a zone, knock down a decoration, take from or retune a player's block (flower pot, lectern, repeater...), or take from a chest the player placed. Nothing was changed. `result.protected` is a `ProtectedDetail` (`pos`, `what`: `player-built` or `base`, `owner`, `block`, `zone?`, `count`, `consentId?`, `hint`); `msg` starts with the teaching line ("That's part of Steve's base — ask Steve before changing it.") |
 | `NO_NATURAL_SOURCE` | W1: `mine` / `collect` found nothing natural and reachable within the radius. It never substitutes another block. `result.noNaturalSource` is a `NoNaturalSourceDetail` (`what`, `radius`, `candidates`: up to 8 `{ pos, block, distance, dir, why: unreachable\|too_far\|protected\|not_natural, owner? }`, `hint`); partial counts stay in `result` |
 | `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
 
@@ -623,10 +623,11 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
 - **`smelt.item`** is either what goes in (`raw_iron`) or what should come out (`iron_ingot`).
 - **Natural sources (W1).** `mine`, `collect` and `find{filter:natural}` resolve a block or tag to natural sources:
-  - A `#tag` leaves out building variants: stripped logs, wood, hyphae and planks. Named outright
-    (`stripped_spruce_log`) they count, but stay protected.
+  - A `#tag` leaves out building variants: stripped logs, wood, hyphae and planks. Named outright to `mine`
+    (`stripped_spruce_log`) they count, but stay protected; `collect` of one finds nothing in nature (craft it).
   - Logs come from **natural trees**: a cluster of log blocks touching leaves with `persistent=false` that nobody
-    placed. Logs in buildings are never trees. A tree is felled whole, bottom-up: the nearest one the agent can walk
+    placed and that touches no building block (planks, glass, doors, stairs, slabs, fences, walls, wool, beds,
+    bricks, cobblestone, chests...). Logs in buildings are never trees, even in a world from before provenance. A tree is felled whole, bottom-up: the nearest one the agent can walk
     to (a quick A* per tree), stepping into the cut trunk or pillaring up at most 2 blocks (dirt or cobblestone) for
     high logs and clearing the pillar afterwards; drops are picked up at the stump, and `collect{replant:true}`
     plants a sapling of the same kind there. `result.trees` counts felled trees, `logsLeftHigh` logs left out of
@@ -643,6 +644,16 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
     with tools that till, strip or burn, buckets and fire charges, `attack` on item frames, paintings and armor
     stands, and `container{take}` / `menu_click` on a chest the player placed (the office's own chest is the crew's
     shared supply). Vanilla breaking and item use are refused for agents too, whatever drives them.
+  - A natural block counts as protected when it holds up a protected one (the ground under the player's torch, door
+    or wall, the stone behind their ladder) or is the floor under their roof (the first solid block above, at most 6
+    up, is theirs); the hint says so ("That holds up part of Steve's build (ladder at 3 64 5) — …"). Fire and lava
+    are refused within 5 blocks of a protected block ("Fire or lava there could reach part of Steve's build — …"),
+    and so is placing TNT there.
+    `use_block` / `use_item` refuse right-clicks that take from or retune a protected flower pot, lectern, chiseled
+    bookshelf, shelf, jukebox, decorated pot, cake, candle, repeater, comparator, daylight detector, note block or
+    respawn anchor. `build` refuses walls, roofs and water inside a zone even into air ("Building there changes part
+    of Steve's base — …"); torches are allowed. `hunt` and `attack` never target tamed or name-tagged animals or
+    golems a player built (`attack` on one: `BAD_TARGET`).
   - `args.allow_protected: true` (on those skills) counts only with a valid top-level `consent: { token }` on the
     same `skill.run`. The token is the `consentId` of an earlier `PROTECTED` failure of the same agent (32 hex, valid
     10 minutes, single use); it lets that one job change the blocks in the box of the protected blocks it was offered

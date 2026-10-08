@@ -128,7 +128,10 @@ public final class Provenance {
 	/** {@code LevelChunkMixin}: the block at {@code pos} of a server chunk changed from {@code old} to {@code now}. */
 	public static void onBlockChanged(final LevelChunk chunk, final BlockPos pos, final BlockState old, final BlockState now) {
 		if (now.isAir() || now.getBlock() instanceof LiquidBlock) {
-			unmark(chunk, pos);
+			// Air and fluids are never marked: flowing water and lava (most of these calls) skip the lookup.
+			if (!old.isAir() && !(old.getBlock() instanceof LiquidBlock)) {
+				unmark(chunk, pos);
+			}
 			return;
 		}
 		Owner owner = placing;

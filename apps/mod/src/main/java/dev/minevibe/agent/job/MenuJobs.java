@@ -104,9 +104,10 @@ public final class MenuJobs {
 				return this.fail("NOT_FOUND", "no container at " + this.pos.toShortString());
 			}
 			if ("take".equals(this.action)) {
-				// W1: a chest the player placed is theirs; the office's own chest is the crew's shared supply.
-				dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.check(agent.level(), this.pos, agent.agentId());
-				if (v != null && v.what() == dev.minevibe.world.provenance.Protection.What.PLAYER_BUILT) {
+				// W1: a chest the player placed (either half of a double chest) is theirs; the office's own chest is the
+				// crew's shared supply.
+				dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.checkContainer(agent.level(), this.pos, agent.agentId());
+				if (v != null) {
 					return this.refuseProtected(agent, v, List.of(this.pos));
 				}
 			}
@@ -251,7 +252,7 @@ public final class MenuJobs {
 
 		private Status opened(final AgentPlayer agent) {
 			if (this.pos != null) {
-				OPENED_AT.put(agent.agentId(), new OpenedAt(agent.containerMenu, this.pos.immutable()));
+				noteOpened(agent, this.pos);
 			}
 			JsonObject snapshot = MenuView.snapshot(agent);
 			for (String key : snapshot.keySet()) {
@@ -292,8 +293,9 @@ public final class MenuJobs {
 		}
 
 		/**
-		 * W1: in the menu of a chest the player placed (opened with {@code open_menu{pos}}), clicks on the chest's own
-		 * slots and "collect all" would take the player's things: refused. Putting things in stays allowed.
+		 * W1: in the menu of a chest the player placed (opened by any right-click of the agent's: {@code open_menu},
+		 * {@code use_block}...), clicks on the chest's own slots and "collect all" would take the player's things:
+		 * refused. Putting things in stays allowed.
 		 */
 		private @Nullable Status guardPlayerContainer(final AgentPlayer agent) {
 			OpenedAt at = OPENED_AT.get(agent.agentId());
@@ -307,19 +309,29 @@ public final class MenuJobs {
 			if (!takes) {
 				return null;
 			}
-			dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.check(agent.level(), at.pos(), agent.agentId());
-			if (v != null && v.what() == dev.minevibe.world.provenance.Protection.What.PLAYER_BUILT) {
+			dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.checkContainer(agent.level(), at.pos(), agent.agentId());
+			if (v != null) {
 				return this.refuseProtected(agent, v, List.of(at.pos()));
 			}
 			return null;
 		}
 	}
 
-	/** The menu an agent opened with {@code open_menu{pos}}, and where (W1 container guard). */
+	/** The menu an agent opened by right-clicking a block, and where (W1 container guard). */
 	record OpenedAt(AbstractContainerMenu menu, BlockPos pos) {
 	}
 
 	private static final Map<String, OpenedAt> OPENED_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+	/**
+	 * Remembers that the menu {@code agent} has open now came from the block at {@code pos} ({@code AgentControls#useBlock}
+	 * calls it for every right-click that opened a menu), so {@code menu_click} can tell whose container it is.
+	 */
+	public static void noteOpened(final AgentPlayer agent, final BlockPos pos) {
+		if (agent.containerMenu != agent.inventoryMenu) {
+			OPENED_AT.put(agent.agentId(), new OpenedAt(agent.containerMenu, pos.immutable()));
+		}
+	}
 
 	/** {@code menu_close{}}: close the open menu; items left in crafting grids go back to the inventory. */
 	public static final class MenuClose extends SkillJob {

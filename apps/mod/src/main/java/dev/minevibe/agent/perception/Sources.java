@@ -34,7 +34,7 @@ public final class Sources {
 			o.addProperty("dir", this.dir);
 			o.addProperty("why", this.why);
 			if (this.owner != null) {
-				o.addProperty("owner", this.owner);
+				o.addProperty("owner", dev.minevibe.bridge.protocol.ProtocolCodec.clip(this.owner, 48));
 			}
 			return o;
 		}

@@ -81,6 +81,15 @@ public final class WorldJobs {
 					return this.refuseProtected(agent, v, List.of(this.pos));
 				}
 			}
+			if (this.ticks == 1) {
+				// W1: TNT next to the player's build.
+				int slot = Inv.find(agent, this.item);
+				ItemStack stack = slot < 0 ? ItemStack.EMPTY : agent.getInventory().getItem(slot);
+				Protection.Verdict v = Protection.checkPlacement(agent.level(), this.pos, stack, agent.agentId());
+				if (v != null) {
+					return this.refuseProtected(agent, v, List.of(v.pos()));
+				}
+			}
 			Walk.State s = this.walk.toBlock(agent, this.pos);
 			if (s == Walk.State.MOVING) {
 				return Status.RUNNING;
@@ -144,6 +153,18 @@ public final class WorldJobs {
 			if (state.isAir()) {
 				return this.fail("NOT_FOUND", "nothing at " + this.pos.toShortString());
 			}
+			if (this.ticks == 1) {
+				// W1: a right-click that would change or take from a protected block (the held tool's effect, the flower
+				// in the player's pot, their repeater's delay) is asked first; doors, levers and chests open as usual.
+				Protection.Verdict refusal = Protection.checkUse(agent.level(), this.pos, faceToward(agent, this.pos), agent.getMainHandItem(), agent.agentId());
+				if (refusal == null) {
+					refusal = Protection.checkInteract(agent.level(), this.pos, agent.agentId());
+				}
+				if (refusal != null) {
+					this.put("block", Refs.blockId(state.getBlock()));
+					return this.refuseProtected(agent, refusal, List.of(refusal.pos()));
+				}
+			}
 			Walk.State s = this.walk.toBlock(agent, this.pos);
 			if (s == Walk.State.MOVING) {
 				return Status.RUNNING;
@@ -152,7 +173,14 @@ public final class WorldJobs {
 				return this.fail("UNREACHABLE", "cannot get within reach of " + this.pos.toShortString());
 			}
 			agent.controls().lookAt(Vec3.atCenterOf(this.pos));
+			dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
 			InteractionResult r = agent.controls().useBlock(this.pos, faceToward(agent, this.pos));
+			Protection.Verdict guarded = dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
+			if (guarded != null) {
+				// The backstop refused it (the face the agent clicks from changed after walking).
+				this.put("block", Refs.blockId(state.getBlock()));
+				return this.refuseProtected(agent, guarded, List.of(guarded.pos()));
+			}
 			if (r == InteractionResult.PASS && ++this.tries < 10) {
 				return Status.RUNNING;
 			}
@@ -204,10 +232,12 @@ public final class WorldJobs {
 				return this.fail("NO_ITEM", "no " + this.item.ref() + " in the inventory");
 			}
 			String held = Refs.itemId(agent.getMainHandItem());
-			Protection.Verdict refusal = this.protectedTarget(agent);
-			if (refusal != null) {
-				this.put("item", held);
-				return this.refuseProtected(agent, refusal, List.of(refusal.pos()));
+			if (this.ticks == 1) {
+				Protection.Verdict refusal = this.protectedTarget(agent);
+				if (refusal != null) {
+					this.put("item", held);
+					return this.refuseProtected(agent, refusal, List.of(refusal.pos()));
+				}
 			}
 			if (this.pos != null) {
 				Walk.State s = this.walk.toBlock(agent, this.pos);
@@ -218,7 +248,13 @@ public final class WorldJobs {
 					return this.fail("UNREACHABLE", "cannot get within reach of " + this.pos.toShortString());
 				}
 				agent.controls().lookAt(Vec3.atCenterOf(this.pos));
+				dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
 				InteractionResult r = agent.controls().useBlock(this.pos, faceToward(agent, this.pos));
+				Protection.Verdict guarded = dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
+				if (guarded != null) {
+					this.put("item", held);
+					return this.refuseProtected(agent, guarded, List.of(guarded.pos()));
+				}
 				if (r == InteractionResult.PASS && ++this.tries < 10) {
 					return Status.RUNNING;
 				}
@@ -250,7 +286,13 @@ public final class WorldJobs {
 			}
 			// In the air: hold "use" until the item is used up (potion, bow charge...), at most 5 s.
 			if (!this.using) {
+				dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
 				this.using = agent.controls().useItem(InteractionHand.MAIN_HAND);
+				Protection.Verdict guarded = dev.minevibe.agent.skill.ProtectionGuard.takeRefusal(agent.agentId());
+				if (guarded != null) {
+					this.put("item", held);
+					return this.refuseProtected(agent, guarded, List.of(guarded.pos()));
+				}
 				if (!this.using) {
 					if (++this.tries < 10) {
 						return Status.RUNNING;
@@ -278,7 +320,8 @@ public final class WorldJobs {
 			ServerLevel level = agent.level();
 			ItemStack stack = agent.getMainHandItem();
 			if (this.pos != null) {
-				return Protection.checkUse(level, this.pos, faceToward(agent, this.pos), stack, agent.agentId());
+				Protection.Verdict v = Protection.checkUse(level, this.pos, faceToward(agent, this.pos), stack, agent.agentId());
+				return v != null ? v : Protection.checkInteract(level, this.pos, agent.agentId());
 			}
 			if (this.entityRef != null) {
 				Entity e = this.entity != null ? this.entity : Refs.entity(agent, this.entityRef, 32.0);
@@ -329,6 +372,19 @@ public final class WorldJobs {
 				if (deco != null) {
 					// W1: item frames, paintings and armor stands are the player's decoration.
 					return this.refuseProtected(agent, deco, List.of(e.blockPosition()));
+				}
+				if (Protection.isPetOrNamed(e) && Refs.parseUuid(this.ref) == null) {
+					// Asked for a kind ("minecraft:cow"): the nearest one that is nobody's pet.
+					Entity other = Refs.nearestOfType(agent, e.getType(), 32.0, x -> !Protection.isPetOrNamed(x) && !Protection.isDecoration(x));
+					if (other != null) {
+						e = other;
+					}
+				}
+				if (Protection.isPetOrNamed(e)) {
+					// W1: tamed animals, name-tagged ones and golems a player built are somebody's; no consent makes hurting
+					// them right.
+					return this.fail("BAD_TARGET", this.ref + " is somebody's (a pet, a named animal or a golem a player built): agents never hurt those. Ask "
+						+ Protection.playerName(agent.level().getServer()) + " if something else should be hunted.");
 				}
 				if (!(e instanceof LivingEntity living)) {
 					return this.fail("BAD_TARGET", this.ref + " cannot be attacked");

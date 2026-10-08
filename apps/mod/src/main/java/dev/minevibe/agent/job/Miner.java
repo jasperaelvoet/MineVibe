@@ -428,17 +428,28 @@ public final class Miner {
 			if (covered.contains(p)) {
 				continue;
 			}
-			Trees.Tree t = Trees.treeAt(level, p);
+			// The whole cluster at once: a log cabin is searched once, not once per log.
+			Trees.Cluster c = Trees.clusterAt(level, p);
+			covered.add(p);
+			covered.addAll(c.logs());
+			Trees.Tree t = c.tree();
 			if (t == null) {
-				covered.add(p);
-				if (Protection.isProtected(level, p)) {
-					this.noteProtected(level, p);
+				BlockPos prot = null;
+				if ("protected".equals(c.notTree()) || "placed".equals(c.notTree())) {
+					for (BlockPos log : c.logs()) {
+						if (Protection.isProtected(level, log)) {
+							prot = log;
+							break;
+						}
+					}
+				}
+				if (prot != null) {
+					this.noteProtected(level, prot);
 				} else {
 					this.reject(agent, p, "not_natural", null);
 				}
 				continue;
 			}
-			covered.addAll(t.logs());
 			if (!this.doneTrees.contains(t.base())) {
 				trees.add(t);
 			}
