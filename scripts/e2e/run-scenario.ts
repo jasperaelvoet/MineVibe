@@ -235,14 +235,21 @@ function sampleState(raw: DebugState): void {
   }
 }
 
+/** The game window of `pid`: its CGWindow number and whether macOS shows it (a hidden one draws at most 1 fps). */
+function gameWindow(pid: number): { id: string; onscreen: boolean } | null {
+  const out = spawnSync('osascript', ['-l', 'JavaScript', join(here, 'window-id.js'), String(pid)], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  }).stdout?.trim();
+  const [id, state] = (out ?? '').split(' ');
+  return id ? { id, onscreen: state === 'onscreen' } : null;
+}
+
 function screenshot(name: string): string | null {
   // The game window only (never the desktop): its CGWindow number by the JVM's pid.
   const pid = lastState?.pid;
   if (!pid) return null;
-  const id = spawnSync('osascript', ['-l', 'JavaScript', join(here, 'window-id.js'), String(pid)], {
-    encoding: 'utf8',
-    timeout: 15_000,
-  }).stdout?.trim();
+  const id = gameWindow(pid)?.id;
   if (!id) return null;
   const file = join(outDir, `${name}.png`);
   const r = spawnSync('screencapture', ['-x', '-o', '-l', id, '-t', 'png', file], { timeout: 15_000 });
@@ -370,6 +377,8 @@ function instrument(rt: Runtime): void {
 // ---------------------------------------------------------------------------------------------------------------
 
 let rt: Runtime | null = null;
+/** Ctrl+C on the harness: the session is stopping (as `npm run play` on Ctrl+C); step 9 still checks the teardown. */
+let stopRequested = false;
 /** Jobs the mod runs for the crew (skill.run replied `running`, no skill.result yet). */
 const runningJobs = new Set<string>();
 /** Plan cards the harness approved as the player would (Alt+1 on the plan card). */
@@ -387,7 +396,7 @@ async function waitFor<T>(
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown = null;
   while (Date.now() < deadline) {
-    if (playExit) throw new Error(`the game session ended while waiting for ${label}`);
+    if (playExit || stopRequested) throw new Error(`the game session ended while waiting for ${label}`);
     try {
       const v = await fn();
       if (v) return v as T;
@@ -469,6 +478,14 @@ function turnsSince(at: number, agentId?: string): TurnRec[] {
 }
 function toolsSince(at: number, agentId?: string): ToolRec[] {
   return tools.filter((t) => t.at >= at && (!agentId || t.agentId === agentId));
+}
+/** The agent's own transcript lines (`chat.append` kind agent) since `at`: the full text of what it said. */
+function linesSince(at: number, agentId: string): string[] {
+  return events
+    .filter((e) => e.dir === 'ev' && e.t === 'chat' && e.at >= at && e.p.agentId === agentId)
+    .map((e) => e.p.entry as Json | undefined)
+    .filter((entry) => entry?.kind === 'agent' && typeof entry.text === 'string')
+    .map((entry) => String(entry?.text));
 }
 function saysSince(at: number, agentId: string): string[] {
   return events
@@ -564,10 +581,17 @@ function needTurns(r: StepResult, n: number): boolean {
 let firstWorld: string | null = null;
 
 async function step1(r: StepResult): Promise<void> {
+  let lastWindowLog = 0;
   const ready = await waitFor(
     'world ready with an office',
     8 * 60_000,
     () => {
+      if (Date.now() - lastWindowLog > 30_000) {
+        lastWindowLog = Date.now();
+        const jvm = descendants(process.pid).find((p) => /java/.test(p.cmd));
+        const w = jvm ? gameWindow(jvm.pid) : null;
+        r.notes.push(`${rel()}: game window ${w ? (w.onscreen ? 'on screen' : 'hidden') : 'not open yet'}`);
+      }
       const e = events.find(
         (x) =>
           x.dir === 'in' &&
@@ -632,6 +656,9 @@ async function step1(r: StepResult): Promise<void> {
   });
   const runEv = events.find((e) => e.t === 'pc.status' && e.p.id === 'linux-1' && e.p.status === 'running');
   r.numbers.linux1RunningMs = runEv ? runEv.at - T0 : null;
+  const cleaned = cleanLeaked();
+  if (cleaned.length > 0)
+    r.notes.push(`harness: removed ${cleaned.length} leftovers of earlier runs from the dev engine`);
   check(r, running === true, `linux-1 status running (${pcs().status('linux-1').status})`);
 
   const frames = await waitFor(
@@ -756,7 +783,25 @@ async function step3(r: StepResult): Promise<void> {
     logs + planks / 4 + table >= 9,
     `about 10 oak logs collected (logs ${logs}, planks ${planks}, table ${table})`,
   );
-  check(r, table >= 1 || tableNearby, 'a crafting table made');
+  // The office already has a crafting table, so "nearby" proves nothing: a craft job for one must have finished.
+  const crafted = events.some(
+    (e) =>
+      e.at >= at &&
+      ((e.dir === 'reply' &&
+        e.t === 'skill.run' &&
+        (e.p.request as Json)?.skill === 'craft' &&
+        /crafting_table/.test(JSON.stringify((e.p.request as Json)?.args)) &&
+        (e.p.reply as Json)?.status === 'done') ||
+        (e.dir === 'in' &&
+          e.t === 'skill.result' &&
+          e.p.status === 'done' &&
+          /crafting_table/.test(JSON.stringify(e.p.result)))),
+  );
+  r.numbers.craftedTable = crafted;
+  r.numbers.otherLogs = inv
+    .filter((x) => /_log$/.test(x.item) && !/oak_log$/.test(x.item))
+    .map((x) => `${x.item} ${x.count}`);
+  check(r, table >= 1 || crafted, `a crafting table made (inventory ${table}, craft job done ${crafted})`);
   check(
     r,
     myTurns.length > 0 &&
@@ -923,7 +968,12 @@ async function step5(r: StepResult): Promise<void> {
   const bash = await waitFor(
     'pc bash',
     240_000,
-    () => toolsSince(at, boss.agentId).filter((t) => /bash/i.test(t.toolName) && t.behavior === 'allow'),
+    () => {
+      const found = toolsSince(at, boss.agentId).filter(
+        (t) => /bash/i.test(t.toolName) && t.behavior === 'allow',
+      );
+      return found.length > 0 ? found : null;
+    },
     500,
   ).catch(() => [] as ToolRec[]);
   r.numbers.bashTools = bash.map((t) => `${t.toolName}@${t.model}/${String(t.effort)}`);
@@ -960,8 +1010,9 @@ async function step5(r: StepResult): Promise<void> {
   ).catch(() => null);
   check(r, stand !== null, 'stood up');
   await waitSettled(boss.agentId, at, 240_000).catch((e: Error) => r.notes.push(e.message));
-  const replies = saysSince(at, boss.agentId).join(' | ');
-  r.numbers.reply = replies.slice(0, 300);
+  // The full reply is the transcript line (the bubble shows its first sentences).
+  const replies = [...linesSince(at, boss.agentId), ...saysSince(at, boss.agentId)].join(' | ');
+  r.numbers.reply = linesSince(at, boss.agentId).join(' | ').slice(0, 400);
   const kVer = kernel.out.split('-')[0] ?? '';
   check(r, kVer !== '' && replies.includes(kVer), `the kernel version reported (${kernel.out})`);
   const seatedTurns = turnsSince(at, boss.agentId);
@@ -1293,6 +1344,41 @@ async function scriptedSmoke(r: StepResult): Promise<void> {
   check(r, !('error' in cmd), 'debug.ui_request agent.cmd answered by Node');
   const trees = await find(boss.agentId, 'minecraft:oak_log', 48).catch((e: Error) => ({ error: e.message }));
   r.numbers.oakNearSpawn = JSON.stringify(trees).slice(0, 200);
+  // Seed scouting at zero tokens: can a body standing in the office actually mine oak here (the mod's own job)?
+  const job = (await runtime()
+    .bridge.request(
+      'skill.run',
+      {
+        jobId: `e2e-scout-${Date.now()}`,
+        agentId: boss.agentId,
+        skill: 'mine',
+        args: { block: 'oak_log', count: 2, radius: 32 },
+        waitMs: 60_000,
+        replace: true,
+      },
+      { timeoutMs: 75_000 },
+    )
+    .catch((e: Error) => ({ status: 'error', error: e.message }))) as Json;
+  r.numbers.oakMineJob = `${String(job.status)} ${JSON.stringify(job.error ?? job.result ?? '').slice(0, 160)}`;
+  // And the office stays whole: its stripped spruce corner posts are never a mining target.
+  const posts = (await find(boss.agentId, 'minecraft:stripped_spruce_log', 16)) as Json;
+  r.numbers.officePosts = ((posts.matches as Json[] | undefined) ?? []).length;
+  const grab = (await runtime()
+    .bridge.request(
+      'skill.run',
+      {
+        jobId: `e2e-posts-${Date.now()}`,
+        agentId: boss.agentId,
+        skill: 'mine',
+        args: { block: 'stripped_spruce_log', count: 1, radius: 16 },
+        waitMs: 30_000,
+        replace: true,
+      },
+      { timeoutMs: 45_000 },
+    )
+    .catch((e: Error) => ({ status: 'error', error: e.message }))) as Json;
+  r.numbers.officePostJob = `${String(grab.status)} ${JSON.stringify(grab.error ?? grab.result ?? '').slice(0, 120)}`;
+  check(r, grab.status === 'failed', 'the office corner posts are not minable by agents');
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1352,10 +1438,14 @@ async function step9(r: StepResult, home: string, playDone: Promise<number>): Pr
   }
   const jvm = lastState?.pid ?? javas[0]?.pid;
   const quitAt = Date.now();
-  if (!playExit && jvm) {
+  if (!playExit && jvm && !stopRequested) {
     // The player closes the game: the JVM quits on its own (saving), and Node notices and tears everything down.
     say(`closing the game (SIGTERM to the JVM ${jvm})`);
-    process.kill(jvm, 'SIGTERM');
+    try {
+      process.kill(jvm, 'SIGTERM');
+    } catch (err) {
+      r.notes.push(`the JVM was already gone: ${(err as Error).message}`);
+    }
   }
   const code = await Promise.race([playDone, sleep(150_000).then(() => null)]);
   r.numbers.playExitCode = code;
@@ -1422,7 +1512,48 @@ async function step9(r: StepResult, home: string, playDone: Promise<number>): Pr
       if (names.length > 0 && containerCli([...del, ...names]).code === 0) removed.push(...names);
     }
     r.numbers.cleanedUp = removed;
+  } else if (prefix) {
+    // The engine stopped with us (nobody else used it): remove this instance's leftovers on the next run instead.
+    writeFileSync(LEAKED, `${[...leakedPrefixes(), prefix].join('\n')}\n`);
   }
+}
+
+/** PC instances of earlier runs whose container, network and volumes are still in the dev engine's store. */
+const LEAKED = join(here, 'out', 'leaked-instances.txt');
+function leakedPrefixes(): string[] {
+  try {
+    return readFileSync(LEAKED, 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^mv-pc-[0-9a-f]{8}-$/.test(l));
+  } catch {
+    return [];
+  }
+}
+/** Once the engine runs: removes the leftovers of earlier runs (only instances this harness created). */
+function cleanLeaked(): string[] {
+  const prefixes = leakedPrefixes();
+  if (prefixes.length === 0) return [];
+  const removed: string[] = [];
+  for (const [list, del] of [
+    [['list', '-a', '-q'], ['rm']],
+    [
+      ['network', 'list', '-q'],
+      ['network', 'delete'],
+    ],
+    [
+      ['volume', 'list', '-q'],
+      ['volume', 'delete'],
+    ],
+  ] as const) {
+    const names = containerCli([...list])
+      .out.split('\n')
+      .map((l) => l.trim())
+      .filter((l) => prefixes.some((p) => l.startsWith(p)));
+    if (names.length > 0 && containerCli([...del, ...names]).code === 0) removed.push(...names);
+  }
+  writeFileSync(LEAKED, '');
+  return removed;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1522,6 +1653,7 @@ async function main(): Promise<void> {
     process.on(sig, () => {
       if (stopping) process.exit(130);
       stopping = true;
+      stopRequested = true;
       say(`${sig}: stopping the session`);
       control.onStopRequest?.(sig);
     });
@@ -1557,6 +1689,8 @@ async function main(): Promise<void> {
     await crewSteps().catch((err: unknown) => say(`scenario aborted: ${String(err)}`));
   }
   await step(9, 'Quit: everything stops, no orphans', (r) => step9(r, home, playDone));
+  // Never exit before the session finished its teardown (PCs, engine lease, run lock).
+  if (!playExit) await Promise.race([playDone, sleep(120_000)]);
   writeResults();
   say(`turns used: ${turns.length}/${maxTurns}`);
   for (const x of results) say(`${x.step}. ${x.status} ${x.name}`);

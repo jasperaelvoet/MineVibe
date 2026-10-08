@@ -138,7 +138,11 @@ describe('dev server', () => {
     const mod = await connect(server.port, token);
     mod.send(hello);
     await mod.next('hello.ok');
-    expect(await mod.next('world.open')).toMatchObject({ worldId: 'world-1', fresh: true, seed: 'e2e-forest' });
+    expect(await mod.next('world.open')).toMatchObject({
+      worldId: 'world-1',
+      fresh: true,
+      seed: 'e2e-forest',
+    });
     // Once the world exists, reopening it never carries a seed.
     mod.send({ t: 'world.state', v: 1, id: 'ws-1', worldId: 'world-1', phase: 'ready', fresh: true });
     await mod.next('ok', (m) => m.re === 'ws-1');

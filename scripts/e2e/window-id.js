@@ -1,4 +1,5 @@
-// JXA: prints the CGWindow number of the Minecraft window owned by a process id (argv[0]), or nothing.
+// JXA: prints the CGWindow number of the Minecraft window owned by a process id (argv[0]) and whether it is on
+// screen (`35460 onscreen`), or nothing.
 // Used by run-scenario.ts so screenshots capture the game window only (`screencapture -l <id>`), not the desktop.
 ObjC.import('CoreGraphics');
 ObjC.import('Foundation');
@@ -9,5 +10,5 @@ function run(argv) {
   const win = list.find(
     (w) => w.kCGWindowOwnerPID === pid && w.kCGWindowLayer === 0 && /^Minecraft/.test(w.kCGWindowName ?? ''),
   );
-  return win ? String(win.kCGWindowNumber) : '';
+  return win ? `${win.kCGWindowNumber} ${win.kCGWindowIsOnscreen ? 'onscreen' : 'hidden'}` : '';
 }

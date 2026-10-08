@@ -14,6 +14,7 @@
       "!**/dist",
       "!**/node_modules",
       "!**/.astro",
+      "!scripts/e2e/out",
       "!!**/.claude"
     ]
   },
