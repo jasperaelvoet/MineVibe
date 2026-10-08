@@ -148,6 +148,9 @@ process is started by `play` in M1 (the `claude` processes on the host were the 
 5. Fabric's profile lists `sha1`+`size` for its libraries, but `@xmcl/core` ignores checksums on url-style entries,
    and the profile has **no checksum at all for `fabric-loader` itself**. The launcher rewrites the entries into
    Mojang's `downloads.artifact` form and fills the loader's sha1 from the Maven `.sha1` sidecar (HTTPS, same repo).
+   **Superseded (review fix, 2026-10-08):** a checksum from the same host proves nothing, so `mods.lock.json` now
+   pins every library of the Fabric profile (loader included) by size and sha512 (`fabric.libraries`), and the
+   launcher refuses a profile library that is not pinned there.
 
 ## Mods lock
 

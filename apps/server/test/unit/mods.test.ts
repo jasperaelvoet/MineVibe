@@ -21,6 +21,7 @@ import {
   type ModrinthVersion,
   ModsLock,
   primaryFile,
+  quarantineDir,
   selectMods,
   verifyAgainstLock,
   versionsUrl,
@@ -83,7 +84,13 @@ function fakeMod(slug: string, n: number, overrides: Partial<ModLockEntry> = {})
 }
 
 function lockOf(entries: ModLockEntry[]): ModsLock {
-  return ModsLock.parse({ lockVersion: 1, minecraft: '26.3', loader: '0.19.5', mods: entries });
+  return ModsLock.parse({
+    lockVersion: 1,
+    minecraft: '26.3',
+    loader: '0.19.5',
+    fabric: { libraries: [{ name: 'net.fabricmc:fabric-loader:0.19.5', size: 1, sha512: 'a'.repeat(128) }] },
+    mods: entries,
+  });
 }
 
 /** A fetch that serves the Modrinth API and the CDN from memory, counting calls. */
@@ -111,6 +118,16 @@ describe('packaging/mods.lock.json', () => {
     const lock = await loadModsLock(LOCK_PATH);
     expect(lock.minecraft).toBe('26.3');
     expect(lock.loader).toBe('0.19.5');
+    // The whole Fabric profile is pinned, the loader included (its profile entry has no checksum at all).
+    expect(lock.fabric.libraries.map((l) => l.name)).toEqual([
+      'net.fabricmc:fabric-loader:0.19.5',
+      'net.fabricmc:sponge-mixin:0.17.4+mixin.0.8.7',
+      'org.ow2.asm:asm:9.10.1',
+      'org.ow2.asm:asm-analysis:9.10.1',
+      'org.ow2.asm:asm-commons:9.10.1',
+      'org.ow2.asm:asm-tree:9.10.1',
+      'org.ow2.asm:asm-util:9.10.1',
+    ]);
     const defaults = lock.mods.filter((m) => !m.optional);
     expect(Object.fromEntries(defaults.map((m) => [m.slug, m.versionId]))).toEqual({
       'fabric-api': 'v2j28coa',
@@ -280,7 +297,7 @@ describe('installMods', () => {
     expect(readFileSync(join(opts.modsDir, a.entry.filename)).equals(a.bytes)).toBe(true);
   });
 
-  it('removes jars it placed earlier, keeps foreign ones, and copies extra jars', async () => {
+  it('removes jars it placed earlier, quarantines foreign ones, and copies extra jars', async () => {
     const a = fakeMod('a', 1);
     const b = fakeMod('b', 2);
     const { root, opts } = setup([a, b]);
@@ -294,11 +311,27 @@ describe('installMods', () => {
       extraJars: [{ source: devJar, filename: 'minevibe-0.1.0.jar', modId: 'minevibe' }],
     });
     expect(r.removed).toEqual([b.entry.filename]);
-    expect(r.unmanaged).toEqual(['user-added.jar']);
+    expect(r.quarantined).toEqual(['user-added.jar']);
     expect(readdirSync(opts.modsDir).sort()).toEqual(
-      ['.minevibe-managed.json', a.entry.filename, 'minevibe-0.1.0.jar', 'user-added.jar'].sort(),
+      ['.minevibe-managed.json', a.entry.filename, 'minevibe-0.1.0.jar'].sort(),
     );
+    const moved = readdirSync(quarantineDir(opts.modsDir));
+    expect(moved).toHaveLength(1);
+    expect(moved[0]).toMatch(/-user-added\.jar$/);
+    expect(readFileSync(join(quarantineDir(opts.modsDir), moved[0] as string), 'utf8')).toBe('mine');
     expect(readFileSync(join(opts.modsDir, 'minevibe-0.1.0.jar'), 'utf8')).toBe('dev mod');
+  });
+
+  it('quarantines a stray copy of a locked mod after the managed list was lost (no duplicate mod ids)', async () => {
+    const a = fakeMod('a', 1);
+    const { opts } = setup([a]);
+    await installMods(opts);
+    // An older version of the same mod, left behind: the managed list that would have removed it is gone.
+    writeFileSync(join(opts.modsDir, 'a-mod-0.9.jar'), 'old a');
+    rmSync(join(opts.modsDir, '.minevibe-managed.json'));
+    const r = await installMods(opts);
+    expect(r.quarantined).toEqual(['a-mod-0.9.jar']);
+    expect(readdirSync(opts.modsDir).filter((f) => f.endsWith('.jar'))).toEqual([a.entry.filename]);
   });
 
   it('refuses two jars with the same mod id', async () => {

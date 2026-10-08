@@ -3,8 +3,9 @@ import { MinecraftFolder, type ResolvedVersion, Version } from '@xmcl/core';
 import { installFabric } from '@xmcl/installer';
 import type { Logger } from 'pino';
 import { writeFileAtomic } from '../util/atomicFile.js';
-import { type DownloadSpec, downloadAll, type FetchLike, launcherFetch } from './download.js';
+import { type DownloadSpec, downloadAll, type FetchLike, fileMatches, launcherFetch } from './download.js';
 import { quickVerifyVersion, readInstallMarker, writeInstallMarker } from './installMinecraft.js';
+import type { FabricLibraryPin } from './mods.js';
 
 /** The version id `@xmcl/installer`'s `installFabric` writes: `<minecraft>-fabric<loader>`. */
 export function fabricVersionId(minecraftVersion: string, loaderVersion: string): string {
@@ -15,6 +16,7 @@ interface ProfileLibrary {
   name: string;
   url?: string;
   sha1?: string;
+  sha512?: string;
   size?: number;
   downloads?: unknown;
   [key: string]: unknown;
@@ -28,52 +30,73 @@ export function mavenPath(coords: string): string {
   return `${group.replaceAll('.', '/')}/${artifact}/${version}/${file}`;
 }
 
-/**
- * Fabric's launcher profile lists libraries as `{name, url, sha1, size}`. `@xmcl/core` ignores those checksums
- * for url-style entries, so rewrite them into Mojang's `downloads.artifact` form; the library installer then
- * verifies every Fabric jar's sha1 and size.
- */
-export function withArtifactDownloads<T extends { libraries?: ProfileLibrary[] }>(profile: T): T {
-  const libraries = (profile.libraries ?? []).map((lib) => {
-    if (lib.downloads || !lib.sha1 || !lib.url) return lib;
-    const path = mavenPath(lib.name);
-    const base = lib.url.endsWith('/') ? lib.url : `${lib.url}/`;
-    return {
-      name: lib.name,
-      downloads: { artifact: { path, url: base + path, sha1: lib.sha1, size: lib.size ?? -1 } },
-    };
-  });
-  return { ...profile, libraries };
+/** A library of Fabric's profile: pinned in `mods.lock.json`, then downloaded and verified by sha512. */
+export interface PinnedFabricLibrary {
+  readonly name: string;
+  readonly path: string;
+  readonly url: string;
+  readonly size: number;
+  readonly sha512: string;
 }
 
 /**
- * Fills in `sha1` for profile libraries that lack one (Fabric's profile omits it for `fabric-loader` itself)
- * from the Maven repository's `.sha1` sidecar, fetched over HTTPS from the library's own repository.
+ * Checks Fabric's launcher profile against the lock's pins (PLAN §10) and rewrites its libraries into Mojang's
+ * `downloads.artifact` form (path, url, size), which `@xmcl/core` resolves like vanilla libraries.
+ *
+ * - Every profile library must be pinned by its exact Maven coordinates; an unknown one is refused.
+ * - Where the profile carries its own size or sha512, it must agree with the pin.
+ * - Repositories must be https. The checksums themselves only come from the lock: Fabric's profile has none for
+ *   `fabric-loader`, and nothing fetched from Fabric's servers at install time is trusted for it.
  */
-export async function fillMavenSha1<T extends { libraries?: ProfileLibrary[] }>(
+export function pinFabricLibraries<T extends { libraries?: ProfileLibrary[] }>(
   profile: T,
-  doFetch: FetchLike,
-): Promise<T> {
-  const libraries = await Promise.all(
-    (profile.libraries ?? []).map(async (lib) => {
-      if (lib.downloads || lib.sha1 || !lib.url) return lib;
-      const base = lib.url.endsWith('/') ? lib.url : `${lib.url}/`;
-      if (!base.startsWith('https://')) throw new Error(`refusing non-https Maven repository ${base}`);
-      const url = `${base}${mavenPath(lib.name)}.sha1`;
-      const res = await doFetch(url);
-      if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
-      const sha1 = /^[0-9a-f]{40}/i.exec((await res.text()).trim())?.[0]?.toLowerCase();
-      if (!sha1) throw new Error(`${url} is not a sha1`);
-      return { ...lib, sha1 };
-    }),
-  );
-  return { ...profile, libraries };
+  pins: readonly FabricLibraryPin[],
+): { profile: T; libraries: PinnedFabricLibrary[] } {
+  const byName = new Map(pins.map((p) => [p.name, p]));
+  const libraries: PinnedFabricLibrary[] = [];
+  const rewritten = (profile.libraries ?? []).map((lib) => {
+    const pin = byName.get(lib.name);
+    if (!pin) throw new Error(`Fabric's profile lists ${lib.name}, which mods.lock.json does not pin`);
+    const declared = typeof lib.sha512 === 'string' ? lib.sha512.toLowerCase() : undefined;
+    if (declared !== undefined && declared !== pin.sha512) {
+      throw new Error(`Fabric's profile has a different sha512 for ${lib.name} than mods.lock.json`);
+    }
+    if (typeof lib.size === 'number' && lib.size !== pin.size) {
+      throw new Error(`Fabric's profile has a different size for ${lib.name} than mods.lock.json`);
+    }
+    const base =
+      typeof lib.url === 'string' ? (lib.url.endsWith('/') ? lib.url : `${lib.url}/`) : MAVEN_FABRIC;
+    if (!base.startsWith('https://')) throw new Error(`refusing non-https Maven repository ${base}`);
+    const path = mavenPath(lib.name);
+    libraries.push({ name: lib.name, path, url: base + path, size: pin.size, sha512: pin.sha512 });
+    return { name: lib.name, downloads: { artifact: { path, url: base + path, size: pin.size } } };
+  });
+  return { profile: { ...profile, libraries: rewritten }, libraries };
+}
+
+/** Fabric's Maven repository (the profile names it per library; this is only the fallback). */
+const MAVEN_FABRIC = 'https://maven.fabricmc.net/';
+
+/** Whether every pinned library is on disk with its pinned size and sha512 (a few MB, hashed every launch). */
+async function pinnedLibrariesIntact(gameDir: string, pins: readonly FabricLibraryPin[]): Promise<string[]> {
+  const mc = MinecraftFolder.from(gameDir);
+  const problems: string[] = [];
+  for (const pin of pins) {
+    const ok = await fileMatches(mc.getLibraryByPath(mavenPath(pin.name)), {
+      size: pin.size,
+      hash: { algorithm: 'sha512', value: pin.sha512 },
+    });
+    if (!ok) problems.push(`${pin.name}: missing or not the pinned file`);
+  }
+  return problems;
 }
 
 export interface InstallFabricOptions {
   readonly gameDir: string;
   readonly minecraftVersion: string;
   readonly loaderVersion: string;
+  /** `mods.lock.json` `fabric.libraries`: every library of the profile, pinned by size and sha512. */
+  readonly libraries: readonly FabricLibraryPin[];
   readonly log: Logger;
   readonly fetch?: FetchLike;
   readonly signal?: AbortSignal;
@@ -87,8 +110,8 @@ export interface InstalledFabric {
 
 /**
  * Installs the Fabric loader profile on top of an installed vanilla version (`@xmcl/installer` `installFabric`
- * fetches Fabric's official launcher profile from meta.fabricmc.net), then downloads its libraries with sha1
- * and size checks.
+ * fetches Fabric's official launcher profile from meta.fabricmc.net), checks its libraries against the lock's pins,
+ * then downloads them with size and sha512 checks. Later launches re-hash the pinned jars (a few MB).
  */
 export async function installFabricLoader(options: InstallFabricOptions): Promise<InstalledFabric> {
   const { gameDir, minecraftVersion, loaderVersion, log } = options;
@@ -96,7 +119,10 @@ export async function installFabricLoader(options: InstallFabricOptions): Promis
   if (await readInstallMarker(gameDir, versionId, 'fabric')) {
     try {
       const resolved = await Version.parse(gameDir, versionId);
-      const problems = await quickVerifyVersion(gameDir, resolved);
+      const problems = [
+        ...(await quickVerifyVersion(gameDir, resolved)),
+        ...(await pinnedLibrariesIntact(gameDir, options.libraries)),
+      ];
       if (problems.length === 0) return { versionId, resolved, installed: false };
       log.warn({ problems: problems.slice(0, 5) }, 'Fabric install incomplete; repairing');
     } catch (err) {
@@ -115,27 +141,19 @@ export async function installFabricLoader(options: InstallFabricOptions): Promis
   if (id !== versionId) throw new Error(`unexpected Fabric version id ${id}`);
   const mc = MinecraftFolder.from(gameDir);
   const jsonPath = mc.getVersionJson(versionId);
-  const profile = withArtifactDownloads(
-    await fillMavenSha1(
-      JSON.parse(await readFile(jsonPath, 'utf8')) as { libraries?: ProfileLibrary[] },
-      doFetch,
-    ),
+  const { profile, libraries } = pinFabricLibraries(
+    JSON.parse(await readFile(jsonPath, 'utf8')) as { libraries?: ProfileLibrary[] },
+    options.libraries,
   );
   await writeFileAtomic(jsonPath, JSON.stringify(profile, null, 2));
 
   // Only Fabric's own libraries: the inherited vanilla files were verified by installMinecraft.
-  // biome-ignore lint/suspicious/noExplicitAny: xmcl's Version.Library union is not exported usefully
-  const libs = Version.resolveLibraries((profile.libraries ?? []) as any);
-  const specs: DownloadSpec[] = libs.map((lib) => {
-    if (!lib.download.url || !lib.download.sha1)
-      throw new Error(`Fabric library ${lib.name} has no checksum`);
-    return {
-      url: lib.download.url,
-      destination: mc.getLibraryByPath(lib.download.path),
-      size: lib.download.size >= 0 ? lib.download.size : undefined,
-      hash: { algorithm: 'sha1', value: lib.download.sha1 },
-    };
-  });
+  const specs: DownloadSpec[] = libraries.map((lib) => ({
+    url: lib.url,
+    destination: mc.getLibraryByPath(lib.path),
+    size: lib.size,
+    hash: { algorithm: 'sha512', value: lib.sha512 },
+  }));
   await downloadAll(specs, {
     fetch: doFetch,
     concurrency: 8,

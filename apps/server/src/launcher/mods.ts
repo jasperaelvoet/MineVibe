@@ -1,6 +1,6 @@
 import { constants as fsConstants } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { writeFileAtomic } from '../util/atomicFile.js';
@@ -42,6 +42,14 @@ export const ModLockEntry = z.object({
 });
 export type ModLockEntry = z.infer<typeof ModLockEntry>;
 
+/** One library of Fabric's launcher profile, pinned: Maven coordinates, size and sha512. */
+export const FabricLibraryPin = z.object({
+  name: z.string().regex(/^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+(:[A-Za-z0-9_.+-]+)?$/),
+  size: z.number().int().positive(),
+  sha512: z.string().regex(SHA512_RE),
+});
+export type FabricLibraryPin = z.infer<typeof FabricLibraryPin>;
+
 /** `packaging/mods.lock.json` (PLAN §10). */
 export const ModsLock = z
   .object({
@@ -50,9 +58,25 @@ export const ModsLock = z
     minecraft: z.string().min(1),
     loader: z.string().min(1),
     generated: z.string().optional(),
+    /** Every library of the Fabric profile (the loader included), so nothing about Fabric is trusted at install time. */
+    fabric: z.object({
+      $comment: z.string().optional(),
+      libraries: z.array(FabricLibraryPin).min(1),
+    }),
     mods: z.array(ModLockEntry).min(1),
   })
   .superRefine((lock, ctx) => {
+    if (!lock.fabric.libraries.some((l) => l.name === `net.fabricmc:fabric-loader:${lock.loader}`)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `fabric.libraries must pin net.fabricmc:fabric-loader:${lock.loader}`,
+      });
+    }
+    const names = new Set<string>();
+    for (const l of lock.fabric.libraries) {
+      if (names.has(l.name)) ctx.addIssue({ code: 'custom', message: `duplicate Fabric library ${l.name}` });
+      names.add(l.name);
+    }
     for (const key of ['versionId', 'modId', 'filename', 'slug'] as const) {
       const seen = new Set<string>();
       for (const m of lock.mods) {
@@ -180,7 +204,13 @@ export interface InstallModsResult {
   readonly downloadedBytes: number;
   readonly apiCalls: number;
   readonly removed: readonly string[];
-  readonly unmanaged: readonly string[];
+  /** Jars MineVibe did not place, moved out of `mods/` into {@link quarantineDir} (file names before the move). */
+  readonly quarantined: readonly string[];
+}
+
+/** `<game>/mods-quarantine`: where jars MineVibe does not manage are moved, next to `mods/`. */
+export function quarantineDir(modsDir: string): string {
+  return join(dirname(modsDir), 'mods-quarantine');
 }
 
 const MANAGED_FILE = '.minevibe-managed.json';
@@ -190,8 +220,10 @@ const Managed = z.object({ files: z.array(z.string()) });
  * Lock-driven mod installer (PLAN §10). Every jar lives in a content-addressed cache keyed by sha512; cached
  * jars are re-verified (size + sha512) before use. Missing ones cost exactly one `GET /v2/versions?ids=[…]`,
  * whose answer is checked against the lock, then each primary file is streamed to `.part` with size and
- * sha512 verification. `mods/` then gets exactly the selected jars (plus `extraJars`); jars MineVibe placed
- * earlier but no longer wants are removed, anything else is left alone and reported.
+ * sha512 verification. `mods/` then holds exactly the selected jars (plus `extraJars`): jars MineVibe placed
+ * earlier but no longer wants are removed, and any other jar is moved to `mods-quarantine/` (a stray copy of a
+ * mod the lock also provides, e.g. after the managed list was lost and the lock moved on, would otherwise crash
+ * Fabric with a duplicate mod id).
  */
 export async function installMods(options: InstallModsOptions): Promise<InstallModsResult> {
   const { cacheDir, modsDir, log } = options;
@@ -291,13 +323,22 @@ export async function installMods(options: InstallModsOptions): Promise<InstallM
     }
   }
   await writeFileAtomic(managedPath, `${JSON.stringify({ files: [...wanted.keys()].sort() }, null, 2)}\n`);
-  const unmanaged = (await readdir(modsDir)).filter(
-    (f) => f.endsWith('.jar') && !wanted.has(f) && !removed.includes(f),
-  );
   if (removed.length > 0) log.info({ removed }, 'removed mods no longer in the lock');
-  if (unmanaged.length > 0) log.warn({ unmanaged }, 'mods/ contains jars MineVibe does not manage');
+  const unmanaged = (await readdir(modsDir)).filter(
+    (f) => f.toLowerCase().endsWith('.jar') && !wanted.has(f) && !removed.includes(f),
+  );
+  if (unmanaged.length > 0) {
+    const quarantine = quarantineDir(modsDir);
+    await mkdir(quarantine, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    for (const f of unmanaged) await rename(join(modsDir, f), join(quarantine, `${stamp}-${f}`));
+    log.warn(
+      { quarantined: unmanaged, to: quarantine },
+      'moved jars MineVibe does not manage out of mods/ (the game only loads the locked set)',
+    );
+  }
 
-  return { mods, downloaded: missing.length, downloadedBytes, apiCalls, removed, unmanaged };
+  return { mods, downloaded: missing.length, downloadedBytes, apiCalls, removed, quarantined: unmanaged };
 }
 
 async function sameBytes(a: string, b: string): Promise<boolean> {

@@ -218,6 +218,7 @@ export async function play(options: PlayOptions): Promise<number> {
           gameDir,
           minecraftVersion: lock.minecraft,
           loaderVersion: lock.loader,
+          libraries: lock.fabric.libraries,
           log,
           signal,
         });

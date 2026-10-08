@@ -48,6 +48,11 @@ for slug, name, vid, modid, side, opt, note in spec:
     if note:
         e['note'] = note
     mods.append(e)
+# The Fabric profile pins (`fabric.libraries`, sha512 per library) are not on Modrinth: keep the existing ones.
+try:
+    fabric = json.load(open(out))['fabric']
+except (OSError, KeyError, ValueError):
+    sys.exit('the output lock must already exist with a "fabric" section (pinned Fabric profile libraries)')
 lock = {
     '$comment': 'Pinned by Modrinth version id + sha512 (PLAN section 10). Filled from ONE '
                 'GET https://api.modrinth.com/v2/versions?ids=[...] (primary file only). Never resolve '
@@ -56,6 +61,7 @@ lock = {
     'minecraft': '26.3',
     'loader': '0.19.5',
     'generated': '2026-10-08',
+    'fabric': fabric,
     'mods': mods,
 }
 open(out, 'w').write(json.dumps(lock, indent=2) + '\n')

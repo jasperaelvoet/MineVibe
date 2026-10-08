@@ -12,12 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  fabricVersionId,
-  fillMavenSha1,
-  mavenPath,
-  withArtifactDownloads,
-} from '../../src/launcher/installFabric.js';
+import { fabricVersionId, mavenPath, pinFabricLibraries } from '../../src/launcher/installFabric.js';
 import {
   dropUnresolvedArgs,
   gameEnv,
@@ -94,64 +89,78 @@ describe('Fabric profile', () => {
     );
   });
 
-  it('fills a missing sha1 from the Maven .sha1 sidecar (fabric-loader has none in the profile)', async () => {
-    const urls: string[] = [];
-    const out = await fillMavenSha1(
+  it('pins every profile library to the lock (fabric-loader has no checksum in the profile)', () => {
+    const pins = [
+      { name: 'net.fabricmc:fabric-loader:0.19.5', size: 7, sha512: 'a'.repeat(128) },
+      { name: 'org.ow2.asm:asm:9.10.1', size: 9, sha512: 'b'.repeat(128) },
+    ];
+    const { profile, libraries } = pinFabricLibraries(
       {
+        id: 'x',
         libraries: [
-          { name: 'net.fabricmc:fabric-loader:0.19.5', url: 'https://maven.fabricmc.net/' },
-          { name: 'org.ow2.asm:asm:9.10.1', url: 'https://maven.fabricmc.net/', sha1: 'b'.repeat(40) },
+          {
+            name: 'org.ow2.asm:asm:9.10.1',
+            url: 'https://maven.fabricmc.net/',
+            sha1: 'c'.repeat(40),
+            sha512: 'B'.repeat(128),
+            size: 9,
+          },
+          { name: 'net.fabricmc:fabric-loader:0.19.5', url: 'https://maven.fabricmc.net' },
         ],
       },
-      async (url) => {
-        urls.push(url);
-        return new Response(`${'F'.repeat(40)}  fabric-loader-0.19.5.jar\n`);
-      },
+      pins,
     );
-    expect(urls).toEqual([
-      'https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar.sha1',
-    ]);
-    expect(out.libraries?.[0]?.sha1).toBe('f'.repeat(40));
-    expect(out.libraries?.[1]?.sha1).toBe('b'.repeat(40));
-    await expect(
-      fillMavenSha1(
-        { libraries: [{ name: 'a:b:1', url: 'http://insecure.example/' }] },
-        async () => new Response(''),
-      ),
-    ).rejects.toThrow(/non-https/);
-    await expect(
-      fillMavenSha1(
-        { libraries: [{ name: 'a:b:1', url: 'https://maven.example/' }] },
-        async () => new Response('<html>'),
-      ),
-    ).rejects.toThrow(/not a sha1/);
-  });
-
-  it('turns url+sha1 libraries into checksummed artifacts', () => {
-    const out = withArtifactDownloads({
-      id: 'x',
-      libraries: [
-        {
-          name: 'net.fabricmc:fabric-loader:0.19.5',
-          url: 'https://maven.fabricmc.net/',
-          sha1: 'a'.repeat(40),
-          size: 7,
-        },
-        { name: 'no.checksum:lib:1', url: 'https://maven.example/' },
-      ],
-    });
-    expect(out.libraries?.[0]).toEqual({
+    expect(profile.libraries?.[1]).toEqual({
       name: 'net.fabricmc:fabric-loader:0.19.5',
       downloads: {
         artifact: {
           path: 'net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar',
           url: 'https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar',
-          sha1: 'a'.repeat(40),
           size: 7,
         },
       },
     });
-    expect(out.libraries?.[1]).toEqual({ name: 'no.checksum:lib:1', url: 'https://maven.example/' });
+    expect(libraries.map((l) => [l.name, l.sha512])).toEqual([
+      ['org.ow2.asm:asm:9.10.1', 'b'.repeat(128)],
+      ['net.fabricmc:fabric-loader:0.19.5', 'a'.repeat(128)],
+    ]);
+  });
+
+  it('refuses unpinned libraries, disagreeing checksums and plain http', () => {
+    const pins = [{ name: 'net.fabricmc:fabric-loader:0.19.5', size: 7, sha512: 'a'.repeat(128) }];
+    expect(() =>
+      pinFabricLibraries({ libraries: [{ name: 'evil:lib:1', url: 'https://maven.fabricmc.net/' }] }, pins),
+    ).toThrow(/does not pin/);
+    expect(() =>
+      pinFabricLibraries(
+        {
+          libraries: [
+            {
+              name: 'net.fabricmc:fabric-loader:0.19.5',
+              url: 'https://maven.fabricmc.net/',
+              sha512: 'f'.repeat(128),
+            },
+          ],
+        },
+        pins,
+      ),
+    ).toThrow(/different sha512/);
+    expect(() =>
+      pinFabricLibraries(
+        {
+          libraries: [
+            { name: 'net.fabricmc:fabric-loader:0.19.5', url: 'https://maven.fabricmc.net/', size: 8 },
+          ],
+        },
+        pins,
+      ),
+    ).toThrow(/different size/);
+    expect(() =>
+      pinFabricLibraries(
+        { libraries: [{ name: 'net.fabricmc:fabric-loader:0.19.5', url: 'http://maven.example/' }] },
+        pins,
+      ),
+    ).toThrow(/non-https/);
   });
 });
 
