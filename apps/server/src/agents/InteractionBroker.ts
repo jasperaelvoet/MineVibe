@@ -5,15 +5,18 @@
  * - **AskUserQuestion** becomes a question card. The brain slot is released while it waits; the answer is
  *   `allow` with `updatedInput: {questions, answers: {[question]: "Oak, Spruce" | free text}}` (S2).
  * - **ExitPlanMode** carries `{}` in CC 2.1.293 (S2): the plan text comes from PlanCapture. Approve = `allow` and
- *   `setPermissionMode('default')`; Revise = `deny` with the feedback (the agent stays in plan mode).
- * - **EnterPlanMode** is allowed only while seated at a PC (the gate denies it otherwise) and switches Node's
- *   tracked mode to `plan`.
+ *   `setPermissionMode('bypassPermissions')` (USER DECISION 2026-10-08: back to the agents' bypass mode, never
+ *   `'default'`); Revise = `deny` with the feedback (the agent stays in plan mode). Only plan-first sessions reach it:
+ *   ToolGate denies ExitPlanMode outside plan mode.
+ * - **EnterPlanMode** is denied (USER DECISION 2026-10-08: agents never put themselves into plan mode; it is not in
+ *   the tool list, and ToolGate denies it too).
  * - Cards resolve as `deny` with a reason on interrupt, kick, death, dismiss or world end (PendingStore.cleanup), and
  *   when the SDK aborts the call.
  */
 
 import { CardQuestion, CHAT_MAX_LENGTH } from '@minevibe/protocol';
 import { z } from 'zod';
+import { AGENT_PERMISSION_MODE } from './constants.js';
 import { type Card, type CardOutcome, newCardId, type PendingStore } from './PendingStore.js';
 import type { PlanCapture } from './PlanCapture.js';
 import type { CanUseTool, PermissionMode, PermissionResult } from './sdk.js';
@@ -32,8 +35,6 @@ export interface BrokerHooks {
   onWaitEnd(card: Card, outcome: CardOutcome): Promise<void>;
   /** Node switches the session's permission mode (and tracks it for the gate). */
   setPermissionMode(mode: PermissionMode): Promise<void>;
-  /** Only tracks the mode (EnterPlanMode: the CLI switches itself). */
-  trackMode(mode: PermissionMode): void;
 }
 
 export interface BrokerOptions {
@@ -41,8 +42,6 @@ export interface BrokerOptions {
   readonly store: PendingStore;
   readonly plans: PlanCapture;
   readonly hooks: BrokerHooks;
-  /** May the agent enter plan mode now (seated at a PC)? */
-  readonly canEnterPlan: () => boolean;
   /** The current seat epoch (plan cards die with the seat). */
   readonly seatEpoch: () => number;
   readonly playerName: () => string;
@@ -133,7 +132,9 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
           const outcome = await wait(card, opts.signal, options.seatEpoch());
           if (outcome.kind === 'approved') {
             await hooks.onWaitEnd(card, outcome);
-            await hooks.setPermissionMode('default');
+            // USER DECISION 2026-10-08: back to bypassPermissions, never 'default'. Awaited before the allow is
+            // returned (verified live in this order: the next calls run in bypassPermissions).
+            await hooks.setPermissionMode(AGENT_PERMISSION_MODE);
             options.plans.clear();
             return { behavior: 'allow', updatedInput: input };
           }
@@ -149,11 +150,11 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
           );
         }
 
-        case 'EnterPlanMode': {
-          if (!options.canEnterPlan()) return deny('Plan mode is for PC work: sit at a PC first.');
-          hooks.trackMode('plan');
-          return { behavior: 'allow', updatedInput: input };
-        }
+        case 'EnterPlanMode':
+          // USER DECISION 2026-10-08: no automatic plan mode. Only the player's Plan-first toggle starts one.
+          return deny(
+            `You can't switch yourself into plan mode. ${options.playerName()} turns on Plan-first for you when they want a plan first.`,
+          );
 
         default:
           return deny(`${toolName} is not permitted.`);

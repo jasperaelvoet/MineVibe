@@ -90,7 +90,10 @@ public final class Ui {
 	/** N→M. Replaces the agent's cards. */
 	public record AgentPending(String agentId, List<PendingCard> cards) {}
 
-	/** N→M. {@code role}: present, queue, ping, release ({@code pendingId} null). */
+	/**
+	 * N→M. {@code role}: present, present_seated (USER DECISION 2026-10-08: a seated agent presents from its chair when
+	 * the player is near, never dismounting), queue, ping, release ({@code pendingId} null).
+	 */
 	public record AgentApproach(String agentId, @Nullable String pendingId, String role) {}
 
 	/** N→M. */
@@ -203,7 +206,7 @@ public final class Ui {
 	public static final MessageType<AgentApproach> AGENT_APPROACH = type("agent.approach", Direction.NODE_TO_MOD, AgentApproach.class, object()
 			.req("agentId", AGENT_ID)
 			.req("pendingId", nullable(PENDING_ID))
-			.req("role", oneOf("present", "queue", "ping", "release")));
+			.req("role", oneOf("present", "present_seated", "queue", "ping", "release")));
 
 	public static final MessageType<ChatAppend> CHAT_APPEND = type("chat.append", Direction.NODE_TO_MOD, ChatAppend.class, object()
 			.req("agentId", AGENT_ID)

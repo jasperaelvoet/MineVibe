@@ -93,7 +93,9 @@ public final class BubbleRenderer {
 			Bubble bubble = state.bubble(agent.agentId());
 			List<String> lines;
 			float alpha = Bubble.distanceAlpha(distance);
-			boolean card = agent == presenter && front != null && distance <= BubbleLayout.CARD_MODE_DISTANCE;
+			// USER DECISION 2026-10-08: a presenter seated at a PC asks from its chair, so its card reaches farther.
+			boolean card = agent == presenter && front != null
+					&& distance <= BubbleLayout.cardModeDistance(AgentEntities.atPc(body, agent));
 			if (card) {
 				lines = BubbleLayout.card(front, agent.handle());
 			} else if (bubble != null) {
@@ -160,9 +162,14 @@ public final class BubbleRenderer {
 
 	/** Test hook: the bubble lines that would be drawn for an agent right now (null when none). */
 	public static @Nullable List<String> linesFor(AgentView agent, double distance) {
+		return linesFor(agent, distance, false);
+	}
+
+	/** Test hook: as {@link #linesFor(AgentView, double)}, for a presenter that sits at a PC or not. */
+	public static @Nullable List<String> linesFor(AgentView agent, double distance, boolean seatedAtPc) {
 		UiState state = UiState.get();
 		Ui.PendingCard front = agent.frontCard();
-		if (agent == state.presenter() && front != null && distance <= BubbleLayout.CARD_MODE_DISTANCE) {
+		if (agent == state.presenter() && front != null && distance <= BubbleLayout.cardModeDistance(seatedAtPc)) {
 			return BubbleLayout.card(front, agent.handle());
 		}
 		Bubble bubble = state.bubble(agent.agentId());

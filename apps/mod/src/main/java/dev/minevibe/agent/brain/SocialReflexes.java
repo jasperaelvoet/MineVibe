@@ -186,6 +186,94 @@ final class ApproachReflex implements Reflex {
 }
 
 /**
+ * Priority 40, from the chair (USER DECISION 2026-10-08): the presenter sits at a PC and the player is near
+ * ({@code agent.approach{role: present_seated}}). It stays in its chair: it turns its head and body toward the player
+ * and chimes once (the client shows the card-mode bubble), and never dismounts. When the role ends it faces its monitor
+ * again. A seated presenter whose player is not near is unseated by Node first ({@code agent.unseat{away}}) and then
+ * walks over with {@link ApproachReflex}.
+ */
+final class SeatedPresentReflex implements Reflex {
+	private boolean chimed;
+	private @Nullable String lastPending;
+
+	@Override
+	public int priority() {
+		return 40;
+	}
+
+	@Override
+	public String name() {
+		return "present_seated";
+	}
+
+	@Override
+	public boolean needsToStand() {
+		return false;
+	}
+
+	@Override
+	public boolean staysSeated() {
+		return true;
+	}
+
+	@Override
+	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
+		if (brain.approachRole() != ReflexBrain.ApproachRole.PRESENT_SEATED) {
+			this.chimed = false;
+			this.lastPending = null;
+			return false;
+		}
+		if (!java.util.Objects.equals(this.lastPending, brain.approachPendingId())) {
+			this.lastPending = brain.approachPendingId();
+			this.chimed = false;
+		}
+		if (!(agent.getVehicle() instanceof SeatEntity)) {
+			return false;
+		}
+		ServerPlayer player = Refs.player(agent);
+		return player != null && player.level() == agent.level();
+	}
+
+	@Override
+	public void tick(final AgentPlayer agent, final ReflexBrain brain) {
+		ServerPlayer player = Refs.player(agent);
+		if (player == null) {
+			return;
+		}
+		face(agent, player.getEyePosition());
+		if (!this.chimed) {
+			this.chimed = true;
+			agent.level().playSound(null, agent.blockPosition(), SoundEvents.NOTE_BLOCK_BELL.value(), SoundSource.NEUTRAL, 0.8F, 1.4F);
+			Map<String, Object> data = new LinkedHashMap<>();
+			data.put("for", "approach");
+			data.put("from", "seat");
+			if (brain.approachPendingId() != null) {
+				data.put("pendingId", brain.approachPendingId());
+			}
+			BodyEvents.emit(agent, "arrived", BodyEvents.INFO, "asking the player from the chair", data, 0);
+		}
+	}
+
+	/** Head, look and body toward {@code target}, from the chair (a passenger's rotation is free on a seat). */
+	static void face(final AgentPlayer agent, final Vec3 target) {
+		agent.controls().lookAt(target);
+		agent.setYBodyRot(agent.getYRot());
+	}
+
+	@Override
+	public void stop(final AgentPlayer agent, final ReflexBrain brain) {
+		agent.controls().releaseAll();
+		if (agent.getVehicle() instanceof SeatEntity seat) {
+			// Back to the monitor: the seat faces the way its chair does.
+			agent.setYRot(seat.getYRot());
+			agent.setYHeadRot(seat.getYRot());
+			agent.setYBodyRot(seat.getYRot());
+			agent.setXRot(0.0F);
+		}
+	}
+}
+
+/**
  * Priority 38: go to a scheduled task's location or the meeting table once the brain accepted it (set from
  * {@code calendar.fired{walk}}). Reports {@code arrived} and lets go; gives up after 5 minutes.
  */

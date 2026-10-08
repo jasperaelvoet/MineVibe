@@ -9,7 +9,14 @@ import type { PcGuestApi } from './GuestApi.js';
 import type { InputRouter, Occupant } from './InputRouter.js';
 import type { PcManager, PcStatusInfo } from './PcManager.js';
 import type { PcType } from './PcTypes.js';
-import { decommissionedInfo, type PcRequestKind, toBridgeError, toPcInfo, toWireBudget } from './pcWire.js';
+import {
+  decommissionedInfo,
+  type PcRequestKind,
+  seatBanner,
+  toBridgeError,
+  toPcInfo,
+  toWireBudget,
+} from './pcWire.js';
 import { type SeatBook, type SeatOccupant, type SeatState, seatTag } from './SeatBook.js';
 import type { ShellMirror } from './ShellMirror.js';
 import { suggestOverlays } from './Vault.js';
@@ -79,6 +86,8 @@ export class PcBridgeGlue {
   readonly #timers = new Set<NodeJS.Timeout>();
   #budgetTimer: NodeJS.Timeout | null = null;
   #attached = false;
+  /** The player's name from `hello` (the "BRB: asking <player>" banner). */
+  #playerName: string | null = null;
 
   constructor(options: PcBridgeGlueOptions) {
     this.#o = options;
@@ -141,7 +150,12 @@ export class PcBridgeGlue {
       if (!rec) continue;
       let info: PcInfo | null;
       try {
-        info = toPcInfo(view, rec, { seat: seats.get(view.pcId), diskGiB: manager.diskGiBOf(view.pcId) });
+        const seat = seats.get(view.pcId);
+        info = toPcInfo(view, rec, {
+          seat,
+          diskGiB: manager.diskGiBOf(view.pcId),
+          banner: seatBanner(seat, this.#playerName, this.#away.get(view.pcId)?.agentId ?? null),
+        });
       } catch (err) {
         this.#log.warn({ pcId: view.pcId, err: String(err) }, 'pc.state could not be built');
         continue;
@@ -210,6 +224,7 @@ export class PcBridgeGlue {
   // ------------------------------------------------------------------------------------------- session
 
   #onHello(m: MessageOf<'hello'>): void {
+    if (m.playerName) this.#playerName = m.playerName;
     if (m.phase === 'boot') {
       // The game is on BootScreen: nobody sits anywhere.
       this.#endAllSeats('world_end');
@@ -321,6 +336,7 @@ export class PcBridgeGlue {
     if (left?.kind === 'agent') {
       if (m.reason === 'away') {
         this.#away.set(m.pcId, { agentId: left.agentId, seatEpoch: left.seatEpoch });
+        this.pushStates(); // the "BRB: asking <player>" banner
         return;
       }
       this.#endAgentSeat(m.pcId, left.agentId, left.seatEpoch, m.reason);

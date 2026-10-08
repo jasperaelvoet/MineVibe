@@ -42,4 +42,13 @@ public interface Reflex {
 	default String unseatReason() {
 		return "survival";
 	}
+
+	/**
+	 * True for a reflex that acts from the chair without ever standing up (USER DECISION 2026-10-08: a seated presenter
+	 * turns toward a player who is near). It may run while the agent sits even below
+	 * {@link ReflexBrain#SEATED_PRIORITY}; it must also return false from {@link #needsToStand()}.
+	 */
+	default boolean staysSeated() {
+		return false;
+	}
 }

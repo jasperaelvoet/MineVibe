@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { migratePlanFirst } from '../../../src/agents/AgentManager.js';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
 import type { FakeQuery } from '../../helpers/fakeSdk.js';
 import { resultText } from '../../helpers/fakeSdk.js';
@@ -10,7 +11,7 @@ afterEach(async () => {
   h = null;
 });
 
-/** A fresh world whose CEO is idle; `planFirst` is turned off unless asked. */
+/** A fresh world whose CEO is idle; `planFirst` is turned on (the player's toggle) only when asked. */
 async function world(options: { planFirst?: boolean } = {}) {
   h = await createHarness();
   await h.manager.openWorld({ worldId: 'w1', gen: 1 });
@@ -20,7 +21,8 @@ async function world(options: { planFirst?: boolean } = {}) {
   q.init();
   q.result();
   await h.until(() => h?.manager.brain(id)?.status === 'idle', 'idle');
-  if (!options.planFirst) await h.manager.command(id, { cmd: 'plan_first', on: false });
+  // USER DECISION 2026-10-08: Plan-first is off by default; only the player's toggle turns it on.
+  if (options.planFirst) await h.manager.command(id, { cmd: 'plan_first', on: true });
   return { w: h, id, q };
 }
 
@@ -127,7 +129,7 @@ describe('sit → swap to Opus/medium at the turn boundary → kickoff', () => {
 });
 
 describe('plan-first: plan mode, PlanCapture and the plan card', () => {
-  it('enters plan mode after the swap; the plan file becomes the card; approve → default mode', async () => {
+  it('enters plan mode after the swap; the plan file becomes the card; approve → back to bypassPermissions', async () => {
     const { w, id, q } = await world({ planFirst: true });
     await wake(w, q, 'refactor the parser');
     await sit(w, q, id);
@@ -171,7 +173,7 @@ describe('plan-first: plan mode, PlanCapture and the plan card', () => {
     expect(await exiting).toMatchObject({ kind: 'allowed' });
     expect(q.calls.filter((c) => c.method === 'setPermissionMode').map((c) => c.args)).toEqual([
       'plan',
-      'default',
+      'bypassPermissions',
     ]);
     expect(
       (
@@ -201,6 +203,66 @@ describe('plan-first: plan mode, PlanCapture and the plan card', () => {
       reason: expect.stringMatching(/Jasper wants changes to the plan: use tabs, not spaces/),
     });
     expect(w.manager.brain(id)?.trackedMode).toBe('plan');
+  });
+});
+
+describe('USER DECISION 2026-10-08: bypassPermissions, no automatic plan mode', () => {
+  it('runs in bypassPermissions; Plan-first is off, so sitting never enters plan mode', async () => {
+    const { w, id, q } = await world();
+    expect(q.options).toMatchObject({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    });
+    expect(q.options.tools).not.toContain('EnterPlanMode');
+    expect(w.manager.listAgents()[0]).toMatchObject({ role: 'ceo', planFirst: false });
+    expect(w.manager.brain(id)?.trackedMode).toBe('bypassPermissions');
+    await wake(w, q, 'fix the parser');
+    await sit(w, q, id);
+    q.result();
+    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
+    expect(q.calls.filter((c) => c.method === 'setPermissionMode')).toEqual([]);
+    expect(w.texts(q).find((t) => t.includes('KICKOFF'))).not.toContain('Plan first');
+    // The agent cannot put itself into plan mode, and there is no plan to exit.
+    expect(await q.callTool('EnterPlanMode', {})).toMatchObject({
+      kind: 'denied',
+      by: 'gate',
+      reason: expect.stringMatching(/Plan-first/),
+    });
+    expect(await q.callTool('ExitPlanMode', {})).toMatchObject({ kind: 'denied', by: 'gate' });
+    expect(w.manager.pendingCards()).toEqual([]);
+    // Seated work runs straight away (the gate allows; nothing waits on a permission prompt).
+    expect(
+      (await q.callTool('mcp__pc__write', { file_path: '/Users/jasper/Code/foo/a.ts', content: 'x' })).kind,
+    ).toBe('allowed');
+    expect(w.manager.brain(id)?.trackedMode).toBe('bypassPermissions');
+  });
+
+  it('loads records saved under the old role default with Plan-first off; a player toggle survives', () => {
+    const base = {
+      agentId: 'ada1',
+      handle: 'ada',
+      name: 'Ada',
+      role: 'ceo' as const,
+      ceo: true,
+      status: 'alive' as const,
+      hiredAt: 0,
+      seniority: 1,
+      sessionId: 's',
+      sessionStarted: true,
+      nonce: 'n',
+      autonomy: 'listen' as const,
+      pingInstead: false,
+    };
+    expect(migratePlanFirst({ ...base, planFirst: true }).planFirst).toBe(false);
+    expect(migratePlanFirst({ ...base, planFirst: true, planFirstByPlayer: true }).planFirst).toBe(true);
+    expect(migratePlanFirst({ ...base, planFirst: false, planFirstByPlayer: true }).planFirst).toBe(false);
+  });
+
+  it('the AgentScreen toggle turns Plan-first on and marks it as the player’s choice', async () => {
+    const { w, id } = await world();
+    await w.manager.command(id, { cmd: 'plan_first', on: true });
+    expect(w.manager.listAgents()[0]).toMatchObject({ planFirst: true });
+    expect(w.manager.brain(id)?.record).toMatchObject({ planFirst: true, planFirstByPlayer: true });
   });
 });
 
@@ -288,7 +350,7 @@ describe('stand up, debounce and kick', () => {
     expect(flagCalls(q).at(-1)).toEqual({ model: 'claude-haiku-5-5', effortLevel: 'xhigh' });
     expect(q.calls.filter((c) => c.method === 'setPermissionMode').map((c) => c.args)).toEqual([
       'plan',
-      'default',
+      'bypassPermissions',
     ]);
     expect(w.texts(q).find((t) => t.includes('KICKED'))).toContain('Jasper kicked you off linux-1 mid-task');
     expect(w.manager.brain(id)?.fsm.snapshot).toMatchObject({ state: 'wandering', epoch: 1 });

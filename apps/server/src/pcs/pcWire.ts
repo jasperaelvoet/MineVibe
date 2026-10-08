@@ -31,6 +31,21 @@ export interface PcInfoExtras {
   readonly banner?: string | null;
 }
 
+/**
+ * The monitor banner of a PC whose agent walked over to ask the player: "BRB: asking <player>" (PLAN §6.3/§6.4; USER
+ * DECISION 2026-10-08 keeps this walk only for a player who is not near). `askingAgent` is the agent that left with
+ * `pc.unseat{away}` (an `away` reservation also covers a meeting pull, which shows no banner).
+ */
+export function seatBanner(
+  seat: SeatState,
+  playerName: string | null,
+  askingAgent: string | null,
+): string | null {
+  if (seat.occupant !== null || seat.reservation?.kind !== 'away') return null;
+  if (askingAgent === null || seat.reservation.agentId !== askingAgent) return null;
+  return `BRB: asking ${playerName ?? 'the player'}`;
+}
+
 /** One PC as `pc.state` sends it; null for a PC type the protocol has no name for (`windows`). */
 export function toPcInfo(view: PcView, rec: PcRecord, extras: PcInfoExtras): PcInfo | null {
   if (view.type === 'windows') return null;

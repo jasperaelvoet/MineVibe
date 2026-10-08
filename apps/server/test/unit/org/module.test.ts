@@ -269,16 +269,55 @@ describe('org module: ApproachQueue → CrewHooks and agent.approach', () => {
     });
   });
 
-  it('a seated agent near the player walks over (goAway) and goes back after the answer (comeBack)', async () => {
+  it('a seated agent whose player is not near walks over (goAway) and goes back after the answer (comeBack)', async () => {
     const h = await harness();
     h.crew.update('bram-1', { seatedPc: 'linux-1' });
-    h.bodies.set('bram-1', body('bram-1', 2, 8, { seat: { kind: 'pc', pcId: 'linux-1' } }));
+    h.bodies.set('bram-1', body('bram-1', 2, 20, { seat: { kind: 'pc', pcId: 'linux-1' } }));
     h.pushBodies();
     h.crew.ask('bram-1', 'q-bram');
     expect(h.hooks.calls).toEqual(['goAway bram-1 q-bram']);
     expect(approaches(h.bridge)).toEqual(['bram-1 present q-bram']);
     h.crew.dropCard('q-bram');
     expect(h.hooks.calls).toEqual(['goAway bram-1 q-bram', 'comeBack bram-1']);
+  });
+
+  it('USER DECISION 2026-10-08: a seated agent with the player near presents from its chair (no goAway)', async () => {
+    const h = await harness();
+    h.crew.update('bram-1', { seatedPc: 'linux-1' });
+    h.bodies.set('bram-1', body('bram-1', 2, 5, { seat: { kind: 'pc', pcId: 'linux-1' } }));
+    h.pushBodies();
+    h.crew.ask('bram-1', 'q-bram');
+    expect(approaches(h.bridge)).toEqual(['bram-1 present_seated q-bram']);
+    expect(h.crew.cardsOf('bram-1')[0]).toMatchObject({ id: 'q-bram', presenting: true });
+    expect(h.bridge.pushed('ui.toast')).toEqual([]);
+    h.crew.dropCard('q-bram');
+    expect(approaches(h.bridge)).toEqual(['bram-1 present_seated q-bram', 'bram-1 release -']);
+    // It never stood up: no goAway / comeBack.
+    expect(h.hooks.calls).toEqual([]);
+  });
+
+  it('USER DECISION 2026-10-08: a seated agent pings a player in combat instead of walking over', async () => {
+    const h = await harness();
+    h.crew.update('bram-1', { seatedPc: 'linux-1' });
+    h.bodies.set('bram-1', body('bram-1', 2, 20, { seat: { kind: 'pc', pcId: 'linux-1' } }));
+    h.pushBodies();
+    h.worldState(gameTicksAt(2, 9), {
+      player: {
+        pos: { x: 0, y: 64, z: 0 },
+        dim: OVERWORLD,
+        hp: 20,
+        maxHp: 20,
+        food: 20,
+        inCombat: true,
+        idleMs: 0,
+      },
+    });
+    h.crew.ask('bram-1', 'q-bram');
+    expect(approaches(h.bridge)).toEqual(['bram-1 ping q-bram']);
+    expect(h.bridge.pushed('ui.toast').at(-1)?.text).toBe(
+      'Bram has a question for you (you are in a fight): @bram or G',
+    );
+    expect(h.hooks.calls).toEqual([]);
   });
 
   it('a far agent pings: agent.approach ping plus one toast naming the reason', async () => {

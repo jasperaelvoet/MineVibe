@@ -46,7 +46,7 @@ Everything runs locally inside one `MineVibe.app`: agents, game, world and VMs. 
 | Minecraft | Java **26.3**, **Fabric** (loader 0.19.5, Fabric API 0.162.0+26.3, Loom 1.18.3, Gradle 9.7.1), **Java 25**. Unobfuscated Mojang names, SDL3 input. |
 | Renderer | OpenGL backend forced (`--graphicsBackend opengl`). Vulkan is experimental and opt-in only. |
 | Agent bodies | Carpet-style fake `ServerPlayer`, vendored (MIT, credited in NOTICE). Real HP, hunger, inventory, menus and riding. |
-| Agent brains | One long-lived streaming `query()` per agent, using `@anthropic-ai/claude-agent-sdk@0.3.293` |
+| Agent brains | One long-lived streaming `query()` per agent, using `@anthropic-ai/claude-agent-sdk@0.3.293`. Always in `bypassPermissions`, with ToolGate (PreToolUse) as the fail-closed sandbox guard; no automatic plan mode (Plan-first is a per-agent toggle, off by default). USER DECISIONS 2026-10-08, 6.1-6.4. |
 | Claude binary | The user's own `claude` (T3 model), at version ≥ 2.1.293, because Haiku 5.5 effort needs it. The installed copy is 2.1.284, so the user runs `claude update`. Release artifacts never ship the Claude binary. |
 | Linux PCs | **Apple `container` 1.5.0**, bundled in the app (Apache-2.0), running `ghcr.io/trycua/linux:24.04` plus a thin MineVibe layer. Docker/OrbStack is a fallback driver for dev and CI. |
 | macOS PCs | **Lume 0.6.x** (notarized `lume.app`, byte-identical) running `ghcr.io/trycua/macos:26`, at most 2 running |
@@ -55,7 +55,7 @@ Everything runs locally inside one `MineVibe.app`: agents, game, world and VMs. 
 | Minecraft auth | Offline profile for development and personal use (the user owns the game). **Public binary releases are gated on Microsoft sign-in**, which needs a Mojang-approved Azure app ID; apply early. Until then the project is source-only. |
 | Hardcore | Agent death is permanent: a grave keeps the inventory, a diary keeps its memory. Player death ends the world and its crew. **"The world and the crew die. Your machines, the Vault and the Codex survive."** Persisting: PCs and their disks, mounted folders, lasting Codex pages, real-clock calendar events, the Chronicle. |
 | Startup behaviour | The **CEO** (the first agent) starts in **Listen** autonomy (wakes only on player, job and critical events), crew cap 4, at most 2 concurrent brain turns, at most 2 seated (Opus) agents |
-| Messaging | Agents speak in bubbles above their heads. The player answers through **vanilla chat**: `@ada @bram …` reaches **only** those agents, no `@` reaches all of them. Chat is intercepted client-side and never sent as a server chat message. Agents with a question, plan or hire **walk to the player**, one presenting at a time. Right-clicking an agent opens its AgentScreen. |
+| Messaging | Agents speak in bubbles above their heads. The player answers through **vanilla chat**: `@ada @bram …` reaches **only** those agents, no `@` reaches all of them. Chat is intercepted client-side and never sent as a server chat message. Agents with a question, plan or hire **walk to the player**, one presenting at a time; a seated agent asks **from its chair** when the player is near (USER DECISION 2026-10-08, 6.4). Right-clicking an agent opens its AgentScreen. |
 | Codex | Shared, markdown-backed knowledge base, with a library block in the world. Lasting pages survive world death; world pages (places, coordinates) are lost with the world. |
 | Calendar and meetings | A shared calendar (wall block and handheld item) for tasks, reminders and meetings, on game or real clocks, with recurrence. The CEO and the player can schedule for anyone; other agents only for themselves. A meeting gathers attendees at the meeting table for a fixed-format standup. |
 | Repo | `github.com/jasperaelvoet/MineVibe`, public, MIT. CI on GitHub Actions. Docs with Astro Starlight on GitHub Pages. |
@@ -166,23 +166,32 @@ Nothing is ever written inside the .app bundle, because that would break its sig
 query({ prompt: gatedInbox, options: {
   pathToClaudeCodeExecutable: claudeBin(),      // absolute path to the user's claude, version >= 2.1.293
   env: agentEnv(),                              // allowlist (see below)
-  settingSources: [], strictMcpConfig: true, permissionMode: 'default',
+  settingSources: [], strictMcpConfig: true,
+  permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,   // USER DECISION 2026-10-08
   cwd: agentHome(worldId, agentId),             // never a Vault path
   sessionId | resume, persistSession: true,
   model: 'claude-haiku-5-5', settings: { effortLevel: 'xhigh' },   // effort set via the flag layer [U S3]
   thinking: { type: 'adaptive' }, includePartialMessages: true,
-  tools: ['AskUserQuestion','EnterPlanMode','ExitPlanMode','WebSearch','WebFetch'],   // TodoWrite is silently dropped by CC 2.1.293 (S2)
+  tools: ['AskUserQuestion','ExitPlanMode','WebSearch','WebFetch'],   // no TodoWrite (S2), no EnterPlanMode (USER DECISION 2026-10-08)
   disallowedTools: ['Bash','Read','Edit','Write','Glob','Grep','NotebookEdit','Agent','Task'],
   toolAliases: { Bash:'mcp__pc__bash', Read:'mcp__pc__read', Edit:'mcp__pc__edit', Write:'mcp__pc__write',
                  Glob:'mcp__pc__glob', Grep:'mcp__pc__grep' },        // [U S2]; fallback: prompt guidance
   mcpServers: { mc: mcServer(rec), pc: pcServer(rec) },             // alwaysLoad: true, timeout 600s, never swapped
-  // NO allowedTools for mc/pc (S2): allowedTools shadows canUseTool, so a gate bug returning
-  // "no decision" would auto-allow. ToolGate returns explicit allow/deny; anything else reaches the broker, which denies.
+  // NO allowedTools for mc/pc (S2). Under bypassPermissions a call the hook leaves undecided is auto-allowed, so
+  // ToolGate returns an explicit allow/deny for every mc/pc/web tool and "no decision" only for the two broker tools.
   hooks: { PreToolUse: [toolGate(rec)] },                           // authoritative, fail-closed; matches built-in AND alias names
-  canUseTool: interactionBroker(rec),                               // AskUserQuestion / ExitPlanMode / EnterPlanMode (gate returns no decision for these)
+  canUseTool: interactionBroker(rec),                               // AskUserQuestion / ExitPlanMode (still reach it under bypass)
   systemPrompt: { type:'preset', preset:'claude_code', append: persona(rec, world) },
 }})
 ```
+- **Permission mode (USER DECISION 2026-10-08).** In-game agents always run in `bypassPermissions` (with
+  `allowDangerouslySkipPermissions: true`); there are no permission prompts. ToolGate (the PreToolUse hook) stays the
+  authoritative, fail-closed sandbox guard. After an approved plan Node returns to `bypassPermissions`, never `default`;
+  Node's tracked mode follows (`bypassPermissions`, or `plan` for a plan-first session). Verified live with the bundled
+  claude 2.1.293 (`spikes/s2-s3-sdk/result.md`, "bypass mode"): hooks still run under bypass and their denies still block;
+  AskUserQuestion and ExitPlanMode still reach canUseTool and the answers reach the model, so the card flow is unchanged.
+  A call the hook leaves undecided is auto-allowed without canUseTool. The SDK prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`
+  at startup; it does not hold for those two interaction tools.
 - **Environment hygiene.** `agentEnv()` is an allowlist:
   - It passes `HOME USER LOGNAME SHELL LANG TMPDIR TERM` and an explicit `PATH` that includes `/usr/bin` (claude calls `security` for the keychain).
   - It adds `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_AGENT_SDK_CLIENT_APP=minevibe/<v>`.
@@ -203,7 +212,8 @@ query({ prompt: gatedInbox, options: {
   - `rate_limit_event` goes to the UsageGovernor.
 
 ### 6.2 Tools per state (ToolGate = PreToolUse hook)
-- **Plan-mode detection.** ToolGate uses `input.permission_mode ?? nodeTrackedMode`. The field is optional in the types, but S2 saw it on every call. Node tracks the mode from its own `setPermissionMode` calls and the brokered Enter/ExitPlanMode.
+- **Plan-mode detection.** ToolGate uses `input.permission_mode ?? nodeTrackedMode`. The field is optional in the types, but S2 saw it on every call (the bypass check saw `bypassPermissions` and `plan`). Node tracks the mode from its own `setPermissionMode` calls and the brokered ExitPlanMode.
+- **Plan mode is never automatic (USER DECISION 2026-10-08).** Agents can't put themselves into plan mode: EnterPlanMode is not in the tool list and ToolGate denies it. Plan mode only comes from the player's per-agent Plan-first toggle (6.3), and ExitPlanMode is denied outside plan mode.
 - **Aliased inputs.** `toolAliases` only renames the tool, so the built-in input arrives unchanged. Every `pc__` schema must therefore be a **superset of the built-in input**:
   - Read `{file_path, offset?, limit?, pages?}` with `cat -n` style output.
   - Edit `{file_path, old_string, new_string, replace_all?}`.
@@ -220,8 +230,9 @@ query({ prompt: gatedInbox, options: {
 | `mc__codex_*` | reads allowed anywhere; writes allowed, within the write budget | allow |
 | `mc__calendar_*`, `report_task` | allow for self. Scheduling others is CEO only; agents can't edit events the player created. | same |
 | Plan mode (seated) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (click, type, key, drag, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: `pc__bash`, with the instruction "read-only commands only, e.g. git status or running tests". |
-| AskUserQuestion / ExitPlanMode | broker | broker |
-| EnterPlanMode | deny | broker |
+| AskUserQuestion | broker | broker |
+| ExitPlanMode | deny ("not in plan mode") | broker in plan mode (plan-first sessions only); deny otherwise |
+| EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
 
 - **All file and shell work happens inside the PC.** `pc__read/write/edit/glob/grep` run in the guest through spacesd (`rg`, upload/download, an exact-string edit with the same semantics as Edit). The host never opens a path an agent controls, so there's no symlink race.
 - **`pc__bash`** uses spacesd `spawn` as the `cua` user (root as a fallback if bind-mount permissions require it [U S5]). Details:
@@ -248,9 +259,9 @@ query({ prompt: gatedInbox, options: {
   3. Returns: "Seated. End your turn now."
 - **Swaps happen only at turn boundaries.** On `result`:
   1. Call `applyFlagSettings({model:'claude-opus-5-5', effortLevel:'medium'})`.
-  2. If plan-first is on, call `setPermissionMode('plan')`.
+  2. If plan-first is on (the player's toggle; off by default for every role), call `setPermissionMode('plan')`.
   3. Queue a **kickoff** message: PC info, mounts, an excerpt of the mount's `CLAUDE.md`, handoff notes, and the task.
-  4. Standing up mirrors this: back to Haiku/xhigh and `default` mode.
+  4. Standing up mirrors this: back to Haiku/xhigh and `bypassPermissions` (USER DECISION 2026-10-08; never `default`).
 - **Debounce.** A stand and re-sit on the same PC within 60 s skips the swap.
 - **Fallback** if S3 fails: T3 Code's `close()` + `resume` with explicit model and effort.
 - **Kick, damage, survival, death or PC down:**
@@ -273,12 +284,18 @@ query({ prompt: gatedInbox, options: {
   - **Hold or ping instead of walking.**
     - In combat (hostile within 12 blocks, or damage in the last 8 s), the card and chime are held.
     - The agent falls back to a **ping** (toast, CrewHud "?" and an off-screen arrow) when any of these is true: night outside a lit area, path over 48 blocks or needing digging, the player in another dimension, or the player inside a PC screen. In a PC screen the card shows in the border strip (7.7).
+    - This walk-to-player flow is for **wandering** agents. Seated agents follow the rules below.
   - **Later.** The player can say `@ada later`, press the Later key on the card, or walk away. The card **parks**: it stays answerable via `@` or G, and the agent resumes its job and returns after 10 min, or when the player is idle within 16 blocks. A card auto-parks after 2 min without an answer, or after 2 min of player AFK.
-  - **Seated agents ping by default.** The monitor shows a "? for Jasper" banner.
-    - They walk over (`away_from_seat`) only when the player is within 24 blocks, not seated and not in combat.
-    - While away, the chair stays reserved, with "BRB: asking Jasper" on the monitor. The model stays Opus and `pc__*` is denied.
-    - After the answer they walk back and sit, with no model swap.
-    - The reservation expires after 3 min away; the card is kept.
+  - **Seated agents ask from the chair when the player is near (USER DECISION 2026-10-08).** Being dropped out of the chair for every question felt wrong, so:
+
+    | Situation (seated agent with a pending question, plan or hire) | What happens |
+    |---|---|
+    | Player **near**: within 8 blocks (`seatedNearBlocks`, configurable), same dimension | **Stays seated** (`agent.approach{present_seated}`): turns head and body toward the player from the chair, card-mode bubble, chimes once. Never dismounts. Held in combat. Keeps presenting until the player walks away (over 16 blocks), which parks the card. |
+    | Player **not near**, walking sensible | Stands up and walks over (`away_from_seat`): chair reserved, "BRB: asking Jasper" on the monitor, model stays Opus, `pc__*` denied. Asks, then walks back and sits with no model swap. The reservation expires after 3 min away; the card is kept. |
+    | Walking **not sensible**: night outside a lit area, path over 48 blocks or needing digging, another dimension, player in combat, player inside a PC screen, or the "Ping instead of walking over" setting | **Ping** from the chair (toast, CrewHud "?", off-screen arrow; the border strip when the player is in a PC screen). An agent already walking over goes back to its chair and pings instead (a fight only holds it). |
+    | Player walks up to a seated agent that is pinging | Switches to presenting from the chair. |
+
+    - Only Node decides (ApproachQueue); the mod never stands a seated agent up for a card on its own. Node unseats it first (`agent.unseat{away, keepReservation}`) when it should walk.
   - Card-wait time is excluded from the per-turn time caps. Each agent has a "Ping instead of walking over" setting.
 - **Answer grammar** (shared by chat, AgentScreen and G):
   - **Who resolves a card.** Only a message whose **leading mentions address exactly that one agent** resolves its card. Broadcasts never do; the echo says "(not an answer: 2 cards pending, use @ada or G)".
@@ -298,10 +315,10 @@ query({ prompt: gatedInbox, options: {
     - `pc__write`/`pc__edit` calls whose path is under `$HOME/.claude/plans/` are therefore **captured in Node memory** (PlanCapture) and never sent to the PC. ToolGate allows exactly this path in plan mode.
     - On `ExitPlanMode`, the captured text becomes the plan card.
   - Shows the plan card: **Approve / Revise**.
-  - Approve = `allow` with `updatedInput`, then `setPermissionMode('default')`. Revise = `deny` with the feedback.
+  - Approve = `allow` with `updatedInput`, after `setPermissionMode('bypassPermissions')` (USER DECISION 2026-10-08: never `default`; verified live in both orders). Revise = `deny` with the feedback.
   - Chat: `@ada approve`, or any other non-question text to Ada as Revise.
   - Hire cards accept `@ceo yes` / `@ceo no <note>`.
-  - Plan-first is a per-agent toggle (default on for coding roles).
+  - Plan-first is a per-agent toggle, **off by default for every role** (USER DECISION 2026-10-08: no automatic plan mode). Only the player turns it on, in AgentScreen; crew records saved under the old default (on for CEO and Engineer) load with it off.
 - **Card cleanup.** On interrupt, kick, death, dismiss or world end, the card resolves as `deny` with a reason. After an app restart it's re-asked.
 - **Hiring.**
   1. The CEO calls `mc__request_hire{role,name?,reason,first_task}`. The handler validates the cap and role, creates a hire card and returns at once ("you'll get [HIRE DECISION]").
@@ -544,7 +561,7 @@ Bubbles show the speaker, and the other attendees turn to look at whoever is tal
 | 50 | Share food with a teammate |
 | 47 | Unseat to survive (seated with food ≤ 6 and no food, or a hazard) |
 | 45 | Unseat to fight (attacked, HP < 50%) |
-| 40 | Approach the player as the current presenter (6.4); held in combat; yields to an active meeting |
+| 40 | Approach the player as the current presenter (6.4); held in combat; yields to an active meeting. Seated presenter with the player near (`present_seated`, USER DECISION 2026-10-08): stays in the chair, faces the player, chimes once; the only reflex below 45 that runs while seated, and it never stands up |
 | 38 | Attend a meeting, or go to a scheduled task's location (only after the brain accepted the task) |
 | 35 | Job (from the LLM) |
 | 30 | Shelter at dusk |
@@ -668,7 +685,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
   - **MineVibeMenuScreen** (Esc, non-pausing): Resume, Crew, PCs & Resources, Brains, Options, Quit MineVibe.
   - **Keys:** T or Enter opens chat (`@name` routing, 6.5). G opens the presenter's front card. Alt+1–4 answers it while the crosshair is on that agent and the player isn't in combat; the hotbar keys are never consumed.
 - **Opening an agent.** Right-clicking an AgentPlayer (client `UseEntityCallback`) opens its AgentScreen. Holding food while the agent is hungry feeds it instead. Sneak-right-clicking a seated agent opens a **kick confirmation**; it never kicks instantly.
-- **Bubbles in card mode.** Within 5 blocks, the presenter's bubble expands to up to 8 lines of 40 characters with the question and its numbered options, or shows as a HUD side card. Messages addressed to the player get an off-screen arrow with the agent's name. Truncated replies end with "… (G)".
+- **Bubbles in card mode.** Within 5 blocks (9 for a presenter asking from its PC chair, USER DECISION 2026-10-08), the presenter's bubble expands to up to 8 lines of 40 characters with the question and its numbered options, or shows as a HUD side card. Messages addressed to the player get an off-screen arrow with the agent's name. Truncated replies end with "… (G)".
 
 ### 7.9 Boot and hardcore reset
 - **Booting.** `GuiSetScreenMixin` replaces `TitleScreen` and `DisconnectedScreen` with **BootScreen**. BootScreen waits for `world.open`, then calls `openWorld`, or `createFreshLevel(…HARD, hardcore=true…)` if the world doesn't exist. Quick Play is not used, because it errors on a missing world.
@@ -1069,6 +1086,7 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 |---|---|---|---|
 | S0 toolchain | 2026-10-08 | PASS | Gradle 9.7.1 / Loom 1.18.3 / Fabric API 0.162.0+26.3. JDK 25 (Temurin 25.0.4.1) is auto-provisioned by Gradle; this needed hand-added foojay URLs because of an API quirk. `runClient` boots 26.3 on OpenGL. Server GameTests pass headless. See `spikes/s0-toolchain/result.md`. |
 | S2 SDK routing and auth | 2026-10-08 | PASS with one change | Subscription auth works with the allowlist env and no keychain prompt; `toolAliases` route to `pc__*` (hooks see the alias target). The **plan text arrives via Write, not `input.plan`**, hence PlanCapture. Remove TodoWrite; no `allowedTools` for mc/pc. See `spikes/s2-s3-sdk/result.md`. |
+| S2b bypass mode (USER DECISION 2026-10-08) | 2026-10-08 | PASS | Agents run in `bypassPermissions` + `allowDangerouslySkipPermissions`. Live, bundled claude 2.1.293, 3 Haiku turns: PreToolUse hooks still run (they report `permission_mode: bypassPermissions`) and a hook deny still blocks the call; AskUserQuestion and ExitPlanMode (plan-first via `setPermissionMode('plan')`) still reach canUseTool and the answers reach the model; Node's switch back to `bypassPermissions` works before or after the allow. A call the hook leaves undecided is auto-allowed, so ToolGate must decide every mc/pc/web call (it does). No PreToolUse card fallback needed. See `spikes/s2-s3-sdk/result.md` ("bypass mode"). |
 | S3 model and effort | 2026-10-08 | PASS | `applyFlagSettings` at turn boundaries swaps haiku/xhigh ⇄ opus/medium in under 100 ms. The prompt cache on the subscription lasts 1 h, and a canUseTool held for 180 s is fine. |
 | S5 Apple container PC | 2026-10-08 | PASS with changes | See §8.6. TCC placement, `--mount …,readonly`, volume seeding, SERVING readiness, self-drawn cursor, cpu+1, disk caps. Follow-up S5b: IPv6/UDP isolation, per-PC networks, Time Machine. `spikes/s5-container/result.md`. |
 | S1 fake player | 2026-10-08 | PASS | Carpet-style `AgentPlayer` on 26.3: role skins, hidden from the tab list, 51 blocks of `path_course` in 301 ticks (3.4 blocks/s, 2 plans, swim, 2-block drop), door opened and closed, log mined in 9 ticks (vanilla 10), creeper back-off to 8.3 blocks, lava escape, seat single occupancy, grave + no respawn, restore across reload. **4 agents cost 0.034-0.062 ms per agent tick** (target 0.5); A* 1.0-1.3 ms per 40-block segment warm. `NavProxyMob` kept. 26.3 facts: seat type must be saveable, 60-tick spawn invulnerability, client-authoritative movement, fake connections don't tick, chunk sending stalls without acks (API_MAP §7). Review fixes: dimension change and End exit, phantoms, graves, dead bodies; agents stay real players (§7.1). 26 GameTests. See `spikes/s1-fake-player/result.md`. |

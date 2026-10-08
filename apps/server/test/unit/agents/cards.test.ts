@@ -23,16 +23,15 @@ const QUESTIONS = [
   { question: 'Where?', options: [{ label: 'Here' }, { label: 'There' }], multiSelect: false },
 ];
 
-function setup(options: { seated?: boolean } = {}) {
+function setup() {
   const store = new PendingStore();
   const plans = new PlanCapture(['/Users/jasper']);
   const events: string[] = [];
-  let mode: PermissionMode = 'default';
+  let mode: PermissionMode = 'plan';
   const broker = createInteractionBroker({
     agentId: 'ada-1',
     store,
     plans,
-    canEnterPlan: () => options.seated ?? true,
     seatEpoch: () => 3,
     playerName: () => 'Jasper',
     now: () => 1000,
@@ -44,10 +43,6 @@ function setup(options: { seated?: boolean } = {}) {
       setPermissionMode: async (m) => {
         mode = m;
         events.push(`mode:${m}`);
-      },
-      trackMode: (m) => {
-        mode = m;
-        events.push(`track:${m}`);
       },
     },
   });
@@ -99,7 +94,7 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(store.list('ada-1')).toEqual([]);
   });
 
-  it('ExitPlanMode: the captured plan becomes the card; approve → allow + default mode', async () => {
+  it('ExitPlanMode: the captured plan becomes the card; approve → allow + back to bypassPermissions', async () => {
     const { store, plans, events, call, mode } = setup();
     plans.write('/Users/jasper/.claude/plans/fix.md', '# Plan\n- run the tests\n- fix the parser');
     const pending = call('ExitPlanMode', {});
@@ -109,8 +104,9 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(store.epochOf(card?.id ?? '')).toBe(3);
     store.resolve(card?.id ?? '', { kind: 'approved' });
     expect(await pending).toEqual({ behavior: 'allow', updatedInput: {} });
-    expect(mode()).toBe('default');
-    expect(events).toEqual(['wait:plan', 'resume:plan:approved', 'mode:default']);
+    // USER DECISION 2026-10-08: an approved plan returns to bypassPermissions, never 'default'.
+    expect(mode()).toBe('bypassPermissions');
+    expect(events).toEqual(['wait:plan', 'resume:plan:approved', 'mode:bypassPermissions']);
     expect(plans.latest()).toBeNull();
   });
 
@@ -126,14 +122,14 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jasper wants changes to the plan: use tabs/);
   });
 
-  it('EnterPlanMode: only while seated; anything else is denied', async () => {
-    const seated = setup({ seated: true });
-    expect(await seated.call('EnterPlanMode', {})).toEqual({ behavior: 'allow', updatedInput: {} });
-    expect(seated.mode()).toBe('plan');
-    const wandering = setup({ seated: false });
-    expect(await wandering.call('EnterPlanMode', {})).toMatchObject({ behavior: 'deny' });
+  it('EnterPlanMode is always denied (USER DECISION 2026-10-08: no automatic plan mode); so is anything else', async () => {
+    const b = setup();
+    const res = await b.call('EnterPlanMode', {});
+    expect(res).toMatchObject({ behavior: 'deny' });
+    expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jasper turns on Plan-first/);
+    expect(b.events).toEqual([]);
     for (const tool of ['Bash', 'mcp__pc__bash', 'mcp__mc__status', 'WebFetch']) {
-      expect(await wandering.call(tool, {}), tool).toMatchObject({ behavior: 'deny' });
+      expect(await b.call(tool, {}), tool).toMatchObject({ behavior: 'deny' });
     }
   });
 });

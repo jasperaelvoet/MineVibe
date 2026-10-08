@@ -80,7 +80,7 @@ public final class SkillCommands {
 			.then(Commands.literal("approach")
 				.then(Commands.argument("agent", StringArgumentType.word()).suggests(AGENTS)
 					.then(Commands.argument("role", StringArgumentType.word())
-						.suggests((ctx, b) -> SharedSuggestionProvider.suggest(new String[] {"present", "queue", "ping", "release"}, b))
+						.suggests((ctx, b) -> SharedSuggestionProvider.suggest(new String[] {"present", "present_seated", "queue", "ping", "release"}, b))
 						.executes(ctx -> call(ctx, () -> {
 							service(ctx).approach(new Ui.AgentApproach(StringArgumentType.getString(ctx, "agent"), "dev", StringArgumentType.getString(ctx, "role")));
 							return Map.of();

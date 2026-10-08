@@ -3,10 +3,15 @@
  *
  * - The hook sees the alias target (`mcp__pc__bash`, never `Bash`; S2) plus `mcp_server.source`. Only in-process SDK
  *   servers (`source: 'sdk'`) named `mc` / `pc` are trusted.
- * - It returns an explicit `allow` or `deny` for every mc/pc/web tool. Broker tools (AskUserQuestion, ExitPlanMode,
- *   EnterPlanMode while seated) get **no decision**, so canUseTool (the InteractionBroker) runs; anything that is not
- *   recognised is denied. There is no `allowedTools` for mc/pc (S2), so a gate bug can only fall through to the broker,
- *   which denies.
+ * - It returns an explicit `allow` or `deny` for every mc/pc/web tool. Broker tools (AskUserQuestion, and ExitPlanMode
+ *   in plan mode) get **no decision**, so canUseTool (the InteractionBroker) runs; anything that is not recognised is
+ *   denied. There is no `allowedTools` for mc/pc (S2).
+ * - USER DECISION 2026-10-08: sessions run in `bypassPermissions`, where a call the hook leaves undecided is
+ *   auto-allowed without canUseTool (verified live) — except the interaction tools AskUserQuestion and ExitPlanMode,
+ *   which still reach canUseTool. So this gate is the only sandbox guard: "no decision" is returned for those two
+ *   broker tools and nothing else, and every error is a deny.
+ * - USER DECISION 2026-10-08: EnterPlanMode is always denied (agents never put themselves into plan mode), and
+ *   ExitPlanMode is denied outside plan mode (only the player's Plan-first toggle starts one).
  * - Plan mode uses `input.permission_mode ?? nodeTrackedMode`.
  * - Any exception while deciding is a deny.
  */
@@ -44,6 +49,8 @@ export type GateDenyCode =
   | 'meeting'
   | 'not_occupant'
   | 'plan_mode'
+  /** EnterPlanMode, or ExitPlanMode outside plan mode (USER DECISION 2026-10-08). */
+  | 'no_plan_mode'
   | 'ceo_only'
   | 'self_only'
   | 'web_wandering'
@@ -335,12 +342,18 @@ export async function decideTool(
 
   switch (toolName) {
     case 'AskUserQuestion':
-    case 'ExitPlanMode':
       return { behavior: 'defer', reason: 'broker' };
-    case 'EnterPlanMode':
-      return ctx.seat.state === 'seated' && isPcSeat(ctx.seat)
+    case 'ExitPlanMode':
+      // USER DECISION 2026-10-08: only plan-first sessions (the player's toggle) are in plan mode.
+      return mode === 'plan'
         ? { behavior: 'defer', reason: 'broker' }
-        : deny('not_seated', 'Plan mode is for PC work: sit at a PC first.');
+        : deny('no_plan_mode', 'You are not in plan mode: there is no plan to approve. Just do the work.');
+    case 'EnterPlanMode':
+      // USER DECISION 2026-10-08: agents never put themselves into plan mode (not in the tool list either).
+      return deny(
+        'no_plan_mode',
+        `Plan mode is not available to you. ${ctx.playerName} turns on Plan-first for you when they want a plan first; otherwise just do the work.`,
+      );
     case 'WebSearch':
     case 'WebFetch': {
       if (!(ctx.seat.state === 'seated' && isPcSeat(ctx.seat))) {

@@ -29,14 +29,25 @@ export function profileOf(tier: ModelTier): BrainProfile {
   return tier === 'opus' ? SEATED_PROFILE : WANDERING_PROFILE;
 }
 
-/** `options.tools`: TodoWrite is silently dropped by CC 2.1.293 (S2), so it is not listed. */
-export const BUILTIN_TOOLS = [
-  'AskUserQuestion',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'WebSearch',
-  'WebFetch',
-] as const;
+/**
+ * The permission mode every agent session runs in, and returns to after an approved plan (never `'default'`).
+ *
+ * USER DECISION 2026-10-08: in-game agents ALWAYS run in `bypassPermissions` (with `allowDangerouslySkipPermissions`).
+ * The PreToolUse hook (ToolGate) stays the authoritative, fail-closed sandbox guard: it returns an explicit allow or
+ * deny for every mc/pc/web tool, because under bypass a call the hook leaves undecided is auto-allowed without
+ * canUseTool. Verified live (spikes/s2-s3-sdk/result.md, "bypass mode"): hooks still run and their denies still block;
+ * AskUserQuestion and ExitPlanMode still reach canUseTool (the InteractionBroker), so the card flow is unchanged.
+ */
+export const AGENT_PERMISSION_MODE = 'bypassPermissions' as const;
+
+/**
+ * `options.tools`: TodoWrite is silently dropped by CC 2.1.293 (S2), so it is not listed.
+ *
+ * USER DECISION 2026-10-08: no EnterPlanMode. Agents never put themselves into plan mode; only the player's per-agent
+ * Plan-first toggle does (Node's `setPermissionMode('plan')` at the sit boundary). ExitPlanMode stays listed for those
+ * plan-first sessions; ToolGate denies it outside plan mode.
+ */
+export const BUILTIN_TOOLS = ['AskUserQuestion', 'ExitPlanMode', 'WebSearch', 'WebFetch'] as const;
 
 /** Host tools that must never run on the host. */
 export const DISALLOWED_TOOLS = [

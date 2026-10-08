@@ -19,9 +19,20 @@ public final class BubbleLayout {
 	public static final int CARD_LINES = 8;
 	/** The presenter's bubble shows its card within this distance (blocks). */
 	public static final double CARD_MODE_DISTANCE = 5.0;
+	/**
+	 * USER DECISION 2026-10-08: a presenter that sits at a PC asks from its chair whenever the player is within 8 blocks
+	 * (Node's {@code seatedNearBlocks}) and never walks closer, so its card shows from a little farther away (the camera
+	 * sits above the player's feet).
+	 */
+	public static final double SEATED_CARD_MODE_DISTANCE = 9.0;
 	/** Bubbles are not drawn beyond this distance; the line becomes a toast. */
 	public static final double MAX_BUBBLE_DISTANCE = 32.0;
 	public static final String MORE = "… (G)";
+
+	/** How close the camera must be for the presenter's bubble to show its card. */
+	public static double cardModeDistance(boolean presenterSeatedAtPc) {
+		return presenterSeatedAtPc ? SEATED_CARD_MODE_DISTANCE : CARD_MODE_DISTANCE;
+	}
 
 	/** Wrapped lines, and whether text was cut off. */
 	public record Layout(List<String> lines, boolean truncated) {}

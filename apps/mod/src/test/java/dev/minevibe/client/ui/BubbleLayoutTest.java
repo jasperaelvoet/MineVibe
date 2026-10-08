@@ -78,6 +78,14 @@ class BubbleLayoutTest {
 	}
 
 	@Test
+	void seatedPresenterShowsItsCardFromTheChair() {
+		// USER DECISION 2026-10-08: seated agents ask from the chair when the player is within 8 blocks.
+		assertEquals(BubbleLayout.CARD_MODE_DISTANCE, BubbleLayout.cardModeDistance(false));
+		assertTrue(BubbleLayout.cardModeDistance(true) >= 8.0, "covers Node's seatedNearBlocks (8)");
+		assertTrue(BubbleLayout.cardModeDistance(true) < BubbleLayout.MAX_BUBBLE_DISTANCE);
+	}
+
+	@Test
 	void clipEndsWithAnEllipsis() {
 		assertEquals("abc", BubbleLayout.clip("abc", 5));
 		assertEquals("abcd…", BubbleLayout.clip("abcdefgh", 5));

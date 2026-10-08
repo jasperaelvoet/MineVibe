@@ -146,5 +146,8 @@ export function pcToolName(name: string): PcToolName | null {
   return (PC_TOOLS as readonly string[]).includes(short) ? (short as PcToolName) : null;
 }
 
-/** Built-in tools brokered by canUseTool. */
-export const BROKER_TOOLS = ['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode'] as const;
+/**
+ * Built-in tools brokered by canUseTool (they still reach it under bypassPermissions). USER DECISION 2026-10-08: no
+ * EnterPlanMode; ExitPlanMode only in plan-first sessions.
+ */
+export const BROKER_TOOLS = ['AskUserQuestion', 'ExitPlanMode'] as const;

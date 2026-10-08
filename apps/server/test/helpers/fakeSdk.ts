@@ -4,6 +4,11 @@
  * PreToolUse hook, canUseTool for "no decision", then the in-process MCP tool handler (with the tool's own input
  * validation). Control calls (`applyFlagSettings`, `setPermissionMode`, `interrupt`) are recorded, and
  * `applyFlagSettings` fires the PostModelSwitch hook during the call, as CC 2.1.293 does (S3).
+ *
+ * Permission modes follow what the live check of USER DECISION 2026-10-08 showed (spikes/s2-s3-sdk/result.md, "bypass
+ * mode"): under `bypassPermissions` a call the hook leaves undecided is auto-allowed without canUseTool, except the
+ * interaction tools AskUserQuestion and ExitPlanMode, which still reach canUseTool. An approved ExitPlanMode leaves
+ * plan mode for the mode the session had before it (unless Node already switched).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -57,6 +62,9 @@ interface Registered {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** Tools that ask the user even under bypassPermissions (verified live, CC 2.1.293). */
+const INTERACTION_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
 export class FakeQuery implements QueryLike {
   readonly options: Options;
   readonly sent: SDKUserMessage[] = [];
@@ -67,6 +75,8 @@ export class FakeQuery implements QueryLike {
   model: string;
   effort: EffortLevel | null;
   permissionMode: PermissionMode;
+  /** The mode before the last switch into plan mode (an approved ExitPlanMode returns to it). */
+  prePlanMode: PermissionMode = 'default';
   closed = false;
   interrupted = 0;
   #out: SDKMessage[] = [];
@@ -103,6 +113,7 @@ export class FakeQuery implements QueryLike {
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     this.calls.push({ method: 'setPermissionMode', args: mode });
+    if (mode === 'plan' && this.permissionMode !== 'plan') this.prePlanMode = this.permissionMode;
     this.permissionMode = mode;
   }
 
@@ -196,15 +207,7 @@ export class FakeQuery implements QueryLike {
       apiKeySource: 'none',
       claude_code_version: '2.1.293',
       cwd: this.options.cwd ?? '/',
-      tools: [
-        'AskUserQuestion',
-        'EnterPlanMode',
-        'ExitPlanMode',
-        'WebSearch',
-        'WebFetch',
-        'mcp__mc__status',
-        'mcp__pc__bash',
-      ],
+      tools: ['AskUserQuestion', 'ExitPlanMode', 'WebSearch', 'WebFetch', 'mcp__mc__status', 'mcp__pc__bash'],
       mcp_servers: [
         { name: 'mc', status: 'connected' },
         { name: 'pc', status: 'connected' },
@@ -362,7 +365,11 @@ export class FakeQuery implements QueryLike {
     let finalInput = input;
     if (decision === 'deny')
       return { kind: 'denied', by: 'gate', reason: hook.hookSpecificOutput?.permissionDecisionReason ?? '' };
-    if (decision !== 'allow') {
+    const bypassed =
+      this.permissionMode === 'bypassPermissions' &&
+      this.options.allowDangerouslySkipPermissions === true &&
+      !INTERACTION_TOOLS.has(toolName);
+    if (decision !== 'allow' && !bypassed) {
       const canUse = this.options.canUseTool;
       if (!canUse) return { kind: 'denied', by: 'broker', reason: 'no canUseTool' };
       const res: PermissionResult | null = await canUse(toolName, input, {
@@ -373,9 +380,16 @@ export class FakeQuery implements QueryLike {
       if (!res || res.behavior === 'deny')
         return { kind: 'denied', by: 'broker', reason: res?.message ?? 'null' };
       finalInput = res.updatedInput ?? input;
-      if (toolName === 'ExitPlanMode') this.permissionMode = 'default';
-      if (toolName === 'EnterPlanMode') this.permissionMode = 'plan';
+      if (toolName === 'ExitPlanMode' && this.permissionMode === 'plan')
+        this.permissionMode = this.prePlanMode;
+      if (toolName === 'EnterPlanMode') {
+        if (this.permissionMode !== 'plan') this.prePlanMode = this.permissionMode;
+        this.permissionMode = 'plan';
+      }
       if (!toolName.startsWith('mcp__')) return { kind: 'allowed', input: finalInput, result: null };
+    } else if (decision !== 'allow' && !toolName.startsWith('mcp__')) {
+      // Auto-allowed by bypassPermissions (a built-in the hook left undecided).
+      return { kind: 'allowed', input: finalInput, result: null };
     }
     const [, server, name] = toolName.split('__');
     const cfg = this.options.mcpServers?.[server ?? ''] as

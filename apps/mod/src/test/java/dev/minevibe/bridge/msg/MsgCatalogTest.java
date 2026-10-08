@@ -112,6 +112,10 @@ class MsgCatalogTest {
 
 		Ui.AgentApproach release = parse(Ui.AGENT_APPROACH, "ui", "agent.approach--release.json");
 		assertNull(release.pendingId());
+		// USER DECISION 2026-10-08: a seated agent presents from its chair when the player is near.
+		Ui.AgentApproach seated = parse(Ui.AGENT_APPROACH, "ui", "agent.approach--present-seated.json");
+		assertEquals("present_seated", seated.role());
+		assertEquals("card-9", seated.pendingId());
 	}
 
 	@Test

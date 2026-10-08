@@ -43,7 +43,7 @@ function ctx(overrides: Partial<GateContext> & { state?: Parameters<typeof seat>
     ceo: false,
     seat: seat(state ?? 'wandering'),
     occupant: (pcId) => (pcId === 'linux-1' ? 'ada-1' : null),
-    trackedMode: 'default',
+    trackedMode: 'bypassPermissions',
     plans: new PlanCapture([HOME]),
     turn: { calls: 0, activeMs: 0 },
     playerName: 'Jasper',
@@ -223,12 +223,52 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
     ).toBe('allow');
   });
 
-  it('broker tools get no decision; EnterPlanMode only while seated at a PC', async () => {
+  it('broker tools get no decision; ExitPlanMode only in plan mode; EnterPlanMode never (USER DECISION 2026-10-08)', async () => {
     expect((await decide('AskUserQuestion', {}, ctx())).behavior).toBe('defer');
-    expect((await decide('ExitPlanMode', {}, ctx({ state: 'seated' }))).behavior).toBe('defer');
-    expect(await decide('EnterPlanMode', {}, ctx())).toMatchObject({ behavior: 'deny' });
-    expect(await decide('EnterPlanMode', {}, ctx({ state: 'meeting' }))).toMatchObject({ behavior: 'deny' });
-    expect((await decide('EnterPlanMode', {}, ctx({ state: 'seated' }))).behavior).toBe('defer');
+    expect((await decide('AskUserQuestion', {}, ctx({ state: 'seated' }))).behavior).toBe('defer');
+    // A plan-first session (the player's toggle) is in plan mode: ExitPlanMode reaches the broker.
+    const planning = ctx({ state: 'seated', trackedMode: 'plan' });
+    expect((await decide('ExitPlanMode', {}, planning)).behavior).toBe('defer');
+    expect(
+      (await decide('ExitPlanMode', {}, ctx({ state: 'seated' }), { ...SDK, permissionMode: 'plan' }))
+        .behavior,
+    ).toBe('defer');
+    // Outside plan mode there is no plan to approve (the CLI's own mode wins over the tracked one).
+    expect(await decide('ExitPlanMode', {}, ctx({ state: 'seated' }))).toMatchObject({
+      code: 'no_plan_mode',
+    });
+    expect(
+      await decide('ExitPlanMode', {}, planning, { ...SDK, permissionMode: 'bypassPermissions' }),
+    ).toMatchObject({ code: 'no_plan_mode' });
+    // Agents never put themselves into plan mode, wherever they are.
+    for (const state of ['wandering', 'seated', 'meeting'] as const) {
+      expect(await decide('EnterPlanMode', {}, ctx({ state })), state).toMatchObject({
+        behavior: 'deny',
+        code: 'no_plan_mode',
+      });
+    }
+  });
+
+  it('decides every mc/pc call explicitly under bypassPermissions (an undecided call would be auto-allowed)', async () => {
+    const bypass = { ...SDK, permissionMode: 'bypassPermissions' };
+    for (const state of ['wandering', 'seated', 'away', 'meeting'] as const) {
+      for (const tool of [
+        'mcp__mc__status',
+        'mcp__mc__sit_at_pc',
+        'mcp__pc__bash',
+        'mcp__pc__write',
+        'WebFetch',
+      ]) {
+        const d = await decide(
+          tool,
+          { command: 'ls', file_path: '/x', url: 'https://example.com' },
+          ctx({ state }),
+          bypass,
+        );
+        expect(d.behavior, `${tool} ${state}`).not.toBe('defer');
+      }
+    }
+    expect((await decide('Bash', { command: 'ls' }, ctx({ state: 'seated' }), bypass)).behavior).toBe('deny');
   });
 
   it('web tools: denied away from a PC; WebFetch denies private targets', async () => {

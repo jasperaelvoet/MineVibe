@@ -1,6 +1,6 @@
 # Spike S2 + S3: Agent SDK routing, auth, HITL and model/effort swap
 
-Run on 2026-10-08 against the live Claude subscription. Raw evidence is in `out/<check>.json` and `out/<check>.events.jsonl` (gitignored, sanitized: no e-mail, organisation or tokens). Run `npm run <a|b|c|d|d:inline|e|f|h|i|summary>` to repeat a check.
+Run on 2026-10-08 against the live Claude subscription. Raw evidence is in `out/<check>.json` and `out/<check>.events.jsonl` (gitignored, sanitized: no e-mail, organisation or tokens). Run `npm run <a|b|c|d|d:inline|e|f|h|i|j|j:order|summary>` to repeat a check.
 
 | Item | Value |
 |---|---|
@@ -24,6 +24,7 @@ Run on 2026-10-08 against the live Claude subscription. Raw evidence is in `out/
 | g rate limits | **PASS** | `rate_limit_event` captured. Utilization is in `unifiedWindows.*.utilization` (fraction), not top-level |
 | h concurrency | **PASS** | 3 parallel Haiku sessions all finished in about 1.3–1.5 s |
 | i pending canUseTool | **PASS** | An AskUserQuestion card held for 180 s, then answered: the session completed and the cache was still warm |
+| j bypass mode (2026-10-09) | **PASS** | USER DECISION 2026-10-08: under `bypassPermissions` hooks still run and their denies block; AskUserQuestion and ExitPlanMode still reach canUseTool; an undecided call is auto-allowed (see "Bypass mode" below) |
 
 ---
 
@@ -182,3 +183,27 @@ One streaming session. Each turn was "call mcp__mc__status once, then reply done
 - **Leftovers outside the repo:**
   - Check f wrote one session transcript under `~/.claude/projects/-Users-jasperaelvoet-Documents-MineVibe-spikes-s2-s3-sdk-out-cwd-f-swap-*`.
   - The plan-mode runs created no file under `~/.claude/plans/`; the writes were aliased into the fake pc tool.
+
+---
+
+## Bypass mode (USER DECISION 2026-10-08): `src/j-bypass.mjs`
+
+**PASS. In-game agents run in `permissionMode: 'bypassPermissions'` with `allowDangerouslySkipPermissions: true`; ToolGate (PreToolUse) stays the authoritative, fail-closed sandbox guard, and the card flow keeps using canUseTool. No PreToolUse-hook fallback for cards was needed.**
+
+Run on 2026-10-09 (local), SDK `0.3.293`, SDK-bundled `claude` `2.1.293`, Haiku 5.5 at `low` effort, production option shape (no `allowedTools`; `tools: ['AskUserQuestion', 'ExitPlanMode']`, i.e. no EnterPlanMode). Three user turns in total (two sessions for `npm run j`, one for `npm run j:order`), 12 API calls, about $0.005 list. Nothing secret was printed or persisted (the Recorder sanitizer as before).
+
+| Check | Result | Evidence |
+|---|---|---|
+| init under bypass | PASS | `system/init.permissionMode: "bypassPermissions"`; tools as configured plus the mc/pc servers, no host built-ins |
+| (a) PreToolUse still runs | PASS | The hook fired for `mcp__mc__status`, `mcp__pc__bash`, `mcp__pc__read` and `AskUserQuestion`, each with `permission_mode: "bypassPermissions"` |
+| (a) a hook deny still blocks | PASS | `mcp__pc__bash` denied by the hook: the handler never ran, the model got `is_error` with "PreToolUse:mcp__pc__bash hook error: SPIKE-GATE-DENY: …", and the result listed it in `permission_denials` |
+| (b) AskUserQuestion reaches canUseTool | PASS | canUseTool got `AskUserQuestion`; `allow` + `updatedInput {questions, answers: {"Which colour?": "Blue"}}`; the model replied "Blue" |
+| (c) ExitPlanMode in a plan-first session | PASS | Session started in bypass, then `setPermissionMode('plan')` (the sit boundary): the plan Write arrived as `mcp__pc__write` with `permission_mode: "plan"`, `ExitPlanMode` (input `{}`) reached canUseTool, tool result "User has approved exiting plan mode. You can now proceed." |
+| back to bypass after approval | PASS | `setPermissionMode('bypassPermissions')` took 1-4 ms; the next call (`mcp__mc__status`) reported `permission_mode: "bypassPermissions"` and the model finished ("DONE"). Works in both orders: after the allow is handed back (S2 order, `npm run j`) and awaited before the allow is returned (the production InteractionBroker order, `npm run j:order`) |
+
+**Finding that shapes ToolGate.** Under bypass a call the hook leaves **undecided** is auto-allowed without canUseTool: the hook returned no decision for `mcp__pc__read` and its handler ran (canUseTool never saw it). Only the interaction tools (AskUserQuestion, ExitPlanMode) still go to canUseTool. So ToolGate must return an explicit allow or deny for every mc/pc/web call and "no decision" only for those two (it does; `apps/server/test/unit/agents/ToolGate.test.ts` pins it). The old fallback "anything undecided reaches the broker, which denies" no longer exists.
+
+**Startup warning.** With bypass plus a canUseTool callback the SDK prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` ("canUseTool will not be invoked … use a PreToolUse hook instead") once per session. It is true for ordinary tools (see above) and not for the two interaction tools, as (b) and (c) show.
+
+Product changes that came with the decision (apps/server): `permissionMode: 'bypassPermissions'` + `allowDangerouslySkipPermissions` in `sessionOptions.ts` (`AGENT_PERMISSION_MODE`), Node's tracked mode starts at and returns to `bypassPermissions` (`AgentBrain`), the approved plan switches to `bypassPermissions` (`InteractionBroker`), and the fake SDK used by the unit tests mirrors the auto-allow rule above.
+

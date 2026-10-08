@@ -77,6 +77,9 @@ public final class SkillGameTests {
 	 */
 	private static final String SEAT_RESERVE = "minevibe-gametest:seat_reserve";
 	private static final String SEAT_FIGHT = "minevibe-gametest:seat_fight";
+	/** USER DECISION 2026-10-08 (seated agents ask from the chair when the player is near): daylight, own batches. */
+	private static final String SEAT_PRESENT_NEAR = "minevibe-gametest:seat_present_near";
+	private static final String SEAT_PRESENT_FAR = "minevibe-gametest:seat_present_far";
 
 	private static int count(final AgentPlayer agent, final net.minecraft.world.item.Item item) {
 		return Inv.count(agent, item);
@@ -711,6 +714,120 @@ public final class SkillGameTests {
 				service.despawn(new Bodies.AgentDespawn(other.agentId(), "dismissed", false));
 			})
 			.thenWaitUntil(() -> helper.assertTrue(pcs.reservation(pcId) == null, "a dismissed agent's reservation is swept: " + pcs.reservation(pcId)))
+			.thenSucceed();
+	}
+
+	/** A PC chair at {@code chairRel} of a running PC; unregistered when the test ends. */
+	private static String chairPc(final GameTestHelper helper, final BlockPos chairRel) {
+		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();
+		String pcId = "pc-" + Long.toString(ThreadLocalRandom.current().nextLong(1_000_000), 36);
+		helper.setBlock(chairRel, MvWorldContent.OFFICE_CHAIR.defaultBlockState());
+		pcs.register(pcId, helper.getLevel().dimension(), helper.absolutePos(chairRel));
+		pcs.setStatus(pcId, "running");
+		AgentTestSupport.onTestEnd(helper, () -> pcs.unregister(pcId));
+		return pcId;
+	}
+
+	private static boolean fromSeat(final Bodies.AgentEvent e) {
+		return e.data() != null && e.data().has("from") && "seat".equals(e.data().get("from").getAsString());
+	}
+
+	/**
+	 * USER DECISION 2026-10-08: a seated agent with a card whose player is near ({@code agent.approach{present_seated}})
+	 * stays in its chair: it turns toward the player and chimes once, and never dismounts (no {@code pc.unseat}).
+	 */
+	@GameTest(environment = SEAT_PRESENT_NEAR, structure = ARENA, maxTicks = 500)
+	public void seatedAgentNearThePlayerDoesNotDismount(final GameTestHelper helper) {
+		String pcId = chairPc(helper, new BlockPos(5, 1, 5));
+		AgentPlayer agent = spawnAgent(helper, "Asker", AgentRole.ENGINEER, 5, 1, 2);
+		ServerPlayer human = spawnHumanStandIn(helper, 10, 1, 9);
+		agent.brain().setFollowTarget(human.getUUID());
+		SkillService service = service(helper);
+		service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), jobId("sit"), 3, dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), "work"));
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(agent.agentId()) != null && agent.getVehicle() instanceof SeatEntity, "seated"))
+			.thenExecute(() -> {
+				helper.assertTrue(agent.distanceTo(human) <= 8.0, "the player is near: " + agent.distanceTo(human));
+				service.approach(new Ui.AgentApproach(agent.agentId(), "card-near", "present_seated"));
+			})
+			.thenExecuteFor(60, () -> helper.assertTrue(agent.getVehicle() instanceof SeatEntity, "never leaves the chair"))
+			.thenExecute(() -> {
+				helper.assertTrue("present_seated".equals(agent.brain().activeName()), "presents from the chair: " + agent.brain().activeName());
+				float want = agent.controls().yawTo(human.position());
+				float off = Math.abs(net.minecraft.util.Mth.wrapDegrees(agent.getYHeadRot() - want));
+				helper.assertTrue(off < 15.0F, "faces the player (head " + agent.getYHeadRot() + ", want " + want + ")");
+				List<Bodies.AgentEvent> arrived = recorder(helper).events(agent.agentId(), "arrived");
+				helper.assertTrue(arrived.size() == 1 && fromSeat(arrived.getFirst()), "chimed once, from the seat: " + arrived);
+				helper.assertTrue(recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, u -> u.pcId().equals(pcId)).isEmpty(), "no pc.unseat");
+				helper.assertTrue(service.seated(agent.agentId()) != null, "seat still tracked");
+				// The walking presenter never stands a seated agent up on its own either: only Node's agent.unseat does.
+				service.approach(new Ui.AgentApproach(agent.agentId(), "card-near", "present"));
+			})
+			.thenExecuteFor(20, () -> helper.assertTrue(agent.getVehicle() instanceof SeatEntity, "present without agent.unseat keeps it seated"))
+			.thenExecute(() -> service.approach(new Ui.AgentApproach(agent.agentId(), null, "release")))
+			.thenIdle(5)
+			.thenExecute(() -> {
+				helper.assertTrue(agent.getVehicle() instanceof SeatEntity, "still seated after the answer");
+				helper.assertFalse("present_seated".equals(agent.brain().activeName()), "released: " + agent.brain().activeName());
+				helper.assertTrue(recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, u -> u.pcId().equals(pcId)).isEmpty(), "still no pc.unseat");
+				assertValid(helper, agent);
+			})
+			.thenSucceed();
+	}
+
+	/**
+	 * USER DECISION 2026-10-08: the player is not near, so Node unseats the agent with the chair kept
+	 * ({@code agent.unseat{away, keepReservation}}) and sends {@code agent.approach{present}}: it walks over, asks, and
+	 * after the answer ({@code release} + {@code agent.seat} with the same epoch) walks back and sits on the same chair.
+	 */
+	@GameTest(environment = SEAT_PRESENT_FAR, structure = ARENA, maxTicks = 1500)
+	public void seatedAgentWithAFarPlayerWalksOverAndReturns(final GameTestHelper helper) {
+		BlockPos chairRel = new BlockPos(2, 1, 2);
+		String pcId = chairPc(helper, chairRel);
+		SimplePcRegistry pcs = (SimplePcRegistry)Seats.pcs();
+		AgentPlayer agent = spawnAgent(helper, "Walker", AgentRole.ENGINEER, 2, 1, 4);
+		ServerPlayer human = spawnHumanStandIn(helper, 13, 1, 13);
+		agent.brain().setFollowTarget(human.getUUID());
+		agent.brain().setMode(IdleMode.STAY, null);
+		SkillService service = service(helper);
+		service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), jobId("sit"), 5, dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), "work"));
+		String back = jobId("back");
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(service.seated(agent.agentId()) != null && agent.getVehicle() instanceof SeatEntity, "seated"))
+			.thenExecute(() -> {
+				helper.assertTrue(agent.distanceTo(human) > 8.0, "the player is not near: " + agent.distanceTo(human));
+				// What Node does for walk_from_seat (AgentBrain.goAway, then the org module's agent.approach).
+				service.unseat(new dev.minevibe.bridge.msg.Seats.AgentUnseat(agent.agentId(), 5, "away", true));
+				service.approach(new Ui.AgentApproach(agent.agentId(), "card-far", "present"));
+				helper.assertFalse(agent.isPassenger(), "stood up");
+				PcRegistry.Reservation r = pcs.reservation(pcId);
+				helper.assertTrue(r != null && "away".equals(r.kind()) && agent.agentId().equals(r.agentId()), "chair kept: " + r);
+			})
+			.thenWaitUntil(() -> {
+				helper.assertTrue(agent.distanceTo(human) <= 3.5, "walked over: " + agent.distanceTo(human));
+				List<Bodies.AgentEvent> arrived = recorder(helper).events(agent.agentId(), "arrived");
+				helper.assertTrue(arrived.stream().anyMatch(e -> !fromSeat(e)), "agent.event arrived (walked): " + arrived);
+			})
+			.thenExecute(() -> {
+				helper.assertTrue(recorder(helper).events(agent.agentId(), "arrived").stream().noneMatch(SkillGameTests::fromSeat), "never presented from the chair");
+				// Answered: Node releases the approach and sends the agent back to the reserved chair (no new epoch).
+				service.approach(new Ui.AgentApproach(agent.agentId(), null, "release"));
+				service.seat(new dev.minevibe.bridge.msg.Seats.AgentSeat(agent.agentId(), back, 5, dev.minevibe.bridge.msg.Seats.SeatTarget.pc(pcId), null));
+			})
+			.thenWaitUntil(() -> {
+				List<Skills.SkillResult> r = recorder(helper).results(back);
+				helper.assertTrue(!r.isEmpty(), "skill.result for the walk back");
+				helper.assertValueEqual(r.getFirst().status(), "done", "sat back down: " + r.getFirst().error());
+			})
+			.thenExecute(() -> {
+				helper.assertTrue(agent.getVehicle() instanceof SeatEntity seat && helper.absolutePos(chairRel).equals(seat.chairPos()), "on its own chair again");
+				var seats = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_SEAT, s -> s.pcId().equals(pcId));
+				helper.assertTrue(seats.size() == 2 && seats.stream().allMatch(s -> Long.valueOf(5).equals(s.seatEpoch())), "pc.seat twice, same epoch: " + seats);
+				helper.assertTrue(pcs.reservation(pcId) == null, "the away reservation became the occupant again: " + pcs.reservation(pcId));
+				var unseats = recorder(helper).of(dev.minevibe.bridge.msg.Seats.PC_UNSEAT, u -> u.pcId().equals(pcId));
+				helper.assertTrue(unseats.size() == 1 && "away".equals(unseats.getFirst().reason()) && unseats.getFirst().reserved(), "one pc.unseat away: " + unseats);
+				assertValid(helper, agent);
+			})
 			.thenSucceed();
 	}
 
