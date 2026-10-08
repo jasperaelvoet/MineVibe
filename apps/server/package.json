@@ -23,6 +23,7 @@
     "@xmcl/core": "2.15.1",
     "@xmcl/installer": "6.1.2",
     "@xmcl/unzip": "2.1.2",
+    "minisearch": "7.2.0",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "ws": "^8.22.0",
