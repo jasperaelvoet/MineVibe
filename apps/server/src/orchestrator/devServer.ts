@@ -1,15 +1,16 @@
+import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DEV_BRIDGE_PORT, DebugStateResult } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { ChatRouter } from '../agents/chat/ChatRouter.js';
 import { createChatSendHandler } from '../agents/chat/chatSend.js';
 import { BridgeServer } from '../bridge/BridgeServer.js';
-import { loadOrCreateToken, removeBridgeFile, writeBridgeFile } from '../bridge/bridgeFile.js';
+import { generateToken, removeBridgeFile, writeBridgeFile } from '../bridge/bridgeFile.js';
 import {
   devHome,
-  devTokenFile,
   ensureBaseDirs,
   HOME_ENV,
+  legacyDevTokenFile,
   type MineVibePaths,
   resolvePaths,
 } from '../config/paths.js';
@@ -24,7 +25,7 @@ export const SAVES_DIR_ENV = 'MINEVIBE_SAVES_DIR';
 export const E2E_ENV = 'MINEVIBE_E2E';
 
 export interface DevServerOptions {
-  /** The monorepo checkout (holds `.dev-token` and, by default, `.minevibe-dev/`). */
+  /** The monorepo checkout (holds, by default, `.minevibe-dev/`). */
   readonly repoRoot: string;
   readonly logger: Logger;
   /** Defaults to 47800 (`MINEVIBE_BRIDGE_PORT` overrides in `main`). 0 picks a random port. */
@@ -35,8 +36,9 @@ export interface DevServerOptions {
   /** Heartbeat interval for the bridge (0 disables). */
   readonly heartbeatMs?: number;
   /**
-   * A per-run token (`npm run play`): used as-is and never written to `.dev-token`. Without it the token comes
-   * from (or is created in) `<repo>/.dev-token`, so a restarted dev server keeps accepting a running game.
+   * The bridge token. Default: a fresh random one for every run. It is only ever written to `run/bridge.json`
+   * (0600), which the mod re-reads before every connection attempt, so a running game reconnects to a restarted dev
+   * server without a long-lived token on disk.
    */
   readonly token?: string;
   /** Data locations to use instead of resolving them from `env` and `repoRoot`. */
@@ -65,8 +67,6 @@ export interface DevServer {
   readonly bridge: BridgeServer;
   readonly paths: MineVibePaths;
   readonly port: number;
-  /** `.dev-token`, or null when a per-run token was passed in. */
-  readonly tokenFile: string | null;
   readonly lifecycle: WorldLifecycle;
   readonly store: CurrentWorldStore;
   /** Where the dev client keeps its saves (and the `_graveyard`). */
@@ -101,9 +101,9 @@ function createDebug(bridge: BridgeServer): DevDebug {
 }
 
 /**
- * `npm run dev` (PLAN §9.4): the bridge on 127.0.0.1:47800 with the token from `<repo>/.dev-token`, data
- * under `<repo>/.minevibe-dev` (unless MINEVIBE_HOME is set) and `run/bridge.json` for the mod's
- * `-Dminevibe.bridgeFile=…`.
+ * `npm run dev` (PLAN §9.4): the bridge on 127.0.0.1:47800 with a fresh token per run, data under
+ * `<repo>/.minevibe-dev` (unless MINEVIBE_HOME is set) and `run/bridge.json` (port, token, pid) for the mod's
+ * `-Dminevibe.bridgeFile=…`. The mod never connects with a bridge file whose pid is not running.
  *
  * The hardcore loop (PLAN §7.9) runs here too: the world record in `state/current-world.json` is marked
  * dead (and the next world allocated) durably before `player.died` is acknowledged, and once the mod
@@ -126,8 +126,9 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
   const graveyardKeep = options.graveyardKeep ?? GRAVEYARD_KEEP;
   const e2e = options.e2e ?? envFlag(env[E2E_ENV]);
 
-  const tokenFile = options.token === undefined ? devTokenFile(options.repoRoot) : null;
-  const token = tokenFile === null ? (options.token as string) : await loadOrCreateToken(tokenFile);
+  const token = options.token ?? generateToken();
+  // Older versions kept a long-lived token in <repo>/.dev-token; it must not linger next to a fixed port.
+  await rm(legacyDevTokenFile(options.repoRoot), { force: true });
 
   const store = new CurrentWorldStore(join(paths.state, 'current-world.json'));
   await store.load();
@@ -171,7 +172,6 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     {
       port,
       bridgeFile: paths.bridgeFile,
-      tokenFile,
       home: paths.appSupport,
       savesDir,
       e2e,
@@ -185,7 +185,6 @@ export async function startDevServer(options: DevServerOptions): Promise<DevServ
     bridge,
     paths,
     port,
-    tokenFile,
     lifecycle,
     store,
     savesDir,

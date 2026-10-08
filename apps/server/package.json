@@ -12,9 +12,9 @@
     "build": "node scripts/build.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx --conditions=source src/main.ts dev",
-    "doctor": "tsx --conditions=source src/main.ts doctor",
-    "play": "tsx --conditions=source src/main.ts play"
+    "dev": "node --conditions=source --import tsx src/main.ts dev",
+    "doctor": "node --conditions=source --import tsx src/main.ts doctor",
+    "play": "node --conditions=source --import tsx src/main.ts play"
   },
   "dependencies": {
     "@minevibe/protocol": "*",

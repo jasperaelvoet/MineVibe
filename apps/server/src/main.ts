@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { DEV_BRIDGE_PORT } from '@minevibe/protocol';
-import { findRepoRoot } from './config/paths.js';
+import { devHome, ensureBaseDirs, findRepoRoot, HOME_ENV, resolvePaths } from './config/paths.js';
 import { doctorReport } from './doctor.js';
 import { createLogger } from './log.js';
 import { startDevServer } from './orchestrator/devServer.js';
 import { type PlayControl, play } from './orchestrator/play.js';
-import { AlreadyRunningError } from './orchestrator/runLock.js';
+import { AlreadyRunningError, acquireRunLock, type RunLock } from './orchestrator/runLock.js';
 import { SERVER_VERSION } from './version.js';
 
 const USAGE = `MineVibe server ${SERVER_VERSION}
@@ -13,12 +13,16 @@ const USAGE = `MineVibe server ${SERVER_VERSION}
 Usage: minevibe-server <command>
 
 Commands:
-  dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient (writes .dev-token)
+  dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient
+            (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; a fresh token in run/bridge.json every run)
   doctor    Print versions and paths
   play      Install or verify Java, Minecraft, Fabric and the mods, then launch the game
-            (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; bridge on a random port)
+            (data under MINEVIBE_HOME, default <repo>/.minevibe-dev/play; bridge on a random port)
   help      Show this help
 `;
+
+/** A terminal Ctrl+C can reach Node twice (the process group, and npm forwarding it); only a later one escalates. */
+const REPEAT_SIGNAL_MS = 2000;
 
 function parsePort(value: string | undefined): number {
   if (value === undefined || value === '') return DEV_BRIDGE_PORT;
@@ -38,10 +42,26 @@ async function runDev(): Promise<number> {
   const log = createLogger({
     pretty: process.stdout.isTTY === true && process.env.MINEVIBE_LOG_JSON !== '1',
   });
+  // Its own home and its own run lock: `npm run play` lives in <repo>/.minevibe-dev/play, so the two never share
+  // run/bridge.json or the world record; with the same MINEVIBE_HOME the lock refuses the second one.
+  const home = process.env[HOME_ENV]?.trim() || devHome(repoRoot);
+  const paths = resolvePaths({ env: { ...process.env, [HOME_ENV]: home }, cwd: repoRoot });
+  await ensureBaseDirs(paths);
+  let lock: RunLock;
+  try {
+    lock = await acquireRunLock(paths.lockFile);
+  } catch (err) {
+    if (err instanceof AlreadyRunningError) {
+      log.error(`${err.message} with the data in ${paths.appSupport}`);
+      return 1;
+    }
+    throw err;
+  }
   let server: Awaited<ReturnType<typeof startDevServer>>;
   try {
     server = await startDevServer({
       repoRoot,
+      paths,
       logger: log,
       port: parsePort(process.env.MINEVIBE_BRIDGE_PORT),
       ...(process.env.MINEVIBE_PLAYER_NAME ? { playerName: process.env.MINEVIBE_PLAYER_NAME } : {}),
@@ -52,29 +72,36 @@ async function runDev(): Promise<number> {
     } else {
       log.error({ err }, 'dev server failed to start');
     }
+    await lock.release();
     return 1;
   }
 
   return new Promise<number>((resolveExit) => {
-    let signalled = false;
+    let signalledAt = 0;
     const shutdown = (signal: NodeJS.Signals) => {
-      if (signalled) {
+      const now = Date.now();
+      if (signalledAt !== 0) {
+        if (now - signalledAt < REPEAT_SIGNAL_MS) return; // the same Ctrl+C, delivered twice
         log.warn({ signal }, 'forced exit');
         resolveExit(130);
         return;
       }
-      signalled = true;
+      signalledAt = now;
       log.info({ signal }, 'shutting down');
-      server.stop('quit').then(
-        () => resolveExit(0),
-        (err: unknown) => {
-          log.error({ err }, 'shutdown failed');
-          resolveExit(1);
-        },
-      );
+      server
+        .stop('quit')
+        .then(() => lock.release())
+        .then(
+          () => resolveExit(0),
+          (err: unknown) => {
+            log.error({ err }, 'shutdown failed');
+            resolveExit(1);
+          },
+        );
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
+    process.on('SIGHUP', shutdown);
   });
 }
 

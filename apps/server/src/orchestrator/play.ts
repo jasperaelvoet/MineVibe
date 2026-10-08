@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline';
 import { MinecraftFolder } from '@xmcl/core';
 import type { Logger } from 'pino';
 import { generateToken } from '../bridge/bridgeFile.js';
-import { devHome, ensureBaseDirs, HOME_ENV, type MineVibePaths, resolvePaths } from '../config/paths.js';
+import { ensureBaseDirs, HOME_ENV, type MineVibePaths, playHome, resolvePaths } from '../config/paths.js';
 import { formatBytes } from '../launcher/download.js';
 import { installFabricLoader } from '../launcher/installFabric.js';
 import { installMinecraft } from '../launcher/installMinecraft.js';
@@ -93,9 +93,26 @@ async function resolveModJar(
   return jar;
 }
 
+/** Sends SIGTERM (the JVM's shutdown hook saves the world), then SIGKILL if it is still running after `graceMs`. */
+export function stopGame(child: ChildProcess, graceMs: number = GAME_STOP_GRACE_MS): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, graceMs);
+    timer.unref();
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolvePromise();
+    });
+    child.kill('SIGTERM');
+  });
+}
+
 /**
  * `npm run play` (PLAN §9.3/§9.4, M1): one MineVibe session from the terminal.
- * 1. Data under the dev home (`<repo>/.minevibe-dev`, or `MINEVIBE_HOME`), single-instance lock.
+ * 1. Data under the play home (`<repo>/.minevibe-dev/play`, or `MINEVIBE_HOME`), single-instance lock. `npm run dev`
+ *    keeps its own home (`<repo>/.minevibe-dev`), so they never share `run/bridge.json` or the world record.
  * 2. Bridge on a random loopback port with a fresh token + the dev world loop; `run/bridge.json` for the mod.
  * 3. Java 25, Minecraft, Fabric and the locked mods, installed or verified in parallel (fast when present).
  * 4. options.txt and mod configs merged, the dev mod jar copied into `game/mods`.
@@ -112,7 +129,7 @@ export async function play(options: PlayOptions): Promise<number> {
     timings[phase] = Math.round(performance.now() - since);
   };
 
-  const home = env[HOME_ENV]?.trim() || (repoRoot ? devHome(repoRoot) : '');
+  const home = env[HOME_ENV]?.trim() || (repoRoot ? playHome(repoRoot) : '');
   const paths: MineVibePaths = resolvePaths({
     env: { ...env, [HOME_ENV]: home },
     cwd: repoRoot ?? process.cwd(),
@@ -128,7 +145,7 @@ export async function play(options: PlayOptions): Promise<number> {
   const control = options.control ?? { onStopRequest: null };
   control.onStopRequest = (reason) => {
     const now = Date.now();
-    // A terminal Ctrl+C can arrive twice (process group + tsx relay); only a later repeat escalates.
+    // A terminal Ctrl+C can arrive twice (the process group, and npm forwarding it); only a later repeat escalates.
     if (stopReason !== null && now - lastRequest < 2000) return;
     lastRequest = now;
     if (child && child.exitCode === null && child.signalCode === null) {
@@ -147,11 +164,12 @@ export async function play(options: PlayOptions): Promise<number> {
     }
     stopReason ??= reason;
   };
-  // Last resort against orphans: whatever happens to Node, the JVM does not outlive it.
-  const killOnExit = () => {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  // Last resort against orphans: whatever ends Node, the JVM is told to quit. SIGTERM, not SIGKILL: its shutdown hook
+  // saves the world. Should the JVM ignore it, the mod's parent watchdog notices that Node is gone and quits too.
+  const stopOnExit = () => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   };
-  process.once('exit', killOnExit);
+  process.once('exit', stopOnExit);
 
   let server: DevServer | null = null;
   try {
@@ -316,8 +334,9 @@ export async function play(options: PlayOptions): Promise<number> {
     }
     throw err;
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    process.removeListener('exit', killOnExit);
+    // Only an error path gets here with the game still running: let it save, then make sure it is gone.
+    if (child) await stopGame(child);
+    process.removeListener('exit', stopOnExit);
     control.onStopRequest = null;
     if (server) await server.stop('quit').catch((err: unknown) => log.warn({ err }, 'bridge stop failed'));
     await runLock.release();

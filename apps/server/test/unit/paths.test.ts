@@ -6,10 +6,11 @@ import {
   agentDir,
   agentHome,
   devHome,
-  devTokenFile,
   ensureBaseDirs,
   findRepoRoot,
   HOME_ENV,
+  legacyDevTokenFile,
+  playHome,
   resolvePaths,
   worldDir,
 } from '../../src/config/paths.js';
@@ -101,7 +102,9 @@ describe('repo helpers', () => {
     writeFileSync(join(root, 'apps', 'server', 'package.json'), JSON.stringify({ name: 'server' }));
     expect(findRepoRoot(join(root, 'apps', 'server', 'src'))).toBe(root);
     expect(devHome(root)).toBe(join(root, '.minevibe-dev'));
-    expect(devTokenFile(root)).toBe(join(root, '.dev-token'));
+    // npm run play never shares run/ or state/ with npm run dev.
+    expect(playHome(root)).toBe(join(root, '.minevibe-dev', 'play'));
+    expect(legacyDevTokenFile(root)).toBe(join(root, '.dev-token'));
   });
 
   it('returns null outside a checkout', () => {

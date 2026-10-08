@@ -52,7 +52,7 @@ You need Node 24 (see `.nvmrc`) and a JDK to start Gradle (the mod builds with J
 
 ```sh
 npm install                          # at the repository root
-npm run dev                          # Node orchestrator on port 47800 (token in .dev-token)
+npm run dev                          # Node orchestrator on port 47800 (a fresh token every run)
 cd apps/mod && ./gradlew runClient   # in a second terminal: Minecraft with the MineVibe mod
 ```
 

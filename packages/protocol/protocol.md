@@ -32,8 +32,12 @@ Node writes `run/bridge.json` (mode `0600`, directory `0700`) before the game st
 - The JVM only receives the file's path: `-Dminevibe.bridgeFile=<path>`. The token never appears on a
   command line or in a log.
 - Release: `~/Library/Application Support/MineVibe/run/bridge.json`.
-- Dev (`npm run dev`): `<repo>/.minevibe-dev/run/bridge.json`, with the token also kept in `<repo>/.dev-token`
-  (0600, reused across dev restarts so a running game can reconnect). Both paths are gitignored.
+- Dev (`npm run dev`): `<repo>/.minevibe-dev/run/bridge.json`, with a fresh token on every start (no token is
+  kept anywhere else; an old `<repo>/.dev-token` is deleted). A running game still reconnects to a restarted dev
+  server, because the mod re-reads the file before every attempt. `npm run play` uses
+  `<repo>/.minevibe-dev/play/run/bridge.json`. Both are gitignored.
+- **Stale files.** The mod reads `pid` and never connects while that process is not running: after Node was killed,
+  the port (fixed 47800 in dev) may belong to anything, and it must not get the token.
 - `MINEVIBE_HOME` overrides the data root (the bridge file is then `$MINEVIBE_HOME/run/bridge.json`).
 
 ## 2. Authentication

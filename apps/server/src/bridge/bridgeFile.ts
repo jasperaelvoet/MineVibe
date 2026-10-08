@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, readFile, rm, stat } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { z } from 'zod';
 import { writeFileAtomic } from '../util/atomicFile.js';
 
@@ -54,24 +54,4 @@ export async function removeBridgeFile(path: string, pid: number = process.pid):
   }
   await rm(path, { force: true });
   return true;
-}
-
-/**
- * Returns the token stored in `path`, creating it (0600) when missing or malformed. Used for the dev
- * `.dev-token` so a restarted dev server keeps accepting a running game. Never logs the token.
- */
-export async function loadOrCreateToken(path: string): Promise<string> {
-  try {
-    const existing = (await readFile(path, 'utf8')).trim();
-    if (isWellFormedToken(existing)) {
-      const mode = (await stat(path)).mode & 0o777;
-      if (mode !== 0o600) await chmod(path, 0o600);
-      return existing;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-  const token = generateToken();
-  await writePrivateFile(path, `${token}\n`);
-  return token;
 }

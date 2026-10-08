@@ -8,7 +8,7 @@ import {
   readClaudeVersion,
 } from './agents/claudeBinary.js';
 import { readBridgeFile } from './bridge/bridgeFile.js';
-import { devHome, findRepoRoot, HOME_ENV, resolvePaths } from './config/paths.js';
+import { devHome, findRepoRoot, HOME_ENV, playHome, resolvePaths } from './config/paths.js';
 import { SERVER_VERSION } from './version.js';
 
 export interface DoctorOptions {
@@ -66,7 +66,10 @@ export async function doctorReport(options: DoctorOptions = {}): Promise<string[
   row('  state', paths.state);
   row('  bridge file', paths.bridgeFile);
   const repo = findRepoRoot(cwd);
-  if (repo) row('  dev home', `${devHome(repo)} (npm run dev)`);
+  if (repo) {
+    row('  dev home', `${devHome(repo)} (npm run dev)`);
+    row('  play home', `${playHome(repo)} (npm run play)`);
+  }
 
   try {
     const bridge = await readBridgeFile(paths.bridgeFile);

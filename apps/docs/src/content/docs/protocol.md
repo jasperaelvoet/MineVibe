@@ -19,7 +19,9 @@ JUnit (the mod), so the two sides can't drift apart. A reference generated from 
 - **Auth.** The mod sends `Authorization: Bearer <token>`. The server rejects any request with an `Origin`
   header and any peer that is not on loopback.
 - **Reconnects.** After a reconnect the mod sends `hello`, and Node answers with a full state resync.
-- **Development.** `npm run dev` uses the fixed port 47800 and a `.dev-token` file, which is never committed.
+- **Development.** `npm run dev` uses the fixed port 47800 and a fresh token on every start. The mod re-reads
+  `run/bridge.json` before every connection attempt and never connects when the file's `pid` is not running, so a
+  stale file can never hand the token to whatever listens on that port later.
 
 ## Message envelope
 

@@ -19,8 +19,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "dev": "npm run dev -w apps/server",
-    "play": "npm run play -w apps/server"
+    "dev": "node --conditions=source --import tsx apps/server/src/main.ts dev",
+    "play": "node --conditions=source --import tsx apps/server/src/main.ts play"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

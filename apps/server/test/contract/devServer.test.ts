@@ -21,7 +21,7 @@ async function start(): Promise<{ server: DevServer; repo: string; token: string
     heartbeatMs: 0,
   });
   servers.push(server);
-  const token = readFileSync(join(repo, '.dev-token'), 'utf8').trim();
+  const token = JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token as string;
   return { server, repo, token };
 }
 
@@ -51,17 +51,25 @@ async function dieInWorld1(mod: ModClient): Promise<void> {
 }
 
 describe('dev server', () => {
-  it('writes .dev-token and run/bridge.json privately under the dev home', async () => {
-    const { server, repo, token } = await start();
-    expect(statSync(join(repo, '.dev-token')).mode & 0o777).toBe(0o600);
+  it('writes run/bridge.json privately under the dev home, with a fresh token and no .dev-token', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'mv-dev-'));
+    dirs.push(repo);
+    writeFileSync(join(repo, '.dev-token'), 'legacy-long-lived-token-0123456789abcdef\n', { mode: 0o600 });
+    const server = await startDevServer({
+      repoRoot: repo,
+      logger: silentLogger(),
+      port: 0,
+      env: {},
+      heartbeatMs: 0,
+    });
+    servers.push(server);
+    expect(existsSync(join(repo, '.dev-token')), 'the old long-lived token file is removed').toBe(false);
     expect(server.paths.appSupport).toBe(join(repo, '.minevibe-dev'));
     const bridgeFile = join(repo, '.minevibe-dev', 'run', 'bridge.json');
     expect(statSync(bridgeFile).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(bridgeFile, 'utf8'))).toEqual({
-      port: server.port,
-      token,
-      pid: process.pid,
-    });
+    const contents = JSON.parse(readFileSync(bridgeFile, 'utf8'));
+    expect(contents).toEqual({ port: server.port, token: expect.any(String), pid: process.pid });
+    expect(contents.token).not.toContain('legacy');
   });
 
   it('answers hello with hello.ok and opens World #1', async () => {
@@ -300,7 +308,7 @@ describe('dev server', () => {
     servers.push(server);
     const debug = server.debug;
     if (!debug) throw new Error('expected E2E debug helpers');
-    const mod = await connect(server.port, readFileSync(join(repo, '.dev-token'), 'utf8').trim());
+    const mod = await connect(server.port, JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token);
     await new Promise((r) => setTimeout(r, 10));
 
     const pending = debug.state();
@@ -382,7 +390,7 @@ describe('dev server', () => {
     expect((await mod.next('server.shutdown')).reason).toBe('quit');
   });
 
-  it('reuses the dev token across restarts', async () => {
+  it('rotates the token on every start (a restarted game re-reads bridge.json)', async () => {
     const first = await start();
     await first.server.stop();
     const again = await startDevServer({
@@ -393,6 +401,10 @@ describe('dev server', () => {
       heartbeatMs: 0,
     });
     servers.push(again);
-    expect(readFileSync(join(first.repo, '.dev-token'), 'utf8').trim()).toBe(first.token);
+    const token = JSON.parse(readFileSync(again.paths.bridgeFile, 'utf8')).token;
+    expect(token).not.toBe(first.token);
+    await expect(ModClient.connect(again.port, first.token)).rejects.toMatchObject({ status: 401 });
+    const mod = await connect(again.port, token);
+    expect(mod.ws.readyState).toBe(1);
   });
 });

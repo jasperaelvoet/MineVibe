@@ -12,8 +12,14 @@ export const HOME_ENV = 'MINEVIBE_HOME';
 /** Name of the gitignored dev data directory at the repo root. */
 export const DEV_HOME_DIRNAME = '.minevibe-dev';
 
-/** Name of the gitignored dev token file at the repo root. */
-export const DEV_TOKEN_FILENAME = '.dev-token';
+/** `npm run play` keeps its own home inside the dev data directory, apart from `npm run dev`'s state. */
+export const PLAY_HOME_DIRNAME = 'play';
+
+/**
+ * Name of the long-lived dev token file older versions kept at the repo root. The dev server now makes a fresh token
+ * every run (it only ever lives in `run/bridge.json`) and deletes this file when it finds it.
+ */
+export const LEGACY_DEV_TOKEN_FILENAME = '.dev-token';
 
 /** Every on-disk location MineVibe uses (PLAN §4 "Runtime data"). */
 export interface MineVibePaths {
@@ -135,14 +141,25 @@ export async function ensureBaseDirs(paths: MineVibePaths): Promise<void> {
   }
 }
 
-/** The dev data directory for a checkout: `<repoRoot>/.minevibe-dev`. */
+/**
+ * `npm run dev`'s data directory for a checkout: `<repoRoot>/.minevibe-dev` (its `run/bridge.json` is what
+ * `./gradlew runClient` reads by default).
+ */
 export function devHome(repoRoot: string): string {
   return join(repoRoot, DEV_HOME_DIRNAME);
 }
 
-/** The dev token file for a checkout: `<repoRoot>/.dev-token`. */
-export function devTokenFile(repoRoot: string): string {
-  return join(repoRoot, DEV_TOKEN_FILENAME);
+/**
+ * `npm run play`'s data directory for a checkout: `<repoRoot>/.minevibe-dev/play`. Separate from {@link devHome}, so
+ * the two never share `run/bridge.json`, the run lock or `state/current-world.json`.
+ */
+export function playHome(repoRoot: string): string {
+  return join(repoRoot, DEV_HOME_DIRNAME, PLAY_HOME_DIRNAME);
+}
+
+/** Where older versions kept the dev token: `<repoRoot>/.dev-token` (removed by the dev server). */
+export function legacyDevTokenFile(repoRoot: string): string {
+  return join(repoRoot, LEGACY_DEV_TOKEN_FILENAME);
 }
 
 /**

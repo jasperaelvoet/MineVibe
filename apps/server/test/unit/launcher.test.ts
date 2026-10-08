@@ -1,4 +1,14 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { type ChildProcess, spawn } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,7 +25,13 @@ import {
   offlineUuid,
 } from '../../src/launcher/launchGame.js';
 import { loadLauncherSettings } from '../../src/launcher/settings.js';
-import { AlreadyRunningError, acquireRunLock } from '../../src/orchestrator/runLock.js';
+import { stopGame } from '../../src/orchestrator/play.js';
+import {
+  AlreadyRunningError,
+  acquireRunLock,
+  parseLockOwner,
+  processStartTime,
+} from '../../src/orchestrator/runLock.js';
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -163,10 +179,104 @@ describe('run lock', () => {
   it('is exclusive while the owner lives and taken over when stale', async () => {
     const path = join(tmp(), 'run', 'lock');
     const lock = await acquireRunLock(path, process.pid);
+    const owner = parseLockOwner(readFileSync(path, 'utf8'));
+    expect(owner).toMatchObject({ pid: process.pid, started: await processStartTime(process.pid) });
     await expect(acquireRunLock(path, process.pid + 1)).rejects.toBeInstanceOf(AlreadyRunningError);
     await lock.release();
+    expect(existsSync(path)).toBe(false);
     writeFileSync(path, '999999\n'); // a pid that does not exist
     const taken = await acquireRunLock(path, process.pid);
     await taken.release();
+  });
+
+  it('takes over a lock whose pid now belongs to a newer process (pid reuse after a reboot)', async () => {
+    const path = join(tmp(), 'run', 'lock');
+    mkdirSync(join(path, '..'), { recursive: true });
+    // This test process is alive, but it is not the process that wrote the lock: different start time.
+    writeFileSync(
+      path,
+      `${JSON.stringify({ pid: process.pid, started: 'Mon Jan 1 00:00:00 2024', nonce: 'x' })}\n`,
+    );
+    const lock = await acquireRunLock(path, process.pid + 1);
+    expect(parseLockOwner(readFileSync(path, 'utf8'))?.pid).toBe(process.pid + 1);
+    await lock.release();
+  });
+
+  it('handles old pid-only locks by comparing the start time with the lock file', async () => {
+    const path = join(tmp(), 'run', 'lock');
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, `${process.pid}\n`);
+    // Written now, by a process that started earlier: that owner is plausible.
+    await expect(acquireRunLock(path, process.pid + 1)).rejects.toBeInstanceOf(AlreadyRunningError);
+    // Written long before this process started: the pid was reused, the lock is stale.
+    const past = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    utimesSync(path, past, past);
+    const lock = await acquireRunLock(path, process.pid + 1);
+    await lock.release();
+  });
+
+  it('keeps a live pid as the owner when its start time cannot be read', async () => {
+    const path = join(tmp(), 'run', 'lock');
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, `${JSON.stringify({ pid: 4242, started: 'then', nonce: 'x' })}\n`);
+    const deps = { pidExists: () => true, startTime: async () => null };
+    await expect(acquireRunLock(path, 1, deps)).rejects.toMatchObject({ pid: 4242 });
+  });
+
+  it('lets exactly one of several racing starters take over a stale lock', async () => {
+    const deps = {
+      pidExists: (pid: number) => pid >= 1000,
+      startTime: async (pid: number) => `start-${pid}`,
+    };
+    for (let round = 0; round < 25; round++) {
+      const path = join(tmp(), 'run', 'lock');
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, `${JSON.stringify({ pid: 7, started: 'start-7', nonce: 'dead' })}\n`); // owner gone
+      const results = await Promise.allSettled(
+        [1001, 1002, 1003, 1004].map((pid) => acquireRunLock(path, pid, deps)),
+      );
+      const won = results.filter((r) => r.status === 'fulfilled');
+      expect(won).toHaveLength(1);
+      for (const r of results) {
+        if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(AlreadyRunningError);
+      }
+      const holder = parseLockOwner(readFileSync(path, 'utf8'));
+      expect(holder?.pid).toBeGreaterThanOrEqual(1001);
+      expect(readdirSync(join(path, '..')).filter((f) => f !== 'lock')).toEqual([]);
+    }
+  });
+
+  it('never releases a lock that someone else holds now', async () => {
+    const path = join(tmp(), 'run', 'lock');
+    const lock = await acquireRunLock(path, process.pid);
+    writeFileSync(path, `${JSON.stringify({ pid: 5, started: 'x', nonce: 'theirs' })}\n`);
+    await lock.release();
+    expect(parseLockOwner(readFileSync(path, 'utf8'))?.nonce).toBe('theirs');
+  });
+});
+
+describe('stopGame', () => {
+  function child(script: string): Promise<ChildProcess> {
+    const proc = spawn(
+      process.execPath,
+      ['-e', `${script}; console.log('ready'); setInterval(() => {}, 1000);`],
+      {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    );
+    return new Promise((resolvePromise) => proc.stdout?.once('data', () => resolvePromise(proc)));
+  }
+
+  it('asks with SIGTERM, so the JVM shutdown hook can save the world', async () => {
+    const proc = await child("process.on('SIGTERM', () => process.exit(0))");
+    await stopGame(proc, 10_000);
+    expect(proc.exitCode).toBe(0);
+    expect(proc.signalCode).toBeNull();
+  });
+
+  it('kills a game that ignores SIGTERM once the grace period is over', async () => {
+    const proc = await child("process.on('SIGTERM', () => {})");
+    await stopGame(proc, 200);
+    expect(proc.signalCode).toBe('SIGKILL');
   });
 });

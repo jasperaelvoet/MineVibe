@@ -47,6 +47,11 @@ npm run dev                      # repo root: bridge on 127.0.0.1:47800, writes 
 cd apps/mod && ./gradlew runClient
 ```
 
+`runClient` reads `npm run dev`'s bridge file only. `npm run play` keeps everything (bridge file, run lock, world
+record, game install) in `.minevibe-dev/play/` and hands its own bridge file to the game it launches, so the two can
+run side by side. The dev server writes a fresh token on every start; the mod re-reads the file before every
+connection attempt and refuses one whose `pid` is not running.
+
 `runClient` passes these to the game JVM as `-D` system properties. Each comes from a Gradle property
 (`-Pminevibe.e2e=true`) or, failing that, an environment variable:
 

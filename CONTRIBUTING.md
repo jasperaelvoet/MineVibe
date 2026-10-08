@@ -18,7 +18,7 @@ You need:
 
 ```sh
 npm install                          # at the repository root (npm workspaces)
-npm run dev                          # Node orchestrator on port 47800, token in .dev-token
+npm run dev                          # Node orchestrator on port 47800 (fresh token per run, in .minevibe-dev/run/bridge.json)
 cd apps/mod && ./gradlew runClient   # second terminal: Minecraft with the MineVibe mod
 ```
 
@@ -99,7 +99,7 @@ spike(s5): measure BGRA frame rate under Apple container
   the vitest and JUnit contract tests cover them.
 - Update the docs in `apps/docs` when you change something users or contributors see. Mark unbuilt features
   as planned.
-- **Never commit** tokens, `.dev-token`, `.env` files, Minecraft worlds or game files, vendor binaries, or
+- **Never commit** tokens, `.minevibe-dev/` (bridge files, worlds), `.env` files, Minecraft worlds or game files, vendor binaries, or
   mod jars. Mods are always downloaded from Modrinth, never rehosted.
 - New dependencies need a license compatible with MIT distribution, and an entry in
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) if they ship in the app or are downloaded at runtime.

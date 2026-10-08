@@ -44,7 +44,7 @@ MineVibe/
 
 ```sh
 npm install                       # once, at the repository root
-npm run dev                       # Node orchestrator on the fixed port 47800, token in .dev-token
+npm run dev                       # Node orchestrator on the fixed port 47800 (a fresh token every run)
 cd apps/mod && ./gradlew runClient   # in a second terminal: Minecraft with the mod, connected to Node
 ```
 
@@ -57,6 +57,13 @@ Useful environment variables:
 
 `npm run play` (milestone M1) installs Minecraft 26.3, Fabric and the mods into a clean game directory and
 launches the game the way the app will, without the Swift stub.
+
+- **Separate data.** `npm run dev` keeps its data in `.minevibe-dev/` (its `run/bridge.json` is what
+  `./gradlew runClient` reads), `npm run play` in `.minevibe-dev/play/`. Each takes the run lock of its own
+  folder, so two of the same kind (or both with one `MINEVIBE_HOME`) refuse to run at once.
+- **Ctrl+C.** Both scripts run Node directly (with the `tsx` loader, no wrapper process), so a Ctrl+C in the
+  terminal runs the normal shutdown: the game gets SIGTERM and saves the world, and `run/lock` and
+  `run/bridge.json` are removed.
 
 ## Tests
 

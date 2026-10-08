@@ -48,6 +48,7 @@ repositories {
 fun launchSetting(property: String, env: String): String? =
 	providers.gradleProperty(property).orElse(providers.environmentVariable(env)).orNull?.trim()?.takeIf { it.isNotEmpty() }
 
+// `npm run dev`'s bridge file. `npm run play` lives in .minevibe-dev/play and passes its own file to the game it starts.
 val devBridgeFile: String = layout.projectDirectory.file("../../.minevibe-dev/run/bridge.json").asFile.normalize().absolutePath
 
 loom {

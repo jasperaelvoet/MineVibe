@@ -1,11 +1,10 @@
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   generateToken,
   isWellFormedToken,
-  loadOrCreateToken,
   readBridgeFile,
   removeBridgeFile,
   writeBridgeFile,
@@ -66,32 +65,5 @@ describe('bridge.json', () => {
     expect(statSync(path).isFile()).toBe(true);
     expect(await removeBridgeFile(path, 111)).toBe(true);
     expect(await removeBridgeFile(path, 111)).toBe(false);
-  });
-});
-
-describe('loadOrCreateToken (.dev-token)', () => {
-  it('creates a 0600 token file and reuses it', async () => {
-    const path = join(tmp(), '.dev-token');
-    const first = await loadOrCreateToken(path);
-    expect(isWellFormedToken(first)).toBe(true);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(await loadOrCreateToken(path)).toBe(first);
-  });
-
-  it('tightens loose permissions on an existing token', async () => {
-    const path = join(tmp(), '.dev-token');
-    const token = generateToken();
-    writeFileSync(path, `${token}\n`);
-    chmodSync(path, 0o644);
-    expect(await loadOrCreateToken(path)).toBe(token);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-  });
-
-  it('replaces a malformed token', async () => {
-    const path = join(tmp(), '.dev-token');
-    writeFileSync(path, 'nope');
-    const token = await loadOrCreateToken(path);
-    expect(token).not.toBe('nope');
-    expect(isWellFormedToken(token)).toBe(true);
   });
 });
