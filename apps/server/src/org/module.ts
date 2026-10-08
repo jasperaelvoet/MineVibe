@@ -160,6 +160,7 @@ export function parseMeetingTurn(
 
 const DIAL_IN_LINES: Readonly<Record<string, string>> = {
   eta: 'Dialling in: too far to walk to the table.',
+  unreachable: "Dialling in: I can't get to the table.",
   dimension: 'Dialling in from another dimension.',
   escort: 'Dialling in: staying with you.',
   late: 'Dialling in: running late.',
@@ -215,6 +216,8 @@ export class OrgModuleImpl implements OrgModule {
   #started = false;
   #playerName = 'the player';
   #lastClock: number | null = null;
+  /** A `world.state.player` snapshot arrived in this world (until then the player counts as active). */
+  #sawPlayer = false;
   /** Living/dead status per agent, to notice deaths and dismissals in `crew` events. */
   readonly #statuses = new Map<string, string>();
   /** "The Codex survived" for the next world's CEO. */
@@ -297,7 +300,13 @@ export class OrgModuleImpl implements OrgModule {
       playerName: () => this.#playerName,
       gitBinary: options.gitBinary,
       logger: this.#log,
+      // The crew tells the CEO about task reports (the `mc` server's `taskReported`, P3 coalesced); a second notice
+      // from the calendar would wake the CEO twice.
+      reportToCeo: false,
     });
+    // Nothing fires until a crew is bound: occurrences due at startup and deliveries restored from disk would be
+    // marked missed for want of anyone to deliver them to (bindCrew releases the calendar).
+    this.services.calendar.hold(true);
     this.orgApi = new OrgContractApi(this.services, {
       crew: () => view.orgCrew(),
       playerName: () => this.#playerName,
@@ -348,6 +357,13 @@ export class OrgModuleImpl implements OrgModule {
       extra.on('meetingMessage', (p) => this.services.meetingMessage(p.text)),
       extra.on('brains', (p) => this.view.setBrains(p)),
     );
+    const summary = (crew as { brainsSummary?: () => unknown }).brainsSummary;
+    if (typeof summary === 'function') {
+      const b = summary.call(crew) as { mode?: unknown; resetsAt?: unknown } | null;
+      if (b && (b.mode === 'normal' || b.mode === 'tired' || b.mode === 'asleep')) {
+        this.view.setBrains({ mode: b.mode, resetsAt: typeof b.resetsAt === 'number' ? b.resetsAt : null });
+      }
+    }
     const control = crew as CrewCardControl;
     if (typeof control.pendingCards === 'function') {
       const byAgent = new Map<string, PendingCard[]>();
@@ -356,6 +372,7 @@ export class OrgModuleImpl implements OrgModule {
       }
       for (const [agentId, cards] of byAgent) this.#syncCards(agentId, cards);
     }
+    this.services.calendar.hold(false);
   }
 
   async onWorldOpen(worldId: string, _fresh: boolean): Promise<void> {
@@ -363,6 +380,7 @@ export class OrgModuleImpl implements OrgModule {
     if (changed) {
       this.view.resetWorld();
       this.#lastClock = null;
+      this.#sawPlayer = false;
     }
     await this.services.openWorld(worldId);
     this.#deliverNotice();
@@ -383,6 +401,7 @@ export class OrgModuleImpl implements OrgModule {
     this.#pendingNotice = ended.notice;
     this.view.resetWorld();
     this.#lastClock = null;
+    this.#sawPlayer = false;
   }
 
   onClock(clockTime: number): void {
@@ -558,10 +577,16 @@ export class OrgModuleImpl implements OrgModule {
     const current = this.services.calendar.worldId;
     if (current !== null && m.worldId !== current) return; // a late push from the previous world
     if (m.office) this.view.setOffice(m.office);
+    const now = this.#clock.now();
     if (m.player) {
-      const now = this.#clock.now();
+      this.#sawPlayer = true;
       this.view.setPlayer(m.player, now);
       this.services.calendar.notePlayerInput(now - m.player.idleMs);
+    } else if (!this.#sawPlayer) {
+      // No player snapshot from this mod (yet): the player counts as active, as everywhere else (worldView.ts).
+      // Otherwise the calendar would call the player AFK 5 minutes after start and hold every game-clock and
+      // agent-created event from then on.
+      this.services.calendar.notePlayerInput(now);
     }
     if (m.clockTime !== undefined) this.onClock(m.clockTime);
     if (m.player) this.#worldView();
@@ -857,17 +882,30 @@ export class OrgModuleImpl implements OrgModule {
   #raiseApproval(card: CalendarApprovalCard): string | undefined {
     const control = this.#crew as CrewCardControl | null;
     if (!control || typeof control.raiseCalendarApproval !== 'function') return undefined;
-    const raised = control.raiseCalendarApproval(card.agentId, card.eventId, card.summary);
+    // An edit that still needs approval asks again: the earlier card for the event goes, so only one is answerable.
+    this.#withdrawApproval(card.cardId, 'replaced by a newer card');
+    const summary = `${singleLine(card.title, 80)}: ${card.summary}`;
+    const raised = control.raiseCalendarApproval(card.agentId, card.eventId, summary);
     this.#approvalCards.set(card.cardId, raised.id);
     return raised.id;
   }
 
+  /**
+   * Resolves the crew's approval card(s) of an event (`cal:<eventId>`): the one this module raised, and any other
+   * calendar card for the event in the crew's store (one raised before an app restart, which this map forgets).
+   */
   #withdrawApproval(cardId: string, reason = 'the event changed or was cancelled'): void {
-    const crewCardId = this.#approvalCards.get(cardId);
+    const ids = new Set<string>();
+    const mapped = this.#approvalCards.get(cardId);
+    if (mapped) ids.add(mapped);
     this.#approvalCards.delete(cardId);
-    if (!crewCardId) return;
-    const store = (this.#crew as CrewCardControl | null)?.pending;
-    store?.resolve?.(crewCardId, { kind: 'denied', reason });
+    const control = this.#crew as CrewCardControl | null;
+    const eventId = cardId.startsWith('cal:') ? cardId.slice(4) : null;
+    if (eventId !== null && typeof control?.pendingCards === 'function') {
+      for (const c of control.pendingCards())
+        if (c.kind === 'calendar' && c.eventId === eventId) ids.add(c.id);
+    }
+    for (const id of ids) control?.pending?.resolve?.(id, { kind: 'denied', reason });
   }
 
   #raiseCardsAtTable(agentIds: readonly string[]): void {
@@ -893,7 +931,10 @@ export class OrgModuleImpl implements OrgModule {
       () => {
         if (this.services.meetingState()?.id === meetingId) this.services.meetingArrived(agentId);
       },
-      () => {}, // logged by #hook; the agent stays "coming" and dials in when the gathering ends
+      () => {
+        // Logged by #hook. The agent cannot get to the table: it dials in now instead of holding up the gathering.
+        if (this.services.meetingState()?.id === meetingId) this.services.meetingCannotCome(agentId);
+      },
     );
   }
 

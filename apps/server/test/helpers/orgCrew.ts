@@ -168,4 +168,10 @@ export class FakeHooks implements CrewHooks {
     this.#pulls.get(agentId)?.resolve();
     this.#pulls.delete(agentId);
   }
+
+  /** The held pull of `agentId` fails: the crew cannot walk it to the table. */
+  failPull(agentId: string): void {
+    this.#pulls.get(agentId)?.reject(new Error('no path to the table'));
+    this.#pulls.delete(agentId);
+  }
 }

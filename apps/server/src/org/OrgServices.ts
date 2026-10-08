@@ -173,6 +173,8 @@ export interface OrgServicesOptions {
   readonly playerName?: string | (() => string) | undefined;
   readonly gitBinary?: string | null | undefined;
   readonly logger?: Logger | undefined;
+  /** Whether `report_task` notifies the CEO from here (default true; see `CalendarServiceOptions.reportToCeo`). */
+  readonly reportToCeo?: boolean | undefined;
 }
 
 /** `calendar.fired` occurrences remembered for their `walk` re-sends. */
@@ -244,6 +246,7 @@ export class OrgServices {
       lastingFile: options.paths.lastingCalendar,
       worldFile: options.paths.worldCalendar,
       logger: options.logger,
+      reportToCeo: options.reportToCeo,
       sink: {
         deliverTask: (d) => {
           let accepted: unknown;
@@ -750,6 +753,11 @@ export class OrgServices {
 
   meetingArrived(agentId: string): void {
     this.meetings.arrived(agentId);
+  }
+
+  /** An attendee cannot get to the table: it dials in. */
+  meetingCannotCome(agentId: string): void {
+    this.meetings.cannotCome(agentId);
   }
 
   agentDied(agentId: string): void {

@@ -184,7 +184,10 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
     expect(h.delivered).toEqual([
       expect.objectContaining({ agentId: 'bram', priority: 'P1', location: 'farm' }),
     ]);
-    expect(h.delivered[0]?.text).toMatch(/^\[MV:beef SCHEDULED\] Farm wheat \(Day 3 06:00 at farm\)/);
+    expect(h.delivered[0]?.text).toMatch(
+      /^\[MV:beef SCHEDULED\] Calendar task \[ev-[0-9a-f]+\] due Day 3 06:00;/,
+    );
+    expect(h.delivered[0]?.text).toContain('Farm wheat\nLocation: farm');
     await h.clock.advance(0);
     expect(h.pushes.some((p) => p.type === 'calendar.fired')).toBe(true);
     expect(h.pushes.some((p) => p.type === 'calendar.state')).toBe(true);

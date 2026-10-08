@@ -208,6 +208,12 @@ export interface CalendarServiceOptions {
   readonly playerName?: string | (() => string) | undefined;
   readonly limits?: Partial<CalendarLimits> | undefined;
   readonly logger?: Logger | undefined;
+  /**
+   * Whether `report_task` tells the CEO itself (default true). The org module turns it off: in the running app the
+   * crew does it (the `mc` server's `taskReported`, at P3 coalesced with the CEO's own session tag), and a second
+   * notice here would wake the CEO twice.
+   */
+  readonly reportToCeo?: boolean | undefined;
 }
 
 type ReportStatus = 'done' | 'failed' | 'blocked';
@@ -325,6 +331,9 @@ export class CalendarService {
   #running = false;
   /** Stopped for good (shutdown): nothing is delivered any more. */
   #stopped = false;
+  /** Held (no crew to deliver to yet): nothing fires, nothing is retried or expired. */
+  #paused = false;
+  readonly #reportToCeo: boolean;
 
   constructor(options: CalendarServiceOptions) {
     this.#nonce = options.nonce;
@@ -339,6 +348,7 @@ export class CalendarService {
     this.#playerNameOf = typeof name === 'function' ? name : () => name;
     this.#limits = { ...DEFAULT_CALENDAR_LIMITS, ...options.limits };
     this.#log = options.logger;
+    this.#reportToCeo = options.reportToCeo ?? true;
     this.#lastInputAt = this.#clock.now();
     this.#toasts = new ToastBatcher(this.#clock, (text) => this.#sink.toast?.(text));
   }
@@ -458,6 +468,22 @@ export class CalendarService {
     this.#toasts.dispose();
   }
 
+  /**
+   * Holds the calendar (`true`) or lets it run again (`false`). While held nothing fires and no deferred delivery is
+   * retried or expired: the org module holds it until a crew is bound, so that occurrences due at startup and
+   * deliveries restored from disk are not marked missed for want of anyone to deliver them to. The game clock is
+   * still recorded; on release the calendar catches up at once.
+   */
+  hold(held: boolean): void {
+    if (this.#paused === held) return;
+    this.#paused = held;
+    if (!held && this.#running) this.tick();
+  }
+
+  get held(): boolean {
+    return this.#paused;
+  }
+
   /** Waits for pending saves. */
   async flush(): Promise<void> {
     await this.#saveQueue;
@@ -494,7 +520,7 @@ export class CalendarService {
     const release = this.#deferred.filter((d) => d.reason === 'meeting' && (!set || set.has(d.agentId)));
     this.#deferred = this.#deferred.filter((d) => !release.includes(d));
     for (const d of release) this.#queueRetry(d);
-    this.#pumpStagger();
+    if (!this.#paused) this.#pumpStagger();
   }
 
   // -------------------------------------------------------------------------------------------
@@ -849,7 +875,7 @@ export class CalendarService {
     if (input.note) occ.note = singleLine(input.note, 200);
     ev.updatedAt = this.#clock.now();
 
-    const ceo = this.#crew.ceoId();
+    const ceo = this.#reportToCeo ? this.#crew.ceoId() : null;
     const who = this.#crew.name(agentId);
     const note = input.note ? `: ${singleLine(input.note, 200)}` : '';
     if (ceo && ceo !== agentId) {
@@ -912,6 +938,7 @@ export class CalendarService {
 
   /** One firing pass. Called every second and on every game-clock update. */
   tick(): void {
+    if (this.#paused) return;
     const nowReal = this.#clock.now();
     const wasAfk = this.#afk;
     this.#afk = nowReal - this.#lastInputAt >= this.#limits.afkMs;
@@ -1103,8 +1130,13 @@ export class CalendarService {
     }
     const selfScheduled = ev.createdBy === agentId;
     const when = this.formatWhen(ev, at);
-    const where = ev.location ? ` at ${singleLine(ev.location, 40)}` : '';
-    const headline = `${ev.title} (${when}${where}${late ? ', late' : ''}). When finished, call mcp__mc__report_task{event_id:"${ev.id}", status}.`;
+    // The control line carries only Node's own words (the id, the time): the title, the place and the task were
+    // written by the player or an agent, so they stay inside the data envelope (PLAN §6.6 "Firing", principle 6).
+    // The crew tags this line with the assignee's session nonce, so shared text here would pass for Node's.
+    const headline = `Calendar task [${ev.id}] due ${when}${late ? ' (late)' : ''}; what and where are below. When finished, call mcp__mc__report_task{event_id:"${ev.id}", status}.`;
+    const lines = [singleLine(ev.title)];
+    if (ev.location) lines.push(`Location: ${singleLine(ev.location, 80)}`);
+    if (ev.task && ev.task !== ev.title) lines.push(ev.task);
     const envelope = wrapNote(
       {
         author: { kind: ev.createdBy === 'player' ? 'player' : 'agent', name: ev.createdByName },
@@ -1112,7 +1144,7 @@ export class CalendarService {
         id: ev.id,
         title: ev.title,
       },
-      ev.task || ev.title,
+      lines.join('\n'),
     );
     this.#sink.deliverTask?.({
       agentId,
@@ -1289,8 +1321,15 @@ export class CalendarService {
     this.#offlineMissed = [];
     const counts = new Map<string, number>();
     for (const i of items) counts.set(i.title, (counts.get(i.title) ?? 0) + 1);
-    const list = [...counts.entries()].map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(', ');
-    const line = this.#nonce.line('MISSED', `Missed while offline: ${list}.`);
+    const list = [...counts.entries()]
+      .map(([t, n]) => `- ${singleLine(t)}${n > 1 ? ` ×${n}` : ''}`)
+      .join('\n');
+    // Titles are shared text: they go in an envelope, never in the control line.
+    const line = this.#nonce.message(
+      'MISSED',
+      'Calendar events missed while offline (listed below).',
+      wrapNote({ author: { kind: 'system', name: 'MineVibe' }, kind: 'calendar' }, list),
+    );
     const targets = new Set<string>();
     const ceo = this.#crew.ceoId();
     if (ceo) targets.add(ceo);

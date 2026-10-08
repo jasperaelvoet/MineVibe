@@ -470,6 +470,21 @@ export class MeetingRunner {
     }
   }
 
+  /**
+   * An attendee on its way cannot reach the table (the crew could not walk it there): it dials in now instead of
+   * holding up the gathering until the 2-minute deadline.
+   */
+  cannotCome(agentId: string): void {
+    const m = this.#active;
+    const a = m?.attendees.get(agentId);
+    if (!m || !a || a.mode !== 'walking' || m.phase !== 'gathering') return;
+    a.mode = 'dial_in';
+    a.reason = 'unreachable';
+    this.#fx.dialIn?.(agentId, m.id, 'unreachable');
+    this.#push();
+    m.waker?.();
+  }
+
   /** An attendee died (or was dismissed): drops out of the speaker order; the chair is replaced or the meeting adjourns. */
   agentDied(agentId: string): void {
     const m = this.#active;

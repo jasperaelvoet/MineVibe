@@ -38,7 +38,7 @@ import type {
   CrewEvents,
   DeliveryResult,
 } from '../contracts/CrewApi.js';
-import { ApiError, PLAYER } from '../contracts/common.js';
+import { ApiError, isApiError, PLAYER } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
 import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
@@ -1180,7 +1180,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     let meeting: ChatContext['meeting'] = null;
     try {
       const m = this.#o.org.meeting.state();
-      if (m && m.phase !== 'done') {
+      // While the meeting gathers nobody takes the floor yet (the MeetingRunner ignores lines then): chat routes as
+      // usual until it opens.
+      if (m && m.phase !== 'done' && m.phase !== 'gathering') {
         meeting = {
           meetingId: m.meetingId,
           attendees: m.attendees
@@ -1397,10 +1399,15 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         break;
       case 'calendar.approve':
         if (card.kind === 'calendar') {
-          // OrgApi.calendar.decide resolves without effect for an event that no longer waits, so a stale card
-          // always clears; any other failure keeps the card up.
-          if (this.#o.approveCalendarEvent) await this.#o.approveCalendarEvent(card.eventId);
-          else await this.#o.org.calendar.decide(PLAYER, card.eventId, { approve: true });
+          // OrgApi.calendar.decide resolves without effect for an event that no longer waits, and an event that is
+          // gone altogether has nothing left to approve, so a stale card always clears; any other failure keeps the
+          // card up.
+          try {
+            if (this.#o.approveCalendarEvent) await this.#o.approveCalendarEvent(card.eventId);
+            else await this.#o.org.calendar.decide(PLAYER, card.eventId, { approve: true });
+          } catch (err) {
+            if (!isApiError(err, ERROR_CODES.CALENDAR_NOT_FOUND)) throw err;
+          }
           this.pending.resolve(card.id, { kind: 'approved' });
         }
         break;
