@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- MineVibe.app's Info.plist (PLAN §9.1). packaging/build-app.ts fills in the at-sign tokens. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>MineVibe</string>
+	<key>CFBundleExecutable</key>
+	<string>MineVibe</string>
+	<key>CFBundleIconFile</key>
+	<string>MineVibe</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.minevibe.MineVibe</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>MineVibe</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
+	<key>LSArchitecturePriority</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<!-- The stub has no Dock icon or menu bar; the game window (the JVM, named MineVibe) is the app. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MineVibe is MIT licensed. Not an official Minecraft product.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MineVibe connects to the computers inside your world: small virtual machines on this Mac that agents and you work on.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>MineVibeCommit</key>
+	<string>@COMMIT@</string>
+</dict>
+</plist>

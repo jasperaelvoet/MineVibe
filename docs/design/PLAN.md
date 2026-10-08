@@ -687,7 +687,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 | `windows` | — (amd64 emulation only) | — | shown greyed out |
 
 - **`container` handling.**
-  - **Starting:** always `container system start --app-root "$AS/MineVibe/container" --install-root "<bundle>/Contents/Helpers/container" --enable-kernel-install --timeout <n>`. `system start` ignores the env vars, and without `--enable-kernel-install` the non-TTY prompt throws. Every other CLI call also gets `CONTAINER_APP_ROOT` / `CONTAINER_INSTALL_ROOT`.
+  - **Starting:** always `container system start --app-root "$AS/MineVibe/container" --install-root "<bundle>/Contents/Runtime/container" --enable-kernel-install --timeout <n>`. `system start` ignores the env vars, and without `--enable-kernel-install` the non-TTY prompt throws. Every other CLI call also gets `CONTAINER_APP_ROOT` / `CONTAINER_INSTALL_ROOT`.
   - **The launchd label `com.apple.container.apiserver` is shared** with any `container` the user installed via Homebrew or the pkg. Before any reuse, stop or `bootout`, run `system status --format json` and compare `paths.appRoot` / `paths.installRoot`:
     - Ours, but an old install root (the app moved or updated): stop, then restart from the current bundle.
     - Someone else's: never stop or bootout it. Show `engine_down` ("another `container` install is running") and offer to use it.
@@ -847,7 +847,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 | `MacOS/node` | Official Node v24 darwin-arm64, byte-identical (Homebrew's node is a stub) |
 | `Runtime/jre/` | Temurin 25 JRE. `bin/MineVibe` is a copy of `java`, so the Dock shows "MineVibe". |
 | `Resources/server/` | `dist/main.mjs` plus production `node_modules` (pinned SDK and `@trycua/cua`; the SDK's claude binary is pruned in release builds) |
-| `Helpers/container/` | Apple container 1.5.0 install root: `bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*` (incl. `machine-apiserver`). It lives under Helpers rather than Resources because Apple's bundle rules put code there. The install root is the grandparent of `bin/container`. |
+| `Runtime/container/` | Apple container 1.5.0 install root: `bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*` (incl. `machine-apiserver`), holding exactly `vendor.lock.json`'s `installRootFiles`. The install root is the grandparent of `bin/container`. Not under `Helpers/` (T7, 2026-10-08): codesign requires everything there to be signed code, and the install root also holds Apple's unsigned `config.toml`, `kindnet.yaml` and shell scripts; under `Runtime/` they are sealed as resources and Apple's signatures stay untouched. The path comes from `appBundleLayout().containerInstallRoot` (`apps/server/src/app/appLayout.ts`), and the bundle is read-only at runtime: never provision into it. |
 | `Helpers/lume.app` | Notarized, never re-signed |
 | `Resources/mod/` | `minevibe-<v>.jar`, `mods.lock.json`, config seeds, the linux-pc Containerfile |
 

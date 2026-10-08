@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { DEV_BRIDGE_PORT } from '@minevibe/protocol';
+import { runApp } from './app/runApp.js';
 import { devHome, ensureBaseDirs, findRepoRoot, HOME_ENV, resolvePaths } from './config/paths.js';
 import { doctorReport } from './doctor.js';
 import { createLogger } from './log.js';
@@ -13,6 +14,8 @@ const USAGE = `MineVibe server ${SERVER_VERSION}
 Usage: minevibe-server <command>
 
 Commands:
+  app       Node's side of MineVibe.app: NDJSON with the Swift stub on stdin/stdout (started by the stub)
+            (--selftest: handshake and bundle checks only, no game)
   dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; a fresh token in run/bridge.json every run)
   doctor    Print versions and paths
@@ -130,6 +133,8 @@ async function runPlay(): Promise<number> {
 export async function main(argv: readonly string[]): Promise<number> {
   const [command = 'help'] = argv;
   switch (command) {
+    case 'app':
+      return runApp({ argv: argv.slice(1) });
     case 'dev':
       return runDev();
     case 'doctor':
@@ -156,8 +161,8 @@ export async function main(argv: readonly string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => {
     process.exitCode = code;
-    // dev and play hold sockets and HTTP keep-alive pools open; exit explicitly once they are done.
-    if (code !== 0 || process.argv[2] === 'dev' || process.argv[2] === 'play') process.exit(code);
+    // dev, play and app hold sockets and HTTP keep-alive pools open; exit explicitly once they are done.
+    if (code !== 0 || ['dev', 'play', 'app'].includes(process.argv[2] ?? '')) process.exit(code);
   },
   (err: unknown) => {
     process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);

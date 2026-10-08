@@ -60,8 +60,8 @@ export function devContainerRoots(home = homedir()): ContainerRoots {
 
 /**
  * Picks the roots: explicit env overrides (`MINEVIBE_CONTAINER_APP_ROOT`, `MINEVIBE_CONTAINER_INSTALL_ROOT`),
- * else the app layout (`<appSupport>/container`, `<bundle>/Contents/Helpers/container`) when neither is
- * TCC-protected, else the dev roots.
+ * else the app layout (`<appSupport>/container`, `<bundle>/Contents/Runtime/container` from
+ * `appBundleLayout().containerInstallRoot`) when neither is TCC-protected, else the dev roots.
  */
 export function resolveContainerRoots(options: {
   appSupportContainer: string;

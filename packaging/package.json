@@ -1,0 +1,16 @@
+{
+  "name": "@minevibe/packaging",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Assembles MineVibe.app (PLAN §9): the Swift stub, Node 24, Temurin 25, Apple container, the server and the mod.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build:app": "node --import tsx build-app.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}
