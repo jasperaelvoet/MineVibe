@@ -7,6 +7,9 @@
 	"license": "MIT",
 	"environment": "*",
 	"entrypoints": {
+		"main": [
+			"dev.minevibe.gametest.GameTestWorldSetup"
+		],
 		"fabric-gametest": [
 			"dev.minevibe.gametest.MineVibeServerGameTests",
 			"dev.minevibe.gametest.agent.AgentGameTests",
