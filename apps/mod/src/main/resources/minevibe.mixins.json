@@ -2,7 +2,12 @@
 	"required": true,
 	"package": "dev.minevibe.mixin",
 	"compatibilityLevel": "JAVA_25",
-	"mixins": [],
+	"mixins": [
+		"agent.ClientboundPlayerInfoUpdatePacketMixin",
+		"agent.PlayerChunkSenderMixin",
+		"agent.PlayerListMixin",
+		"agent.SleepStatusMixin"
+	],
 	"injectors": {
 		"defaultRequire": 1
 	},

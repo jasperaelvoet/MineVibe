@@ -8,10 +8,12 @@
 	"environment": "*",
 	"entrypoints": {
 		"fabric-gametest": [
-			"dev.minevibe.gametest.MineVibeServerGameTests"
+			"dev.minevibe.gametest.MineVibeServerGameTests",
+			"dev.minevibe.gametest.agent.AgentGameTests"
 		],
 		"fabric-client-gametest": [
-			"dev.minevibe.gametest.client.MineVibeClientGameTests"
+			"dev.minevibe.gametest.client.MineVibeClientGameTests",
+			"dev.minevibe.gametest.agent.AgentClientGameTests"
 		]
 	},
 	"depends": {

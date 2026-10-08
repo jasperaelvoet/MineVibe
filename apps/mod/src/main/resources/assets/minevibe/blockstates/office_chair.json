@@ -1,0 +1,34 @@
+{
+  "variants": {
+    "facing=north,kind=pc": {
+      "model": "minevibe:block/office_chair"
+    },
+    "facing=east,kind=pc": {
+      "model": "minevibe:block/office_chair",
+      "y": 90
+    },
+    "facing=south,kind=pc": {
+      "model": "minevibe:block/office_chair",
+      "y": 180
+    },
+    "facing=west,kind=pc": {
+      "model": "minevibe:block/office_chair",
+      "y": 270
+    },
+    "facing=north,kind=meeting": {
+      "model": "minevibe:block/office_chair"
+    },
+    "facing=east,kind=meeting": {
+      "model": "minevibe:block/office_chair",
+      "y": 90
+    },
+    "facing=south,kind=meeting": {
+      "model": "minevibe:block/office_chair",
+      "y": 180
+    },
+    "facing=west,kind=meeting": {
+      "model": "minevibe:block/office_chair",
+      "y": 270
+    }
+  }
+}
