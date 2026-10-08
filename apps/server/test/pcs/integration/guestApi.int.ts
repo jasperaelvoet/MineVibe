@@ -321,6 +321,7 @@ describe('PcApi on a real PC, through the agents’ pc tools', () => {
     expect(readFileSync(join(vaultRw, 'notes', 'todo.md'), 'utf8')).toBe('- ship it\n');
     const refused = await tool('write', { file_path: join(vaultRo, 'nope.txt'), content: 'x' });
     expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/^Error DENIED: .*Read-only file system/);
     note('ro_write_refusal', refused.text);
     const missing = await tool('read', { file_path: join(vaultRw, 'missing.txt') });
     expect(missing.isError).toBe(true);

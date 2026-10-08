@@ -61,7 +61,10 @@ class FakeProc {
     this.killed = true;
     this.exit({ signal: 'kill' });
   }
+  /** The process already exited: writing its stdin fails (the script refused early). */
+  stdinGone = false;
   async writeStdin(data: ArrayBuffer): Promise<void> {
+    if (this.stdinGone) throw new Error('process has exited (FailedPrecondition)');
     this.stdin.push(new Uint8Array(data));
   }
   async closeStdin(): Promise<void> {}
@@ -84,6 +87,8 @@ class FakeGuest {
   readonly runs: { script: string; args: string[] }[] = [];
   readonly execs: FakeProc[] = [];
   clipboard = '';
+  /** Every stdin script exits before reading its input. */
+  stdinGone = false;
   readonly client = {
     run: async (cmd: { args: string[] }) => {
       const [, script = '', , ...args] = cmd.args;
@@ -101,7 +106,11 @@ class FakeGuest {
       if (cmd.stdin) {
         const [, script = '', , ...args] = cmd.args;
         this.runs.push({ script, args });
-        return new FakeProc(cmd, (stdin) => (this.scripts.get(script) ?? (() => ({ code: 0 })))(args, stdin));
+        const p = new FakeProc(cmd, (stdin) =>
+          (this.scripts.get(script) ?? (() => ({ code: 0 })))(args, stdin),
+        );
+        p.stdinGone = this.stdinGone;
+        return p;
       }
       const p = new FakeProc(cmd);
       this.execs.push(p);
@@ -282,6 +291,17 @@ describe('files in the guest', () => {
       guest.scripts.set(READ_SCRIPT, () => ({ code }));
       expect(await codeOf(api.readFile('linux-1', { path: '/w/a.txt' }))).toBe(want);
     }
+  });
+
+  it('a write the script refuses before reading its input is DENIED, not a transport error', async () => {
+    sit();
+    guest.stdinGone = true;
+    guest.scripts.set(WRITE_SCRIPT, () => ({
+      code: 5,
+      stderr: 'guest: line 5: /ro/x: Read-only file system',
+    }));
+    const e = await api.writeFile('linux-1', '/ro/x', 'data').catch((x: ApiError) => x);
+    expect(e).toMatchObject({ code: 'DENIED', message: '/ro/x: Read-only file system' });
   });
 
   it('writes through stdin and returns the bytes', async () => {

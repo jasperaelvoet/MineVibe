@@ -145,11 +145,11 @@ function scriptError(r: ScriptResult, path: string): ApiError | null {
       return err(PC_ERROR_CODES.NOT_FOUND, `no such file or directory: ${path}`);
     case SCRIPT_EXIT.NOT_A_FILE:
       return err(PC_ERROR_CODES.NOT_A_FILE, `${path} is a directory`);
-    case SCRIPT_EXIT.DENIED:
-      return err(
-        PC_ERROR_CODES.DENIED,
-        `${path}: ${tail(r.stderr) || 'permission denied (or a read-only folder)'}`,
-      );
+    case SCRIPT_EXIT.DENIED: {
+      const why = tail(r.stderr) || 'permission denied (or a read-only folder)';
+      // The shell's own message usually names the path already.
+      return err(PC_ERROR_CODES.DENIED, why.includes(path) ? why : `${path}: ${why}`);
+    }
     case SCRIPT_EXIT.BINARY:
       return err(PC_ERROR_CODES.NOT_A_FILE, `${path} is a binary file; inspect it with bash (file, xxd, …)`);
     case SCRIPT_EXIT.TOO_LARGE:
@@ -866,11 +866,15 @@ export class PcGuestApi implements PcApi {
         if (options.stdin === undefined) return c.run(command, { signal });
         const p = await c.spawn(command, { signal });
         const data = options.stdin;
-        for (let i = 0; i < data.byteLength; i += STDIN_CHUNK) {
-          const chunk = data.slice(i, i + STDIN_CHUNK);
-          await p.writeStdin(chunk.buffer as ArrayBuffer, { signal });
+        try {
+          for (let i = 0; i < data.byteLength; i += STDIN_CHUNK) {
+            const chunk = data.slice(i, i + STDIN_CHUNK);
+            await p.writeStdin(chunk.buffer as ArrayBuffer, { signal });
+          }
+          await p.closeStdin({ signal });
+        } catch {
+          // The script may already have exited (a refused write into a read-only folder): its exit code says why.
         }
-        await p.closeStdin({ signal });
         return p.wait({ signal });
       });
       if (out.exit.timedOut)
