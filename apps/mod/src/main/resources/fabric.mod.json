@@ -19,7 +19,8 @@
 		"main": [
 			"dev.minevibe.MineVibeMod",
 			"dev.minevibe.agent.AgentModInit",
-			"dev.minevibe.org.OrgModInit"
+			"dev.minevibe.org.OrgModInit",
+			"dev.minevibe.agent.skill.SkillsModInit"
 		],
 		"client": [
 			"dev.minevibe.client.MineVibeClient",

@@ -50,7 +50,8 @@ final class EatReflex implements Reflex {
 
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
-		boolean eating = agent.isUsingItem() && agent.getUseItem().has(DataComponents.FOOD);
+		// Finishing a bite counts only for a bite this reflex started: an eat job's bite belongs to the job.
+		boolean eating = brain.active() == this && agent.isUsingItem() && agent.getUseItem().has(DataComponents.FOOD);
 		if (this.critical) {
 			return agent.getHealth() <= CRITICAL_HEALTH && (eating || AgentInventory.bestFoodSlot(agent, true, true) >= 0);
 		}

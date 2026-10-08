@@ -22,6 +22,11 @@ final class ProtectReflex implements Reflex {
 	}
 
 	@Override
+	public boolean allowedWhileSeated() {
+		return false;
+	}
+
+	@Override
 	public String name() {
 		return "protect";
 	}

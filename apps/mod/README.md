@@ -113,6 +113,7 @@ src/gametest/               mod "minevibe-gametest": server (fabric-gametest) an
                             (fabric-client-gametest) GameTests, never shipped
 src/test/                   JUnit tests
 docs/API_MAP_26.3.md        verified API reference
+docs/SKILLS.md              the agent skill layer: messages, conventions, failure codes, reflexes
 ```
 
 Where code goes:

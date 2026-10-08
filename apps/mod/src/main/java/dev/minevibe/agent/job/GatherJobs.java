@@ -1,0 +1,528 @@
+package dev.minevibe.agent.job;
+
+import dev.minevibe.agent.AgentInventory;
+import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.skill.Refs;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
+
+/** Gathering skills: {@code mine}, {@code collect}, {@code hunt}, {@code dig}, {@code pickup}. */
+public final class GatherJobs {
+	private GatherJobs() {
+	}
+
+	/** {@code mine{block, count, near?, radius?}}: break {@code count} matching blocks and pick up what they drop. */
+	public static final class Mine extends SkillJob {
+		private final Refs.BlockMatcher block;
+		private final int count;
+		private final Miner miner;
+		private Map<String, Integer> before = Map.of();
+
+		public Mine(final Refs.BlockMatcher block, final int count, final @Nullable BlockPos near, final int radius) {
+			super("mine");
+			this.block = block;
+			this.count = count;
+			this.miner = new Miner(block, near, radius);
+		}
+
+		@Override
+		protected int timeoutTicks() {
+			return Math.min(30 * MINUTE, MINUTE + this.count * 30 * SECOND);
+		}
+
+		@Override
+		public void start(final AgentPlayer agent) {
+			this.before = Inv.counts(agent);
+		}
+
+		@Override
+		public void onResume(final AgentPlayer agent) {
+			this.miner.reset();
+		}
+
+		@Override
+		protected Status step(final AgentPlayer agent) {
+			if (this.miner.mined() >= this.count) {
+				// Let the last drops be picked up (the miner collects right after each break).
+				return this.miner.collecting(agent) ? Status.RUNNING : this.finish(agent, null);
+			}
+			Miner.Tick t = this.miner.tick(agent);
+			this.progress((double)this.miner.mined() / this.count, this.miner.mined() + "/" + this.count + " " + this.block.ref());
+			return switch (t) {
+				case WORKING -> Status.RUNNING;
+				case NONE_LEFT -> this.finish(agent, "NOT_FOUND");
+				case FAILED -> {
+					this.finish(agent, null);
+					yield this.fail(this.miner.failureCode(), this.miner.failure());
+				}
+			};
+		}
+
+		private Status finish(final AgentPlayer agent, final @Nullable String shortCode) {
+			agent.controls().stopMining();
+			this.put("mined", this.miner.mined());
+			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+			if (shortCode != null && this.miner.mined() < this.count) {
+				return this.fail(shortCode, "found only " + this.miner.mined() + " of " + this.count + " " + this.block.ref() + " in range");
+			}
+			return this.done();
+		}
+	}
+
+	/**
+	 * {@code collect{item, count, radius?}}: end up with {@code count} more of an item: pick up loose items first, then
+	 * break the blocks that drop it (logs for {@code oak_log}, stone for {@code cobblestone}, ores for raw metals).
+	 */
+	public static final class Collect extends SkillJob {
+		private final Refs.ItemMatcher item;
+		private final int count;
+		private final int radius;
+		private final @Nullable Predicate<BlockState> sources;
+		private final Walk walk = new Walk();
+		private final Set<ItemEntity> ignored = new HashSet<>();
+		private int lastLooks;
+		private @Nullable Miner miner;
+		private int startCount;
+		private Map<String, Integer> before = Map.of();
+
+		public Collect(final Refs.ItemMatcher item, final int count, final int radius) {
+			super("collect");
+			this.item = item;
+			this.count = count;
+			this.radius = radius;
+			this.sources = sourcesOf(item);
+		}
+
+		@Override
+		protected int timeoutTicks() {
+			return Math.min(30 * MINUTE, MINUTE + this.count * 30 * SECOND);
+		}
+
+		@Override
+		public void start(final AgentPlayer agent) {
+			this.startCount = Inv.count(agent, this.item);
+			this.before = Inv.counts(agent);
+		}
+
+		@Override
+		public void onResume(final AgentPlayer agent) {
+			this.walk.reset();
+			if (this.miner != null) {
+				this.miner.reset();
+			}
+		}
+
+		@Override
+		protected Status step(final AgentPlayer agent) {
+			int got = Inv.count(agent, this.item) - this.startCount;
+			this.progress((double)Math.max(0, got) / this.count, Math.max(0, got) + "/" + this.count + " " + this.item.ref());
+			if (got >= this.count) {
+				agent.controls().stopMining();
+				this.report(agent, got);
+				return this.done();
+			}
+			if (Inv.freeSlots(agent) == 0 && !Inv.hasRoomFor(agent, new ItemStack(this.item.item() != null ? this.item.item() : Items.STONE))) {
+				this.report(agent, got);
+				return this.fail("INVENTORY_FULL", "no room for more " + this.item.ref());
+			}
+			// Loose items first (only while not in the middle of breaking a block).
+			if (this.miner == null || this.miner.target() == null) {
+				ItemEntity loose = Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s));
+				if (loose != null && !this.ignored.contains(loose)) {
+					if (agent.position().distanceTo(loose.position()) > 0.6 && this.walk.to(agent, loose.position(), 0.5) == Walk.State.FAILED) {
+						this.ignored.add(loose);
+					}
+					return Status.RUNNING;
+				}
+			}
+			if (this.sources == null) {
+				this.report(agent, got);
+				return this.fail("NOT_FOUND", "no loose " + this.item.ref() + " nearby, and it is not dropped by any block MineVibe knows");
+			}
+			if (this.miner == null) {
+				this.miner = new Miner(this.sources, null, this.radius);
+			}
+			Miner.Tick t = this.miner.tick(agent);
+			return switch (t) {
+				case WORKING -> Status.RUNNING;
+				case NONE_LEFT -> {
+					if (Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s)) != null && ++this.lastLooks < 200) {
+						yield Status.RUNNING;
+					}
+					this.report(agent, got);
+					yield this.fail("NOT_FOUND", "collected " + Math.max(0, got) + " of " + this.count + "; no more " + this.item.ref() + " sources within " + this.radius + " blocks");
+				}
+				case FAILED -> {
+					this.report(agent, got);
+					yield this.fail(this.miner.failureCode(), this.miner.failure());
+				}
+			};
+		}
+
+		private void report(final AgentPlayer agent, final int got) {
+			this.put("collected", Math.max(0, got));
+			this.put("have", Inv.count(agent, this.item));
+			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+		}
+	}
+
+	/** Blocks that drop {@code item} when mined: the item's own block (or a block tag of the same name), plus common drops. */
+	static @Nullable Predicate<BlockState> sourcesOf(final Refs.ItemMatcher item) {
+		List<Predicate<BlockState>> out = new ArrayList<>();
+		Refs.BlockMatcher self = item.asBlock();
+		if (self != null) {
+			out.add(self);
+		}
+		if (item.item() != null) {
+			Set<Block> extra = DROPS.getOrDefault(item.item(), Set.of());
+			if (!extra.isEmpty()) {
+				out.add(s -> extra.contains(s.getBlock()));
+			}
+		} else if (item.tag() != null && item.tag().location().getPath().equals("logs")) {
+			out.add(s -> s.is(BlockTags.LOGS));
+		}
+		if (out.isEmpty()) {
+			return null;
+		}
+		return s -> {
+			for (Predicate<BlockState> p : out) {
+				if (p.test(s)) {
+					return true;
+				}
+			}
+			return false;
+		};
+	}
+
+	/** Items whose block is not the item itself. */
+	private static final Map<Item, Set<Block>> DROPS = Map.ofEntries(
+		Map.entry(Items.COBBLESTONE, Set.of(Blocks.STONE, Blocks.COBBLESTONE)),
+		Map.entry(Items.COBBLED_DEEPSLATE, Set.of(Blocks.DEEPSLATE, Blocks.COBBLED_DEEPSLATE)),
+		Map.entry(Items.COAL, Set.of(Blocks.COAL_ORE, Blocks.DEEPSLATE_COAL_ORE)),
+		Map.entry(Items.RAW_IRON, Set.of(Blocks.IRON_ORE, Blocks.DEEPSLATE_IRON_ORE)),
+		Map.entry(Items.RAW_COPPER, Set.of(Blocks.COPPER_ORE, Blocks.DEEPSLATE_COPPER_ORE)),
+		Map.entry(Items.RAW_GOLD, Set.of(Blocks.GOLD_ORE, Blocks.DEEPSLATE_GOLD_ORE)),
+		Map.entry(Items.DIAMOND, Set.of(Blocks.DIAMOND_ORE, Blocks.DEEPSLATE_DIAMOND_ORE)),
+		Map.entry(Items.EMERALD, Set.of(Blocks.EMERALD_ORE, Blocks.DEEPSLATE_EMERALD_ORE)),
+		Map.entry(Items.REDSTONE, Set.of(Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE)),
+		Map.entry(Items.LAPIS_LAZULI, Set.of(Blocks.LAPIS_ORE, Blocks.DEEPSLATE_LAPIS_ORE)),
+		Map.entry(Items.QUARTZ, Set.of(Blocks.NETHER_QUARTZ_ORE)),
+		Map.entry(Items.FLINT, Set.of(Blocks.GRAVEL)),
+		Map.entry(Items.CLAY_BALL, Set.of(Blocks.CLAY)),
+		Map.entry(Items.GLOWSTONE_DUST, Set.of(Blocks.GLOWSTONE)),
+		Map.entry(Items.WHEAT_SEEDS, Set.of(Blocks.SHORT_GRASS, Blocks.TALL_GRASS)),
+		Map.entry(Items.SNOWBALL, Set.of(Blocks.SNOW_BLOCK)),
+		Map.entry(Items.DIRT, Set.of(Blocks.DIRT, Blocks.GRASS_BLOCK, Blocks.PODZOL, Blocks.MYCELIUM)),
+		Map.entry(Items.SAND, Set.of(Blocks.SAND)),
+		Map.entry(Items.GRAVEL, Set.of(Blocks.GRAVEL))
+	);
+
+	/** {@code hunt{entity, count, radius?}}: chase and kill {@code count} mobs of a type, then pick up their drops. */
+	public static final class Hunt extends SkillJob {
+		private final EntityType<?> type;
+		private final String ref;
+		private final int count;
+		private final int radius;
+		private final Walk walk = new Walk();
+		private @Nullable LivingEntity target;
+		private @Nullable Vec3 lastDeath;
+		private int collectTicks;
+		private int killed;
+		private Map<String, Integer> before = Map.of();
+
+		public Hunt(final EntityType<?> type, final String ref, final int count, final int radius) {
+			super("hunt");
+			this.type = type;
+			this.ref = ref;
+			this.count = count;
+			this.radius = radius;
+		}
+
+		@Override
+		protected int timeoutTicks() {
+			return Math.min(20 * MINUTE, MINUTE + this.count * MINUTE);
+		}
+
+		@Override
+		public void start(final AgentPlayer agent) {
+			this.before = Inv.counts(agent);
+		}
+
+		@Override
+		public void onResume(final AgentPlayer agent) {
+			this.walk.reset();
+		}
+
+		@Override
+		protected Status step(final AgentPlayer agent) {
+			if (this.lastDeath != null) {
+				if (this.collectTicks-- > 0 && Miner.collectNear(agent, this.walk, BlockPos.containing(this.lastDeath), 4.0, s -> true)) {
+					return Status.RUNNING;
+				}
+				this.lastDeath = null;
+			}
+			if (this.killed >= this.count) {
+				return this.finish(agent);
+			}
+			if (this.target == null || !this.target.isAlive() || this.target.isRemoved()) {
+				if (this.target != null && this.target.isDeadOrDying()) {
+					this.killed++;
+					this.lastDeath = this.target.position();
+					this.collectTicks = 60;
+					this.target = null;
+					return Status.RUNNING;
+				}
+				Entity e = Refs.nearestOfType(agent, this.type, this.radius, x -> x instanceof LivingEntity && !(x instanceof Player));
+				if (e == null) {
+					this.finish(agent);
+					return this.fail("NOT_FOUND", "killed " + this.killed + " of " + this.count + "; no " + this.ref + " within " + this.radius + " blocks");
+				}
+				this.target = (LivingEntity)e;
+				this.walk.reset();
+			}
+			this.progress((double)this.killed / this.count, this.killed + "/" + this.count + " " + this.ref);
+			if (this.target.distanceTo(agent) > this.radius + 16) {
+				this.target = null;
+				return Status.RUNNING;
+			}
+			if (!Fight.tick(agent, this.target, this.walk)) {
+				this.finish(agent);
+				return this.fail("UNREACHABLE", "cannot reach the " + this.ref + " (" + this.walk.failure() + ")");
+			}
+			return Status.RUNNING;
+		}
+
+		private Status finish(final AgentPlayer agent) {
+			this.put("killed", this.killed);
+			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+			return this.done();
+		}
+	}
+
+	/** {@code dig{from, to}}: clear every breakable block in the box, top layer first, then pick up the drops. */
+	public static final class Dig extends SkillJob {
+		public static final int MAX_BLOCKS = 1024;
+		private final BlockPos min;
+		private final BlockPos max;
+		private final Walk walk = new Walk();
+		private final Set<BlockPos> skipped = new HashSet<>();
+		private @Nullable BlockPos target;
+		private int dug;
+		private int mineTicks;
+		private int collectTicks = -1;
+		private Map<String, Integer> before = Map.of();
+
+		public Dig(final BlockPos a, final BlockPos b) {
+			super("dig");
+			this.min = new BlockPos(Math.min(a.getX(), b.getX()), Math.min(a.getY(), b.getY()), Math.min(a.getZ(), b.getZ()));
+			this.max = new BlockPos(Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()));
+		}
+
+		/** Blocks in the box, in longs: int coordinates far apart would overflow an int product (and pass a size check). */
+		public static long volume(final BlockPos a, final BlockPos b) {
+			return (Math.abs((long)a.getX() - b.getX()) + 1) * (Math.abs((long)a.getY() - b.getY()) + 1) * (Math.abs((long)a.getZ() - b.getZ()) + 1);
+		}
+
+		@Override
+		protected int timeoutTicks() {
+			return (int)Math.min(40L * MINUTE, MINUTE + volume(this.min, this.max) * 5L * SECOND);
+		}
+
+		@Override
+		public void start(final AgentPlayer agent) {
+			this.before = Inv.counts(agent);
+		}
+
+		@Override
+		public void onResume(final AgentPlayer agent) {
+			this.walk.reset();
+		}
+
+		@Override
+		protected Status step(final AgentPlayer agent) {
+			ServerLevel level = agent.level();
+			if (this.collectTicks >= 0) {
+				BlockPos mid = BlockPos.containing((this.min.getX() + this.max.getX()) / 2.0, this.min.getY(), (this.min.getZ() + this.max.getZ()) / 2.0);
+				double r = Math.max(4.0, Math.sqrt(this.min.distSqr(this.max)) / 2.0 + 2.0);
+				if (this.collectTicks-- > 0 && Miner.collectNear(agent, this.walk, mid, r, s -> true)) {
+					return Status.RUNNING;
+				}
+				this.put("dug", this.dug);
+				this.put("skipped", this.skipped.size());
+				this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+				return this.done();
+			}
+			if (this.target != null && BlockOps.isClear(level, this.target)) {
+				// Broken by the held attack at the end of the last tick.
+				if (this.mineTicks > 0) {
+					this.dug++;
+				}
+				this.target = null;
+			}
+			if (this.target == null) {
+				this.target = this.next(agent);
+				this.mineTicks = 0;
+				if (this.target == null) {
+					agent.controls().stopMining();
+					this.collectTicks = 100;
+					return Status.RUNNING;
+				}
+			}
+			BlockPos t = this.target;
+			long total = volume(this.min, this.max);
+			this.progress((double)this.dug / total, this.dug + " blocks dug");
+			Walk.State s = this.walk.toBlock(agent, t);
+			if (s == Walk.State.MOVING) {
+				return Status.RUNNING;
+			}
+			if (s == Walk.State.FAILED || ++this.mineTicks > 30 * SECOND) {
+				this.skipped.add(t);
+				this.target = null;
+				return Status.RUNNING;
+			}
+			if (BlockOps.mineTick(agent, t)) {
+				this.dug++;
+				this.target = null;
+			}
+			return Status.RUNNING;
+		}
+
+		/** Highest layer first; nearest to the agent within it. */
+		private @Nullable BlockPos next(final AgentPlayer agent) {
+			ServerLevel level = agent.level();
+			for (int y = this.max.getY(); y >= this.min.getY(); y--) {
+				BlockPos best = null;
+				double bestD = Double.MAX_VALUE;
+				for (int x = this.min.getX(); x <= this.max.getX(); x++) {
+					for (int z = this.min.getZ(); z <= this.max.getZ(); z++) {
+						BlockPos p = new BlockPos(x, y, z);
+						if (this.skipped.contains(p) || BlockOps.isClear(level, p) || BlockOps.unbreakable(level, p)) {
+							continue;
+						}
+						double d = p.distSqr(agent.blockPosition());
+						if (d < bestD) {
+							bestD = d;
+							best = p;
+						}
+					}
+				}
+				if (best != null) {
+					return best;
+				}
+			}
+			return null;
+		}
+	}
+
+	/** {@code pickup{item?, radius?}}: pick up loose items (optionally only one kind) until none are left in range. */
+	public static final class Pickup extends SkillJob {
+		private final Refs.@Nullable ItemMatcher item;
+		private final int radius;
+		private final Walk walk = new Walk();
+		private final Set<ItemEntity> unreachable = new HashSet<>();
+		private @Nullable ItemEntity target;
+		private int targetTicks;
+		private Map<String, Integer> before = Map.of();
+
+		public Pickup(final Refs.@Nullable ItemMatcher item, final int radius) {
+			super("pickup");
+			this.item = item;
+			this.radius = radius;
+		}
+
+		@Override
+		protected int timeoutTicks() {
+			return 2 * MINUTE;
+		}
+
+		@Override
+		public void start(final AgentPlayer agent) {
+			this.before = Inv.counts(agent);
+		}
+
+		@Override
+		public void onResume(final AgentPlayer agent) {
+			this.walk.reset();
+		}
+
+		@Override
+		protected Status step(final AgentPlayer agent) {
+			Predicate<ItemStack> what = this.item == null ? s -> true : this.item;
+			if (this.target == null || !this.target.isAlive()) {
+				List<ItemEntity> items = agent.level().getEntitiesOfClass(ItemEntity.class, agent.getBoundingBox().inflate(this.radius),
+					e -> e.isAlive() && !this.unreachable.contains(e) && what.test(e.getItem()) && Tossed.pickableBy(e, agent) && Inv.hasRoomFor(agent, e.getItem()));
+				this.target = items.stream().min(Comparator.comparingDouble(e -> e.distanceToSqr(agent))).orElse(null);
+				this.targetTicks = 0;
+				if (this.target == null) {
+					Map<String, Integer> got = Inv.gained(this.before, Inv.counts(agent));
+					this.put("picked", got);
+					if (got.isEmpty()) {
+						return this.fail("NOT_FOUND", "no " + (this.item == null ? "items" : this.item.ref()) + " to pick up within " + this.radius + " blocks");
+					}
+					return this.done();
+				}
+			}
+			if (++this.targetTicks > 15 * SECOND || this.walk.to(agent, this.target.position(), 0.5) == Walk.State.FAILED) {
+				this.unreachable.add(this.target);
+				this.target = null;
+			}
+			this.progress(null, "picking up " + Refs.itemId(this.target == null ? ItemStack.EMPTY : this.target.getItem()).replace("minecraft:", ""));
+			return Status.RUNNING;
+		}
+	}
+
+	/** Shared melee: best weapon, close in with the navigator, swing when charged. Returns false if unreachable. */
+	public static final class Fight {
+		private Fight() {
+		}
+
+		public static boolean tick(final AgentPlayer agent, final LivingEntity target, final Walk walk) {
+			int weapon = AgentInventory.bestWeaponSlot(agent.getInventory());
+			if (weapon >= 0) {
+				AgentInventory.equip(agent, weapon);
+			}
+			double dist = agent.distanceTo(target);
+			if (dist > 2.8 || !agent.hasLineOfSight(target)) {
+				Walk.State s = walk.to(agent, target.position(), 1.8);
+				if (s == Walk.State.FAILED) {
+					return false;
+				}
+				if (dist < 6.0) {
+					agent.controls().lookAt(target);
+				}
+				return true;
+			}
+			walk.stop(agent);
+			agent.controls().lookAt(target);
+			agent.controls().setForward(dist > 2.0 ? 0.6F : 0.0F);
+			agent.controls().attack(target);
+			return true;
+		}
+	}
+
+	static String lower(final String s) {
+		return s.toLowerCase(Locale.ROOT);
+	}
+}

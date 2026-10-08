@@ -61,14 +61,14 @@ public final class WorldTicker {
 						fresh,
 						new Messages.BlockPos(pos.getX(), pos.getY(), pos.getZ()),
 						null,
-						Math.max(0L, mc.level.getOverworldClockTime())));
+						dev.minevibe.agent.skill.WorldClock.overworldClockTime(mc.level.getOverworldClockTime())));
 			}
 			ticks = 0;
 			return;
 		}
 		if (++ticks % 20 == 0 && bridge != null && Messages.isWorldId(id)) {
 			bridge.send(Messages.WORLD_STATE, new Messages.WorldState(
-					id, Messages.WorldState.READY, null, null, null, Math.max(0L, mc.level.getOverworldClockTime())));
+					id, Messages.WorldState.READY, null, null, null, dev.minevibe.agent.skill.WorldClock.overworldClockTime(mc.level.getOverworldClockTime())));
 		}
 	}
 }
