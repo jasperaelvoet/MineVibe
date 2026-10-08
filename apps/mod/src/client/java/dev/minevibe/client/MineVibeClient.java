@@ -57,6 +57,8 @@ public final class MineVibeClient implements ClientModInitializer {
 					.config(() -> BridgeConfig.load(bridgeFile))
 					.clientExecutor(clientTasks)
 					.serverExecutor(MineVibeClient::runningServer)
+					// MVF1 frames go to whatever a feature module installed with MineVibeBridge.setFrameSink (PC monitors).
+					.frameSink(MineVibeBridge.frameSink())
 					.hello(ClientBridge::hello)
 					.build();
 			MineVibeBridge.install(bridge);

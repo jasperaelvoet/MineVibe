@@ -1,0 +1,141 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "minecraft:block/dark_oak_planks",
+    "desk": "minecraft:block/dark_oak_planks",
+    "metal": "minecraft:block/iron_block",
+    "tower": "minecraft:block/gray_concrete",
+    "body": "minecraft:block/black_concrete",
+    "keys": "minecraft:block/light_gray_concrete"
+  },
+  "elements": [
+    {
+      "from": [
+        0,
+        13,
+        0
+      ],
+      "to": [
+        16,
+        16,
+        16
+      ],
+      "faces": {
+        "north": {
+          "texture": "#desk"
+        },
+        "east": {
+          "texture": "#desk"
+        },
+        "south": {
+          "texture": "#desk"
+        },
+        "west": {
+          "texture": "#desk"
+        },
+        "up": {
+          "texture": "#desk"
+        },
+        "down": {
+          "texture": "#desk"
+        }
+      }
+    },
+    {
+      "from": [
+        1,
+        0,
+        1
+      ],
+      "to": [
+        3,
+        13,
+        3
+      ],
+      "faces": {
+        "north": {
+          "texture": "#metal"
+        },
+        "east": {
+          "texture": "#metal"
+        },
+        "south": {
+          "texture": "#metal"
+        },
+        "west": {
+          "texture": "#metal"
+        },
+        "up": {
+          "texture": "#metal"
+        },
+        "down": {
+          "texture": "#metal"
+        }
+      }
+    },
+    {
+      "from": [
+        1,
+        0,
+        13
+      ],
+      "to": [
+        3,
+        13,
+        15
+      ],
+      "faces": {
+        "north": {
+          "texture": "#metal"
+        },
+        "east": {
+          "texture": "#metal"
+        },
+        "south": {
+          "texture": "#metal"
+        },
+        "west": {
+          "texture": "#metal"
+        },
+        "up": {
+          "texture": "#metal"
+        },
+        "down": {
+          "texture": "#metal"
+        }
+      }
+    },
+    {
+      "from": [
+        9,
+        0,
+        3
+      ],
+      "to": [
+        15,
+        12,
+        15
+      ],
+      "faces": {
+        "north": {
+          "texture": "#tower"
+        },
+        "east": {
+          "texture": "#tower"
+        },
+        "south": {
+          "texture": "#tower"
+        },
+        "west": {
+          "texture": "#tower"
+        },
+        "up": {
+          "texture": "#tower"
+        },
+        "down": {
+          "texture": "#tower"
+        }
+      }
+    }
+  ]
+}

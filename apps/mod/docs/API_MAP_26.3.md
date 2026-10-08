@@ -697,6 +697,45 @@ are from the same decompiled jars as above.
 - GameRules in 26.3: `level.getGameRules().get(GameRules.X)` and `set(GameRules.X, value, server)`; rule ids are
   snake_case (`spawn_monsters`, `spawn_mobs`, `advance_time`).
 
+### 7.4 PC monitors and input (S4, track T2)
+Verified by reading the sources and by `spikes/s4-monitor` (a real client with Sodium 0.9.2 and Entity Culling 1.11.2).
+- **Monitor textures.** `RenderTypes.text(id)` binds the texture's own sampler (`RenderSetup` :104: no override, so
+  `AbstractTexture#getSampler()`), so an `AbstractTexture` subclass that sets `sampler =
+  RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR)` is sampled clamped and linear. The `TEXT` pipeline
+  blends translucent and culls back faces: monitor quads must be counter-clockwise for the viewer.
+- **Uploads.** `CommandEncoder#writeToTexture(GpuTexture, ByteBuffer, mip, layer, x, y, w, h)`: the GL backend sets
+  `UNPACK_ROW_LENGTH = w` (`GlCommandEncoder` :307), so the source must be tightly packed `w x h`; a band of full-width
+  rows can be uploaded straight out of a full frame without repacking. The texture needs `USAGE_COPY_DST` (1) and
+  `USAGE_TEXTURE_BINDING` (4); create it with `GpuDevice#createTexture(label, usage, GpuFormat.RGBA8_UNORM, w, h, 1, 1)`.
+- **Block entity culling.** `LevelExtractor#extractVisibleBlockEntities` takes every block entity of the visible
+  sections (no per-block-entity frustum test) plus `ClientLevel#getGloballyRenderedBlockEntities()` for renderers
+  with `shouldRenderOffScreen()`. A monitor whose block entity lives in the monitor block (the picture reaches 12 px into
+  the side column) rendered correctly under Sodium + Entity Culling.
+- **GUI.** `GuiGraphicsExtractor#blit(GpuTextureView, GpuSampler, x0, y0, x1, y1, u0, u1, v0, v1)` draws any texture
+  with its own sampler. `Screen#extractBackground` is called before `extractRenderState` (override it for no blur).
+- **Frames.** `Minecraft#runTick` runs `GameRenderer#extract` (level, then GUI) before `GameRenderer#render`, so
+  `LevelRenderEvents.END_MAIN` comes after both extractions of the same frame. `Minecraft#getFrameTimeNs()` changes
+  every frame and is stable within one: a cheap "once per frame" token.
+- **SDL input.** `SDLEventHandler#pollEvents` turns `SDL_EVENT_KEY_DOWN/UP` (768/769) into
+  `KeyEvent(scancode, keycode, mod)` with action `-1` for repeats, and copies `SDL_EVENT_TEXT_INPUT` (771) text at poll
+  time (`textString()`) into `KeyboardHandler#textInput`, one `charTyped` per code point. `CharacterEvent` carries no
+  modifiers: read `SDLKeyboard.SDL_GetModState()`. `SDLEvents.SDL_PushEvent` injects synthetic events (window id from
+  `SDLVideo.SDL_GetWindowID(window.handle())`); the text pointer only has to live until the next poll. Logged real
+  key events: Esc `41/27`, Tab `43/9`, Return `40/13`, LShift `225/0x400000E1` (mod `0x1`), LCtrl `224/0x400000E0`
+  (mod `0x40`).
+- **Keys a screen never sees.** `Minecraft#handleGlobalKeyPress` handles fullscreen (F11) and screenshot (F2) before
+  `Screen#keyPressed`; the friends key only fires when `!screen.isInputCaptured()`.
+- **Cursor.** `SDLMouse.SDL_HideCursor()` / `SDL_ShowCursor()`; `GuiGraphicsExtractor#requestCursor(CursorType)` only
+  picks shapes.
+- **Smaller API facts.** `PoseStack#rotateDegrees(Axis, float)` (there is no `mulPose(Quaternionf)`, only
+  `mulPose(Matrix4fc|Transformation)`); `ServerPlayer#drop(ItemStack, boolean, Prediction)`; `Vec3i` has no
+  `getCenter()` (use `Vec3.atCenterOf`); `Item.Properties#component(type, value)`; a custom data component is
+  `DataComponentType.<T>builder().persistent(codec).networkSynchronized(streamCodec).build()` registered in
+  `BuiltInRegistries.DATA_COMPONENT_TYPE`; `BlockEntity#preRemoveSideEffects(pos, state)` runs on the server only when
+  the block really changes (not for a state change of the same block, not with flag 256).
+- **Performance mods in `runClient`.** Jars in `<runDir>/mods` load next to the dev classpath (26.3 is unobfuscated,
+  nothing is remapped); Entity Culling logs a harmless "Reference map ... could not be read".
+
 ## 8. Not found / open
 - `Minecraft#setScreen` - NOT FOUND (use `Gui#setScreen`).
 - `getRenderBoundingBox` - NOT FOUND in vanilla or Fabric API (see correction 2).
@@ -706,3 +745,5 @@ are from the same decompiled jars as above.
   texture's own `GpuSampler` (linear vs nearest), Entity Culling behaviour for globally rendered BEs,
   and whether `ALLOW_CHAT` interception plus `modifyCustomCompletions` give `@name` Tab completion in
   plain chat.
+- S4 answered the sampler question (7.4: the texture's own sampler). Entity Culling with globally rendered block
+  entities is still untested (the monitor does not need `shouldRenderOffScreen`).

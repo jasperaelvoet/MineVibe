@@ -1,0 +1,117 @@
+package dev.minevibe.client.pc.frame;
+
+import com.mojang.blaze3d.platform.NativeImage;
+import dev.minevibe.MineVibeMod;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.Identifier;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * One {@link MonitorFrame} (CPU) and {@link MonitorTexture} (GPU, registered as {@code minevibe:pc/<pcId>}) per PC
+ * (PLAN 7.6). Decoder threads write frames; the render thread calls {@link #prepare} wherever it draws a monitor (the
+ * block entity renderer, PcControlScreen, Watch mode), which uploads at most once per PC per rendered frame.
+ */
+public final class MonitorTextures {
+	private static final Map<String, Entry> ENTRIES = new ConcurrentHashMap<>();
+	private static @Nullable Identifier white;
+
+	private MonitorTextures() {}
+
+	private static final class Entry {
+		final Identifier id;
+		final MonitorFrame frame = new MonitorFrame();
+		@Nullable MonitorTexture texture;
+		long lastAttemptToken = Long.MIN_VALUE;
+
+		Entry(final String pcId) {
+			this.id = MineVibeMod.id("pc/" + pcId);
+		}
+	}
+
+	/** The CPU frame of {@code pcId} (any thread; created on first use). */
+	public static MonitorFrame frameFor(final String pcId) {
+		return ENTRIES.computeIfAbsent(pcId, Entry::new).frame;
+	}
+
+	/**
+	 * Render thread: uploads what the decoders produced since the last upload (once per rendered frame per PC) and
+	 * returns the texture to draw, or null while the PC has never sent a frame.
+	 */
+	public static @Nullable Identifier prepare(final String pcId) {
+		Entry e = ENTRIES.get(pcId);
+		if (e == null) {
+			return null;
+		}
+		long token = Minecraft.getInstance().getFrameTimeNs();
+		if (e.lastAttemptToken != token) {
+			e.lastAttemptToken = token;
+			long t0 = System.nanoTime();
+			long[] bytes = {0};
+			boolean uploaded = e.frame.tryUpload((rows, y, height, width, frameHeight, resized) -> {
+				MonitorTexture tex = e.texture;
+				if (tex == null) {
+					tex = new MonitorTexture("MineVibe PC " + pcId);
+					e.texture = tex;
+					tex.ensureSize(width, frameHeight);
+					Minecraft.getInstance().getTextureManager().register(e.id, tex);
+				} else {
+					tex.ensureSize(width, frameHeight);
+				}
+				tex.writeRows(rows, y, height);
+				bytes[0] = (long) width * height * 4;
+			});
+			if (uploaded) {
+				PcStats.upload(bytes[0], System.nanoTime() - t0);
+			}
+		}
+		MonitorTexture tex = e.texture;
+		return tex != null && tex.hasTexture() ? e.id : null;
+	}
+
+	/** Frame size in pixels ({@code [w, h]}), or null before the first frame. */
+	public static int @Nullable [] size(final String pcId) {
+		Entry e = ENTRIES.get(pcId);
+		if (e == null || e.frame.width() == 0) {
+			return null;
+		}
+		return new int[] {e.frame.width(), e.frame.height()};
+	}
+
+	/** Nanoseconds since the last decoded frame of {@code pcId}, or {@link Long#MAX_VALUE} without one. */
+	public static long ageNanos(final String pcId) {
+		Entry e = ENTRIES.get(pcId);
+		long at = e == null ? 0 : e.frame.lastPatchNanos();
+		return at == 0 ? Long.MAX_VALUE : System.nanoTime() - at;
+	}
+
+	/** Render thread: frees one PC's texture and frame. */
+	public static void release(final String pcId) {
+		Entry e = ENTRIES.remove(pcId);
+		if (e != null && e.texture != null) {
+			Minecraft.getInstance().getTextureManager().release(e.id);
+		}
+	}
+
+	/** Render thread: frees everything (leaving the world). */
+	public static void releaseAll() {
+		for (String pcId : ENTRIES.keySet()) {
+			release(pcId);
+		}
+	}
+
+	/** A 1x1 white texture for coloured quads on monitors (render thread). */
+	public static Identifier white() {
+		Identifier id = white;
+		if (id == null) {
+			NativeImage image = new NativeImage(1, 1, false);
+			image.setPixel(0, 0, 0xFFFFFFFF);
+			id = MineVibeMod.id("pc/white");
+			Minecraft.getInstance().getTextureManager().register(id, new DynamicTexture(() -> "MineVibe white", image));
+			white = id;
+		}
+		return id;
+	}
+}

@@ -67,6 +67,12 @@ connection attempt and refuses one whose `pid` is not running.
 The dev server moves dead worlds from `apps/mod/run/saves` to `saves/_graveyard` (`MINEVIBE_SAVES_DIR`
 overrides the folder). `spikes/s7-boot/run.mjs` drives the whole boot and hardcore loop this way.
 
+PC development switches, read by the game straight from the environment (no Gradle property):
+`MINEVIBE_PC_STATS=1` logs `[pc-stats]` (monitor fps, uploads and render-thread cost) every 5 s,
+`MINEVIBE_PC_INPUT_LOG=1` logs every key/char event PcControlScreen gets and every `pc.input` it sends, and
+`MINEVIBE_PC_DEMO=<pcId>` runs the scripted monitor demo `spikes/s4-monitor/run.mjs` uses (it places a
+workstation in the current world; see `spikes/s4-monitor/result.md`).
+
 Screens: `GuiSetScreenMixin` (the one `Gui#setScreen` choke point) shows BootScreen instead of TitleScreen
 and DisconnectedScreen, GameOverScreen instead of DeathScreen, and the non-pausing MineVibeMenuScreen
 instead of PauseScreen. Every change is logged as `[screen] <shown> (requested <asked>)`. Under client

@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "G": "minecraft:glass_pane",
+    "I": "minecraft:iron_ingot",
+    "R": "minecraft:redstone",
+    "C": "minecraft:copper_ingot"
+  },
+  "pattern": [
+    " G ",
+    "IRI",
+    "CIC"
+  ],
+  "result": {
+    "id": "minevibe:linux_workstation"
+  }
+}
