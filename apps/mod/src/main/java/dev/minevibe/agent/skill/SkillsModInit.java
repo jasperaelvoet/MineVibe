@@ -2,7 +2,6 @@ package dev.minevibe.agent.skill;
 
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
-import dev.minevibe.agent.AgentService;
 import dev.minevibe.agent.skill.seat.Seats;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents;
@@ -26,13 +25,10 @@ public final class SkillsModInit implements ModInitializer {
 			SkillBridge.ensureRegistered();
 		});
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-			SkillService service = SkillService.get(server);
+			// Bodies restored from the crew list get their follow target and mode from Node's agent.spawn{restore}.
+			SkillService.get(server);
 			SkillBridge.ensureRegistered();
 			WorldClock.publish(server);
-			// Bodies restored from the crew list follow the local player, like spawned ones.
-			for (AgentPlayer agent : AgentService.get(server).agents()) {
-				service.adopt(agent);
-			}
 		});
 		ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
 			SkillService.stopped(server);

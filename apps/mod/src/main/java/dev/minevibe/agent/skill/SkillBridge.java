@@ -40,14 +40,14 @@ public final class SkillBridge {
 	}
 
 	static void register(final BridgeClient bridge) {
-		bridge.handleAsync(Skills.SKILL_RUN, Route.SERVER, req -> service().run(req));
-		bridge.handle(Skills.SKILL_CANCEL, Route.SERVER, req -> service().cancel(req));
-		bridge.handle(Skills.OBS_QUERY, Route.SERVER, req -> service().obs(req));
-		bridge.handle(Bodies.AGENT_SPAWN, Route.SERVER, req -> service().spawn(req));
-		bridge.handle(Bodies.AGENT_DESPAWN, Route.SERVER, req -> service().despawn(req));
-		bridge.handle(Bodies.AGENT_MODE, Route.SERVER, req -> service().mode(req));
-		bridge.handle(Seats.AGENT_SEAT, Route.SERVER, req -> service().seat(req));
-		bridge.handle(Seats.AGENT_UNSEAT, Route.SERVER, req -> service().unseat(req));
+		tryHandle(() -> bridge.handleAsync(Skills.SKILL_RUN, Route.SERVER, req -> service().run(req)));
+		tryHandle(() -> bridge.handle(Skills.SKILL_CANCEL, Route.SERVER, req -> service().cancel(req)));
+		tryHandle(() -> bridge.handle(Skills.OBS_QUERY, Route.SERVER, req -> service().obs(req)));
+		tryHandle(() -> bridge.handle(Bodies.AGENT_SPAWN, Route.SERVER, req -> service().spawn(req)));
+		tryHandle(() -> bridge.handle(Bodies.AGENT_DESPAWN, Route.SERVER, req -> service().despawn(req)));
+		tryHandle(() -> bridge.handle(Bodies.AGENT_MODE, Route.SERVER, req -> service().mode(req)));
+		tryHandle(() -> bridge.handle(Seats.AGENT_SEAT, Route.SERVER, req -> service().seat(req)));
+		tryHandle(() -> bridge.handle(Seats.AGENT_UNSEAT, Route.SERVER, req -> service().unseat(req)));
 		bridge.observe(Ui.AGENT_APPROACH, Route.SERVER, a -> {
 			SkillService s = SkillService.current();
 			if (s != null) {
@@ -70,7 +70,7 @@ public final class SkillBridge {
 		try {
 			registration.run();
 		} catch (IllegalStateException e) {
-			SkillOutbox.LOG.info("{} (kept the earlier handler)", e.getMessage());
+			SkillOutbox.LOG.warn("{}: kept the earlier handler", e.getMessage());
 		}
 	}
 

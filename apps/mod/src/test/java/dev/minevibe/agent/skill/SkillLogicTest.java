@@ -105,6 +105,26 @@ class SkillLogicTest {
 	}
 
 	@Test
+	void handlersRegisteredElsewhereFirstAreKept() {
+		dev.minevibe.bridge.BridgeClient bridge = dev.minevibe.bridge.BridgeClient.builder()
+			.config(() -> {
+				throw new java.io.IOException("no bridge in this test");
+			})
+			.hello(() -> new Messages.Hello("0.1.0", "26.3", Messages.Hello.PHASE_BOOT, null, null))
+			.build();
+		try {
+			bridge.handle(Bodies.AGENT_SPAWN, dev.minevibe.bridge.BridgeClient.Route.SERVER, req -> java.util.Map.of());
+			// Another module took agent.spawn: the skill layer keeps that handler and registers the rest.
+			SkillBridge.register(bridge);
+			assertThrows(IllegalStateException.class, () -> bridge.handle(Skills.SKILL_RUN, dev.minevibe.bridge.BridgeClient.Route.SERVER, req -> null));
+			// Pushes are observed, so a UI handler for agent.approach can still be added.
+			bridge.on(dev.minevibe.bridge.msg.Ui.AGENT_APPROACH, dev.minevibe.bridge.BridgeClient.Route.CLIENT, a -> {});
+		} finally {
+			bridge.close("test over");
+		}
+	}
+
+	@Test
 	void bridgePayloadsMatchTheContract() {
 		Bodies.AgentBody body = new Bodies.AgentBody(
 			"ada", new Types.Vec3(1.5, 64.0, -3.25), "minecraft:overworld", 18.0, 20.0, 15, 3.5, "follow", true, false, "unseat_to_survive",
