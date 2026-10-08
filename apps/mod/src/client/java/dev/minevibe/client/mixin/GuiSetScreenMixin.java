@@ -1,6 +1,7 @@
 package dev.minevibe.client.mixin;
 
 import dev.minevibe.client.boot.ScreenRouter;
+import dev.minevibe.client.menu.NonPausingScreens;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.screens.Screen;
 import org.jspecify.annotations.Nullable;
@@ -20,6 +21,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       (TitleScreen when there is no level, DeathScreen when the player is dead).</li>
  *   <li>{@code TAIL}: logs the screen that really ended up in {@code Gui.screen}.</li>
  * </ul>
+ * At {@code HEAD} it also hands the change to {@link NonPausingScreens}, which marks screens opened from the
+ * MineVibe menu (vanilla's Options and everything below it) as non-pausing.
  * Both rewrites happen before {@code this.screen = screen} loads the local, so the field, {@code added()} and
  * {@code init()} all see the replacement.
  */
@@ -30,7 +33,9 @@ public abstract class GuiSetScreenMixin {
 
 	@ModifyVariable(method = "setScreen", at = @At("HEAD"), argsOnly = true)
 	private @Nullable Screen minevibe$routeRequested(@Nullable Screen requested) {
-		return ScreenRouter.route(requested, true);
+		Screen routed = ScreenRouter.route(requested, true);
+		NonPausingScreens.onOpen(this.screen, routed);
+		return routed;
 	}
 
 	@ModifyVariable(method = "setScreen", at = @At("STORE"), argsOnly = true)

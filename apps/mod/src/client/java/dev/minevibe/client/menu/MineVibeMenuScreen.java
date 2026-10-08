@@ -8,8 +8,9 @@ import net.minecraft.network.chat.Component;
 
 /**
  * The Esc menu (PLAN §7.8, §7.9). It replaces vanilla's pause screen and never pauses the game: the world, the
- * crew and their PCs keep running while it is open. M1 has Resume, Options and Quit MineVibe; there is no
- * Save &amp; Quit, LAN, multiplayer or feedback, because the app is either open (you are in) or closed.
+ * crew and their PCs keep running while it is open, and so do the screens opened from it (vanilla's Options is a
+ * pause screen of its own; {@link NonPausingScreens} overrides that). M1 has Resume, Options and Quit MineVibe; there
+ * is no Save &amp; Quit, LAN, multiplayer or feedback, because the app is either open (you are in) or closed.
  */
 public final class MineVibeMenuScreen extends Screen {
 	public MineVibeMenuScreen() {
