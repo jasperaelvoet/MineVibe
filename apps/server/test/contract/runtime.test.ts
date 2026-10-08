@@ -120,7 +120,7 @@ const defaultScript: TurnScript = (text) => {
 };
 
 async function start(
-  options: { script?: TurnScript; crew?: 'agents' | 'none' } = {},
+  options: { script?: TurnScript; crew?: 'agents' | 'none'; officeDoorWaitMs?: number } = {},
 ): Promise<{ runtime: Runtime; sim: BridgeSim; mods: Recorded; brain: ScriptedBrain; dir: string }> {
   const dir = mkdtempSync(join(tmpdir(), 'mv-runtime-'));
   dirs.push(dir);
@@ -137,7 +137,7 @@ async function start(
     crew: options.crew ?? 'agents',
     modules: { pc: mods.pc, org: mods.org },
     pcRuntime: 'docker',
-    officeDoorWaitMs: 2_000,
+    officeDoorWaitMs: options.officeDoorWaitMs ?? 2_000,
     agents: {
       queryFactory: brain.factory,
       claude: { source: 'bundled', path: undefined, version: null },
@@ -364,6 +364,48 @@ describe('startRuntime composition', () => {
       (m) => m.agentId === spawn.agentId && m.status === 'asleep',
     );
     expect(brainMsg.status).toBe('asleep');
+  });
+
+  it('stops at once while a world opens: no claude starts and the modules never hear the open (review fix)', async () => {
+    const { runtime, sim, mods, brain } = await start({ officeDoorWaitMs: 30_000 });
+    await sim.boot();
+    // No office reported: the first CEO waits for the door.
+    sim.ready('world-1', { fresh: true });
+    await until(() => runtime.ctx.world() !== null, 'world ready');
+    await new Promise((r) => setTimeout(r, 50));
+    const t0 = performance.now();
+    await runtime.stop();
+    expect(performance.now() - t0).toBeLessThan(5_000);
+    await runtime.settled();
+    expect(brain.factory.queries).toHaveLength(0);
+    expect(sim.sent('agent.spawn')).toHaveLength(0);
+    expect(mods.calls.filter((c) => c.includes('.open:'))).toEqual([]);
+    expect(mods.calls.slice(-2)).toEqual(['org.stop', 'pc.stop']);
+  });
+
+  it('a quit right after the player died ends the world for the modules before they stop (review fix)', async () => {
+    const { runtime, sim, mods, brain } = await start();
+    await bootWorld1(sim, runtime, brain);
+    await sim.request('player.died', { worldId: 'world-1', cause: 'lava', day: 1, ticksAlive: 10 });
+    await runtime.stop();
+    const ended = mods.calls.indexOf('org.ended:world-1');
+    expect(ended).toBeGreaterThan(-1);
+    expect(ended).toBeLessThan(mods.calls.indexOf('org.stop'));
+    expect(mods.calls.indexOf('pc.ended:world-1')).toBeLessThan(mods.calls.indexOf('pc.stop'));
+  });
+
+  it('a dead world gets no clock while its world end runs (review fix)', async () => {
+    const { runtime, sim, mods, brain } = await start();
+    await bootWorld1(sim, runtime, brain);
+    sim.clock('world-1', 500);
+    await until(() => mods.clocks.includes(500), 'clock');
+    await sim.request('player.died', { worldId: 'world-1', cause: 'lava', day: 1, ticksAlive: 10 });
+    sim.clock('world-1', 520);
+    await runtime.settled();
+    sim.clock('world-1', 540);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mods.clocks).not.toContain(520);
+    expect(mods.clocks).not.toContain(540);
   });
 
   it('runs the M1 chat handler with crew none, and the org module still gets a crew and hooks', async () => {

@@ -60,6 +60,11 @@ export const PCS_ENV = 'MINEVIBE_PCS';
 
 /** How long a new agent's spawn waits for the office door before it appears near the player instead. */
 export const OFFICE_DOOR_WAIT_MS = 5_000;
+/**
+ * How long {@link Runtime.stop} lets a world event already running (an open, a world end) finish before the modules
+ * stop. The sessions are closed by then, so last words end at once and no new brain starts.
+ */
+export const STOP_WORLD_WAIT_MS = 10_000;
 
 export type CrewMode = 'agents' | 'scripted' | 'none';
 
@@ -201,6 +206,20 @@ export function officeDoor(
   return slot ? { pos: slot.pos, dim: 'minecraft:overworld' } : null;
 }
 
+/** Whether `p` settles within `ms` (it is never rejected here: the world chain catches its own errors). */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([p.then(() => true as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Crew fates from a world's archived `crew.json` (Game Over after a Node restart). */
 async function fatesFromDisk(paths: MineVibePaths, worldId: string): Promise<CrewFate[]> {
   try {
@@ -249,8 +268,12 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
   let gameSession = 0;
   /** World transitions run one at a time, in order. */
   let worldChain: Promise<void> = Promise.resolve();
+  /** Set by `stop()`: no world event starts any more, and the modules are not called after they stopped. */
+  let closing = false;
   const enqueueWorld = (what: string, fn: () => Promise<void>): void => {
-    worldChain = worldChain.then(fn).catch((err: unknown) => log.error({ err }, `${what} failed`));
+    worldChain = worldChain
+      .then(() => (closing ? undefined : fn()))
+      .catch((err: unknown) => log.error({ err }, `${what} failed`));
   };
   const fates = new Map<string, CrewFate[]>();
   /** Worlds whose end already ran (or is queued). */
@@ -448,8 +471,14 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
     enqueueWorld('world open', async () => {
       if (agents) {
         const respawn = agents.manager.world?.worldId === world.worldId;
-        await agents.manager.openWorld(world, { respawn });
+        try {
+          await agents.manager.openWorld(world, { respawn });
+        } catch (err) {
+          // The crew failing to come back must not keep the PCs and the org services out of the world.
+          log.error({ err, worldId: world.worldId }, 'the crew could not be restored');
+        }
       }
+      if (closing) return;
       log.info({ worldId: world.worldId, gen: world.gen, fresh }, 'world opened');
       await pcModule.onWorldOpen?.(world.worldId, fresh);
       await orgModule.onWorldOpen(world.worldId, fresh);
@@ -492,7 +521,8 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
       noDoor.delete(msg.worldId);
       for (const wake of [...doorWaiters]) wake();
     }
-    if (msg.clockTime !== undefined && opened?.worldId === msg.worldId) {
+    // A dead world's clock (Game Over still pushes `ready` until the world closes) is nobody's business.
+    if (msg.clockTime !== undefined && opened?.worldId === msg.worldId && !ended.has(msg.worldId)) {
       const t = msg.clockTime;
       try {
         pcModule.onClock?.(t);
@@ -573,10 +603,17 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
     },
     stop(reason = 'quit') {
       stopping ??= (async () => {
+        closing = true;
+        // A spawn waiting for the office door goes ahead now (it finds the runtime closing and gives up).
+        for (const wake of [...doorWaiters]) wake();
         ui?.dispose();
         scriptedCrew?.dispose();
-        // Sessions close first (they resume next time); then the services, then the bridge.
+        // Sessions close first (they resume next time) and no new brain starts; then the world event in flight
+        // finishes (bounded), so the modules never hear of a world after they stopped; then the services and the
+        // bridge.
         await agents?.dispose().catch((err: unknown) => log.warn({ err }, 'agent runtime stop failed'));
+        const chainDone = await settlesWithin(worldChain, STOP_WORLD_WAIT_MS);
+        if (!chainDone) log.warn('a world event was still running at shutdown');
         await orgModule.stop().catch((err: unknown) => log.warn({ err }, 'org module stop failed'));
         await pcModule.stop().catch((err: unknown) => log.warn({ err }, 'PC module stop failed'));
         lifecycle.dispose();

@@ -225,6 +225,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #ended: CrewFile['ended'] = undefined;
   /** False after the game booted again (an app restart): seats the mod reports are not restored. */
   #seatRestore = true;
+  /** Set by {@link shutdown}: no brain is created or started any more (a world open still in flight stops). */
+  #closed = false;
   #tokens = new Map<string, number>();
 
   constructor(options: AgentManagerOptions) {
@@ -445,10 +447,21 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
    * again for the same world (a reconnect) only re-announces the crew.
    */
   async openWorld(world: WorldInfo, options: { respawn?: boolean } = {}): Promise<void> {
+    if (this.#closed) return;
     if (this.#world?.worldId === world.worldId) {
-      // The game restarted into the same world while Node kept running: the bodies are only in the playerdata now.
       if (options.respawn) {
-        for (const r of this.#records.filter((x) => x.status === 'alive')) await this.#respawn(r);
+        // The game restarted into the same world while Node kept running (PLAN §6.3 "App restart"): the bodies are
+        // only in the playerdata now, unseated, and their jobs are gone. The brains follow: no seat, no PC access.
+        this.#occupants.clear();
+        this.#bodies.clear();
+        for (const r of this.#records.filter((x) => x.status === 'alive')) {
+          // Not awaited: the swap back to Haiku may compact first (minutes), and the world open must not wait.
+          void this.#brains
+            .get(r.agentId)
+            ?.gameRestarted()
+            .catch((err: unknown) => this.#log.warn({ err, agentId: r.agentId }, 'seat reset failed'));
+          await this.#respawn(r);
+        }
       }
       this.#emitCrew();
       for (const b of this.#brains.values()) this.emit('brain', b.brainPayload());
@@ -572,7 +585,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   async #createBrain(record: AgentRecord): Promise<AgentBrain> {
     const existing = this.#brains.get(record.agentId);
     if (existing) return existing;
+    // After shutdown a brain would start a claude nobody closes.
+    if (this.#closed) throw new Error('the agent runtime is shutting down');
     await mkdir(join(this.#agentDir(record.agentId), 'home'), { recursive: true, mode: 0o700 });
+    if (this.#closed) throw new Error('the agent runtime is shutting down');
+    const raced = this.#brains.get(record.agentId);
+    if (raced) return raced;
     const brain = new AgentBrain(record, this.#env());
     this.#brains.set(record.agentId, brain);
     return brain;
@@ -619,12 +637,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
 
   /** Spawns a new CEO (fresh world, or a newcomer at dawn when the crew is empty). */
   async #hireCeo(options: { fresh: boolean }): Promise<AgentRecord | null> {
-    if (!this.#world) return null;
+    if (!this.#world || this.#closed) return null;
     const { name, handle } = this.#pickName();
     const record = this.#newRecord({ name, handle, role: 'ceo', ceo: true });
     const world = this.#world;
     const at = await this.#spawnAt();
-    if (this.#world !== world || this.#ending) return null;
+    if (this.#world !== world || this.#ending || this.#closed) return null;
     try {
       await this.#o.skills.spawn({
         agentId: record.agentId,
@@ -750,6 +768,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
 
   /** App shutdown: remember who sat where, close every session (they resume next time). */
   async shutdown(): Promise<void> {
+    this.#closed = true;
     for (const brain of this.#brains.values()) {
       const s = brain.fsm.snapshot;
       if (s.kind === 'pc' && s.pcId && brain.fsm.holdsPcSeat) brain.record.lastSeatedPc = s.pcId;
@@ -779,7 +798,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.#clockTime = msg.clockTime;
     if (this.#dawnNewcomer && prev !== null && clockDay(msg.clockTime) > clockDay(prev) && this.#world) {
       this.#dawnNewcomer = false;
-      void this.#hireCeo({ fresh: false });
+      void this.#hireCeo({ fresh: false }).catch((err: unknown) =>
+        this.#log.error({ err }, 'the dawn newcomer could not arrive'),
+      );
     }
   }
 
@@ -1568,6 +1589,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       brain.context(control(nonce, 'CONTEXT', body));
       return;
     }
+    // A wake for a brain that cannot think would wait forever: the org module marks the task missed instead.
+    if (!brain.canThink) throw new ApiError('BRAIN_OFFLINE', `${brain.record.name} cannot think right now.`);
     const controlKind = kind === 'scheduled' ? 'SCHEDULED' : 'MEETING';
     brain.enqueue({ mode: 'wake', priority: 1, kind: controlKind, text: control(nonce, controlKind, body) });
   }

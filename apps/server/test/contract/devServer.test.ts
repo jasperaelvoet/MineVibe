@@ -352,8 +352,9 @@ describe('dev server', () => {
     const mod = await connect(server.port, token);
     mod.send(hello);
     await mod.next('world.open');
-    mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready' });
-    await new Promise((r) => setTimeout(r, 30));
+    // As a request: its `ok` comes once the world is durably marked created (no timing guess, flaky under load).
+    mod.send({ t: 'world.state', v: 1, id: 'ws-1', worldId: 'world-1', phase: 'ready' });
+    await mod.next('ok', (m) => m.re === 'ws-1');
 
     const again = await connect(server.port, token);
     again.send({ ...hello, id: 'm-2', phase: 'in_world', worldId: 'world-1' });

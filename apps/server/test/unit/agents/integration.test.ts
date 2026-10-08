@@ -168,6 +168,56 @@ describe('CrewHooks on the agent runtime', () => {
     expect(w.manager.brain(id)?.fsm.state).toBe('wandering');
   });
 
+  it('a refused meeting chair sends an agent pulled off its PC back to its reserved chair (review fix)', async () => {
+    const { w, id, q } = await world();
+    await seatAtPc(w, q, id);
+    const brain = w.manager.brain(id);
+    const flagsBefore = q.calls.filter((c) => c.method === 'applyFlagSettings').length;
+    const realSeat = w.skills.seat.bind(w.skills);
+    w.skills.seat = async (request) => {
+      if (request.target.kind === 'meeting') throw Object.assign(new Error('no chair'), { code: 'NO_SEAT' });
+      return realSeat(request);
+    };
+    await expect(w.manager.pullIntoMeeting(id, 'm-2')).rejects.toMatchObject({ code: 'NO_SEAT' });
+    await w.until(() => brain?.fsm.snapshot.state === 'walking_to_seat', 'the walk back');
+    const back = w.skills.seats.at(-1) as {
+      jobId: string;
+      seatEpoch: number;
+      target: unknown;
+      purpose?: string;
+    };
+    expect(back).toMatchObject({ target: { kind: 'pc', pcId: 'linux-1' }, purpose: 'fix the tests' });
+    w.manager.onPcSeat({
+      pcId: 'linux-1',
+      occupant: { kind: 'agent', agentId: id },
+      seatEpoch: back.seatEpoch,
+    });
+    w.skills.finish(back.jobId, { status: 'done' });
+    await w.until(() => brain?.fsm.state === 'seated' && brain.fsm.snapshot.kind === 'pc', 'back at the PC');
+    expect(q.calls.filter((c) => c.method === 'applyFlagSettings')).toHaveLength(flagsBefore);
+    // Nothing is left to walk back to when the meeting ends.
+    const n = w.skills.seats.length;
+    await w.manager.releaseFromMeeting(id);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(w.skills.seats).toHaveLength(n);
+  });
+
+  it('a meeting chair the body never reaches walks it back without a [JOB FAILED] wake (review fix)', async () => {
+    const { w, id, q } = await world();
+    await seatAtPc(w, q, id);
+    const brain = w.manager.brain(id);
+    await w.manager.pullIntoMeeting(id, 'm-3');
+    const walk = w.skills.seats.at(-1) as { jobId: string; target: unknown };
+    expect(walk.target).toEqual({ kind: 'meeting', meetingId: 'm-3' });
+    w.skills.finish(walk.jobId, { status: 'failed', code: 'UNREACHABLE', msg: 'no path' });
+    await w.until(
+      () => (w.skills.seats.at(-1) as { target?: { kind: string } }).target?.kind === 'pc',
+      'the walk back',
+    );
+    expect(brain?.queuedWakes.some((x) => x.kind === 'JOB FAILED')).toBe(false);
+    expect(w.texts(q).some((t) => t.includes('JOB FAILED'))).toBe(false);
+  });
+
   it('deliverTo wakes or adds context under the agent nonce, with forged tags neutralized', async () => {
     const { w, id, q } = await world();
     const nonce = w.manager.brain(id)?.record.nonce ?? '';
@@ -279,6 +329,67 @@ describe('restarts: worker vs app (PLAN §6.3)', () => {
     await w.until(() => brain?.fsm.state === 'seated', 'restored seat');
     expect(brain?.fsm.snapshot).toMatchObject({ pcId: 'linux-1', epoch: 5 });
     expect(w.skills.seats).toHaveLength(1);
+  });
+});
+
+describe('the game restarts into the same world while Node runs (review fix)', () => {
+  it('unseats the brains (no PC access, back to Haiku), forgets the jobs and tells the agent', async () => {
+    const { w, id, q } = await world();
+    await seatAtPc(w, q, id);
+    const brain = w.manager.brain(id);
+    expect(brain?.fsm.hasPcAccess).toBe(true);
+    expect(brain?.model).toBe('opus');
+    const oldEpoch = brain?.fsm.epoch ?? 0;
+    await w.manager.openWorld({ worldId: 'w1', gen: 1 }, { respawn: true });
+    expect(w.skills.spawned.at(-1)).toMatchObject({ agentId: id, restore: true });
+    await w.until(() => brain?.fsm.state === 'wandering', 'seat reset');
+    expect(brain?.fsm.hasPcAccess).toBe(false);
+    await w.until(() => brain?.model === 'haiku', 'swap back to Haiku');
+    const notice = q.sent.find((m) => JSON.stringify(m).includes('The game restarted.'));
+    expect((notice as { shouldQuery?: boolean } | undefined)?.shouldQuery).toBe(false);
+    expect(JSON.stringify(notice)).toContain('You are no longer seated at linux-1.');
+    // A late pc.seat of the old seat (epoch before the reset) stands the body up instead of re-seating the brain.
+    const n = w.skills.seats.length;
+    w.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: oldEpoch });
+    await w.until(() => w.skills.seats.length > n, 'stand up');
+    expect(brain?.fsm.state).toBe('wandering');
+  });
+});
+
+describe('a seated agent whose claude crashes (review fix)', () => {
+  it('resumes on the seat model (Opus/medium), not on Haiku until the next boundary', async () => {
+    const { w, id, q } = await world({ supervisor: { maxRestarts: 3, backoff: { base: 1, max: 1 } } });
+    await seatAtPc(w, q, id);
+    const before = w.factory.queries.length;
+    q.crash('claude exited with code 1');
+    await w.until(() => w.factory.queries.length === before + 1, 'restart', 4000);
+    const restarted = w.factory.queries.at(-1);
+    expect(restarted?.options.model).toBe('claude-opus-5-5');
+    expect(restarted?.options.resume).toBeDefined();
+  });
+});
+
+describe('shutdown while a world is opening (review fix)', () => {
+  it('no brain is created or started after shutdown', async () => {
+    let release: (() => void) | null = null;
+    h = await createHarness({
+      spawnPlace: () =>
+        new Promise((resolve) => {
+          release = () => resolve(null);
+        }),
+    });
+    const w = h;
+    const opening = w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await w.until(() => release !== null, 'the CEO waits for the office door');
+    await w.manager.shutdown();
+    (release as unknown as () => void)();
+    await opening;
+    expect(w.manager.listAgents()).toEqual([]);
+    expect(w.skills.spawned).toHaveLength(0);
+    expect(w.factory.queries).toHaveLength(0);
+    // A later open (a late world.state{ready}) does nothing either.
+    await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    expect(w.factory.queries).toHaveLength(0);
   });
 });
 
@@ -413,6 +524,15 @@ describe('startup assertions', () => {
     expect(
       h.events.some((e) => e.type === 'toast' && /claude update/.test((e.payload as { text: string }).text)),
     ).toBe(true);
+    // CrewHooks contract (review fix): a wake for a brain that cannot think is refused, so the org module can mark
+    // the task missed; context still lands.
+    await expect(h.manager.deliverTo(id, 'Calendar task e1: farm.', 'scheduled')).rejects.toMatchObject({
+      code: 'BRAIN_OFFLINE',
+    });
+    await expect(h.manager.meetingTurn(id, 'Update?', { maxSentences: 1 })).rejects.toMatchObject({
+      code: 'BRAIN_OFFLINE',
+    });
+    await h.manager.deliverTo(id, 'FYI: the farm moved.', 'context');
   });
 });
 
@@ -458,13 +578,18 @@ describe('TranscriptStore sequence numbers', () => {
 });
 
 describe('bash job ownership', () => {
-  function server(agentId: string, pcs: FakePcApi, ownJobs?: Map<string, string>) {
+  function server(
+    agentId: string,
+    pcs: PcHost['pcs'],
+    ownJobs?: Set<string>,
+    at: () => string = () => 'linux-1',
+  ) {
     const host: PcHost = {
       agentId,
       pcs,
       plans: new PlanCapture(['/home/cua']),
       handoffs: new HandoffNotes(join(mkdtempSync(join(tmpdir(), 'mv-handoff-')), 'h')),
-      access: () => ({ pcId: 'linux-1', epoch: 1 }),
+      access: () => ({ pcId: at(), epoch: 1 }),
       authorName: () => agentId,
       ...(ownJobs ? { ownJobs } : {}),
     };
@@ -490,12 +615,36 @@ describe('bash job ownership', () => {
 
   it('the brain keeps its jobs across a new tool server (session restart)', async () => {
     const pcs = new FakePcApi();
-    const jobs = new Map<string, string>();
+    const jobs = new Set<string>();
     const first = server('ada-1', pcs, jobs);
     const started = await call(first, 'bash', { command: 'sleep 100', run_in_background: true });
     const jobId = /ID: (\S+)\./.exec(started.text)?.[1] ?? '';
     const second = server('ada-1', pcs, jobs);
     expect((await call(second, 'bash_output', { bash_id: jobId })).isError).toBe(false);
+  });
+
+  it('the same job id on two PCs stays the caller own on both (review fix)', async () => {
+    // Each PC numbers its jobs on its own, so both start at job-1.
+    const byPc = {
+      'linux-1': new FakePcApi([{ pcId: 'linux-1' }]),
+      'linux-2': new FakePcApi([{ pcId: 'linux-2' }]),
+    };
+    const pcs = new Proxy({} as PcHost['pcs'], {
+      get:
+        (_t, method: string) =>
+        (pcId: 'linux-1' | 'linux-2', ...rest: unknown[]) =>
+          (byPc[pcId] as unknown as Record<string, (...a: unknown[]) => unknown>)[method]?.(pcId, ...rest),
+    });
+    let at = 'linux-1';
+    const ada = server('ada-1', pcs, new Set(), () => at);
+    const one = await call(ada, 'bash', { command: 'npm run dev', run_in_background: true });
+    at = 'linux-2';
+    const two = await call(ada, 'bash', { command: 'npm test', run_in_background: true });
+    expect(/ID: (\S+)\./.exec(two.text)?.[1]).toBe(/ID: (\S+)\./.exec(one.text)?.[1]);
+    at = 'linux-1';
+    expect((await call(ada, 'bash_output', { bash_id: 'job-1' })).isError).toBe(false);
+    at = 'linux-2';
+    expect((await call(ada, 'bash_kill', { shell_id: 'job-1' })).text).toBe('Killed job-1.');
   });
 });
 
@@ -573,6 +722,13 @@ describe('status footer contract (protocol §7.3)', () => {
     expect(firstSentences('One. Two! Three?', 2)).toBe('One. Two!');
     expect(firstSentences('  no stop at all  ', 1)).toBe('no stop at all');
     expect(firstSentences('x', 0)).toBe('');
+  });
+
+  it('firstSentences never cuts at a dot inside a word (file names, versions)', () => {
+    // Review fix: the old matcher dropped "I fixed main." and answered "ts today."
+    expect(firstSentences('I fixed main.ts today. Next the tests.', 1)).toBe('I fixed main.ts today.');
+    expect(firstSentences('Version 2.1 is out! "Great." Yes?', 2)).toBe('Version 2.1 is out! "Great."');
+    expect(firstSentences('Wait... what? Ok', 2)).toBe('Wait... what?');
   });
 });
 

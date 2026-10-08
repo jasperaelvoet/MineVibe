@@ -167,13 +167,22 @@ interface TurnCollector {
   readonly resolve: (text: string) => void;
 }
 
-/** The first `n` sentences of `text` (whitespace collapsed). */
+/**
+ * The first `n` sentences of `text` (whitespace collapsed). A sentence ends at `.`, `!` or `?` (plus closing quotes or
+ * brackets) followed by whitespace, so `main.ts`, `v2.1` or `1.5x` inside a sentence never cut it.
+ */
 export function firstSentences(text: string, n: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length === 0 || n <= 0) return '';
-  const sentences = flat.match(/[^.!?]+[.!?]+["')\]]*(\s|$)|[^.!?]+$/g) ?? [flat];
-  return sentences.slice(0, n).join('').trim();
+  return flat
+    .split(/(?<=[.!?]+["')\]]*) /)
+    .slice(0, n)
+    .join(' ')
+    .trim();
 }
+
+/** Job label prefix of a walk to a meeting chair (CrewHooks.pullIntoMeeting). */
+const MEETING_SIT_LABEL = 'sit at meeting ';
 
 /** Strikes before a turn that keeps calling tools after "end your turn" is interrupted. */
 const PENDING_SWAP_STRIKES = 2;
@@ -321,8 +330,8 @@ export class AgentBrain {
   #lastSwap: SwapResult | null = null;
   #lastPlayerAt = 0;
   #lastAutonomousAt: number | null = null;
-  /** Background `pc__bash` jobs this agent started (job id → PC), across session restarts. */
-  readonly #bashJobs = new Map<string, string>();
+  /** Background `pc__bash` jobs this agent started (`ownJobKey`s: PC and job id), across session restarts. */
+  readonly #bashJobs = new Set<string>();
   /** Meeting turns collecting the running turn's text. */
   #collectors: TurnCollector[] = [];
   /** The session is being closed on purpose to resume it with another model (no crash handling). */
@@ -384,6 +393,14 @@ export class AgentBrain {
 
   get offline(): boolean {
     return this.#offline;
+  }
+
+  /**
+   * False while this brain cannot think at all: stopped, offline after repeated crashes, or halted by the startup
+   * assertions (no usable claude, wrong account). A usage pause (asleep until `resetsAt`) still thinks later.
+   */
+  get canThink(): boolean {
+    return !this.#stopped && !this.#offline && this.#assertionsFailed === null;
   }
 
   /** Ms since the player last addressed this agent (idle nudges). */
@@ -474,7 +491,8 @@ export class AgentBrain {
           persona,
           mc: createMcServer(this.#mcHost()),
           pc: createPcServer(this.#pcHost()),
-          profile: options.profile ?? WANDERING_PROFILE,
+          // A restart (crash, Retry) of a seated agent resumes on the seat's model, not on Haiku until the next boundary.
+          profile: options.profile ?? (this.fsm.wantsOpus(env.now()) ? SEATED_PROFILE : WANDERING_PROFILE),
           stderr: (d) => this.#log.debug({ stderr: d.slice(0, 500) }, 'claude stderr'),
         }),
         gate,
@@ -627,7 +645,7 @@ export class AgentBrain {
     prompt: string,
     options: { maxSentences: number; timeoutMs?: number | undefined },
   ): Promise<string> {
-    if (this.#stopped || this.#offline || this.#assertionsFailed) {
+    if (!this.canThink) {
       return Promise.reject(new ApiError('BRAIN_OFFLINE', `${this.record.name} cannot think right now.`));
     }
     return new Promise<string>((resolve) => {
@@ -1358,7 +1376,16 @@ export class AgentBrain {
 
   /** A sit job that outlived its tool call ended. */
   async sitJobEnded(jobId: string, ok: boolean, detail: string): Promise<void> {
+    const meeting = this.#jobs.get(jobId)?.startsWith(MEETING_SIT_LABEL) === true;
     this.#jobs.delete(jobId);
+    if (meeting && !ok) {
+      // The org services asked for this walk, not the agent: no [JOB FAILED] wake. An agent pulled off its PC goes
+      // back to it (and dials in from there).
+      await this.#seatSettled(jobId, ok, detail).catch(() => '');
+      this.#log.info({ jobId, detail }, 'no meeting chair reached');
+      this.#returnToPc('the meeting chair could not be reached');
+      return;
+    }
     try {
       const text = await this.#seatSettled(jobId, ok, detail);
       if (!ok)
@@ -1591,9 +1618,12 @@ export class AgentBrain {
         });
       } catch (err) {
         this.fsm.sitFailed();
+        // Refused (NO_SEAT, UNREACHABLE): an agent pulled off its PC goes back to its reserved chair, so the meeting
+        // can dial it in from there instead of leaving it standing with the chair held.
+        this.#returnToPc('no meeting chair');
         throw err;
       }
-      this.#jobs.set(jobId, `sit at meeting ${meetingId}`);
+      this.#jobs.set(jobId, `${MEETING_SIT_LABEL}${meetingId}`);
     });
   }
 
@@ -1602,7 +1632,7 @@ export class AgentBrain {
    * chair (no swap: the stretched debounce still holds) and gets its kickoff again.
    */
   async releaseFromMeeting(): Promise<void> {
-    const back = await this.#seatMutex.run(async () => {
+    await this.#seatMutex.run(async () => {
       const s = this.fsm.snapshot;
       if (s.kind === 'meeting' && s.state !== 'wandering') {
         if (s.state === 'walking_to_seat') {
@@ -1617,12 +1647,19 @@ export class AgentBrain {
         }
         this.fsm.stand('stand');
       }
-      const ret = this.#meetingReturn;
-      this.#meetingReturn = null;
-      return ret;
     });
+    this.#returnToPc('the meeting is over');
+  }
+
+  /**
+   * An agent pulled from its PC into a meeting walks back to its reserved chair (no swap: the stretched debounce still
+   * holds) and gets its kickoff again. Runs on its own (its sit job ends in `skill.result` like any sit, and it queues
+   * behind the seat mutex); a refusal wakes the agent. No-op when the agent did not come from a PC.
+   */
+  #returnToPc(why: string): void {
+    const back = this.#meetingReturn;
+    this.#meetingReturn = null;
     if (!back || this.#stopped) return;
-    // The walk back runs on its own (its sit job ends in `skill.result` like any sit); a refusal wakes the agent.
     void this.sitAtPc({
       pcId: back.pcId,
       purpose: back.purpose ?? 'Carry on where you left off before the meeting.',
@@ -1636,10 +1673,36 @@ export class AgentBrain {
         text: control(
           this.record.nonce,
           'CRITICAL',
-          `The meeting is over, but you could not get back to ${back.pcId}: ${err instanceof Error ? err.message : String(err)}`,
+          `You were called to a meeting (${why}), but could not get back to ${back.pcId}: ${err instanceof Error ? err.message : String(err)}`,
         ),
       });
     });
+  }
+
+  /**
+   * The game restarted into the same world while Node kept running (PLAN §6.3 "App restart"): the body comes back
+   * unseated and the mod's jobs are gone. The seat ends with no debounce (PC tools stop as soon as the seat mutex is
+   * free; the model swaps back to Haiku at the next boundary, which may compact first), tracked jobs are forgotten,
+   * and the agent is told (context, no turn). Resolves once the seat reset and its boundary ran.
+   */
+  async gameRestarted(): Promise<void> {
+    const s = this.fsm.snapshot;
+    const pcId = s.kind === 'pc' && this.fsm.holdsPcSeat ? s.pcId : null;
+    const hadJobs = this.#jobs.size > 0;
+    this.#jobs.clear();
+    this.#meetingReturn = null;
+    if (this.#awayTimer) clearTimeout(this.#awayTimer);
+    this.#awayTimer = null;
+    this.#queue = this.#queue.filter((q) => q.kind !== 'KICKOFF');
+    const reset = this.resetSeat('app_restart');
+    // A plan for a PC the agent no longer sits at dies with the seat (as on a kick).
+    if (pcId) this.#env.pending.cleanup(this.agentId, 'The game restarted.', (c) => c.kind === 'plan');
+    const parts = ['The game restarted.'];
+    if (pcId) parts.push(`You are no longer seated at ${pcId}.`);
+    if (hadJobs) parts.push('Jobs you had running were stopped.');
+    this.context(control(this.record.nonce, 'RESTARTED', parts.join(' ')));
+    this.#setStatus();
+    await reset;
   }
 
   /** App restart, death, dismissal or world end: unseated with no swap debounce. */

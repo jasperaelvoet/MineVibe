@@ -62,7 +62,9 @@ export interface CrewHooks {
   /**
    * Into a meeting: a seated agent is interrupted, keeps its PC chair reserved and its model (the swap debounce
    * stretches over the meeting), then the body walks to a meeting chair (`agent.seat{meeting}`). Resolves once the
-   * walk started; the mod's `NO_SEAT` / `UNREACHABLE` rejects (the meeting can dial the agent in instead).
+   * walk started; the mod's `NO_SEAT` / `UNREACHABLE` rejects (the meeting can dial the agent in instead). When the
+   * chair is refused, or the walk to it fails later, an agent that came from a PC walks back to its reserved chair on
+   * its own (no wake, no swap), so a dialed-in agent waits at its desk.
    */
   pullIntoMeeting(agentId: string, meetingId: string): Promise<void>;
   /** Leaves the meeting chair; an agent that was seated at a PC walks back to its reserved chair. */
