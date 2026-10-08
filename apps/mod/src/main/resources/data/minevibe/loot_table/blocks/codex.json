@@ -1,0 +1,25 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "condition": {
+        "type": "minecraft:survives_explosion"
+      },
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "condition": {
+            "type": "minecraft:match_block",
+            "blocks": "minevibe:codex",
+            "state": {
+              "part": "bottom_left"
+            }
+          },
+          "name": "minevibe:codex"
+        }
+      ],
+      "rolls": 1
+    }
+  ],
+  "random_sequence": "minevibe:blocks/codex"
+}

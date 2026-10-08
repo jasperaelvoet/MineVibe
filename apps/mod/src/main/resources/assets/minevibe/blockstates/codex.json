@@ -1,0 +1,94 @@
+{
+  "variants": {
+    "facing=north,part=bottom_left": {
+      "model": "minevibe:block/codex_bottom_left"
+    },
+    "facing=north,part=bottom_right": {
+      "model": "minevibe:block/codex_bottom_right"
+    },
+    "facing=north,part=middle_left": {
+      "model": "minevibe:block/codex_middle_left"
+    },
+    "facing=north,part=middle_right": {
+      "model": "minevibe:block/codex_middle_right"
+    },
+    "facing=north,part=top_left": {
+      "model": "minevibe:block/codex_top_left"
+    },
+    "facing=north,part=top_right": {
+      "model": "minevibe:block/codex_top_right"
+    },
+    "facing=east,part=bottom_left": {
+      "model": "minevibe:block/codex_bottom_left",
+      "y": 90
+    },
+    "facing=east,part=bottom_right": {
+      "model": "minevibe:block/codex_bottom_right",
+      "y": 90
+    },
+    "facing=east,part=middle_left": {
+      "model": "minevibe:block/codex_middle_left",
+      "y": 90
+    },
+    "facing=east,part=middle_right": {
+      "model": "minevibe:block/codex_middle_right",
+      "y": 90
+    },
+    "facing=east,part=top_left": {
+      "model": "minevibe:block/codex_top_left",
+      "y": 90
+    },
+    "facing=east,part=top_right": {
+      "model": "minevibe:block/codex_top_right",
+      "y": 90
+    },
+    "facing=south,part=bottom_left": {
+      "model": "minevibe:block/codex_bottom_left",
+      "y": 180
+    },
+    "facing=south,part=bottom_right": {
+      "model": "minevibe:block/codex_bottom_right",
+      "y": 180
+    },
+    "facing=south,part=middle_left": {
+      "model": "minevibe:block/codex_middle_left",
+      "y": 180
+    },
+    "facing=south,part=middle_right": {
+      "model": "minevibe:block/codex_middle_right",
+      "y": 180
+    },
+    "facing=south,part=top_left": {
+      "model": "minevibe:block/codex_top_left",
+      "y": 180
+    },
+    "facing=south,part=top_right": {
+      "model": "minevibe:block/codex_top_right",
+      "y": 180
+    },
+    "facing=west,part=bottom_left": {
+      "model": "minevibe:block/codex_bottom_left",
+      "y": 270
+    },
+    "facing=west,part=bottom_right": {
+      "model": "minevibe:block/codex_bottom_right",
+      "y": 270
+    },
+    "facing=west,part=middle_left": {
+      "model": "minevibe:block/codex_middle_left",
+      "y": 270
+    },
+    "facing=west,part=middle_right": {
+      "model": "minevibe:block/codex_middle_right",
+      "y": 270
+    },
+    "facing=west,part=top_left": {
+      "model": "minevibe:block/codex_top_left",
+      "y": 270
+    },
+    "facing=west,part=top_right": {
+      "model": "minevibe:block/codex_top_right",
+      "y": 270
+    }
+  }
+}

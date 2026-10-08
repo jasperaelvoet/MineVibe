@@ -18,11 +18,13 @@
 	"entrypoints": {
 		"main": [
 			"dev.minevibe.MineVibeMod",
-			"dev.minevibe.agent.AgentModInit"
+			"dev.minevibe.agent.AgentModInit",
+			"dev.minevibe.org.OrgModInit"
 		],
 		"client": [
 			"dev.minevibe.client.MineVibeClient",
-			"dev.minevibe.client.agent.AgentClientInit"
+			"dev.minevibe.client.agent.AgentClientInit",
+			"dev.minevibe.client.org.OrgClientInit"
 		]
 	},
 	"mixins": [
