@@ -1,0 +1,14 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-31",
+  "jobId": "job-32",
+  "agentId": "ada",
+  "skill": "goto",
+  "args": {
+    "entity": "player",
+    "range": 2.5
+  },
+  "waitMs": 0,
+  "replace": true
+}

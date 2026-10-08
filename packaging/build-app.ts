@@ -19,7 +19,13 @@ import { writePlaceholderIconset } from './lib/icon.js';
 import { renderInfoPlist } from './lib/infoPlist.js';
 import { copyProductionPackages, productionPackages } from './lib/prodDeps.js';
 import { chooseIdentity, parseIdentities } from './lib/signing.js';
-import { archiveFileName, loadVendorLock, type VendorEntry, type VendorLock } from './lib/vendorLock.js';
+import {
+  archiveFileName,
+  checkInstallRoot,
+  loadVendorLock,
+  type TarVendorEntry,
+  type VendorLock,
+} from './lib/vendorLock.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SWIFTC_ARGS = ['-O', '-parse-as-library', '-target', 'arm64-apple-macos26.0'];
@@ -52,15 +58,24 @@ interface Vendors {
   readonly containerRoot: string;
 }
 
-async function fetchVendor(entry: VendorEntry, cache: string): Promise<string> {
-  const { path, downloaded } = await ensureDownloaded(
-    { url: entry.url, size: entry.size, sha256: entry.sha256, fileName: archiveFileName(entry) },
-    cache,
-    { userAgent: 'MineVibe-packaging (+https://github.com/jasperaelvoet/MineVibe)' },
-  );
-  say(`${entry.name} ${entry.version}: ${downloaded ? 'downloaded' : 'cached'}, sha256 ok`);
+async function fetchVendor(
+  label: string,
+  item: { url: string; size: number; sha256: string; fileName: string },
+  cache: string,
+): Promise<string> {
+  const { path, downloaded } = await ensureDownloaded(item, cache, {
+    userAgent: 'MineVibe-packaging (+https://github.com/jasperaelvoet/MineVibe)',
+  });
+  say(`${label}: ${downloaded ? 'downloaded' : 'cached'}, sha256 ok`);
   return path;
 }
+
+const fetchTarVendor = (entry: TarVendorEntry, cache: string) =>
+  fetchVendor(
+    `${entry.name} ${entry.version}`,
+    { url: entry.url, size: entry.size, sha256: entry.sha256, fileName: archiveFileName(entry) },
+    cache,
+  );
 
 /** Checks the pkg's installer signature against the lock (`pkgutil --check-signature`). */
 async function checkPkgSignature(pkg: string, signer: string): Promise<void> {
@@ -76,25 +91,34 @@ async function checkPkgSignature(pkg: string, signer: string): Promise<void> {
 async function prepareVendors(lock: VendorLock, cache: string, work: string): Promise<Vendors> {
   const vendorDir = join(work, 'vendor');
   const node = (async () => {
-    const archive = await fetchVendor(lock.node, cache);
+    const archive = await fetchTarVendor(lock.node, cache);
     const dir = join(vendorDir, 'node');
     await mkdir(dir, { recursive: true });
     await run('tar', ['-xzf', archive, '-C', dir, lock.node.extract]);
     return join(dir, ...lock.node.extract.split('/'));
   })();
   const jre = (async () => {
-    const archive = await fetchVendor(lock.jre, cache);
+    const archive = await fetchTarVendor(lock.jre, cache);
     const dir = join(vendorDir, 'jre');
     await mkdir(dir, { recursive: true });
     await run('tar', ['-xzf', archive, '-C', dir]);
     return join(dir, ...lock.jre.extract.split('/'));
   })();
   const container = (async () => {
-    const pkg = await fetchVendor(lock.container, cache);
-    await checkPkgSignature(pkg, lock.container.pkgSigner);
+    const { pkg: pin } = lock.container;
+    const pkg = await fetchVendor(
+      `Apple container ${lock.container.version}`,
+      { url: pin.url, size: pin.size, sha256: pin.sha256, fileName: pin.name },
+      cache,
+    );
+    await checkPkgSignature(pkg, lock.container.signer);
     const dir = join(vendorDir, 'container-pkg'); // pkgutil wants a path that does not exist yet
     await run('pkgutil', ['--expand-full', pkg, dir]);
-    return join(dir, ...lock.container.extract.split('/'));
+    const payload = join(dir, 'Payload');
+    await stat(join(payload, 'bin', 'container'));
+    // The same install root the PC manager provisions in dev: Apple's update/uninstall scripts are left out.
+    for (const rel of lock.container.exclude) await rm(join(payload, ...rel.split('/')), { force: true });
+    return payload;
   })();
   const [nodeBin, jreHome, containerRoot] = await Promise.all([node, jre, container]);
   return { node: nodeBin, jreHome, containerRoot };
@@ -367,8 +391,16 @@ async function main(): Promise<void> {
     ];
     if ((await sha256File(vendors.node)) !== (await sha256File(at(BUNDLE_LAYOUT.node))))
       problems.push('node differs');
+    // The install root must be exactly what the lock pins, or the PC manager's isProvisioned() fails and it would
+    // try to provision (write) inside the signed bundle.
+    const installRoot = new Map(
+      (await snapshotTree(at(BUNDLE_LAYOUT.container)))
+        .filter((e) => e.kind === 'file')
+        .map((e) => [e.rel, e.content] as const),
+    );
+    problems.push(...checkInstallRoot(installRoot, lock.container.installRootFiles));
     if (problems.length > 0)
-      throw new Error(`vendor copies are not byte-identical:\n${problems.slice(0, 20).join('\n')}`);
+      throw new Error(`vendor copies differ from their pins:\n${problems.slice(0, 20).join('\n')}`);
     // The Dock shows the JVM's executable name: bin/MineVibe is a byte-identical copy of bin/java.
     const java = join(at(BUNDLE_LAYOUT.jre), 'bin', 'java');
     const renamed = join(at(BUNDLE_LAYOUT.jre), 'bin', 'MineVibe');

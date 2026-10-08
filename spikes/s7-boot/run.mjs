@@ -10,6 +10,8 @@
 //   2. the Esc menu is open and the integrated server keeps ticking (nothing pauses)
 //   3. debug.kill_player -> GameOverScreen in < 3 s
 //   4. debug.click_begin -> standing in a new world (new worldId) in < 20 s; the dead save is in saves/_graveyard
+//   4b. Node restarts during Begin (review fix MAJOR 1): the mod's world.state{closed} cannot get through, is
+//      re-sent until the restarted Node takes it, and only then is the next world created (from Node's world.open)
 //   5. kill the game (SIGKILL) on Game Over, relaunch -> straight to GameOverScreen, then into the new world
 //   6. dead-marker recovery: the death never reached Node (state rewound), relaunch -> the world's dead marker
 //      leads to Game Over, player.died is re-sent, then the next world
@@ -195,6 +197,20 @@ async function main() {
     );
   }
 
+  /** Retries debug.kill_player while it answers NOT_READY (a player who just joined is invulnerable for a moment). */
+  async function killPlayer(timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        await server.debug.killPlayer();
+        return;
+      } catch (err) {
+        if (err.code !== 'NOT_READY' || Date.now() > deadline) throw err;
+        await sleep(100);
+      }
+    }
+  }
+
   /** Retries debug.click_begin while it answers NOT_READY. */
   async function clickBegin(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
@@ -271,7 +287,7 @@ async function main() {
 
     // ---- 3. Death -> Game Over -----------------------------------------------------------------------
     let tKill = Date.now();
-    await server.debug.killPlayer();
+    await killPlayer();
     const over = await waitState('GameOverScreen', (s) => s.screen === 'GameOverScreen', 10_000, first);
     timings.deathToGameOverMs = Date.now() - tKill;
     check('death -> GameOverScreen in < 3 s', timings.deathToGameOverMs < 3000, `${timings.deathToGameOverMs} ms`);
@@ -291,12 +307,34 @@ async function main() {
     check('new world is hardcore HARD survival', second.hardcore && second.difficulty === 'hard' && second.gameMode === 'survival');
     check('world-1 save moved to saves/_graveyard', existsSync(join(savesDir, '_graveyard', 'world-1', 'level.dat')) && !existsSync(join(savesDir, 'world-1')));
 
+    // ---- 4b. Node restarts during Begin: the close is re-sent until Node takes it ----------------------
+    await killPlayer();
+    await waitState('GameOverScreen in world-2', (s) => s.screen === 'GameOverScreen' && s.worldId === 'world-2', 10_000, first);
+    await waitState('Node marked world-2 dead', () => server.store.current.status === 'dead' && server.store.current.worldId === 'world-2', 5000);
+    const tBeginRestart = Date.now();
+    await clickBegin(15_000);
+    // Node goes away at once: the game is still saving world-2, so its world.state{closed} has nowhere to go.
+    await server.stop('restart');
+    say('dev server stopped right after Begin; restarting it in 3 s');
+    await sleep(3000);
+    await startServer();
+    const third = await waitState('World #3 after the restart', (s) => inWorld(s) && s.worldId === 'world-3', 90_000, first);
+    timings.beginAcrossNodeRestartMs = Date.now() - tBeginRestart;
+    check(
+      'Node restart during Begin -> World #3 once the re-sent closed was taken',
+      third.worldId === 'world-3' && server.store.current.worldId === 'world-3' && server.store.current.status === 'alive',
+      `${timings.beginAcrossNodeRestartMs} ms, Node at ${server.store.current.worldId}`,
+    );
+    const closedRequests = nodeEvents.filter((e) => e.t === 'world.state' && e.phase === 'closed' && e.worldId === 'world-2');
+    check('the mod sent world.state{closed} for world-2 as a request (with an id)', closedRequests.some((e) => typeof e.id === 'string'), `${closedRequests.length} seen`);
+    check('world-2 save moved to saves/_graveyard', existsSync(join(savesDir, '_graveyard', 'world-2', 'level.dat')));
+
     // ---- 5. Kill the game on Game Over, relaunch -------------------------------------------------------
     tKill = Date.now();
-    await server.debug.killPlayer();
-    await waitState('GameOverScreen in world-2', (s) => s.screen === 'GameOverScreen' && s.worldId === 'world-2', 10_000, first);
+    await killPlayer();
+    await waitState('GameOverScreen in world-3', (s) => s.screen === 'GameOverScreen' && s.worldId === 'world-3', 10_000, first);
     timings.deathToGameOver2Ms = Date.now() - tKill;
-    await waitState('Node marked world-2 dead', () => server.store.current.status === 'dead' && server.store.current.worldId === 'world-2', 5000);
+    await waitState('Node marked world-3 dead', () => server.store.current.status === 'dead' && server.store.current.worldId === 'world-3', 5000);
     say(`killing the game (pid ${gamePid}) on Game Over`);
     await killGame(gamePid, 'SIGKILL');
     await waitExit(first, 30_000);
@@ -320,24 +358,24 @@ async function main() {
     check('Game Over came before any world loaded', firstMineVibe === 'GameOverScreen', relaunchScreens.join(' > '));
     const tBegin2 = Date.now();
     await clickBegin(15_000);
-    const third = await waitState('World #3', (s) => inWorld(s) && s.worldId === 'world-3', 60_000, relaunch);
+    const fourth = await waitState('World #4', (s) => inWorld(s) && s.worldId === 'world-4', 60_000, relaunch);
     timings.relaunchBeginToNewWorldMs = Date.now() - tBegin2;
-    check('then into World #3 in < 20 s', timings.relaunchBeginToNewWorldMs < 20_000, `${timings.relaunchBeginToNewWorldMs} ms`);
-    check('World #3 is hardcore', third.hardcore === true);
-    check('world-2 save moved to saves/_graveyard', existsSync(join(savesDir, '_graveyard', 'world-2', 'level.dat')));
+    check('then into World #4 in < 20 s', timings.relaunchBeginToNewWorldMs < 20_000, `${timings.relaunchBeginToNewWorldMs} ms`);
+    check('World #4 is hardcore', fourth.hardcore === true);
+    check('world-3 save moved to saves/_graveyard', existsSync(join(savesDir, '_graveyard', 'world-3', 'level.dat')));
 
     // ---- 6. Dead-marker recovery: Node never heard of the death ---------------------------------------
-    await server.debug.killPlayer();
-    await waitState('GameOverScreen in world-3', (s) => s.screen === 'GameOverScreen' && s.worldId === 'world-3', 10_000, relaunch);
-    await waitState('Node marked world-3 dead', () => server.store.current.status === 'dead' && server.store.current.worldId === 'world-3', 5000);
+    await killPlayer();
+    await waitState('GameOverScreen in world-4', (s) => s.screen === 'GameOverScreen' && s.worldId === 'world-4', 10_000, relaunch);
+    await waitState('Node marked world-4 dead', () => server.store.current.status === 'dead' && server.store.current.worldId === 'world-4', 5000);
     await killGame(gamePid, 'SIGKILL');
     await waitExit(relaunch, 30_000);
     await server.stop('restart');
     const recordPath = join(home, 'state', 'current-world.json');
-    // Rewind Node's record to "world-3 alive" to simulate a death that never reached Node.
+    // Rewind Node's record to "world-4 alive" to simulate a death that never reached Node.
     writeFileSync(
       recordPath,
-      `${JSON.stringify({ v: 1, worldId: 'world-3', gen: 3, status: 'alive', created: true }, null, 2)}\n`,
+      `${JSON.stringify({ v: 1, worldId: 'world-4', gen: 4, status: 'alive', created: true }, null, 2)}\n`,
       { mode: 0o600 },
     );
     await startServer();
@@ -350,13 +388,13 @@ async function main() {
     );
     gamePid = fromMarker.pid;
     check('world.open of a dead world -> GameOverScreen (dead marker)', fromMarker.screen === 'GameOverScreen' && !fromMarker.inWorld, fromMarker.screen);
-    await waitState('Node marked world-3 dead again', () => server.store.current.status === 'dead', 15_000);
-    check('player.died re-sent from the marker; Node allocated world-4', server.store.current.next?.worldId === 'world-4');
+    await waitState('Node marked world-4 dead again', () => server.store.current.status === 'dead', 15_000);
+    check('player.died re-sent from the marker; Node allocated world-5', server.store.current.next?.worldId === 'world-5');
     const tBegin3 = Date.now();
     await clickBegin(15_000);
-    await waitState('World #4', (s) => inWorld(s) && s.worldId === 'world-4', 60_000, markerRun);
+    await waitState('World #5', (s) => inWorld(s) && s.worldId === 'world-5', 60_000, markerRun);
     timings.markerBeginToNewWorldMs = Date.now() - tBegin3;
-    check('then into World #4 in < 20 s', timings.markerBeginToNewWorldMs < 20_000, `${timings.markerBeginToNewWorldMs} ms`);
+    check('then into World #5 in < 20 s', timings.markerBeginToNewWorldMs < 20_000, `${timings.markerBeginToNewWorldMs} ms`);
 
     // ---- 7. Lifeline: parent exits -> the game saves and quits ----------------------------------------
     const stoppingBefore = nodeEvents.filter((e) => e.t === 'client.stopping').length;
@@ -367,7 +405,7 @@ async function main() {
     timings.parentExitToGameExitMs = exit ? exit.at - tParent : null;
     check('parent exit -> game quits by itself', Boolean(exit) && gameGone, exit ? `${timings.parentExitToGameExitMs} ms` : 'still running');
     check('game said client.stopping', nodeEvents.filter((e) => e.t === 'client.stopping').length > stoppingBefore);
-    check('world-4 was saved on the way out', existsSync(join(savesDir, 'world-4', 'level.dat')));
+    check('world-5 was saved on the way out', existsSync(join(savesDir, 'world-5', 'level.dat')));
 
     for (const launch of launches) {
       check(`no TitleScreen in launch ${launch.label}`, !launch.screens.some((s) => s.shown === 'TitleScreen'));

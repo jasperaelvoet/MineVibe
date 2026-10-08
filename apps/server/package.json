@@ -11,6 +11,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "vitest run",
+    "test:pcs": "vitest run --config vitest.pcs.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --conditions=source --import tsx src/main.ts dev",
     "doctor": "node --conditions=source --import tsx src/main.ts doctor",
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@minevibe/protocol": "*",
+    "@trycua/cua": "0.4.1",
     "@xmcl/core": "2.15.1",
     "@xmcl/installer": "6.1.2",
     "@xmcl/unzip": "2.1.2",

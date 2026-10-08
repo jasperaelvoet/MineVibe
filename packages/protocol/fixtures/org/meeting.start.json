@@ -1,0 +1,8 @@
+{
+  "t": "meeting.start",
+  "v": 1,
+  "id": "m-120",
+  "title": "Quick sync",
+  "attendees": "all",
+  "preview": true
+}

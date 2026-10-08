@@ -1,0 +1,9 @@
+{
+  "t": "plan.decision",
+  "v": 1,
+  "id": "m-76",
+  "agentId": "bram",
+  "pendingId": "card-8",
+  "decision": "revise",
+  "feedback": "Also add a regression test."
+}

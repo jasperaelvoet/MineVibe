@@ -104,3 +104,42 @@ before the health update).
 - Client GameTests (`./gradlew runClientGameTest`) still pass and still end on TitleScreen: under
   `-Dfabric.client.gametest` the redirects are off and no bridge is started. A GameTest that drives BootScreen
   against an in-JVM fake bridge (PLAN §11 `mod-client`) is still to be written.
+
+## Update after the M1 review (2026-10-08)
+
+The review found that a lost `world.state{closed}` could leave Node on the dead world while the game played a world
+it had created on its own, and that a failed open or create left the client "loading" forever. Changes, all
+re-verified with this harness:
+
+- **Begin no longer creates the next world.** Game Over closes the dead world, makes sure `player.died` was
+  acknowledged, then re-sends `world.state{closed}` as a request until Node acknowledges it. Node moves on durably,
+  buries the save and sends `world.open`; BootScreen creates the world from it (Node's seed). Node also takes the mod
+  showing up in the allocated next world (`hello{in_world}`, `world.state`, `player.died`) as the missing `closed`.
+- **BootScreen never waits forever**: a hello every 5 s while nothing arrives; a failed open/create clears the loading
+  state; "already loading" needs a running integrated server and is capped at 120 s.
+- **New step 4b, Node restarts during Begin**: Node is stopped right after `debug.click_begin` (the game is still
+  saving the dead world) and started again 3 s later. The re-sent `closed` reaches the new Node, which then opens the
+  next world. Later steps shift by one world (World #5 at the end).
+- **`debug.kill_player` answers `NOT_READY`** while the player is still invulnerable after joining (vanilla: until its
+  client reports "loaded", not even `/kill` damage gets through). One run killed the player in that window and got an
+  `ok` without a death; the harness now retries.
+- Bridge messages for the client thread go through the mod's own queue, drained every client tick
+  (`Minecraft#disconnect` drops vanilla's queue), so `debug.state` answers at the end of a tick.
+
+Two complete runs of the updated harness, 32/32 checks each (`s7-2026-10-08T18-18-02-708Z`,
+`s7-2026-10-08T18-24-37-130Z`):
+
+| Measure | Runs (ms) | Budget |
+|---|---|---|
+| `runClient` start -> standing in World #1 | 16554, 13202 | - |
+| Server ticks in 3 s with the menu open | 61, 61 | > 0 |
+| `debug.kill_player` -> GameOverScreen | 52, 51 | < 3000 |
+| Begin -> standing in the new world | 4098, 3052 | < 20000 |
+| Begin -> new world with Node stopped for 3 s right after Begin | 7197, 6902 | - |
+| Relaunch after `SIGKILL` -> GameOverScreen | 10333, 9049 | - |
+| Begin after relaunch -> new world | 5223, 4555 | < 20000 |
+| Begin after dead-marker recovery -> new world | 4856, 4402 | < 20000 |
+| Parent process exits -> game JVM gone (world saved) | 1643, 1426 | - |
+
+Begin -> new world is about 1 s slower than before (it now waits for Node's acknowledgement and `world.open`), well
+inside the budget.

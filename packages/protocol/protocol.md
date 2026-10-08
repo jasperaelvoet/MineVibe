@@ -134,10 +134,23 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `CHAT_UNAVAILABLE` | Node | `chat.send`: the addressed agent is dead or dismissed |
 | `CHAT_INVALID_ANSWER` | Node | `chat.send`: out-of-range option, or several picks on a single-select question |
 | `CHAT_REJECTED` | Node | `chat.send`: empty, malformed mention, `@all` mixed with names, no meeting running |
+| `UNKNOWN_AGENT` | both | The agent id names no living agent / body |
+| `UNKNOWN_SKILL` | mod | `skill.run`: unknown skill |
+| `BAD_ARGS` | mod | `skill.run` / `obs.query`: `args` do not fit |
+| `BUSY` | mod | `skill.run`: a job is running and `replace` is false |
+| `UNKNOWN_JOB` | mod | `skill.cancel`: no such job |
+| `PC_DOWN`, `SEAT_CAP` | Node | `mc__sit_at_pc` pre-checks: the PC is not running, `maxSeated` reached |
+| `RESERVED`, `OCCUPIED_BY_PLAYER`, `UNREACHABLE`, `NO_SEAT` | mod | `agent.seat`: chair reserved, the player sits there, no path, no free meeting chair |
+| `CARD_GONE` | Node | `pending.answer` / `plan.decision` / `hire.decision`: the card is no longer pending |
+| `FORBIDDEN` | Node | Rights: CEO only, player-created event, `rules` page, ... |
+| `PC_UNKNOWN`, `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`, `BAD_MOUNT`, `ENGINE_DOWN` | Node | PC requests (section 7.7) |
+| `CODEX_NOT_FOUND`, `CODEX_CONFLICT`, `CODEX_SIMILAR`, `CODEX_TOO_LARGE`, `CODEX_SECRET`, `CODEX_INVALID`, `CODEX_BUDGET` | Node | Codex requests (section 7.8) |
+| `CALENDAR_NOT_FOUND`, `CALENDAR_INVALID`, `CALENDAR_LIMIT` | Node | Calendar requests |
+| `MEETING_BUSY`, `MEETING_NOT_FOUND`, `NO_QUORUM` | Node | Meeting requests |
 
 `TIMEOUT` and `DISCONNECTED` are local failure codes; they are never sent.
 
-## 6. Messages (M1)
+## 6. Messages: session, world and M1 UI
 
 Shared value types:
 
@@ -171,11 +184,11 @@ Fixtures: `hello.json`, `hello--in-world.json`.
 | `world` | `{ id: WorldId, gen: int≥1, fresh: bool }` \| null | The world the mod should be in. `fresh`: not created yet. |
 | `player` | `{ name: PlayerName }` | |
 | `settings` | object | Free-form until later milestones |
-| `pcs` | `[{ pcId, … }]` | Pinned in M4 |
-| `budget` | object \| null | Pinned in M4 |
+| `pcs` | `PcInfo[]` | The payload of `pc.state` (section 7.7) |
+| `budget` | `Budget` \| null | The payload of `budget.state` (section 7.7) |
 | `crew` | `[{ agentId, handle, name, role, ceo: bool, status: alive\|dead\|dismissed }]` | |
 | `brains` | `{ inFlight, queued, max, mode: normal\|tired\|asleep, utilization: 0..1\|null, resetsAt: epochMs\|null }` | |
-| `pending` | `[{ id, agentId, kind: question\|plan\|hire, … }]` | Pinned in M3 |
+| `pending` | `PendingCard[]` | Every agent's cards (section 7.6) |
 
 After `hello.ok`, Node sends `world.open` when the mod is on BootScreen (or in a different world than Node
 expects), or `world.next` when the current world is dead and the mod is still in it (Game Over).
@@ -343,7 +356,7 @@ The mod handles these only when the game runs with `-Dminevibe.e2e=true`; otherw
 | Type | Runs on | `ok` reply |
 |---|---|---|
 | `debug.state` | client thread | `DebugStateResult` (below) |
-| `debug.kill_player` | integrated server (`err NO_SERVER` without one) | `{}`; `err NOT_READY` if the player is absent or already dead |
+| `debug.kill_player` | integrated server (`err NO_SERVER` without one) | `{}`; `err NOT_READY` if the player is absent, already dead, or still loading (vanilla keeps a player who just joined invulnerable until its client reports "loaded") |
 | `debug.open_menu` | client thread | `{ screen }` after opening the menu the way Esc does; `err NOT_READY` outside a world |
 | `debug.click_begin` | client thread | `{}` once Begin was pressed on the Game Over screen; `err NOT_READY` if it is not shown or not enabled yet |
 
@@ -355,11 +368,270 @@ screen, null in game), `worldId`, `gen`, `inWorld`, `hardcore`, `difficulty`
 
 Fixtures: `debug.state.json`, `debug.kill_player.json`, `debug.open_menu.json`, `debug.click_begin.json`.
 
-## 7. Later milestones
+## 7. Full catalog
 
-The full catalog (bodies, skills, seats, cards, Codex, calendar, meetings, PCs) is sketched in PLAN §5 and is
-added here, with schemas and fixtures, as each milestone lands. Adding a message type never changes `v`;
-changing the meaning of an existing field does.
+Every message type, by group (PLAN §5). The schemas live in `src/messages/<group>.ts` (`world`, `bodies`,
+`skills`, `seats`, `ui`, `pc`, `org`, `debug`; `ok`/`err` in `src/envelope.ts`) and are registered in
+`src/registry.ts`. **Dir** is who sends it. A type with an **`ok` result** is a request: it is always sent with an
+`id`, and the receiver answers `ok` with those keys (exported zod schema of that name) or `err`. Other types
+marked "Request" in the summary are answered with a plain `ok {}`. Everything else is fire-and-forget.
+
+Adding a message type never changes `v`; changing the meaning of an existing field does. Payload keys never reuse
+an envelope key: page and event ids travel as `pageId` / `eventId`.
+
+| Type | Group | Dir | `ok` result | Summary |
+|---|---|---|---|---|
+| `hello` | world | M→N |  | Mod handshake; sent first on every connection. |
+| `hello.ok` | world | N→M |  | Handshake reply with a full state snapshot. |
+| `world.open` | world | N→M |  | Open or create the given hardcore world. |
+| `world.state` | world | M→N |  | World lifecycle phase, plus 1 Hz clock and player updates. |
+| `player.died` | world | M→N |  | Request: the player died; re-sent until acked. |
+| `world.next` | world | N→M |  | Next world allocated, plus the summary of the one that ended. |
+| `client.stopping` | world | M→N |  | The game client is shutting down. |
+| `server.shutdown` | world | N→M |  | Node is shutting down. |
+| `agent.spawn` | bodies | N→M | `AgentSpawnResult` | Request: spawn an agent body, or restore it from its playerdata. |
+| `agent.despawn` | bodies | N→M |  | Request: remove an agent body (dismissed, world end, shutdown). |
+| `agent.state` | bodies | M→N |  | 1 Hz snapshot of every agent body (position, vitals, job, seat). |
+| `agent.event` | bodies | M→N |  | A notable body event (hurt, starving, stuck, kicked, arrived, ...). |
+| `agent.died` | bodies | M→N |  | Request: an agent died (grave placed); re-sent until acked. |
+| `agent.mode` | bodies | N→M |  | Request: set an agent's idle mode (follow, stay, guard, wander). |
+| `crew.state` | bodies | N→M |  | The crew list (names, handles, roles, CEO, status). |
+| `skill.run` | skills | N→M | `SkillRunResult` | Request: start a job; replies running, done, failed or cancelled. |
+| `skill.progress` | skills | M→N |  | Progress of a running job. |
+| `skill.cancel` | skills | N→M | `SkillCancelResult` | Request: cancel one job or all jobs of an agent. |
+| `skill.result` | skills | M→N |  | A running job ended (done, failed, cancelled). |
+| `obs.query` | skills | N→M | `ObsQueryResult` | Request: an observation (status, look_around, inventory, find, ...). |
+| `agent.seat` | seats | N→M | `AgentSeatResult` | Request: reserve a PC or meeting chair, walk there and sit (a job). |
+| `agent.unseat` | seats | N→M |  | Request: stand an agent up (optionally keeping its reservation). |
+| `pc.seat` | seats | M→N |  | A PC chair got an occupant (player or agent). |
+| `pc.unseat` | seats | M→N |  | A PC chair was left, with the reason (stand, kick, damage, ...). |
+| `ui.toast` | ui | N→M |  | Show a toast. |
+| `agent.say` | ui | N→M |  | Speech bubble above an agent. |
+| `agent.brain` | ui | N→M |  | Model suffix, brain status icon, last activity and toggles of one agent. |
+| `agent.pending` | ui | N→M |  | Replaces an agent's pending cards (questions, plans, hires, calendar approvals). |
+| `agent.approach` | ui | N→M |  | ApproachQueue: present a card, queue behind the player, ping, or release. |
+| `chat.append` | ui | N→M |  | Appends a line to an agent's transcript (AgentScreen, Crew log). |
+| `chat.history` | ui | M→N | `ChatHistoryResult` | Request: a page of an agent's transcript. |
+| `chat.send` | ui | M→N | `ChatSendResult` | Request: player chat line or AgentScreen reply; Node routes it. |
+| `pending.answer` | ui | M→N | `ChatSendResult` | Request: answer, park or decide a card from AgentScreen, G or Alt+1-4. |
+| `plan.decision` | ui | M→N | `ChatSendResult` | Request: approve or revise a plan card. |
+| `hire.decision` | ui | M→N | `ChatSendResult` | Request: approve or decline a hire card. |
+| `agent.cmd` | ui | M→N |  | Request: AgentScreen command (follow, stay, stop, interrupt, kick, dismiss, toggles). |
+| `brains.state` | ui | N→M |  | Brain scheduler and usage state (normal, tired, asleep). |
+| `pc.state` | pc | N→M |  | State of one PC: status, resources, mounts, occupant, reservation, banner. |
+| `budget.state` | pc | N→M |  | Host PC budget: vCPU, RAM pool, disk, macOS slots. |
+| `pc.view` | pc | M→N |  | Frame tier of a PC as the player sees it (focus, visible, none). |
+| `pc.input` | pc | M→N |  | Batched player input for the PC the player sits at (≤ 60 Hz). |
+| `pc.frame.ack` | pc | M→N |  | Acknowledges a decoded MVF1 frame (≤ 2 unacked per PC). |
+| `pc.cursor` | pc | N→M |  | The seated agent's cursor (frames carry no cursor). |
+| `pc.config` | pc | M→N | `PcConfigResult` | Request: change a PC (resources, type, mounts, flags); may recreate it. |
+| `pc.action` | pc | M→N | `PcActionResult` | Request: create, start, stop, restart, reimage, decommission, plug, kick, watch, ... |
+| `pc.consent` | pc | M→N |  | Request: accept or decline a PC download. |
+| `host.pick_folder` | pc | M→N | `PickFolderResult` | Request: native folder picker through the stub (Vault "Browse…"). |
+| `codex.index` | org | N→M |  | The Codex page index for CodexScreen. |
+| `codex.search` | org | M→N | `CodexSearchResult` | Request: full-text Codex search. |
+| `codex.get` | org | M→N | `CodexGetResult` | Request: read a Codex page with its history. |
+| `codex.put` | org | M→N | `CodexPutResult` | Request: create, update or append to a Codex page as the player. |
+| `codex.delete` | org | M→N |  | Request: delete a Codex page. |
+| `calendar.state` | org | N→M |  | Every calendar event with its occurrence log. |
+| `calendar.put` | org | M→N | `CalendarPutResult` | Request: create or edit a calendar event as the player. |
+| `calendar.cancel` | org | M→N |  | Request: cancel an event or its next occurrence. |
+| `calendar.fired` | org | N→M |  | A calendar occurrence fired; lists who walks to the location now. |
+| `meeting.state` | org | N→M |  | The active meeting: phase, chair, speaker, attendees. |
+| `meeting.start` | org | M→N | `MeetingStartResult` | Request: start a meeting now (or preview ETAs). |
+| `meeting.end` | org | M→N |  | Request: end the meeting (HUD End button). |
+| `debug.state` | debug | N→M | `DebugStateResult` | E2E only: snapshot of the client (request; reply carries DebugStateResult). |
+| `debug.kill_player` | debug | N→M |  | E2E only: kill the local player (request). |
+| `debug.open_menu` | debug | N→M |  | E2E only: open the in-game menu as Esc would (request). |
+| `debug.click_begin` | debug | N→M |  | E2E only: press Begin on the Game Over screen (request). |
+| `debug.kill_agent` | debug | N→M |  | E2E only: kill an agent body (request). |
+| `debug.set_clock` | debug | N→M |  | E2E only: set the overworld clock time (request). |
+| `ok` | reply | both |  | Success reply to a request. |
+| `err` | reply | both |  | Failure reply to a request. |
+
+### 7.1 Value types used by the later groups
+
+| Type | Format |
+|---|---|
+| `PcId` | `^[a-z0-9][a-z0-9-]{0,63}$` (`linux-1`, `mac-1`) |
+| `PendingId`, `JobId`, `EventId`, `MeetingId`, `ConsentId` | `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$` |
+| `CodexId` | `^[a-z0-9][a-z0-9-]{0,79}$` (also the page's file name) |
+| `Rev` | `^[0-9a-f]{7,64}$` (git revision) |
+| `Dimension` | `namespace:path`, e.g. `minecraft:overworld` |
+| `ItemId` | `[#][namespace:]path`: `oak_log`, `minecraft:oak_log`, `#minecraft:logs` (a tag) |
+| `EntityRef` | `player`, an agent id, an entity UUID, or an entity type id (`minecraft:cow`, the nearest) |
+| `Title` | 1-80 characters, single line (calendar titles, Codex titles, meeting titles) |
+| `Vec3` | `{ x, y, z }` numbers (entity position) |
+| `Place` | `{ pos: BlockPos, dim: Dimension }` |
+| `Occupant` | `{ kind: "player" }` \| `{ kind: "agent", agentId }` |
+| `Author` | `{ kind: player\|agent\|system, name, agentId? }` |
+| `AgentRole` | `ceo` \| `engineer` \| `miner` \| `farmer` \| `guard` \| `builder` |
+| `IdleMode` | `follow` \| `stay` \| `guard` \| `wander` |
+| `ModelTier` | `haiku` \| `opus` (name tag suffix `[H]` / `[O]`) |
+| `Autonomy` | `listen` \| `helpful` \| `proactive` |
+| `EpochMs` | integer milliseconds since 1970 |
+
+Discriminated unions carry their discriminator as a plain string key (`kind`, or `k` for input events); the Java
+records flatten every variant into one record with `@Nullable` fields.
+
+### 7.2 world (additions to section 6)
+
+- `world.state.player` (optional, on the 1 Hz pushes): `{ pos: Vec3, dim, hp, maxHp, food 0-20, inCombat, idleMs,
+  screen?, seatedPc? }`. Node uses it for ApproachQueue (combat, other dimension, PC screen), meetings (16 blocks,
+  HP), the calendar's AFK rule (5 min of `idleMs`) and the player-HP wake.
+- `hello.ok.pcs` is `PcInfo[]` (the payload of `pc.state`), `budget` is `Budget | null` (the payload of
+  `budget.state`), and `pending` is `PendingCard[]` (every agent's cards). After `hello.ok`, Node also sends the
+  per-topic pushes (`crew.state`, `agent.brain`, `agent.pending`, `pc.state`, `budget.state`, `codex.index`,
+  `calendar.state`, `meeting.state`, `brains.state`) exactly as on every change, so a reconnect is a full resync.
+
+### 7.3 bodies
+
+- `agent.spawn` (request, `AgentSpawnResult { pos, dim, restored }`): `{ agentId, handle, name, role: AgentRole,
+  ceo, skin?, at?: Place, restore, mode: IdleMode, bark? }`. Without `at` the body appears at the office door. With
+  `restore` the mod loads the agent's saved playerdata if there is one (app restart, world reload). A hire spawns
+  with `bark: "reporting_for_duty"`.
+- `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
+- `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
+  saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
+  playerDistance?, held? }`. Node builds the 25-token status footer and the Digest from it.
+- `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
+  `killed`, `reflex`, `stuck`, `unseated`, `kicked`, `player_low_hp`, `dimension_changed`, `arrived`,
+  `approach_blocked` (`data.why`: `combat|night|far|dimension|pc_screen`, so ApproachQueue falls back to a ping),
+  `fed_player`, `shared_food`, `picked_up`, `advancement`.
+- `agent.died` (request, re-sent until `ok`, idempotent per `agentId`): `{ agentId, worldId, cause, killer?, day,
+  pos, dim, grave? }`.
+- `agent.mode` (request): `{ agentId, mode: IdleMode, anchor? }`.
+- `crew.state`: `{ crew: CrewMember[] }` on every crew change (hire, death, dismissal, CEO promotion); drives name
+  tags and the `@` completion list.
+
+### 7.4 skills
+
+- `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error? }`):
+  `{ jobId, agentId, skill, args, waitMs, replace }`. The mod waits up to `waitMs` (the tool's `wait_s`, default
+  20 s); a job that is still going replies `running` and later sends `skill.result`. Errors: `UNKNOWN_AGENT`,
+  `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job is running and `replace` is false).
+- Skills: `goto`, `mine`, `collect`, `hunt`, `dig`, `place`, `use_block`, `use_item`, `attack`, `equip`, `eat`,
+  `sleep`, `pickup`, `drop`, `give`, `craft`, `smelt`, `container`, `open_menu`, `menu_click`, `menu_close`, `build`,
+  `farm`, `ride`, `dismount`, `emote`. Their `args` schemas are exported as `SkillArgs.<skill>` (Node validates
+  before sending and builds the `mcp__mc__*` tool schemas from them); on the wire `args` is only required to be an
+  object. Node-side tools (`say`, `tell`, `remember`, `wait`, `request_hire`, `codex_*`, `calendar_*`,
+  `report_task`) never reach the mod; `set_mode` is `agent.mode`, `stop` is `skill.cancel`, `sit_at_pc` /
+  `stand_up` are `agent.seat` / `agent.unseat`.
+- `skill.progress`: `{ jobId, agentId, progress?, text }`, at most one per job per second.
+- `skill.cancel` (request, `SkillCancelResult { cancelled: JobId[] }`): `{ agentId, jobId?, reason }`; without
+  `jobId` every job of the agent.
+- `skill.result`: `{ jobId, agentId, status: done|failed|cancelled, result?, error?: { code, msg }, durationMs }`.
+- `obs.query` (request, `ObsQueryResult { result }`): `{ agentId, query, args }`, `query` one of `status`,
+  `look_around`, `inventory`, `find`, `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`.
+
+### 7.5 seats
+
+- `agent.seat` (request, `AgentSeatResult { jobId, status: "running" }`): `{ agentId, jobId, seatEpoch, target:
+  { kind: "pc", pcId } | { kind: "meeting", meetingId }, purpose? }`. The mod reserves the chair ("Bram is
+  coming"), walks, then rides it (non-forced). The outcome is a `skill.result{jobId}` and, for a PC, `pc.seat`.
+  Node runs its own pre-checks first (`PC_DOWN`, `SEAT_CAP`); the mod answers `RESERVED`, `OCCUPIED_BY_PLAYER`,
+  `UNREACHABLE`, `NO_SEAT`, `UNKNOWN_AGENT` or `PC_UNKNOWN`.
+- `agent.unseat` (request): `{ agentId, seatEpoch, reason, keepReservation }`. `keepReservation` keeps the chair for
+  the agent (`away`: asking the player, "BRB" on the monitor; `meeting`).
+- `pc.seat`: `{ pcId, occupant, seatEpoch? }`; `pc.unseat`: `{ pcId, occupant, reason, reserved }`. The mod's
+  PcRegistry is authoritative for who sits where; these fire for the player too (sitting opens PcControlScreen,
+  Shift+Esc stands up).
+- `UnseatReason`: `stand`, `kick`, `damage`, `survival`, `death`, `pc_down`, `meeting`, `world_end`, `dismiss`,
+  `app_restart`, `worker_restart`, `away`, `player_took`, `reservation_expired`.
+
+### 7.6 ui
+
+- `agent.brain`: `{ agentId, model, status: idle|thinking|queued|waiting_player|asleep|offline, activity|null,
+  autonomy, planFirst, pingInstead }`. Head icons: … thinking, hourglass queued, Zz asleep/offline; ? and ! come
+  from the cards; the monitor icon from `agent.state.seat`.
+- `agent.pending`: `{ agentId, cards: PendingCard[] }` replaces that agent's cards. `PendingCard` is
+  `{ id, agentId, createdAt, parked, presenting }` plus, by `kind`: `question { questions: [{ question, header?,
+  options: [{ label, description? }], multiSelect }], answers }`, `plan { plan }`, `hire { role, name, handle,
+  reason, firstTask }`, or `calendar { eventId, summary }` (an agent-created recurring event or meeting waiting for
+  approval).
+- `agent.approach`: `{ agentId, pendingId|null, role: present|queue|ping|release }` (PLAN §6.4).
+- `chat.append`: `{ agentId, entry: ChatEntry }`; `ChatEntry = { seq, at, kind:
+  player|agent|activity|card|answer|tell|system, text, fromAgentId?, cardId? }`. `chat.history` (request,
+  `ChatHistoryResult { entries, more }`): `{ agentId, beforeSeq?, limit }`.
+- `chat.send` gains an optional `mode: chat|reply|task|interrupt` for AgentScreen's Reply / New task / Interrupt.
+- `pending.answer` (request, `ChatSendResult`): `{ agentId, pendingId, answer }` with `answer` one of
+  `{ kind: "options", picks: [1-based] }`, `{ kind: "text", text }`, `{ kind: "later" }`, `{ kind: "approve" }`,
+  `{ kind: "decline", note? }` (the last two for calendar approval cards). Errors: `CARD_GONE`,
+  `CHAT_INVALID_ANSWER`.
+- `plan.decision` (request, `ChatSendResult`): `{ agentId, pendingId, decision: approve|revise, feedback? }`
+  (`revise` needs `feedback`). `hire.decision` (request, `ChatSendResult`): `{ pendingId, decision:
+  approve|decline, note? }`.
+- `agent.cmd` (request): `{ agentId, cmd, on?, level? }`, `cmd` one of `follow`, `stay`, `guard`, `wander`,
+  `stop`, `interrupt`, `kick`, `dismiss`, `plan_first` (needs `on`), `ping_instead` (needs `on`), `autonomy`
+  (needs `level`), `retry_brain`.
+- `brains.state`: the `BrainsSummary` keys of `hello.ok.brains`.
+
+### 7.7 pc
+
+- `pc.state`: a `PcInfo` at the top level: `{ pcId, type: linux|linux-slim|macos, name, status, progress|null,
+  detail|null, slot, cpus, memoryMiB, diskGiB, plugged, pinned, wipeOnDeath, mounts: [{ hostPath, mode: rw|ro }],
+  occupant|null, reservation: { agentId, kind: coming|away }|null, banner|null, screen: { w, h }|null,
+  consent: { consentId, what, bytes, freeBytes }|null }`. `slot` is the MVF1 `pcSlot` of its frames. Statuses:
+  `off`, `downloading`, `awaiting_consent`, `booting`, `running`, `stopping`, `remounting`, `reimaging`,
+  `no_capacity`, `macos_slots_full`, `engine_down`, `error`, `decommissioned`.
+- `budget.state`: `{ cpu: { total, used, free, maxOvercommit }, memoryMiB: { pool, used, free }, diskFreeGiB,
+  macos: { running, max }, crewCap }`.
+- `pc.view`: `{ pcId, tier: focus|visible|none }`, sent on change.
+- `pc.input`: `{ pcId, seq, events }`, at most 60 batches a second. Events (guest pixels, cua key names):
+  `{ k: "move", x, y }`, `{ k: "button", button: left|right|middle, down, x, y }`, `{ k: "scroll", dx, dy, x, y }`,
+  `{ k: "key", key, down }`, `{ k: "text", text }` (from `charTyped`), `{ k: "release_all" }`.
+- `pc.frame.ack`: `{ pcId, seq }` after a frame is decoded (at most 2 unacknowledged per PC).
+- `pc.cursor`: `{ pcId, x, y, visible }`, the agent's last pointer target (frames carry no cursor, PLAN §8.6).
+- `pc.config` (request, `PcConfigResult { recreate }`): `{ pcId, name?, type?, cpus?, memoryMiB?, mounts?, pinned?,
+  wipeOnDeath? }`. Errors: `OVER_BUDGET`, `BAD_MOUNT`, `PC_UNKNOWN`.
+- `pc.action` (request, `PcActionResult { pcId }`): `{ action, pcId?, type?, pos? }`. `create` takes `type` and
+  no `pcId`; every other action (`start`, `stop`, `restart`, `reimage`, `decommission`, `reissue`, `unplug`,
+  `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,
+  `PC_UNKNOWN`, `ENGINE_DOWN`.
+- `pc.consent` (request): `{ pcId, consentId, accept }`.
+- `host.pick_folder` (request, `PickFolderResult { path|null }`): `{ purpose: "vault", pcId?, prompt? }`. PLAN §5
+  calls it `host.pickFolder`; type names are dotted lowercase (section 4), so the wire name is `host.pick_folder`.
+
+### 7.8 org: Codex, calendar, meetings
+
+- `codex.index`: `{ pages: CodexPageMeta[] (≤ 1000), truncated }`; `CodexPageMeta = { id, title, category, scope,
+  tags, author: Author, created, updated, rev, pinned }`. Categories: `places`, `howto`, `projects`, `decisions`,
+  `people`, `log`, `minutes`, `rules` (player only). Scopes: `lasting`, `world`.
+- `codex.search` (request, `CodexSearchResult { hits: [{ id, title, category, scope, snippet, score }] }`):
+  `{ query, tags?, category?, scope?, limit }`.
+- `codex.get` (request, `CodexGetResult { page }`): `{ pageId }`; `page` adds `body` (≤ 8192), `links` and `history:
+  [{ rev, at, author, summary }]` to the meta.
+- `codex.put` (request, `CodexPutResult { pageId, rev }`): `{ mode: create|update|append, pageId?, baseRev?, title,
+  body, tags, category, scope, pinned? }`. `update` and `append` need `pageId`, `update` needs `baseRev`. Errors:
+  `CODEX_CONFLICT` (stale `baseRev`), `CODEX_SIMILAR`, `CODEX_TOO_LARGE`, `CODEX_SECRET`, `CODEX_INVALID`,
+  `CODEX_NOT_FOUND`, `FORBIDDEN`.
+- `codex.delete` (request): `{ pageId, baseRev? }`.
+- `calendar.state`: `{ events: CalendarEvent[], tz }`. `CalendarEvent = { id, title, kind: task|reminder|meeting,
+  assignees: AgentId[] | "all", clock: game|real, at, tz?, recurrence: { kind: once|daily|every_n_days|weekdays,
+  n? }, durationMin, location?, task?, catchUp: skip|once_late, runWhileAway, createdBy: "player" | AgentId, status:
+  active|paused|pending_approval|orphaned|done|cancelled, nextAt|null, occurrences: [{ at, status, note?, agentId?
+  }] (≤ 20) }`. On the game clock `at` and `nextAt` are overworld clock ticks (Day = floor(t/24000)+1, 06:00 =
+  tick 0); on the real clock they are epoch ms. `weekdays` is real clock only; `every_n_days` needs `n`.
+  Occurrence statuses: `fired`, `done`, `failed`, `blocked`, `missed`, `deferred`, `orphaned`, `cancelled`.
+- `calendar.put` (request, `CalendarPutResult { eventId }`): the event fields (no state), plus `eventId` to edit.
+  `calendar.cancel` (request): `{ eventId, scope: next|all }`. Errors: `CALENDAR_NOT_FOUND`, `CALENDAR_INVALID`,
+  `FORBIDDEN`.
+- `calendar.fired`: `{ eventId, occurrence, kind, title, assignees, target: Place|null, walk: AgentId[] }`. `walk`
+  lists the assignees whose brain accepted the task and who now go to `target` (reflex 38); Node re-sends the same
+  occurrence as more accept.
+- `meeting.state`: `{ meetingId, title, phase: gathering|open|updates|floor|wrapup|done, chair, speaker|null,
+  attendees: [{ agentId, status: coming|seated|dialed_in|absent|excused|left|dead, etaS|null }], eventId|null,
+  startedAt, endsBy, quick }`. `chair` and `speaker` are `"player"` or an agent id.
+- `meeting.start` (request, `MeetingStartResult { meetingId|null, etas: [{ agentId, etaS|null, dialIn }] }`):
+  `{ eventId?, title?, attendees?, preview }`; with `preview` Node only computes the ETAs. Errors: `MEETING_BUSY`,
+  `NO_QUORUM`. `meeting.end` (request): `{ meetingId }`.
+
+### 7.9 debug (additions to 6.13)
+
+| Type | Runs on | `ok` reply |
+|---|---|---|
+| `debug.kill_agent` | integrated server | `{}`; `err UNKNOWN_AGENT` |
+| `debug.set_clock` | integrated server | `{}` after setting the overworld clock to `clockTime` |
 
 ## 8. Binary frames: `MVF1` (N→M)
 
@@ -402,17 +674,22 @@ per frame.
 - Sending: one `mv-bridge-send` thread drains a queue; `java.net.http.WebSocket` allows only one send in flight.
 - An oversize message from Node (text over 256 KiB, binary over 32 bytes + 64 MiB) makes the mod close with
   `1008`: `java.net.http` does not let a client send `1009`.
-- Implementation: `dev.minevibe.bridge.BridgeClient` (`apps/mod/src/main/java`), with the Gson records and the
-  zod-equivalent validator in `dev.minevibe.bridge.protocol`.
+- Implementation: `dev.minevibe.bridge.BridgeClient` (`apps/mod/src/main/java`), with the zod-equivalent validator
+  and the M1 records in `dev.minevibe.bridge.protocol`, and the records of every later group in
+  `dev.minevibe.bridge.msg` (`Bodies`, `Skills`, `Seats`, `Ui`, `Pc`, `Org`, `Debug`).
 
 ## 10. Fixtures
 
 ```
-fixtures/<type>.json              one valid example per message type
-fixtures/<type>--<variant>.json   further valid examples
-fixtures/invalid/*.json           must be rejected (bad version, unsafe world id, empty recipients, …)
-fixtures/unknown/*.json           well-formed envelopes with unknown types: must be ignored, not rejected
+fixtures/<group>/<type>.json                 one valid example per message type, in its catalog group
+fixtures/<group>/<type>--<variant>.json      further valid examples
+fixtures/<group>/invalid/<type>--<why>.json  must be rejected (bad version, unsafe world id, failed refinement, ...)
+fixtures/envelope/invalid/*.json             malformed envelopes
+fixtures/unknown/*.json                      well-formed envelopes with unknown types: must be ignored, not rejected
+fixtures/reply/ok--<request>.json            `ok` replies; vitest checks each against its request's result schema
 ```
 
-Every registered type has at least one valid fixture; the vitest suite enforces it, and the mod's JUnit suite
-parses the same files with Gson.
+Groups: `world`, `bodies`, `skills`, `seats`, `ui`, `pc`, `org`, `debug`, `reply`. Every registered type has at
+least one valid fixture and every group has invalid ones; the vitest suite enforces both. The mod's JUnit suite
+parses the same files with Gson: valid ones into their records (every JSON key must map to a record component), the
+messages the mod sends must re-encode to identical JSON, and invalid ones must be rejected.

@@ -1,0 +1,15 @@
+{
+  "t": "agent.died",
+  "v": 1,
+  "id": "m-50",
+  "agentId": "cleo",
+  "worldId": "world-7",
+  "cause": "fell",
+  "day": 4,
+  "pos": {
+    "x": 1,
+    "y": 2,
+    "z": 3
+  },
+  "dim": "Overworld"
+}

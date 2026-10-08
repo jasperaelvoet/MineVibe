@@ -1,0 +1,11 @@
+{
+  "t": "chat.append",
+  "v": 1,
+  "agentId": "bram",
+  "entry": {
+    "seq": 41,
+    "at": 1791484805000,
+    "kind": "activity",
+    "text": "pc__bash: npm test (3 failed)"
+  }
+}

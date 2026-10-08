@@ -1,0 +1,11 @@
+{
+  "t": "obs.query",
+  "v": 1,
+  "id": "n-33",
+  "agentId": "ada",
+  "query": "find",
+  "args": {
+    "what": "minecraft:oak_log",
+    "radius": 48
+  }
+}

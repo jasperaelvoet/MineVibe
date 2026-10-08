@@ -1,0 +1,78 @@
+{
+  "t": "calendar.state",
+  "v": 1,
+  "tz": "Europe/Brussels",
+  "events": [
+    {
+      "id": "ev-1",
+      "title": "Farm wheat",
+      "kind": "task",
+      "assignees": ["bram"],
+      "clock": "game",
+      "at": 48000,
+      "recurrence": {
+        "kind": "once"
+      },
+      "durationMin": 30,
+      "location": "wheat-field",
+      "task": "Harvest and replant the wheat.",
+      "catchUp": "skip",
+      "runWhileAway": false,
+      "createdBy": "player",
+      "status": "active",
+      "nextAt": 48000,
+      "occurrences": []
+    },
+    {
+      "id": "ev-3",
+      "title": "Standup",
+      "kind": "meeting",
+      "assignees": "all",
+      "clock": "real",
+      "at": 1791513600000,
+      "tz": "Europe/Brussels",
+      "recurrence": {
+        "kind": "weekdays"
+      },
+      "durationMin": 10,
+      "location": "meeting_table",
+      "catchUp": "once_late",
+      "runWhileAway": false,
+      "createdBy": "ada",
+      "status": "pending_approval",
+      "nextAt": null,
+      "occurrences": [
+        {
+          "at": 1791427200000,
+          "status": "missed",
+          "note": "App was closed"
+        }
+      ]
+    },
+    {
+      "id": "ev-4",
+      "title": "Check the furnace",
+      "kind": "reminder",
+      "assignees": ["ada"],
+      "clock": "game",
+      "at": 30000,
+      "recurrence": {
+        "kind": "every_n_days",
+        "n": 2
+      },
+      "durationMin": 5,
+      "catchUp": "skip",
+      "runWhileAway": true,
+      "createdBy": "ada",
+      "status": "active",
+      "nextAt": 78000,
+      "occurrences": [
+        {
+          "at": 30000,
+          "status": "done",
+          "agentId": "ada"
+        }
+      ]
+    }
+  ]
+}

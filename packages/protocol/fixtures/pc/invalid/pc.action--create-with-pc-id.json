@@ -1,0 +1,8 @@
+{
+  "t": "pc.action",
+  "v": 1,
+  "id": "m-1",
+  "action": "create",
+  "type": "linux",
+  "pcId": "linux-2"
+}

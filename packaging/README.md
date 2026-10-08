@@ -35,7 +35,7 @@ verified, and only then moved to `dist/MineVibe.app`, so a failed build never le
 | `MacOS/MineVibe` | The Swift stub, `apps/launcher-mac/MineVibe.swift`, built with `xcrun swiftc -O -parse-as-library -target arm64-apple-macos26.0`. The only thing we sign. |
 | `MacOS/node` | Official Node `bin/node` from `vendor.lock.json`, byte-identical (Node.js Foundation's signature, team HX7739G8FX). |
 | `Runtime/jre/` | Temurin JRE `Contents/Home`, byte-identical (Eclipse Adoptium's signatures, team JCDTMS22B4). `bin/MineVibe` is a byte-identical copy of `bin/java`, so the Dock shows "MineVibe". |
-| `Runtime/container/` | Apple `container` 1.5.0 install root (`bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*`), the pkg payload byte for byte (Apple's signatures, team UPBK2H6LZM). Pass it as `--install-root` / `CONTAINER_INSTALL_ROOT`. |
+| `Runtime/container/` | Apple `container` 1.5.0 install root (`bin/container`, `bin/container-apiserver`, `libexec/container/plugins/*`), the pkg payload byte for byte without the `exclude`d update/uninstall scripts (Apple's signatures, team UPBK2H6LZM). It holds exactly the lock's `installRootFiles`, so the PC manager's `isProvisioned()` accepts it and never writes into the bundle. Pass it as `--install-root` / `CONTAINER_INSTALL_ROOT`. |
 | `Resources/server/` | `dist/main.mjs` (+ source map and legal notices), a `package.json`, and the server's production `node_modules` copied byte for byte from the installed workspace (`npm ls --omit=dev`). |
 | `Resources/mod/` | `minevibe-<version>.jar`, `mods.lock.json`, `seed-configs/*.json` (this folder is `MINEVIBE_RESOURCES` for the launcher). |
 | `Resources/MineVibe.icns` | Placeholder icon, generated (`lib/icon.ts`). |
@@ -58,8 +58,9 @@ subfolder, so `/Applications/MineVibe.app/Contents/Runtime/container` is fine.
 - Each vendor archive must match the `size` and `sha256` pinned in `vendor.lock.json`; a mismatch deletes the
   download and fails. Archives are cached content-addressed (`<cache>/<sha256>/<file>`) and re-hashed on use.
 - The `container` pkg must pass `pkgutil --check-signature` as "signed by a developer certificate issued by Apple for
-  distribution", with the first certificate equal to the lock's `pkgSigner`.
-- The copies in the bundle are compared file by file (bytes, modes, symlinks) against the extracted originals.
+  distribution", with the first certificate equal to the lock's `container.signer`.
+- The copies in the bundle are compared file by file (bytes, modes, symlinks) against the extracted originals, and
+  the `container` install root must hold exactly `container.installRootFiles` (each file's sha256, nothing else).
 - Every Mach-O in `MacOS/node`, `Runtime/jre` and `Runtime/container` must pass `codesign --verify --strict` and be
   signed by the lock's `teamId`.
 - `node --version` and `java -version` must report the pinned versions.
@@ -129,7 +130,9 @@ The schemas are in `apps/server/src/app/stubProtocol.ts`; Node's side is `apps/s
 
 1. Pick the new archive and its published sha256 (Node: `SHASUMS256.txt`; Temurin: the Adoptium API or the
    release's `.sha256.txt`; `container`: the GitHub release asset digest).
-2. Update `url`, `size`, `sha256`, `version` and `extract` in `vendor.lock.json` (and `javaVersion` for the JRE).
+2. Update `url`, `size`, `sha256`, `version` and `extract` in `vendor.lock.json` (and `javaVersion` for the JRE). For
+   `container`, update `pkg`, `version` and every `installRootFiles` hash: the PC manager reads the same entry
+   (`readContainerLock`), so one pin serves the bundle and `npm run dev`.
 3. Run `npm run build:app`: it re-checks signatures and team IDs, so a vendor that changed its signing team fails
    loudly. Update `teamId` only after checking why.
 4. Run the self-test and a real launch from a non-TCC copy.

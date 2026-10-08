@@ -1,0 +1,31 @@
+# MineVibe Linux PC: cua's Linux desktop image (XFCE + cua-spacesd on :3211) plus a thin MineVibe layer.
+# PLAN §4, §8.1 and §8.6. Build locally with Apple container:
+#   container build -t minevibe/linux-pc:dev -f images/linux-pc/Containerfile images/linux-pc
+#   container builder stop && container builder delete
+#
+# The base is pinned by the multi-arch index digest recorded in S5 (2026-10-08); its linux/arm64
+# manifest is sha256:69fad5f0565e70d5c786d8f7d6c5175ca93c92eb5f1d538b9057db45f3714d01.
+FROM ghcr.io/trycua/linux:24.04@sha256:71dbd9f077adcbe5e27f2041391bac69afce8093f1ce757e02c9167495ac7dc4
+
+USER root
+
+# Tools agents and players expect in a terminal PC. The base already ships Node, Go, uv, gh and rust.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tmux ripgrep git build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+# A skeleton copy of the image's /home/cua. Apple container named volumes start empty and root-owned and
+# hide the image's /home/cua (XFCE then crash-loops), so the boot hook seeds the home volume from here.
+RUN mkdir -p /opt/minevibe \
+ && cp -a /home/cua /opt/minevibe/skel-home
+
+COPY minevibe-entrypoint.sh /opt/minevibe/entrypoint.sh
+RUN chmod 0755 /opt/minevibe/entrypoint.sh
+
+LABEL dev.minevibe.image="linux-pc" \
+      org.opencontainers.image.source="https://github.com/jasperaelvoet/MineVibe" \
+      org.opencontainers.image.base.name="ghcr.io/trycua/linux:24.04" \
+      org.opencontainers.image.base.digest="sha256:71dbd9f077adcbe5e27f2041391bac69afce8093f1ce757e02c9167495ac7dc4"
+
+# The base has no ENTRYPOINT and CMD=/opt/cua/desktop/entrypoint.sh; the hook execs that at the end.
+CMD ["/opt/minevibe/entrypoint.sh"]

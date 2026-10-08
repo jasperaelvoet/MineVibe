@@ -612,7 +612,92 @@ public final class Screens {
   task such as `runProductionClientGameTest` yourself. Not configured yet.
 - Example in this repo: `src/gametest/java/dev/minevibe/gametest/client/MineVibeClientGameTests.java`.
 
-## 7. Not found / open
+## 7. 26.3 facts learned in S1, S7 and the M1 review
+
+Verified by running code (GameTests, the S7 harness, `npm run play`), not only by reading sources. Line numbers
+are from the same decompiled jars as above.
+
+### 7.1 Fake players (agents)
+- **A vehicle must be saveable.** `Entity#startRiding` refuses a vehicle whose type cannot serialize
+  (`!entityToRide.type.canSerialize()` on the server), so a seat entity type must not use
+  `EntityType.Builder.noSave()`. "Never saved" is `Entity#shouldBeSaved() == false` instead.
+- **A fresh player is invulnerable for 60 ticks.** `ServerPlayer#isInvulnerableTo` :1319 is true while
+  `!connection.hasClientLoaded()` (`ServerGamePacketListenerImpl#hasClientLoaded` :2261: `clientLoadedTimeoutTimer`,
+  60 ticks, or a `ServerboundPlayerLoadedPacket`). Not even `/kill`'s `genericKill` damage gets through. A fake player
+  calls `connection.handleAcceptPlayerLoad(new ServerboundPlayerLoadedPacket())` after `placeNewPlayer`; an E2E
+  "kill the player" must wait for (or check) `hasClientLoaded()`.
+- **Players are client-authoritative.** `Player#isClientAuthoritative()` is true, so the server skips fall damage and
+  the `onGround` update for them. Server-simulated bodies override it to `false` (as `GameTestHelper`'s mock players do).
+- **Fake connections never tick.** `ServerGamePacketListenerImpl#tick()` (idle kick, the vanilla `doTick` call) runs
+  only for connections in `ServerConnectionListener`; a fake player calls `ServerPlayer#doTick()` itself.
+- **Chunk sending stalls without acks.** `PlayerChunkSender` sends one 9-chunk batch, then waits for a chunk-batch ack
+  that never comes. Skipping `PlayerChunkSender#sendNextChunks` for fake players builds no chunk packets at all; player
+  tickets and chunk loading are unaffected.
+- **Dimension changes wait for the client.** `ServerPlayer#teleport(TeleportTransition)` :1123 sets
+  `isChangingDimension = true`; only `handleAcceptTeleportPacket` :544 clears it (`hasChangedDimension()`). While it is
+  set the player is invulnerable (`isInvulnerableTo`) and `processPortalCooldown()` is skipped (no portal works again).
+  A fake player clears it after `super.teleport(...)` (Carpet's `EntityPlayerMPFake#teleport`).
+- **The End exit portal does not teleport the first time.** `EndPortalBlock#entityInside` calls
+  `ServerPlayer#showEndCredits()` :1114 while `!seenCredits`: the player is removed from the level
+  (`removePlayerImmediately`), `wonGame` is set, and only the client's `PERFORM_RESPAWN` brings it back through
+  `PlayerList#respawn` :387, which constructs a **new plain `ServerPlayer`** (`new ServerPlayer(...)` :392). A fake
+  player overrides `showEndCredits()` to set `seenCredits` and stay; the portal then teleports it the normal way
+  (`getPortalDestination` -> `findRespawnPositionAndUseSpawnBlock`).
+- **Phantoms count every player.** `PhantomSpawner#tick` iterates `level.players()` and spawns when
+  `TIME_SINCE_REST` ≥ 72000 (3 days); `ServerPlayer#doTick` awards `TIME_SINCE_REST` every tick out of bed (:672).
+  Reset it with `resetStat(Stats.CUSTOM.get(Stats.TIME_SINCE_REST))` for bodies that never sleep.
+- **Advancement announcements** are broadcast from the lambda `award` passes to `display().ifPresent(...)`:
+  `PlayerAdvancements#lambda$award$0` -> `PlayerList#broadcastSystemMessage(Component, boolean)`. A mixin must target
+  `lambda$award$0`, not `award` (0 targets found otherwise).
+- **usercache.json** is filled in `PlayerList#placeNewPlayer` :152 (`server.services().nameToIdCache().add(NameAndId)`,
+  interface `UserNameToIdResolver`). `CachedUserNameToIdResolver#get(UUID)` is a pure lookup; `get(String)` may create
+  an offline entry.
+- `LivingEntity#swing(hand)` is now `swing(hand, SwingAnimation, sendToSwingingEntity)`; entity type constants live in
+  `EntityTypes`; `PushReaction.BLOCK` is `IMMOVEABLE`; `ValueInput#read(MapCodec)` is deprecated but still used by
+  vanilla for `ServerPlayer.SavedPosition`.
+- A grave must not use `!level.getFluidState(pos).isEmpty()` as "free": waterlogged stairs, slabs and fences hold a
+  fluid too. Use `BlockState#canBeReplaced()` (air, plants, fire and fluids are replaceable) or `LiquidBlock`.
+
+### 7.2 Client, screens and threads
+- **`Gui#setScreen` mixins must rewrite the argument at method entry** (`@ModifyVariable(at = @At("HEAD"),
+  argsOnly = true)`), plus `@At("STORE")` for the screens `setScreen(null)` makes up. At the `PUTFIELD` the original
+  screen is already on the stack: the field keeps it while `init()` runs on the replacement (S7 finding 1).
+- **Pausing** is decided only in `Gui#isPausing()` :304 (`screen.isPauseScreen() || overlay.isPausing()`), read by
+  `Minecraft#runTick` :1283. `Screen#isPauseScreen()` defaults to true; vanilla `OptionsScreen` and its sub-screens are
+  pause screens. Wrap the `isPauseScreen()` call in `Gui#isPausing` to change it for subclasses too.
+- **`Minecraft#disconnect(...)` :2219 calls `dropAllTasks()`**: everything queued with `Minecraft#execute` before a
+  disconnect is silently discarded. Work that must survive leaving a world needs its own queue.
+- **World loads block the client thread.** `Minecraft#doWorldLoad` :2114 loops (`renderFrame` + `runAllTasks`) until
+  the integrated server is ready; no client tick runs meanwhile. `WorldOpenFlows#createFreshLevel` on a datapack
+  failure calls `gui.setScreen(parentScreen)` without starting a server, and `createWorldAccess` failure calls
+  `gui.setScreen(null)`.
+- **`MinecraftServer#execute` runs the task inline once the server is stopped**: `BlockableEventLoop#execute` :98
+  runs `doRunTask` directly when `scheduleExecutables()` is false, and `MinecraftServer#scheduleExecutables` :1460 is
+  `super.scheduleExecutables() && !isStopped()`. `doRunTask` also catches and logs task exceptions, so a task cannot
+  signal "not run" by throwing.
+- **Shutdown hook:** the client `Main` registers "Client Shutdown Thread" (`Main` :244), which calls
+  `IntegratedServer#halt(true)`: SIGTERM or SIGINT to the JVM saves the world (players, regions, `level.dat`). Log4j
+  is already shut down by then, so the save is not in `latest.log`; check file times.
+- `java.net.http.WebSocket#sendText` with malformed UTF-16: JDK 25 completes the send with
+  `IOException("Malformed text message")` caused by a `CharacterCodingException` (the API documents
+  `IllegalArgumentException`). It encodes up to `jdk.httpclient.websocket.intermediateBufferSize` (16 KiB) before
+  writing, so a shorter frame leaves nothing on the wire. A client may not send close code 1009 (S7 finding 5).
+
+### 7.3 Worlds and GameTests
+- `levelExists` lives on `LevelStorageSource` (:363), not `WorldOpenFlows` (see 2.1).
+- `LevelSettings.DifficultySettings(Difficulty difficulty, boolean hardcore, boolean locked)` (see 2.2); MineVibe
+  worlds use `(HARD, true, true)`.
+- **GameTest structures** (`data/<ns>/gametest/structure/<name>.snbt`) write block states as `id{prop:value}`, not
+  `id[prop=value]`.
+- `GameTestHelper#onEachTick` uses `setRunAtTickTime` (one action per tick, overwrites `runAfterDelay`); per-tick
+  probes use `startSequence().thenExecuteFor(...)`. The GameTest server ticks unthrottled.
+- The GameTest world is `WorldPresets.FLAT_ALL_DIMENSIONS` (`GameTestServer` :122): flat Nether (bedrock + 3 basalt)
+  and End (bedrock + 3 end stone) exist, surface at `getMinY() + 4`. Default game rules apply, including natural
+  monster spawning around every player (fake players too); MineVibe's GameTest mod turns `spawn_monsters` off.
+- GameRules in 26.3: `level.getGameRules().get(GameRules.X)` and `set(GameRules.X, value, server)`; rule ids are
+  snake_case (`spawn_monsters`, `spawn_mobs`, `advance_time`).
+
+## 8. Not found / open
 - `Minecraft#setScreen` - NOT FOUND (use `Gui#setScreen`).
 - `getRenderBoundingBox` - NOT FOUND in vanilla or Fabric API (see correction 2).
 - `WorldOpenFlows#levelExists` - NOT FOUND (it is `LevelStorageSource#levelExists`).

@@ -16,12 +16,13 @@ import { fileURLToPath } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BUNDLE_LAYOUT } from '../../apps/server/src/app/appLayout.js';
+import { readContainerLock } from '../../apps/server/src/pcs/drivers/ContainerRuntime.js';
 import { compareTrees, ensureDownloaded, isMachO } from '../lib/files.js';
 import { encodePng, ICONSET, placeholderIcon } from '../lib/icon.js';
 import { plistBool, plistString, renderInfoPlist } from '../lib/infoPlist.js';
 import { copyProductionPackages, productionPackages } from '../lib/prodDeps.js';
 import { chooseIdentity, parseIdentities } from '../lib/signing.js';
-import { archiveFileName, VendorLock } from '../lib/vendorLock.js';
+import { archiveFileName, checkInstallRoot, VendorLock } from '../lib/vendorLock.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
 const dirs: string[] = [];
@@ -44,14 +45,29 @@ describe('vendor.lock.json', () => {
     expect(lock.node.version).toMatch(/^24\./);
     expect(lock.jre.javaVersion).toMatch(/^25\./);
     expect(lock.container.version).toBe('1.5.0');
-    expect(lock.container.sha256).toBe('a24808cb202318fa1c3bbee0c6c6887fe1225fe899d7b687a0ddd939bd6573f8');
+    expect(lock.container.pkg.sha256).toBe(
+      'a24808cb202318fa1c3bbee0c6c6887fe1225fe899d7b687a0ddd939bd6573f8',
+    );
     expect(lock.container.teamId).toBe('UPBK2H6LZM');
+    expect(lock.container.signer).toContain('(UPBK2H6LZM)');
     expect(archiveFileName(lock.node)).toBe(`node-v${lock.node.version}-darwin-arm64.tar.gz`);
     expect(archiveFileName(lock.jre)).toBe('OpenJDK25U-jre_aarch64_mac_hotspot_25.0.4.1_1.tar.gz');
-    expect(archiveFileName(lock.container)).toBe('container-1.5.0-installer-signed.pkg');
+    expect(lock.container.pkg.name).toBe('container-1.5.0-installer-signed.pkg');
   });
 
-  it('rejects http, a short hash, an escaping archive path and a wrong archive kind', () => {
+  it('is the same container pin the PC manager reads (readContainerLock)', async () => {
+    // One file, one pin: the bundle's install root and `npm run dev`'s provisioned one must be the same bytes.
+    const lock = VendorLock.parse(real);
+    const pcs = await readContainerLock(join(repoRoot, 'packaging', 'vendor.lock.json'));
+    expect(pcs.version).toBe(lock.container.version);
+    expect(pcs.pkg).toEqual(lock.container.pkg);
+    expect(pcs.signer).toBe(lock.container.signer);
+    expect(pcs.teamId).toBe(lock.container.teamId);
+    expect(pcs.exclude).toEqual(lock.container.exclude);
+    expect(pcs.installRootFiles).toEqual(lock.container.installRootFiles);
+  });
+
+  it('rejects http, a short hash, an escaping path, a bad file name and a missing bin/container pin', () => {
     const bad = (patch: (l: typeof real) => void) => {
       const copy = structuredClone(real);
       patch(copy);
@@ -59,10 +75,30 @@ describe('vendor.lock.json', () => {
     };
     expect(bad(() => {})).toBe(true);
     expect(bad((l) => (l.node.url = l.node.url.replace('https:', 'http:')))).toBe(false);
+    expect(bad((l) => (l.container.pkg.url = l.container.pkg.url.replace('https:', 'http:')))).toBe(false);
     expect(bad((l) => (l.jre.sha256 = 'abc'))).toBe(false);
-    expect(bad((l) => (l.container.extract = '../../etc'))).toBe(false);
-    expect(bad((l) => (l.container.archive = 'tar.gz'))).toBe(false);
+    expect(bad((l) => (l.container.pkg.sha256 = 'abc'))).toBe(false);
+    expect(bad((l) => (l.jre.extract = '../../etc'))).toBe(false);
+    expect(bad((l) => (l.container.exclude = ['../x']))).toBe(false);
+    expect(bad((l) => (l.container.pkg.name = '../x.pkg'))).toBe(false);
+    expect(bad((l) => (l.node.archive = 'pkg'))).toBe(false);
     expect(bad((l) => (l.node.teamId = 'nope'))).toBe(false);
+    expect(bad((l) => delete l.container.installRootFiles['bin/container'])).toBe(false);
+  });
+
+  it('checks an install root against installRootFiles: hashes, missing and extra files', () => {
+    const want = { 'bin/container': 'a'.repeat(64), 'libexec/x/config.toml': 'b'.repeat(64) };
+    const exact = new Map(Object.entries(want));
+    expect(checkInstallRoot(exact, want)).toEqual([]);
+    const wrong = new Map([
+      ['bin/container', 'c'.repeat(64)],
+      ['bin/update-container.sh', 'd'.repeat(64)],
+    ]);
+    const problems = checkInstallRoot(wrong, want);
+    expect(problems).toHaveLength(3);
+    expect(problems.join('\n')).toMatch(/bin\/container: sha256/);
+    expect(problems.join('\n')).toMatch(/libexec\/x\/config.toml: missing/);
+    expect(problems.join('\n')).toMatch(/update-container.sh: not in installRootFiles/);
   });
 });
 
