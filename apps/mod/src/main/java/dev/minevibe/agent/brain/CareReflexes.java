@@ -30,11 +30,16 @@ abstract class TossFoodReflex implements Reflex {
 
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
-		if (brain.threats().inCombat(agent, 8.0) || FoodPick.spareSlot(agent) < 0) {
+		if (brain.active() != this && (agent.tickCount + this.priority()) % 10 != 0) {
 			return false;
 		}
-		this.receiver = this.pick(agent, brain);
-		return this.receiver != null;
+		LivingEntity r = this.pick(agent, brain);
+		if (r == null || brain.threats().inCombat(agent, 8.0) || FoodPick.spareSlot(agent) < 0) {
+			this.receiver = null;
+			return false;
+		}
+		this.receiver = r;
+		return true;
 	}
 
 	@Override

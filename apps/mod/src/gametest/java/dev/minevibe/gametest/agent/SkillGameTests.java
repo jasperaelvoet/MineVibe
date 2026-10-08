@@ -224,11 +224,14 @@ public final class SkillGameTests {
 		helper.setBlock(new BlockPos(10, 2, 9), Blocks.OAK_LOG);
 		helper.setBlock(new BlockPos(5, 1, 12), Blocks.OAK_LOG);
 		AgentPlayer agent = spawnAgent(helper, "Lumber", AgentRole.MINER, 3, 1, 3);
-		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("logs"), "collect", "{\"item\":\"oak_log\",\"count\":3,\"radius\":16}", 120_000);
+		String job = jobId("logs");
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, job, "collect", "{\"item\":\"oak_log\",\"count\":3,\"radius\":16}", 120_000);
 		helper.succeedWhen(() -> {
 			assertDone(helper, r, "collect");
 			helper.assertTrue(count(agent, Items.OAK_LOG) >= 3, "logs: " + count(agent, Items.OAK_LOG));
 			helper.assertValueEqual(result(r).get("collected").getAsInt(), 3, "collected");
+			List<Skills.SkillProgress> progress = recorder(helper).of(Skills.SKILL_PROGRESS, p -> p.jobId().equals(job));
+			helper.assertTrue(!progress.isEmpty() && progress.stream().anyMatch(p -> p.text().contains("oak_log")), "skill.progress while collecting: " + progress);
 			assertValid(helper, agent);
 		});
 	}

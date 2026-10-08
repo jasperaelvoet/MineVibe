@@ -57,7 +57,8 @@ final class Goals {
 final class ApproachReflex implements Reflex {
 	private boolean arrived;
 	private @Nullable String blockedWhy;
-	private @Nullable String forPending = "";
+	private ReflexBrain.@Nullable ApproachRole lastRole;
+	private @Nullable String lastPending;
 
 	@Override
 	public int priority() {
@@ -72,8 +73,9 @@ final class ApproachReflex implements Reflex {
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
 		ReflexBrain.ApproachRole role = brain.approachRole();
-		if (!java.util.Objects.equals(this.forPending, brain.approachPendingId() + "/" + role)) {
-			this.forPending = brain.approachPendingId() + "/" + role;
+		if (role != this.lastRole || !java.util.Objects.equals(this.lastPending, brain.approachPendingId())) {
+			this.lastRole = role;
+			this.lastPending = brain.approachPendingId();
 			this.arrived = false;
 			this.blockedWhy = null;
 		}
@@ -378,6 +380,9 @@ final class IdleModeReflex implements Reflex {
 
 	@Override
 	public boolean wants(final AgentPlayer agent, final ReflexBrain brain) {
+		if (brain.mode() == IdleMode.FOLLOW) {
+			return false;
+		}
 		BlockPos anchor = brain.anchor() != null ? brain.anchor() : agent.blockPosition();
 		Vec3 a = Vec3.atBottomCenterOf(anchor);
 		switch (brain.mode()) {

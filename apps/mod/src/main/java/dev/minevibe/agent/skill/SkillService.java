@@ -353,6 +353,9 @@ public final class SkillService {
 			}
 		}
 		this.adopt(agent);
+		if (req.at() != null && agent.brain().home() == null) {
+			agent.brain().setHome(Refs.pos(req.at().pos()));
+		}
 		IdleMode mode = IdleMode.byId(req.mode());
 		agent.brain().setMode(mode == null ? IdleMode.FOLLOW : mode, null);
 		Map<String, Object> out = new LinkedHashMap<>();

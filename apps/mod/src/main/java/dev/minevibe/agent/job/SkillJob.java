@@ -106,7 +106,15 @@ public abstract class SkillJob implements Job {
 		if (agent.isPassenger() && !this.worksSeated()) {
 			return this.fail("SEATED", "stand up (or dismount) before " + this.skill);
 		}
-		return this.step(agent);
+		try {
+			return this.step(agent);
+		} catch (dev.minevibe.bridge.BridgeException e) {
+			// A reference that turned out to be bad while running (an unknown entity type, say): the job fails, the tick goes on.
+			return this.fail(e.code(), String.valueOf(e.getMessage()));
+		} catch (RuntimeException e) {
+			org.slf4j.LoggerFactory.getLogger("MineVibe/Skills").error("{} job of {} failed", this.skill, agent.agentId(), e);
+			return this.fail("INTERNAL", this.skill + " failed: " + e);
+		}
 	}
 
 	/** One tick of work while the job is in control. */

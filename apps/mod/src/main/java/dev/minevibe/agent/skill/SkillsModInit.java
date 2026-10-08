@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 public final class SkillsModInit implements ModInitializer {
 	@Override
 	public void onInitialize() {
+		SkillCommands.register();
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			SkillService.get(server);
 			BodyEvents.reset();

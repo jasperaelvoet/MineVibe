@@ -524,6 +524,7 @@ public final class WorldJobs {
 			agent.controls().useBlock(this.bed, Direction.UP);
 			if (agent.isSleeping()) {
 				this.slept = true;
+				agent.brain().setHome(this.bed);
 				return Status.RUNNING;
 			}
 			return this.ticks > 40 * SECOND ? this.fail("OBSTRUCTED", "could not lie down in the bed") : Status.RUNNING;

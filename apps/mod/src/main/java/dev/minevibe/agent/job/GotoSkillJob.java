@@ -1,6 +1,7 @@
 package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.skill.Places;
 import dev.minevibe.agent.skill.Refs;
 import java.util.Locale;
 import net.minecraft.core.BlockPos;
@@ -10,8 +11,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * {@code goto{pos | entity, range}}: walk to a block position, or to an entity ({@code player}, an agent, a UUID, the
- * nearest of an entity type) and keep tracking it while it moves. Places (office, bed, chest, {@code pc:<id>}) are
- * resolved to positions by Node before the job starts.
+ * nearest of an entity type) and keep tracking it while it moves. {@code entity} may also name a place: {@code office},
+ * {@code home}, {@code spawn}, the nearest {@code bed} / {@code chest} / {@code crafting_table} / {@code furnace}, or
+ * {@code pc:<id>} (see {@link Places}).
  */
 public final class GotoSkillJob extends SkillJob {
 	private final @Nullable BlockPos pos;
@@ -19,6 +21,7 @@ public final class GotoSkillJob extends SkillJob {
 	private final double range;
 	private final Walk walk = new Walk();
 	private @Nullable Entity entity;
+	private @Nullable BlockPos place;
 	private int resolveAt;
 
 	public GotoSkillJob(final @Nullable BlockPos pos, final @Nullable String entityRef, final double range) {
@@ -45,13 +48,21 @@ public final class GotoSkillJob extends SkillJob {
 
 	@Override
 	protected Status step(final AgentPlayer agent) {
-		if (this.pos != null) {
-			Vec3 goal = Vec3.atBottomCenterOf(this.pos);
+		if (this.pos == null && this.place == null && Places.isPlace(this.entityRef)) {
+			this.place = Places.resolve(agent, this.entityRef);
+			if (this.place == null) {
+				return this.fail("NOT_FOUND", "no " + this.entityRef + " near " + agent.blockPosition().toShortString());
+			}
+			this.put("place", this.entityRef);
+		}
+		BlockPos target = this.pos != null ? this.pos : this.place;
+		if (target != null) {
+			Vec3 goal = Vec3.atBottomCenterOf(target);
 			Walk.State s = this.walk.to(agent, goal, this.range);
 			this.progress(null, String.format(Locale.ROOT, "%.0f blocks to go", agent.position().distanceTo(goal)));
 			return switch (s) {
 				case ARRIVED -> this.arrived(agent, goal);
-				case FAILED -> this.fail("UNREACHABLE", "no path to " + this.pos.toShortString() + " (" + this.walk.failure() + ")");
+				case FAILED -> this.fail("UNREACHABLE", "no path to " + target.toShortString() + " (" + this.walk.failure() + ")");
 				case MOVING -> Status.RUNNING;
 			};
 		}
