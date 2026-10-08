@@ -1,0 +1,20 @@
+{
+  "name": "minevibe-spike-s5-container",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike S5: Apple container 1.5.0 running ghcr.io/trycua/linux:24.04, driven through @trycua/cua spacesd client.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "health": "node src/health.mjs",
+    "frames": "node src/frames.mjs",
+    "input": "node src/input.mjs",
+    "spawn": "node src/spawn.mjs",
+    "isolation": "node src/isolation.mjs"
+  },
+  "dependencies": {
+    "@trycua/cua": "0.4.1"
+  }
+}

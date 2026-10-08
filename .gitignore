@@ -29,3 +29,6 @@ spikes/**/out/
 .vscode/
 *.iml
 apps/mod/minevibe.local.properties
+
+# Claude Code local state (agent worktrees, settings)
+.claude/

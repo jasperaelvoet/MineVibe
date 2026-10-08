@@ -732,6 +732,33 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 - On macOS guests, rotate the default `lume` password and keep VNC off.
 - cua and Lume telemetry are off.
 
+### 8.6 S5 findings (2026-10-08), which override the details above
+- **TCC (macOS privacy protection) placement.** The `container` install root must not be inside a TCC-protected folder (`~/Documents`, `~/Desktop`, `~/Downloads`, iCloud). The root daemon InternetSharing can't read `container-network-vmnet` there, so vmnet creation fails with error 1001 and `system start` and `stop` hang.
+  - **Dev:** both container roots live under `~/Library/Application Support/MineVibe-dev/` even though the repo is in `~/Documents`. `MINEVIBE_HOME` for game files may stay in the repo.
+  - **App:** the stub refuses to run from a TCC-protected folder and asks the user to move the app to `/Applications`.
+- **Read-only mounts.** Use only `--mount type=bind,source=…,target=…,readonly`. In 1.5.0, `-v SRC:DST:ro` silently creates a writable mount at `DST`+"o" when DST has more than one path component, and `:readonly` is ignored.
+- **Named volumes start empty and root-owned.** They hide the image's `/home/cua`, and XFCE crash-loops. The `minevibe-linux-pc` image gets an entrypoint hook that seeds `/home/cua` from a skeleton on first boot and runs `chown 1000:1000` on the home and every build-dir overlay, then execs the cua entrypoint.
+- **Readiness.** `health()` resolves even while spacesd reports `NOT_SERVING`; require `HEALTH_STATUS_SERVING`.
+- **Frames.**
+  - The BGRA stream is damage-driven: about 29–30 fps while the screen changes, 0 while idle, about 4 MB per frame (1280×800), about 13% of one core in Node. JPEG screenshots take about 9 ms (p50) at 1280 and 4 ms at 640.
+  - **The cursor isn't drawn in frames**, so PcControlScreen draws its own cursor from the local mouse position (agent cursor: last pointer target).
+  - Ack frames the way cua's viewer does.
+  - Note the transport (`grpc` vs `grpc-web`) chosen by `@trycua/cua`.
+- **CPU accounting.** `--cpus N` gives the guest N+1 vCPUs (`cpuOverhead: 1`), and the budget counts that. An idle 4 GiB PC costs about 1.2 GB of host RAM.
+- **Disk.** Volumes and the root filesystem default to **512 GiB sparse**, so every volume and rootfs gets an explicit size cap, which the budget counts. Time Machine exclusion (`tmutil addexclusion`) for the container app root is still untested.
+- **Isolation.**
+  - Guests reach the host's **0.0.0.0** services through 192.168.64.1 and the LAN IP. A 127.0.0.1-bound TCP port was refused (IPv4 only so far), so **everything MineVibe runs binds 127.0.0.1**.
+  - Guests share one L2 segment and can reach each other, so per-PC tokens matter. Per-PC networks (`container network create`) are a follow-up.
+  - IPv6/`::` binds, UDP and DNS are still untested (S5b).
+- **Users.** spacesd refuses to run as root, and `cua` is in the sudo group. The "root shell" fallback is `sudo -n` inside the guest.
+- **Vault semantics.**
+  - Guest writes land on the host as the host user, and `chown` fails with EPERM.
+  - A mode-0200 create fails but leaves an empty file.
+  - **Host edits fire no inotify events in the guest**, so watch-mode tools in a PC miss edits made on the Mac.
+- **Tokens.** `container inspect` shows `CUA_ENV_TOKEN` in plaintext while the container exists. That's acceptable for a local single-user app; tokens are rotated per PC create and deleted with the PC.
+- **cua telemetry.** Set `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` and `CUA_HOME=<MineVibe Caches>/cua` before importing `@trycua/cua`.
+- **Timings.** Cold `system start` takes 32 s (kernel download), image pull 124 s (1.19 GB), warm `run` 0.6 s with spacesd up about 2.9 s later; stop 1.6 s, start 0.7 s, recreate keeps volumes.
+
 ## 9. MineVibe.app and first run
 
 ### 9.1 Bundle
@@ -935,3 +962,4 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 | S0 toolchain | 2026-10-08 | PASS | Gradle 9.7.1 / Loom 1.18.3 / Fabric API 0.162.0+26.3. JDK 25 (Temurin 25.0.4.1) is auto-provisioned by Gradle; this needed hand-added foojay URLs because of an API quirk. `runClient` boots 26.3 on OpenGL. Server GameTests pass headless. See `spikes/s0-toolchain/result.md`. |
 | S2 SDK routing and auth | 2026-10-08 | PASS with one change | Subscription auth works with the allowlist env and no keychain prompt; `toolAliases` route to `pc__*` (hooks see the alias target). The **plan text arrives via Write, not `input.plan`**, hence PlanCapture. Remove TodoWrite; no `allowedTools` for mc/pc. See `spikes/s2-s3-sdk/result.md`. |
 | S3 model and effort | 2026-10-08 | PASS | `applyFlagSettings` at turn boundaries swaps haiku/xhigh ⇄ opus/medium in under 100 ms. The prompt cache on the subscription lasts 1 h, and a canUseTool held for 180 s is fine. |
+| S5 Apple container PC | 2026-10-08 | PASS with changes | See §8.6. TCC placement, `--mount …,readonly`, volume seeding, SERVING readiness, self-drawn cursor, cpu+1, disk caps. Follow-up S5b: IPv6/UDP isolation, per-PC networks, Time Machine. `spikes/s5-container/result.md`. |

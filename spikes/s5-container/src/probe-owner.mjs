@@ -1,0 +1,11 @@
+import "./env.mjs";
+import { connectPc, VAULT, sleep } from "./lib.mjs";
+const pc = await connectPc();
+const t = (b) => Buffer.from(b).toString().trim();
+const run = async (user, c) => t((await pc.run({ program: "sh", args: ["-c", c], env: new Map(), stdin: false, user, cwd: VAULT })).stdout);
+console.log("cua :", await run("cua", "stat -c '%u:%g %a %n' host-file.txt root-made.txt; touch cua-new.txt; stat -c '%u:%g %n' cua-new.txt"));
+console.log("root:", await run("root", "stat -c '%u:%g %a %n' host-file.txt root-made.txt cua-new.txt"));
+await sleep(2000);
+console.log("cua after 2s:", await run("cua", "stat -c '%u:%g %n' host-file.txt cua-new.txt; echo append >> host-file.txt && echo write-ok"));
+console.log("root after 2s:", await run("root", "stat -c '%u:%g %n' host-file.txt cua-new.txt"));
+process.exit(0);

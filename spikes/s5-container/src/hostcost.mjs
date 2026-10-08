@@ -1,0 +1,14 @@
+import "./env.mjs";
+import { connectPc, sleep } from "./lib.mjs";
+const pc = await connectPc();
+const mode = process.argv[2];
+const dmg = await pc.spawn({ program: "xfce4-terminal", args: ["--geometry=100x30+80+80", "-x", "sh", "-c", "while true; do date +%s.%N; done"], env: new Map([["DISPLAY", ":1"]]), user: "cua", stdin: false });
+await sleep(800);
+let n = 0;
+const s = mode === "none" ? null : await pc.openMedia({ maxFps: 30, maxDimension: 0, audio: false, disableVideo: false, ...(mode === "bgra" ? { requestJson: '{"codecs":["MEDIA_CODEC_BGRA"]}' } : {}) }, { onFrame() { n++; }, onEvent() {} });
+console.log("READY", process.pid);
+await sleep(8000);
+await s?.close().catch(() => {});
+await dmg.kill().catch(() => {});
+console.log("frames", n);
+process.exit(0);
