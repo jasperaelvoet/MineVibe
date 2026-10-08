@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:pcs": "vitest run --config vitest.pcs.config.ts",
     "test:live": "vitest run --config vitest.live.config.ts",
+    "eval:tools": "node --conditions=source --import tsx eval/run.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --conditions=source --import tsx src/main.ts dev",
     "doctor": "node --conditions=source --import tsx src/main.ts doctor",
