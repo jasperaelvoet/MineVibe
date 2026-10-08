@@ -323,8 +323,10 @@ export class EventRouter {
 
 /** A one-line summary of a job result object. */
 export function summarizeResult(result: Record<string, unknown> | undefined): string {
-  if (!result || Object.keys(result).length === 0) return 'done';
-  if (typeof result.summary === 'string') return result.summary.slice(0, 200);
-  const text = JSON.stringify(result);
+  // The mod's status footer belongs at the end of a tool result, not inside a job summary (protocol §7.3).
+  const { footer: _footer, ...rest } = result ?? {};
+  if (Object.keys(rest).length === 0) return 'done';
+  if (typeof rest.summary === 'string') return rest.summary.slice(0, 200);
+  const text = JSON.stringify(rest);
   return text.length > 200 ? `${text.slice(0, 199)}…` : text;
 }

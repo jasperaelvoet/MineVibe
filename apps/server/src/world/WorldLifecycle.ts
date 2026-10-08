@@ -20,6 +20,17 @@ export interface WorldLifecycleOptions {
    * a retry `next` is the world that followed `dead`, as far as the record still knows it.
    */
   readonly onWorldEnded?: (dead: CurrentWorldRecord, next: CurrentWorldRecord) => void | Promise<void>;
+  /**
+   * Called after every `world.state{ready}` for the current, living world was recorded (the 1 Hz pushes included):
+   * `fresh` is true when this was the first `ready` that world ever had. The runtime opens the crew here.
+   */
+  readonly onWorldReady?: (world: { worldId: string; gen: number }, info: { fresh: boolean }) => void;
+  /** The live parts of `hello.ok` (crew, brains, cards, PCs); the rest comes from the world record. */
+  readonly snapshot?: () => Partial<
+    Pick<PayloadOf<'hello.ok'>, 'crew' | 'brains' | 'pending' | 'pcs' | 'budget' | 'settings'>
+  >;
+  /** The crew's fates for the Game Over summary (`world.next.summary.crewFates`) of a dead world. */
+  readonly crewFates?: (worldId: string) => PayloadOf<'world.next'>['summary']['crewFates'];
 }
 
 /**
@@ -42,6 +53,9 @@ export class WorldLifecycle {
   readonly #log: Logger;
   readonly #serverVersion: string;
   readonly #onWorldEnded: WorldLifecycleOptions['onWorldEnded'];
+  readonly #onWorldReady: WorldLifecycleOptions['onWorldReady'];
+  readonly #snapshot: WorldLifecycleOptions['snapshot'];
+  readonly #crewFates: WorldLifecycleOptions['crewFates'];
   #playerName: string;
   #lastPhase: string | null = null;
   readonly #unsubscribe: Array<() => void> = [];
@@ -58,6 +72,9 @@ export class WorldLifecycle {
     this.#onWorldEnded = options.onWorldEnded;
     // Read now, so an unloaded store throws here instead of rejecting `whenRecovered()` unobserved.
     this.#recovered = this.#retryUnburied(this.#store.unburied);
+    this.#onWorldReady = options.onWorldReady;
+    this.#snapshot = options.snapshot;
+    this.#crewFates = options.crewFates;
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
@@ -126,7 +143,18 @@ export class WorldLifecycle {
     }
     if (msg.phase === 'loading' || msg.phase === 'ready') {
       if (this.#isAllocatedNext(msg.worldId)) await this.#adoptNext(msg.worldId, `world.state{${msg.phase}}`);
-      if (msg.phase === 'ready') await this.#store.markCreated(msg.worldId);
+      if (msg.phase === 'ready') {
+        // True only for the first `ready` the world ever had.
+        const fresh = await this.#store.markCreated(msg.worldId);
+        const rec = this.#store.current;
+        if (this.#onWorldReady && rec.worldId === msg.worldId && rec.status === 'alive') {
+          try {
+            this.#onWorldReady({ worldId: rec.worldId, gen: rec.gen }, { fresh });
+          } catch (err) {
+            this.#log.error({ err, worldId: rec.worldId }, 'world-ready hook failed');
+          }
+        }
+      }
       return {};
     }
     if (msg.phase !== 'closed') return {};
@@ -246,6 +274,12 @@ export class WorldLifecycle {
   }
 
   #helloOk(rec: CurrentWorldRecord): PayloadOf<'hello.ok'> {
+    let live: ReturnType<NonNullable<WorldLifecycleOptions['snapshot']>> = {};
+    try {
+      live = this.#snapshot?.() ?? {};
+    } catch (err) {
+      this.#log.warn({ err }, 'hello.ok snapshot failed');
+    }
     return {
       server: { version: this.#serverVersion, protocol: PROTOCOL_VERSION },
       world: { id: rec.worldId, gen: rec.gen, fresh: !rec.created },
@@ -256,6 +290,7 @@ export class WorldLifecycle {
       crew: [],
       brains: { inFlight: 0, queued: 0, max: 2, mode: 'normal', utilization: null, resetsAt: null },
       pending: [],
+      ...live,
     };
   }
 
@@ -269,6 +304,15 @@ export class WorldLifecycle {
     });
   }
 
+  #fatesOf(worldId: string): PayloadOf<'world.next'>['summary']['crewFates'] {
+    try {
+      return this.#crewFates?.(worldId) ?? [];
+    } catch (err) {
+      this.#log.warn({ err, worldId }, 'crew fates failed');
+      return [];
+    }
+  }
+
   #sendWorldNext(rec: CurrentWorldRecord): void {
     if (rec.status !== 'dead' || !rec.next || !rec.death) return;
     this.#bridge.send('world.next', {
@@ -280,7 +324,7 @@ export class WorldLifecycle {
         day: rec.death.day,
         cause: rec.death.cause,
         ...(rec.death.killer !== undefined ? { killer: rec.death.killer } : {}),
-        crewFates: [],
+        crewFates: this.#fatesOf(rec.worldId),
         vaultCommits: [],
       },
     });

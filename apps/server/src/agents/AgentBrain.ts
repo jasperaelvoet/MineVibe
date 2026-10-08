@@ -29,11 +29,14 @@ import { AgentSession, type SwapResult } from './AgentSession.js';
 import type { BrainScheduler, Grant, WakePriority } from './BrainScheduler.js';
 import type { ResolvedClaude } from './claudeBinary.js';
 import {
+  type BrainProfile,
   BUBBLE_MAX_CHARS,
   CONTEXT_GUARD_RATIO,
   CONTEXT_GUARD_TIMEOUT_MS,
   HAIKU_CONTEXT_TOKENS,
   MAX_SEATED,
+  MEETING_SWAP_DEBOUNCE_MS,
+  MEETING_TURN_TIMEOUT_MS,
   SEATED_PROFILE,
   WANDERING_PROFILE,
 } from './constants.js';
@@ -136,6 +139,11 @@ export interface BrainEnv {
   readonly swapDebounceMs?: number | undefined;
   /** The record changed in a way that must reach `crew.json` now (e.g. the session was created). */
   recordChanged?(brain: AgentBrain): void;
+  /**
+   * Whether a `pc.seat` for an agent Node thinks is wandering restores the seat (a Node-only "worker" restart, the
+   * game kept running) or stands the body up (an app restart: everyone loads unseated). Default true.
+   */
+  seatRestore?(): boolean;
 }
 
 interface QueuedWake {
@@ -145,7 +153,36 @@ interface QueuedWake {
   readonly key: string | undefined;
   readonly epoch: number | null;
   readonly seq: number;
+  /** A meeting turn waiting for what the agent says in the turn this item starts. */
+  readonly collector?: TurnCollector | undefined;
 }
+
+/** Collects the assistant text of one turn (CrewHooks.meetingTurn). */
+interface TurnCollector {
+  readonly texts: string[];
+  readonly maxSentences: number;
+  active: boolean;
+  done: boolean;
+  timer: NodeJS.Timeout | null;
+  readonly resolve: (text: string) => void;
+}
+
+/**
+ * The first `n` sentences of `text` (whitespace collapsed). A sentence ends at `.`, `!` or `?` (plus closing quotes or
+ * brackets) followed by whitespace, so `main.ts`, `v2.1` or `1.5x` inside a sentence never cut it.
+ */
+export function firstSentences(text: string, n: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0 || n <= 0) return '';
+  return flat
+    .split(/(?<=[.!?]+["')\]]*) /)
+    .slice(0, n)
+    .join(' ')
+    .trim();
+}
+
+/** Job label prefix of a walk to a meeting chair (CrewHooks.pullIntoMeeting). */
+const MEETING_SIT_LABEL = 'sit at meeting ';
 
 /** Strikes before a turn that keeps calling tools after "end your turn" is interrupted. */
 const PENDING_SWAP_STRIKES = 2;
@@ -293,6 +330,14 @@ export class AgentBrain {
   #lastSwap: SwapResult | null = null;
   #lastPlayerAt = 0;
   #lastAutonomousAt: number | null = null;
+  /** Background `pc__bash` jobs this agent started (`ownJobKey`s: PC and job id), across session restarts. */
+  readonly #bashJobs = new Set<string>();
+  /** Meeting turns collecting the running turn's text. */
+  #collectors: TurnCollector[] = [];
+  /** The session is being closed on purpose to resume it with another model (no crash handling). */
+  #resuming = false;
+  /** The PC an agent pulled into a meeting returns to afterwards. */
+  #meetingReturn: { pcId: string; purpose: string | null } | null = null;
 
   constructor(record: AgentRecord, env: BrainEnv) {
     this.record = record;
@@ -350,6 +395,14 @@ export class AgentBrain {
     return this.#offline;
   }
 
+  /**
+   * False while this brain cannot think at all: stopped, offline after repeated crashes, or halted by the startup
+   * assertions (no usable claude, wrong account). A usage pause (asleep until `resetsAt`) still thinks later.
+   */
+  get canThink(): boolean {
+    return !this.#stopped && !this.#offline && this.#assertionsFailed === null;
+  }
+
   /** Ms since the player last addressed this agent (idle nudges). */
   idleMs(now = this.#env.now()): number {
     return now - Math.max(this.#lastPlayerAt, this.record.lastActiveAt ?? 0);
@@ -367,12 +420,29 @@ export class AgentBrain {
    * Starts (or resumes) the SDK session. `contexts` are delivered first as `shouldQuery:false` (memory, roster,
    * restart notice); `wakes` are queued (welcome, kickoff).
    */
-  start(options: { contexts?: readonly string[]; wakes?: readonly Routed[] } = {}): void {
+  start(
+    options: { contexts?: readonly string[]; wakes?: readonly Routed[]; profile?: BrainProfile } = {},
+  ): void {
     if (this.#stopped) throw new Error('brain stopped');
     if (this.#session?.started) return;
     this.#offline = false;
     // A (re)start re-runs the startup assertions (e.g. Retry after logging in again).
     this.#assertionsFailed = null;
+    let claude: ResolvedClaude;
+    try {
+      claude = this.#env.claude();
+    } catch (err) {
+      // No usable claude (missing, too old): the brain stays asleep with a toast; the body keeps its reflexes.
+      // Contexts and wakes wait in the queue, so a later Retry (after `claude update` and a restart) loses nothing.
+      const problem = err instanceof Error ? err.message : String(err);
+      this.#assertionsFailed = [problem];
+      this.#log.error({ problem }, 'no usable claude: the brain stays asleep');
+      this.#env.assertionsFailed(this, [problem]);
+      for (const text of options.contexts ?? []) this.#contexts.push(text);
+      for (const w of options.wakes ?? []) this.enqueue(w);
+      this.#setStatus();
+      return;
+    }
     this.#startupChecked?.();
     const startup = new Promise<void>((resolve) => {
       this.#startupChecked = resolve;
@@ -413,7 +483,7 @@ export class AgentBrain {
       {
         agentId: this.agentId,
         options: buildSessionOptions({
-          claude: env.claude(),
+          claude,
           env: env.agentEnv(),
           cwd: env.agentHome(this.agentId),
           resume,
@@ -421,7 +491,8 @@ export class AgentBrain {
           persona,
           mc: createMcServer(this.#mcHost()),
           pc: createPcServer(this.#pcHost()),
-          profile: WANDERING_PROFILE,
+          // A restart (crash, Retry) of a seated agent resumes on the seat's model, not on Haiku until the next boundary.
+          profile: options.profile ?? (this.fsm.wantsOpus(env.now()) ? SEATED_PROFILE : WANDERING_PROFILE),
           stderr: (d) => this.#log.debug({ stderr: d.slice(0, 500) }, 'claude stderr'),
         }),
         gate,
@@ -484,6 +555,7 @@ export class AgentBrain {
     this.#clearTimers();
     this.#env.scheduler.cancel(this.agentId);
     this.#grant = null;
+    this.#finishCollectors(this.#queue);
     this.#queue = [];
     if (!options.keepCards) {
       this.#env.pending.cleanup(this.agentId, reason, (c) => c.kind === 'question' || c.kind === 'plan');
@@ -520,8 +592,11 @@ export class AgentBrain {
   // ---------------------------------------------------------------------------------------------------------------
 
   /** Queues one routed item: a wake, a context line or a digest line. */
-  enqueue(item: Routed): void {
-    if (this.#stopped) return;
+  enqueue(item: Routed, collector?: TurnCollector): void {
+    if (this.#stopped) {
+      if (collector) this.#finishCollector(collector);
+      return;
+    }
     if (item.mode === 'digest') {
       this.digest.push(item.line);
       return;
@@ -537,6 +612,7 @@ export class AgentBrain {
     // A player message during a running turn folds into it at the next tool boundary (`next`).
     if (item.priority === 0 && this.#session?.started && this.#session.inTurn && this.#grant && !item.now) {
       this.#session.send(item.text, { priority: 'next' });
+      if (collector) this.#activate(collector);
       return;
     }
     const wake: QueuedWake = {
@@ -546,6 +622,7 @@ export class AgentBrain {
       key: item.key,
       epoch: item.kind === 'KICKOFF' ? this.fsm.epoch : null,
       seq: ++this.#seq,
+      collector,
     };
     if (item.key !== undefined) this.#queue = this.#queue.filter((q) => q.key !== item.key);
     this.#queue.push(wake);
@@ -557,6 +634,72 @@ export class AgentBrain {
   context(text: string): void {
     if (this.#session?.started) this.#session.send(text, { shouldQuery: false });
     else this.#contexts.push(text);
+  }
+
+  /**
+   * One meeting turn (CrewHooks.meetingTurn): a P0 wake on the interactive lane that runs on its own, and resolves
+   * with the agent's text from that turn, cut to `maxSentences`. After `timeoutMs` (queue wait included) the turn is
+   * interrupted and the promise resolves with what was said so far.
+   */
+  meetingTurn(
+    prompt: string,
+    options: { maxSentences: number; timeoutMs?: number | undefined },
+  ): Promise<string> {
+    if (!this.canThink) {
+      return Promise.reject(new ApiError('BRAIN_OFFLINE', `${this.record.name} cannot think right now.`));
+    }
+    return new Promise<string>((resolve) => {
+      const collector: TurnCollector = {
+        texts: [],
+        maxSentences: options.maxSentences,
+        active: false,
+        done: false,
+        timer: null,
+        resolve,
+      };
+      collector.timer = setTimeout(() => {
+        collector.timer = null;
+        if (collector.done) return;
+        if (collector.active) {
+          if (this.#session?.inTurn) void this.#session.interrupt();
+        } else {
+          this.#queue = this.#queue.filter((q) => q.collector !== collector);
+          this.#setStatus();
+        }
+        this.#finishCollector(collector);
+      }, options.timeoutMs ?? MEETING_TURN_TIMEOUT_MS);
+      collector.timer.unref?.();
+      this.enqueue(
+        {
+          mode: 'wake',
+          priority: 0,
+          kind: 'MEETING',
+          text: control(this.record.nonce, 'MEETING', prompt),
+        },
+        collector,
+      );
+    });
+  }
+
+  #activate(collector: TurnCollector): void {
+    if (collector.done || collector.active) return;
+    collector.active = true;
+    this.#collectors.push(collector);
+  }
+
+  #finishCollector(collector: TurnCollector): void {
+    if (collector.done) return;
+    collector.done = true;
+    if (collector.timer) clearTimeout(collector.timer);
+    collector.timer = null;
+    this.#collectors = this.#collectors.filter((c) => c !== collector);
+    collector.resolve(firstSentences(collector.texts.join(' '), collector.maxSentences));
+  }
+
+  /** Ends every active collector, and those of `items` (dropped queue items). */
+  #finishCollectors(items: readonly QueuedWake[]): void {
+    for (const c of [...this.#collectors]) this.#finishCollector(c);
+    for (const item of items) if (item.collector) this.#finishCollector(item.collector);
   }
 
   /** The player addressed this agent (debounced by the caller). */
@@ -721,10 +864,13 @@ export class AgentBrain {
     const session = this.#session;
     if (!session) return;
     const epoch = this.fsm.epoch;
-    const items = this.#queue
-      .filter((q) => q.epoch === null || q.epoch === epoch)
-      .sort((a, b) => a.priority - b.priority || a.seq - b.seq);
-    this.#queue = [];
+    const live = this.#queue.filter((q) => q.epoch === null || q.epoch === epoch);
+    // A meeting turn runs on its own: what the agent says in it is the meeting's answer.
+    const meeting = live.filter((q) => q.collector !== undefined);
+    const items = (meeting.length > 0 ? meeting : live).sort(
+      (a, b) => a.priority - b.priority || a.seq - b.seq,
+    );
+    this.#queue = meeting.length > 0 ? live.filter((q) => q.collector === undefined) : [];
     if (items.length === 0) {
       this.#grant?.release();
       this.#grant = null;
@@ -732,9 +878,12 @@ export class AgentBrain {
       return;
     }
     const parts: string[] = [];
-    const digest = this.digest.take(this.record.nonce);
+    const digest = meeting.length > 0 ? null : this.digest.take(this.record.nonce);
     if (digest) parts.push(digest);
-    for (const item of items) parts.push(item.text);
+    for (const item of items) {
+      parts.push(item.text);
+      if (item.collector) this.#activate(item.collector);
+    }
     this.#turn = {
       calls: 0,
       startedAt: this.#env.now(),
@@ -754,6 +903,7 @@ export class AgentBrain {
   #onTurnEnd(result: SDKResultMessage): void {
     this.#env.turnEnded(this, result);
     for (const w of this.#turnEndWaiters.splice(0)) w(result);
+    this.#finishCollectors([]);
     if (result.is_error && result.subtype === 'success' && isUsageLimitText(result.result)) {
       this.#env.governor.onRejected();
     }
@@ -874,6 +1024,7 @@ export class AgentBrain {
     const trimmed = text.trim();
     this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed });
     if (/^\(?silent\)?\.?$/i.test(trimmed)) return;
+    for (const c of this.#collectors) c.texts.push(trimmed);
     const bubble = bubbleText(trimmed);
     if (bubble.length === 0) return;
     this.#env.say({
@@ -897,6 +1048,13 @@ export class AgentBrain {
     this.#acquiring = null;
     for (const w of this.#turnEndWaiters.splice(0))
       w({ subtype: 'error_during_execution' } as SDKResultMessage);
+    // A meeting turn in flight ends with what was said so far.
+    this.#finishCollectors([]);
+    if (this.#resuming) {
+      // Closed on purpose to resume with another model (PLAN §6.3 fallback): nothing was lost.
+      this.#setStatus();
+      return;
+    }
     if (!this.#stopped) {
       // A crash: questions are re-asked (stale), plans die with the turn.
       this.#env.pending.markStale(this.agentId);
@@ -982,7 +1140,8 @@ export class AgentBrain {
           this.#lastSwap = await session.applyProfile(target);
           this.#log.info({ swap: this.#lastSwap }, 'brain swapped');
         } catch (err) {
-          this.#log.error({ err }, 'applyFlagSettings failed');
+          this.#log.error({ err }, 'applyFlagSettings failed: closing and resuming with the new model');
+          await this.#resumeWithProfile(target);
         }
         this.#env.brainChanged(this);
       }
@@ -993,6 +1152,9 @@ export class AgentBrain {
       }
       if (this.fsm.state === 'standing_pending_swap' && this.#trackedMode !== 'default')
         await this.#setMode('default');
+      // Pulled from a PC into a meeting: no plan mode at the table (it comes back with the PC).
+      if (this.fsm.snapshot.kind === 'meeting' && this.#trackedMode === 'plan')
+        await this.#setMode('default');
       const t = this.fsm.boundary();
       if (t?.to === 'seated') await this.#queueKickoff(t.snapshot);
       if (t?.to === 'wandering') this.plans.clear();
@@ -1001,6 +1163,39 @@ export class AgentBrain {
       this.#boundaryHold--;
       if (this.#boundaryHold === 0) queueMicrotask(() => this.#pump());
     }
+  }
+
+  /**
+   * PLAN §6.3 fallback when the flag-layer swap fails: T3 Code's `close()` + `resume` with the explicit model and
+   * effort. Runs at a turn boundary (no turn, no card waiting), so nothing is lost: the conversation resumes from the
+   * persisted session, queued wakes and buffered context carry over, and the startup assertions run again.
+   */
+  async #resumeWithProfile(profile: BrainProfile): Promise<void> {
+    const old = this.#session;
+    if (!old || this.#stopped) return;
+    const t0 = this.#env.now();
+    this.#resuming = true;
+    try {
+      await this.closeSession();
+    } finally {
+      this.#resuming = false;
+    }
+    if (this.#stopped) return;
+    try {
+      this.start({ profile });
+    } catch (err) {
+      this.#log.error({ err }, 'resume with the new model failed');
+      return;
+    }
+    this.#lastSwap = {
+      from: old.model,
+      to: profile.model,
+      ms: this.#env.now() - t0,
+      acked: false,
+      estimatedCacheWriteUsd: null,
+      resumed: true,
+    };
+    this.#log.info({ swap: this.#lastSwap }, 'brain swapped by close + resume');
   }
 
   async #setMode(mode: PermissionMode): Promise<void> {
@@ -1166,20 +1361,31 @@ export class AgentBrain {
           return `Seated at ${s.pcId}. End your turn now; your PC session starts with your next turn.`;
         return ok ? 'You are no longer on your way to that chair.' : `Could not sit: ${detail}.`;
       }
+      const where = s.kind === 'meeting' ? 'the meeting table' : (s.pcId ?? 'the chair');
       if (!ok) {
         this.fsm.sitFailed();
-        throw new ApiError('UNREACHABLE', `Could not sit at ${s.pcId}: ${detail}.`);
+        throw new ApiError('UNREACHABLE', `Could not sit at ${where}: ${detail}.`);
       }
       this.fsm.arrived();
       if (!this.#session?.inTurn) await this.#boundary();
       this.#pump();
+      if (s.kind === 'meeting') return 'Seated at the meeting table.';
       return `Seated at ${s.pcId}. End your turn now; your PC session starts with your next turn.`;
     });
   }
 
   /** A sit job that outlived its tool call ended. */
   async sitJobEnded(jobId: string, ok: boolean, detail: string): Promise<void> {
+    const meeting = this.#jobs.get(jobId)?.startsWith(MEETING_SIT_LABEL) === true;
     this.#jobs.delete(jobId);
+    if (meeting && !ok) {
+      // The org services asked for this walk, not the agent: no [JOB FAILED] wake. An agent pulled off its PC goes
+      // back to it (and dials in from there).
+      await this.#seatSettled(jobId, ok, detail).catch(() => '');
+      this.#log.info({ jobId, detail }, 'no meeting chair reached');
+      this.#returnToPc('the meeting chair could not be reached');
+      return;
+    }
     try {
       const text = await this.#seatSettled(jobId, ok, detail);
       if (!ok)
@@ -1218,6 +1424,19 @@ export class AgentBrain {
         return;
       }
       if (s.state === 'wandering' && epoch !== undefined) {
+        if (this.#env.seatRestore?.() === false) {
+          // App restart (the game booted again): everyone loads unseated (PLAN §6.3), so the body stands up.
+          this.#log.info({ pcId, epoch }, 'seated after an app restart: standing the body up');
+          await this.#env.skills
+            .unseat({
+              agentId: this.agentId,
+              seatEpoch: epoch,
+              reason: 'app_restart',
+              keepReservation: false,
+            })
+            .catch((err: unknown) => this.#log.warn({ err }, 'unseat (app restart) failed'));
+          return;
+        }
         // Worker restart: the mod still has the agent in the chair.
         this.fsm.restoreSeated(pcId, epoch);
         this.context(
@@ -1347,6 +1566,145 @@ export class AgentBrain {
     });
   }
 
+  /**
+   * Pulled into a meeting (PLAN §6.6, CrewHooks.pullIntoMeeting). A PC seat is left with the chair kept
+   * (`agent.unseat{meeting, keepReservation}`), the running turn is interrupted and the swap debounce stretches over
+   * the meeting, so the model stays and the walk back costs no swap. Then the body walks to a meeting chair
+   * (`agent.seat{meeting}`); the sit job's `skill.result` seats it. Resolves once the walk started.
+   */
+  pullIntoMeeting(meetingId: string, options: { debounceMs?: number | undefined } = {}): Promise<void> {
+    return this.#seatMutex.run(async () => {
+      const env = this.#env;
+      const s = this.fsm.snapshot;
+      if (s.kind === 'meeting' && s.meetingId === meetingId) return; // already there or on the way
+      if (s.kind === 'pc' && s.state !== 'wandering' && s.state !== 'standing_pending_swap') {
+        if (s.state === 'walking_to_seat') {
+          if (s.jobId)
+            await env.skills.cancelSkill(this.agentId, { jobId: s.jobId, reason: 'meeting' }).catch(() => []);
+          this.fsm.stand('meeting');
+        } else {
+          if (s.pcId) this.#meetingReturn = { pcId: s.pcId, purpose: s.purpose };
+          await env.skills
+            .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'meeting', keepReservation: true })
+            .catch((err: unknown) => this.#log.warn({ err }, 'unseat (meeting) failed'));
+          if (this.#awayTimer) clearTimeout(this.#awayTimer);
+          this.#awayTimer = null;
+          this.fsm.stand('meeting', { debounceMs: options.debounceMs ?? MEETING_SWAP_DEBOUNCE_MS });
+          this.#queue = this.#queue.filter((q) => q.kind !== 'KICKOFF');
+          // A turn waiting on the player's answer keeps waiting (its card is raised at the table); any other turn
+          // stops at its next tool boundary.
+          if (this.#session?.inTurn && this.#waitingCards.size === 0) await this.#session.interrupt();
+          else if (!this.#session?.inTurn && this.#trackedMode !== 'default') await this.#setMode('default');
+        }
+      } else if (s.kind === 'meeting' && s.state !== 'wandering') {
+        // Another meeting's chair: leave it first.
+        if (s.state === 'walking_to_seat' && s.jobId)
+          await env.skills.cancelSkill(this.agentId, { jobId: s.jobId, reason: 'meeting' }).catch(() => []);
+        else
+          await env.skills
+            .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'stand', keepReservation: false })
+            .catch(() => {});
+        this.fsm.stand('stand');
+      }
+      const jobId = `sit-${randomUUID().slice(0, 8)}`;
+      const t = this.fsm.beginSit({ kind: 'meeting', meetingId }, { purpose: 'meeting', jobId });
+      try {
+        await env.skills.seat({
+          agentId: this.agentId,
+          seatEpoch: t.epoch,
+          target: { kind: 'meeting', meetingId },
+          purpose: 'meeting',
+          jobId,
+        });
+      } catch (err) {
+        this.fsm.sitFailed();
+        // Refused (NO_SEAT, UNREACHABLE): an agent pulled off its PC goes back to its reserved chair, so the meeting
+        // can dial it in from there instead of leaving it standing with the chair held.
+        this.#returnToPc('no meeting chair');
+        throw err;
+      }
+      this.#jobs.set(jobId, `${MEETING_SIT_LABEL}${meetingId}`);
+    });
+  }
+
+  /**
+   * Leaves the meeting chair (CrewHooks.releaseFromMeeting); an agent pulled from a PC walks back to its reserved
+   * chair (no swap: the stretched debounce still holds) and gets its kickoff again.
+   */
+  async releaseFromMeeting(): Promise<void> {
+    await this.#seatMutex.run(async () => {
+      const s = this.fsm.snapshot;
+      if (s.kind === 'meeting' && s.state !== 'wandering') {
+        if (s.state === 'walking_to_seat') {
+          if (s.jobId)
+            await this.#env.skills
+              .cancelSkill(this.agentId, { jobId: s.jobId, reason: 'meeting over' })
+              .catch(() => []);
+        } else {
+          await this.#env.skills
+            .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'stand', keepReservation: false })
+            .catch((err: unknown) => this.#log.warn({ err }, 'unseat (meeting over) failed'));
+        }
+        this.fsm.stand('stand');
+      }
+    });
+    this.#returnToPc('the meeting is over');
+  }
+
+  /**
+   * An agent pulled from its PC into a meeting walks back to its reserved chair (no swap: the stretched debounce still
+   * holds) and gets its kickoff again. Runs on its own (its sit job ends in `skill.result` like any sit, and it queues
+   * behind the seat mutex); a refusal wakes the agent. No-op when the agent did not come from a PC.
+   */
+  #returnToPc(why: string): void {
+    const back = this.#meetingReturn;
+    this.#meetingReturn = null;
+    if (!back || this.#stopped) return;
+    void this.sitAtPc({
+      pcId: back.pcId,
+      purpose: back.purpose ?? 'Carry on where you left off before the meeting.',
+      waitMs: 0,
+    }).catch((err: unknown) => {
+      this.#log.warn({ err, pcId: back.pcId }, 'could not return to the PC after the meeting');
+      this.enqueue({
+        mode: 'wake',
+        priority: 2,
+        kind: 'CRITICAL',
+        text: control(
+          this.record.nonce,
+          'CRITICAL',
+          `You were called to a meeting (${why}), but could not get back to ${back.pcId}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      });
+    });
+  }
+
+  /**
+   * The game restarted into the same world while Node kept running (PLAN §6.3 "App restart"): the body comes back
+   * unseated and the mod's jobs are gone. The seat ends with no debounce (PC tools stop as soon as the seat mutex is
+   * free; the model swaps back to Haiku at the next boundary, which may compact first), tracked jobs are forgotten,
+   * and the agent is told (context, no turn). Resolves once the seat reset and its boundary ran.
+   */
+  async gameRestarted(): Promise<void> {
+    const s = this.fsm.snapshot;
+    const pcId = s.kind === 'pc' && this.fsm.holdsPcSeat ? s.pcId : null;
+    const hadJobs = this.#jobs.size > 0;
+    this.#jobs.clear();
+    this.#meetingReturn = null;
+    if (this.#awayTimer) clearTimeout(this.#awayTimer);
+    this.#awayTimer = null;
+    this.#queue = this.#queue.filter((q) => q.kind !== 'KICKOFF');
+    const reset = this.resetSeat('app_restart');
+    // A plan for a PC the agent no longer sits at dies with the seat (as on a kick).
+    if (pcId) this.#env.pending.cleanup(this.agentId, 'The game restarted.', (c) => c.kind === 'plan');
+    const parts = ['The game restarted.'];
+    if (pcId) parts.push(`You are no longer seated at ${pcId}.`);
+    if (hadJobs) parts.push('Jobs you had running were stopped.');
+    this.context(control(this.record.nonce, 'RESTARTED', parts.join(' ')));
+    this.#setStatus();
+    await reset;
+  }
+
   /** App restart, death, dismissal or world end: unseated with no swap debounce. */
   async resetSeat(reason: SeatEndReason): Promise<void> {
     await this.#seatMutex.run(async () => {
@@ -1441,22 +1799,38 @@ export class AgentBrain {
       handoffs: env.handoffs,
       access: (tool) => this.#pcAccess(tool),
       authorName: () => this.record.name,
+      ownJobs: this.#bashJobs,
     };
   }
 
-  /** The ~25-token status footer of every `mc` result. */
+  /**
+   * The ~25-token status footer, in the mod's format (`HP 18/20 food 15 | day 3 08:12 | 120 64 -80 overworld |
+   * collect | iron_sword`). The mod's own footer (in every `skill.run` / `obs.query` result) is the source; this one
+   * is only for tool results that never reach the mod (protocol §7.3). Null before the first `agent.state`.
+   */
   footer(): string | null {
-    const body = this.#env.body(this.agentId);
-    if (!body) return null;
-    const clock = this.#env.clockTime();
-    const parts = [
-      `HP ${Math.round(body.hp)}/${Math.round(body.maxHp)}`,
-      `food ${body.food}/20`,
-      clock !== null ? ticksToGameTime(clock) : null,
-      `at ${Math.floor(body.pos.x)},${Math.floor(body.pos.y)},${Math.floor(body.pos.z)}`,
-      body.job ? `job ${body.job.skill}` : 'no job',
-      body.inCombat ? 'IN COMBAT' : null,
-    ].filter((p): p is string => p !== null);
-    return `[${parts.join(' · ')}]`;
+    return statusFooter(this.#env.body(this.agentId), this.#env.clockTime());
   }
+}
+
+/** The mod's status footer, built from an `agent.state` body (see {@link AgentBrain.footer}). */
+export function statusFooter(body: AgentBody | null, clockTime: number | null): string | null {
+  if (!body) return null;
+  const parts = [`HP ${Math.ceil(body.hp)}/${Math.round(body.maxHp)} food ${body.food}`];
+  if (clockTime !== null) parts.push(ticksToGameTime(clockTime).replace(/^Day/, 'day'));
+  const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;
+  parts.push(`${Math.floor(body.pos.x)} ${Math.floor(body.pos.y)} ${Math.floor(body.pos.z)} ${dim}`);
+  let activity: string;
+  if (body.reflex) activity = body.job ? `${body.reflex} (${body.job.skill} paused)` : body.reflex;
+  else if (body.job)
+    activity =
+      body.job.progress !== undefined
+        ? `${body.job.skill} ${Math.round(body.job.progress * 100)}%`
+        : body.job.skill;
+  else if (body.seat) activity = 'seated';
+  else activity = `idle (${body.mode})`;
+  parts.push(activity);
+  if (body.inCombat) parts.push('IN COMBAT');
+  if (body.held) parts.push(body.held.replace(/^minecraft:/, ''));
+  return parts.join(' | ');
 }

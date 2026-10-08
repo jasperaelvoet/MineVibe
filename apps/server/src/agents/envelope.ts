@@ -52,6 +52,7 @@ export type ControlKind =
   | 'LAST WORDS'
   | 'TURN CAP'
   | 'WELCOME'
+  | 'MEETING'
   | 'PLAYER';
 
 /** `[MV:<nonce> <KIND>] text`. */
@@ -88,6 +89,15 @@ export function escapeShared(text: string): string {
     .replace(CONTROL_LOOKALIKE_RE, '[mv-quoted:')
     .replace(/<</g, '‹‹')
     .replace(/>>/g, '››');
+}
+
+/**
+ * Neutralizes only control-tag look-alikes (`[MV:` in any spacing or case becomes `[mv-quoted:`) and drops control
+ * characters, leaving data envelopes intact: for Node-made text (org deliveries) whose shared parts are already
+ * enveloped.
+ */
+export function neutralizeControlTags(text: string): string {
+  return dropUnsafe(text).replace(CONTROL_LOOKALIKE_RE, '[mv-quoted:');
 }
 
 /** One line of at most `max` characters: whitespace runs (newlines included) collapse to one space. */

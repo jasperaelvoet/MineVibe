@@ -4,8 +4,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../../src/log.js';
 import { type DevServer, startDevServer } from '../../src/orchestrator/devServer.js';
+import { createMemoryOrgModule, createNullPcModule } from '../../src/orchestrator/placeholderModules.js';
 import { CurrentWorldStore } from '../../src/world/currentWorld.js';
 import { ModClient } from '../helpers/modClient.js';
+
+/** The M1 world loop alone: no crew, no PCs, in-memory org services. */
+const NO_CREW = { crew: 'none', modules: { pc: createNullPcModule, org: createMemoryOrgModule } } as const;
 
 const dirs: string[] = [];
 const servers: DevServer[] = [];
@@ -20,6 +24,7 @@ async function start(): Promise<{ server: DevServer; repo: string; token: string
     port: 0,
     env: {},
     heartbeatMs: 0,
+    ...NO_CREW,
   });
   servers.push(server);
   const token = JSON.parse(readFileSync(server.paths.bridgeFile, 'utf8')).token as string;
@@ -81,6 +86,7 @@ describe('dev server', () => {
       port: 0,
       env: {},
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(server);
     expect(existsSync(join(repo, '.dev-token')), 'the old long-lived token file is removed').toBe(false);
@@ -356,6 +362,7 @@ describe('dev server', () => {
       port: 0,
       env: { MINEVIBE_E2E: '1' },
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(server);
     const debug = server.debug;
@@ -396,8 +403,9 @@ describe('dev server', () => {
     const mod = await connect(server.port, token);
     mod.send(hello);
     await mod.next('world.open');
-    mod.send({ t: 'world.state', v: 1, worldId: 'world-1', phase: 'ready' });
-    await vi.waitFor(() => expect(server.store.current).toMatchObject({ worldId: 'world-1', created: true }));
+    // As a request: its `ok` comes once the world is durably marked created (no timing guess, flaky under load).
+    mod.send({ t: 'world.state', v: 1, id: 'ws-1', worldId: 'world-1', phase: 'ready' });
+    await mod.next('ok', (m) => m.re === 'ws-1');
 
     const again = await connect(server.port, token);
     again.send({ ...hello, id: 'm-2', phase: 'in_world', worldId: 'world-1' });
@@ -449,6 +457,7 @@ describe('dev server', () => {
       port: 0,
       env: {},
       heartbeatMs: 0,
+      ...NO_CREW,
     });
     servers.push(again);
     const token = JSON.parse(readFileSync(again.paths.bridgeFile, 'utf8')).token;

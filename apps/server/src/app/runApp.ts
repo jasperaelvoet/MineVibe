@@ -194,6 +194,7 @@ export async function runApp(options: RunAppOptions): Promise<number> {
       env: playEnv,
       fetch,
       onProgress: (event) => progress.onPlay(event),
+      mode: 'app',
     });
     if (code !== 0 && stopReason === null) {
       // The game itself failed (a crash, or killed): say so, or the stub can only report "exit code N".

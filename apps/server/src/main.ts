@@ -16,13 +16,19 @@ Usage: minevibe-server <command>
 Commands:
   app       Node's side of MineVibe.app: NDJSON with the Swift stub on stdin/stdout (started by the stub)
             (--selftest: handshake and bundle checks only, no game)
-  dev       Start the bridge on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient
+  dev       Start the MineVibe server (crew, PCs, org services) on 127.0.0.1:${DEV_BRIDGE_PORT} for ./gradlew runClient
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev; a fresh token in run/bridge.json every run)
             --scripted-crew  run a scripted, zero-token crew (Ada, Bram) to exercise the in-game UI
+            --no-crew        no crew at all (chat is routed against an empty roster)
   doctor    Print versions and paths
-  play      Install or verify Java, Minecraft, Fabric and the mods, then launch the game
+  play      Install or verify Java, Minecraft, Fabric and the mods, start the same server, then launch the game
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev/play; bridge on a random port)
   help      Show this help
+
+Environment:
+  MINEVIBE_CLAUDE=bundled     dev and play: run the Agent SDK's own claude instead of yours
+  MINEVIBE_PC_RUNTIME=docker  use Docker/OrbStack for PCs instead of Apple container
+  MINEVIBE_PCS=off            no PCs (the container engine is never touched)
 `;
 
 /** A terminal Ctrl+C can reach Node twice (the process group, and npm forwarding it); only a later one escalates. */
@@ -70,6 +76,7 @@ async function runDev(args: readonly string[] = []): Promise<number> {
       port: parsePort(process.env.MINEVIBE_BRIDGE_PORT),
       ...(process.env.MINEVIBE_PLAYER_NAME ? { playerName: process.env.MINEVIBE_PLAYER_NAME } : {}),
       ...(args.includes('--scripted-crew') ? { scriptedCrew: true } : {}),
+      ...(args.includes('--no-crew') ? { crew: 'none' as const } : {}),
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {

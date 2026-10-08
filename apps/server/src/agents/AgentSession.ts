@@ -117,6 +117,8 @@ export interface SwapResult {
   /** The PostModelSwitch hook confirmed the model (always true for an effort-only change). */
   readonly acked: boolean;
   readonly estimatedCacheWriteUsd: number | null;
+  /** The flag-layer swap failed and the session was closed and resumed with the new model (PLAN §6.3 fallback). */
+  readonly resumed?: boolean | undefined;
 }
 
 /** Usage numbers of the last real turn (context guard, accounting). */
@@ -420,8 +422,14 @@ export async function checkStartup(
       const account = await query.accountInfo();
       if (!account.subscriptionType)
         problems.push('no Claude subscription is logged in (run `claude` and log in)');
-      if (account.apiProvider !== undefined && account.apiProvider !== 'firstParty') {
-        problems.push(`claude talks to ${account.apiProvider}, not Anthropic directly`);
+      // S2 (spikes/s2-s3-sdk/out/a-init.json): a subscription login reports apiProvider "firstParty". A missing
+      // value is no proof of a first-party login, so it fails like Bedrock or Vertex would (PLAN §6.1).
+      if (account.apiProvider !== 'firstParty') {
+        problems.push(
+          account.apiProvider === undefined
+            ? 'claude did not say it talks to Anthropic directly (no apiProvider)'
+            : `claude talks to ${account.apiProvider}, not Anthropic directly`,
+        );
       }
     } catch (err) {
       problems.push(`could not read the account (${err instanceof Error ? err.message : String(err)})`);

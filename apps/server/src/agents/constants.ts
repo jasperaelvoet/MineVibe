@@ -127,6 +127,14 @@ export const CHRONICLE_MAX_CHARS = 6_000;
 /** Last words: one CEO turn, hard-capped (PLAN §7.9). */
 export const LAST_WORDS_MS = 8_000;
 
+/** A meeting turn (CrewHooks.meetingTurn) is interrupted after this long, queue wait included. */
+export const MEETING_TURN_TIMEOUT_MS = 90_000;
+/**
+ * The re-sit debounce of an agent pulled from its PC into a meeting: the longest meeting (10 min) plus 2 min, so the
+ * walk back to the reserved PC costs no model swap (PLAN §6.6).
+ */
+export const MEETING_SWAP_DEBOUNCE_MS = 12 * 60_000;
+
 /** Autonomous wake budgets per agent per hour (full design §5.8). */
 export const AUTONOMY_BUDGET_PER_HOUR = Object.freeze({ listen: 0, helpful: 20, proactive: 40 });
 /** Minimum spacing between autonomous wakes of one agent. */

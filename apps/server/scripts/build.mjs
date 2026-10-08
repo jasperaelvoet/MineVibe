@@ -19,8 +19,17 @@ await build({
   conditions: ['source'],
   sourcemap: true,
   legalComments: 'linked',
-  // ws probes these optional native add-ons inside try/catch; they are not shipped.
-  external: ['bufferutil', 'utf-8-validate'],
+  external: [
+    // ws probes these optional native add-ons inside try/catch; they are not shipped.
+    'bufferutil',
+    'utf-8-validate',
+    // Resolved from node_modules next to dist/ (PLAN §9.1: Resources/server/node_modules): the Agent SDK finds its
+    // platform claude binary relative to its own package, and cua loads its native darwin-arm64 add-on.
+    '@anthropic-ai/claude-agent-sdk',
+    '@trycua/cua',
+    // The SDK takes zod as a peer: one zod instance for our tool schemas and the SDK's MCP server.
+    'zod',
+  ],
   // Bundled CommonJS dependencies (ws, pino) call require() for Node built-ins.
   banner: {
     js: "#!/usr/bin/env node\nimport { createRequire as __mvCreateRequire } from 'node:module';\nconst require = __mvCreateRequire(import.meta.url);",
