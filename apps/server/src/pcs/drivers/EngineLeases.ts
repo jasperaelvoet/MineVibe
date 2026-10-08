@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from 'pino';
 import { type ExecFn, execWithTimeout } from './exec.js';
@@ -16,7 +16,11 @@ import { type ExecFn, execWithTimeout } from './exec.js';
  *   the engine running, never stopping it under someone else's PCs.
  * - Taking a lease + starting the engine, and dropping a lease + stopping the engine, run under an
  *   exclusive lock file (`engine.lock`, broken when its holder is dead), so a quitting process cannot stop
- *   the engine while another one is just starting to use it.
+ *   the engine while another one is just starting to use it. Within one process the calls queue on an
+ *   in-process mutex first, so two calls of one object never overlap either.
+ * - A stale lock is broken by an atomic rename to a unique tombstone, then checked: only the contender
+ *   whose tombstone holds the very record it judged dead goes on, so two processes breaking the same
+ *   stale lock never both get in, and a fresh lock taken in between is never deleted.
  */
 
 export interface LeaseRecord {
@@ -30,6 +34,11 @@ export interface LeaseRecord {
 }
 
 export type Liveness = 'alive' | 'dead' | 'unknown';
+
+/** What `engine.lock` holds: a lease record plus a nonce, so every acquisition's content is unique. */
+interface LockRecord extends LeaseRecord {
+  nonce: string;
+}
 
 export interface EngineLeasesOptions {
   /** Directory of lease files (created on demand). */
@@ -59,8 +68,12 @@ export class EngineLeases {
   readonly #liveness: (rec: LeaseRecord) => Promise<Liveness>;
   /** Our lease file name (null while we hold none). */
   #file: string | null = null;
-  /** Depth of `withLock` held by this object (re-entrant). */
-  #lockDepth = 0;
+  /** The `acquire()` in flight: concurrent callers share it instead of writing a second lease (B2). */
+  #acquiring: Promise<void> | null = null;
+  /** Tail of this object's in-process lock queue (B1). */
+  #lockTail: Promise<void> = Promise.resolve();
+  /** This process's start time (`ps -o lstart=`), once ps told it. */
+  #ownStart: string | null = null;
 
   constructor(options: EngineLeasesOptions) {
     this.dir = options.dir;
@@ -89,6 +102,20 @@ export class EngineLeases {
     return out ? null : 'gone';
   }
 
+  /** This process's start time, cached once known (null while ps cannot tell). */
+  async #selfStart(): Promise<string | null> {
+    if (this.#ownStart === null) {
+      const s = await this.processStart(this.#pid);
+      if (s !== null && s !== 'gone') this.#ownStart = s;
+    }
+    return this.#ownStart;
+  }
+
+  /** A record of this process now (for a lease or the lock). */
+  async #record(): Promise<LeaseRecord> {
+    return { pid: this.#pid, started: await this.#selfStart(), holder: this.#holder, at: Date.now() };
+  }
+
   async #defaultLiveness(rec: LeaseRecord): Promise<Liveness> {
     if (!Number.isInteger(rec.pid) || rec.pid <= 0) return 'dead';
     try {
@@ -104,17 +131,23 @@ export class EngineLeases {
     return now === rec.started ? 'alive' : 'dead';
   }
 
-  /** Takes this process's lease (idempotent). */
-  async acquire(): Promise<void> {
-    if (this.#file) return;
+  /**
+   * Takes this process's lease (idempotent). Concurrent calls share the one in flight, so a process
+   * never writes two leases (B2).
+   */
+  acquire(): Promise<void> {
+    if (this.#file) return Promise.resolve();
+    if (!this.#acquiring) {
+      this.#acquiring = this.#writeLease().finally(() => {
+        this.#acquiring = null;
+      });
+    }
+    return this.#acquiring;
+  }
+
+  async #writeLease(): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    const started = await this.processStart(this.#pid);
-    const rec: LeaseRecord = {
-      pid: this.#pid,
-      started: started === 'gone' ? null : started,
-      holder: this.#holder,
-      at: Date.now(),
-    };
+    const rec = await this.#record();
     const name = `${this.#pid}-${randomBytes(4).toString('hex')}.json`;
     const tmp = join(this.dir, `.${name}.tmp`);
     await writeFile(tmp, `${JSON.stringify(rec)}\n`, { mode: 0o600 });
@@ -122,14 +155,18 @@ export class EngineLeases {
     this.#file = name;
   }
 
-  /** Drops this process's lease (idempotent). */
+  /** Drops this process's lease (idempotent); an acquire in flight lands first, so it is never left behind. */
   async release(): Promise<void> {
+    if (this.#acquiring) await this.#acquiring.catch(() => {});
     const f = this.#file;
     this.#file = null;
     if (f) await rm(join(this.dir, f), { force: true });
   }
 
-  /** Every lease file other than ours: live or undecidable ones are returned, dead ones deleted. */
+  /**
+   * Every lease file other than ours: live or undecidable ones are returned, dead ones deleted. A lease of
+   * this very process (our pid and start time) is never another user, whatever its file name (B2).
+   */
   async others(): Promise<LeaseRecord[]> {
     let names: string[];
     try {
@@ -149,6 +186,9 @@ export class EngineLeases {
         await rm(path, { force: true });
         continue;
       }
+      if (rec.pid === this.#pid && rec.started !== null && rec.started === (await this.#selfStart())) {
+        continue;
+      }
       const live = await this.#liveness(rec);
       if (live === 'dead') {
         this.#log?.info({ pid: rec.pid, holder: rec.holder }, 'removing a stale engine lease');
@@ -160,45 +200,62 @@ export class EngineLeases {
     return out;
   }
 
-  /** Runs `fn` holding the exclusive engine lock (re-entrant within this object). */
+  /**
+   * Runs `fn` holding the exclusive engine lock: first this object's in-process queue (B1: two calls never
+   * overlap, whatever their timing), then the lock file shared with other processes. Not re-entrant: `fn`
+   * must not call `withLock` itself (it would wait for itself).
+   */
   async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.#lockDepth > 0) return fn();
+    const prev = this.#lockTail;
+    let done: () => void = () => {};
+    this.#lockTail = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    try {
+      await prev;
+      const path = join(this.dir, LOCK);
+      const mine = await this.#lockFile(path);
+      try {
+        return await fn();
+      } finally {
+        await this.#removeIf(path, mine);
+      }
+    } finally {
+      done();
+    }
+  }
+
+  /** Takes the lock file (waiting for a live holder, breaking a dead one); returns what we wrote. */
+  async #lockFile(path: string): Promise<string> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    const path = join(this.dir, LOCK);
     const t0 = Date.now();
     for (;;) {
+      const rec: LockRecord = { ...(await this.#record()), nonce: randomBytes(8).toString('hex') };
+      const mine = `${JSON.stringify(rec)}\n`;
+      if (await this.#createExclusive(path, mine)) return mine;
+      let seen: string;
       try {
-        const fh = await open(path, 'wx', 0o600);
-        try {
-          const started = await this.processStart(this.#pid);
-          const rec: LeaseRecord = {
-            pid: this.#pid,
-            started: started === 'gone' ? null : started,
-            holder: this.#holder,
-            at: Date.now(),
-          };
-          await fh.writeFile(`${JSON.stringify(rec)}\n`);
-        } finally {
-          await fh.close();
-        }
-        break;
+        seen = await readFile(path, 'utf8');
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue; // let go just now
+        throw err;
       }
       let holder: LeaseRecord | null = null;
       try {
-        holder = JSON.parse(await readFile(path, 'utf8')) as LeaseRecord;
+        holder = JSON.parse(seen) as LeaseRecord;
       } catch {
-        // Being written right now, or garbage: give a writer a moment, then break it.
+        // Garbage (a writer that died mid-write): give a writer a moment, then break it.
         const age = await stat(path).then(
           (s) => Date.now() - s.mtimeMs,
           () => 0,
         );
-        if (age > 10_000) await rm(path, { force: true });
+        if (age > 10_000 && (await this.#removeIf(path, seen))) continue;
       }
       if (holder && (await this.#liveness(holder)) === 'dead') {
-        this.#log?.info({ pid: holder.pid }, 'breaking a stale engine lock');
-        await rm(path, { force: true });
+        // B3: only the record judged dead is removed; whoever loses the race just tries again.
+        if (await this.#removeIf(path, seen)) {
+          this.#log?.info({ pid: holder.pid }, 'broke a stale engine lock');
+        }
         continue;
       }
       if (Date.now() - t0 > this.#lockTimeoutMs) {
@@ -208,12 +265,56 @@ export class EngineLeases {
       }
       await new Promise((r) => setTimeout(r, 100));
     }
-    this.#lockDepth++;
+  }
+
+  /**
+   * Creates `path` holding `content` only when it does not exist: the content goes to a private temp file
+   * that is then hard-linked into place, so the lock is never seen half-written. False when it exists.
+   */
+  async #createExclusive(path: string, content: string): Promise<boolean> {
+    const tmp = join(this.dir, `.${LOCK}.${this.#pid}-${randomBytes(6).toString('hex')}.tmp`);
+    await writeFile(tmp, content, { mode: 0o600, flag: 'wx' });
     try {
-      return await fn();
+      await link(tmp, path);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw err;
     } finally {
-      this.#lockDepth--;
-      await rm(path, { force: true });
+      await rm(tmp, { force: true });
+    }
+  }
+
+  /**
+   * Removes the lock file only while it still holds `expected` (B3). A read-then-remove would delete a
+   * lock someone else took in between, so the file is renamed to a unique tombstone first (atomic: of
+   * several contenders only one gets it) and the tombstone is checked: holding `expected`, it was the one
+   * to remove; holding anything else, a lock was taken in between and is put back (`link` never replaces a
+   * file). Returns whether this call removed `expected`.
+   */
+  async #removeIf(path: string, expected: string): Promise<boolean> {
+    const now = await readFile(path, 'utf8').catch(() => null);
+    if (now !== expected) return false;
+    const tomb = join(this.dir, `.${LOCK}.${this.#pid}-${randomBytes(6).toString('hex')}.tomb`);
+    try {
+      await rename(path, tomb);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // someone else was faster
+      throw err;
+    }
+    try {
+      if ((await readFile(tomb, 'utf8')) === expected) return true;
+      try {
+        await link(tomb, path);
+      } catch (err) {
+        this.#log?.error(
+          { err: (err as Error).message },
+          'could not put back an engine lock taken while breaking a stale one',
+        );
+      }
+      return false;
+    } finally {
+      await rm(tomb, { force: true });
     }
   }
 }

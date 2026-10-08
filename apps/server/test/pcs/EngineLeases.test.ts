@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,12 @@ const writeLease = (d: string, name: string, rec: LeaseRecord) => {
 };
 /** A pid that existed a moment ago and is gone now. */
 const deadPid = () => spawnSync('/usr/bin/true').pid as number;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** An exec whose `ps` answers `stdout` for any pid. */
+const psSays =
+  (stdout: string): ExecFn =>
+  async () =>
+    ok(stdout);
 
 describe('N4: engine leases', () => {
   it('a lease records the pid and its process start time; release removes it', async () => {
@@ -121,12 +128,110 @@ describe('N4: engine leases', () => {
   });
 });
 
+describe('N4: the engine lock excludes, and a process holds one lease', () => {
+  /** A critical section that records the most callers ever inside it at once. */
+  function section() {
+    let inside = 0;
+    let max = 0;
+    const crit = async (ms: number) => {
+      inside++;
+      max = Math.max(max, inside);
+      await sleep(ms);
+      inside--;
+    };
+    return { crit, max: () => max };
+  }
+
+  it('B1: concurrent withLock calls of one object never overlap (repro)', async () => {
+    const l = new EngineLeases({ dir, liveness: async () => 'alive' });
+    const { crit, max } = section();
+    const first = l.withLock(() => crit(50));
+    await sleep(20);
+    await Promise.all([first, l.withLock(() => crit(50)), l.withLock(() => crit(10))]);
+    expect(max()).toBe(1);
+    // A failing section lets the next one in.
+    await expect(l.withLock(async () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+    await expect(l.withLock(async () => 'next')).resolves.toBe('next');
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('B3: two processes breaking the same stale lock never both get in (repro)', async () => {
+    const DEAD = 999_999;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'engine.lock'),
+      JSON.stringify({ pid: DEAD, started: 'x', holder: 'dead', at: 1 }),
+    );
+    // Both judge the dead holder; a learns it at once, b only after a has broken it and got in.
+    const liveness = (ms: number) => async (rec: LeaseRecord) => {
+      if (rec.pid !== DEAD) return 'alive' as const;
+      await sleep(ms);
+      return 'dead' as const;
+    };
+    const a = new EngineLeases({ dir, pid: 111, liveness: liveness(1), exec: psSays('X') });
+    const b = new EngineLeases({ dir, pid: 222, liveness: liveness(100), exec: psSays('Y') });
+    const { crit, max } = section();
+    const order: number[] = [];
+    await Promise.all([
+      a.withLock(async () => {
+        order.push(111);
+        await crit(300);
+      }),
+      b.withLock(async () => {
+        order.push(222);
+        await crit(300);
+      }),
+    ]);
+    expect(max()).toBe(1);
+    expect(order).toEqual([111, 222]);
+    // Nothing is left behind: no lock, no tombstone, no temp file.
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('B3: a garbage lock is broken once old, and only that one', async () => {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'engine.lock');
+    writeFileSync(path, '{half');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+    const l = new EngineLeases({ dir, liveness: async () => 'alive' });
+    await expect(l.withLock(async () => 'in')).resolves.toBe('in');
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('B2: concurrent acquire() writes one lease, and release leaves none of ours (repro)', async () => {
+    const l = new EngineLeases({ dir });
+    await Promise.all([l.acquire(), l.acquire(), l.acquire()]);
+    expect(leaseFiles(dir)).toHaveLength(1);
+    // A release racing an acquire in flight removes the lease that acquire writes.
+    const pending = l.release().then(() => l.acquire());
+    await Promise.all([pending, l.release()]);
+    await l.release();
+    expect(leaseFiles(dir)).toEqual([]);
+    expect(await l.others()).toEqual([]);
+  });
+
+  it('B2: a leftover lease of this very process (pid + start time) is not another user', async () => {
+    const l = new EngineLeases({ dir });
+    const started = await l.processStart(process.pid);
+    expect(typeof started).toBe('string');
+    writeLease(dir, `${process.pid}-leftover.json`, {
+      pid: process.pid,
+      started: started as string,
+      holder: 'me',
+      at: 1,
+    });
+    await l.acquire();
+    expect(await l.others()).toEqual([]);
+  });
+});
+
 describe('N4: the engine is stopped only when no other live MineVibe uses it', () => {
   const lock: ContainerLock = {
     version: '1.5.0',
     pkg: { name: 'container.pkg', url: 'https://invalid.example/container.pkg', sha256: 'a'.repeat(64) },
   };
-  function runtime() {
+  function runtime(statusDelayMs = 0) {
     const roots = { appRoot: join(dir, 'app'), installRoot: join(dir, 'root') };
     mkdirSync(join(roots.installRoot, 'bin'), { recursive: true });
     writeFileSync(join(roots.installRoot, 'bin', 'container'), '#!/bin/sh\n');
@@ -136,9 +241,21 @@ describe('N4: the engine is stopped only when no other live MineVibe uses it', (
       server: { version: '1.5.0' },
     });
     const calls: string[][] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
     const exec: ExecFn = async (_file, args) => {
       calls.push([...args]);
-      return args[0] === 'system' && args[1] === 'status' ? ok(status) : ok();
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        if (args[0] === 'system' && args[1] === 'status') {
+          if (statusDelayMs) await sleep(statusDelayMs);
+          return ok(status);
+        }
+        return ok();
+      } finally {
+        inFlight--;
+      }
     };
     // Leases ask the real `ps`; the container CLI is faked.
     const rt = new ContainerRuntime({
@@ -148,7 +265,7 @@ describe('N4: the engine is stopped only when no other live MineVibe uses it', (
       exec,
       leases: { exec: execWithTimeout },
     });
-    return { rt, calls, leaseDir: join(roots.appRoot, 'minevibe-leases') };
+    return { rt, calls, leaseDir: join(roots.appRoot, 'minevibe-leases'), maxInFlight: () => maxInFlight };
   }
   const stops = (calls: string[][]) => calls.filter((c) => c[0] === 'system' && c[1] === 'stop').length;
 
@@ -218,4 +335,29 @@ describe('N4: the engine is stopped only when no other live MineVibe uses it', (
     expect(stops(calls)).toBe(0);
     expect(readFileSync(join(rt.installRoot, 'bin', 'container'), 'utf8')).toBe('#!/bin/sh\n');
   });
+
+  it('B1: a quit racing a start in the same process waits for it (never stops mid-start)', async () => {
+    const { rt, calls, maxInFlight } = runtime(30);
+    const events: string[] = [];
+    const start = rt.startAndLease().then(() => events.push('started'));
+    while (!calls.some((c) => c[1] === 'status')) await sleep(1);
+    const quit = rt.releaseAndStopIfUnused().then((stopped) => events.push(`quit ${stopped}`));
+    await Promise.all([start, quit]);
+    expect(events).toEqual(['started', 'quit true']);
+    expect(maxInFlight()).toBe(1);
+    expect(stops(calls)).toBe(1);
+  });
+
+  for (const stagger of [0, 2, 5, 15]) {
+    it(`B2: overlapping startAndLease x2 (stagger ${stagger} ms) hold one lease; quit stops the engine`, async () => {
+      const { rt, calls, leaseDir } = runtime(30);
+      const first = rt.startAndLease();
+      if (stagger) await sleep(stagger);
+      await Promise.all([first, rt.startAndLease(), rt.leases.acquire()]);
+      expect(leaseFiles(leaseDir)).toHaveLength(1);
+      expect(await rt.releaseAndStopIfUnused()).toBe(true);
+      expect(stops(calls)).toBe(1);
+      expect(leaseFiles(leaseDir)).toEqual([]);
+    });
+  }
 });

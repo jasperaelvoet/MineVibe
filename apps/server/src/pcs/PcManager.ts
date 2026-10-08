@@ -283,6 +283,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   /** Last known containers of this instance (H4: what actually runs). */
   #live = new Map<string, PcContainerInfo>();
   #builds = 0;
+  /** Admitted activations that may build their image: the builder VM's RAM stays reserved for them. */
+  #builderHolds = 0;
   #monitorTimer: NodeJS.Timeout | null = null;
   #monitoring = false;
   readonly #healthFails = new Map<string, number>();
@@ -535,7 +537,45 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   // ------------------------------------------------------------------ budget
 
   #settings(): BudgetSettings {
-    return { ...this.#budget, builderActive: this.#builds > 0 };
+    return { ...this.#budget, builderActive: this.#builds > 0 || this.#builderHolds > 0 };
+  }
+
+  /** Reserves the builder VM's RAM until the returned release runs (idempotent). */
+  #holdBuilder(): () => void {
+    this.#builderHolds++;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.#builderHolds--;
+    };
+  }
+
+  /** The image a start of `p` would build locally when it is missing (dev fallback, PLAN §9.3), else null. */
+  #localBuildImage(p: PcRecord): string | null {
+    if (!this.#o.imageBuild) return null;
+    const img = p.image && isAllowedImage(p.type, p.image) ? p.image : PC_TYPE_SPECS[p.type].image;
+    return img?.startsWith('minevibe/') ? img : null;
+  }
+
+  /** Ids among `pcs` whose start may build an image locally (its image is missing now). */
+  async #mayBuild(pcs: readonly PcRecord[]): Promise<Set<string>> {
+    const missing = new Map<string, Promise<boolean>>();
+    const out = new Set<string>();
+    for (const p of pcs) {
+      const img = this.#localBuildImage(p);
+      if (!img) continue;
+      let m = missing.get(img);
+      if (!m) {
+        m = this.driver.imageExists(img).then(
+          (exists) => !exists,
+          () => true,
+        );
+        missing.set(img, m);
+      }
+      if (await m) out.add(p.id);
+    }
+    return out;
   }
 
   /** Crew cap for the claude reserve (L11): the RAM pool is recomputed and broadcast. */
@@ -714,7 +754,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * queue, so two starts (or a start and an edit, or `bootAll`) can never both be admitted against the
    * same free RAM. An activation (`active`) holds a reservation until `release()`: it counts while the PC
    * downloads, boots or sits between awaits, whatever its status says. `apply` runs inside the critical
-   * section right after a successful check (the record change of an edit or a create).
+   * section right after a successful check (the record change of an edit or a create). An activation
+   * that may build its image locally runs the builder VM too: it is admitted only with the builder's RAM
+   * reserved, and that reservation is held until `release()` as well.
    */
   async #admit(
     kind: 'create' | 'start' | 'edit',
@@ -724,13 +766,24 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return this.#withAdmission(async () => {
       const inv = await this.#inventory();
       const host = await this.#hostFactsWith(inv);
-      const res = admit(host, this.#settings(), this.#allocations(inv), {
+      const builder = opts.active && (await this.#mayBuild([p])).has(p.id);
+      const settings = builder ? { ...this.#settings(), builderActive: true } : this.#settings();
+      const res = admit(host, settings, this.#allocations(inv), {
         kind,
         pc: this.#alloc(p, opts.active),
       });
       if (!res.ok) throw new PcError(res.reason, res.detail, res.resource);
       opts.apply?.();
-      return { warnings: res.warnings, release: opts.active ? this.#reserve(p.id) : () => {} };
+      if (!opts.active) return { warnings: res.warnings, release: () => {} };
+      const releasePc = this.#reserve(p.id);
+      const releaseBuilder = builder ? this.#holdBuilder() : () => {};
+      return {
+        warnings: res.warnings,
+        release: () => {
+          releasePc();
+          releaseBuilder();
+        },
+      };
     });
   }
 
@@ -1122,7 +1175,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    * Boots every plugged PC in boot-priority order (pinned, then most recently used) with budget
    * admission; PCs that don't fit become `no_capacity` / `macos_slots_full`. Containers that still run
    * for an inactive PC are adopted or stopped first (N7), and the plan is made and reserved in one
-   * admission critical section (N3).
+   * admission critical section (N3). When a planned start may build its image, the plan counts the
+   * builder VM and keeps it reserved until the last such start ends. A PC unplugged after planning is
+   * not started (checked under its lock).
    */
   async bootAll(): Promise<{ booted: string[]; refused: string[]; failed: string[] }> {
     const booted: string[] = [];
@@ -1157,59 +1212,80 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         .filter((p) => !this.#isActive(p.id) && this.#liveActive(p.id))
         .map((p) => this.#alloc(p, true));
       const orphanAlloc = this.#allocations(inv).filter((a) => a.id === ORPHANS_ID);
-      const plan = planBoot(host, this.#settings(), candidates, [
-        ...alreadyActive,
-        ...strays,
-        ...orphanAlloc,
-      ]);
+      const mayBuild = await this.#mayBuild(candidates.map((c) => this.#rec(c.id)));
+      const settings = this.#settings();
+      if (mayBuild.size > 0) settings.builderActive = true;
+      const plan = planBoot(host, settings, candidates, [...alreadyActive, ...strays, ...orphanAlloc]);
       const lowDisk = this.#diskFloorProblem(host.diskFreeBytes);
       const releases = new Map<string, () => void>();
       if (!lowDisk) for (const id of plan.boot) releases.set(id, this.#reserve(id));
+      // The builder VM stays reserved until the last planned start that may build has ended.
+      const lastBuild = plan.boot.findLastIndex((id) => mayBuild.has(id));
+      if (!lowDisk && lastBuild >= 0) {
+        const releaseBuilder = this.#holdBuilder();
+        const lastId = plan.boot[lastBuild] as string;
+        const releasePc = releases.get(lastId) ?? (() => {});
+        releases.set(lastId, () => {
+          releasePc();
+          releaseBuilder();
+        });
+      }
       // Adopted PCs (booting, no operation of their own) only need readiness.
       const waitFor = alreadyActive
         .map((a) => a.id)
         .filter((id) => this.status(id).status === 'booting' && !this.#reservations.has(id));
       return { plan, lowDisk, releases, waitFor };
     });
-    for (const r of plan.refused) {
-      this.#setStatus(r.id, {
-        status: r.reason === 'MACOS_SLOTS' ? 'macos_slots_full' : 'no_capacity',
-        detail: r.detail,
-      });
-    }
-    // PCs that were already running (adopted) only need readiness; a failure stops them (L7, H4).
-    for (const id of waitFor) {
-      try {
-        await this.#serialize(id, async () => {
-          if (this.status(id).status !== 'booting') return;
-          const p = this.#rec(id);
-          try {
-            await this.#waitReady(p);
-          } catch (err) {
-            await this.#failBoot(p, err);
-            throw err;
-          }
+    try {
+      for (const r of plan.refused) {
+        this.#setStatus(r.id, {
+          status: r.reason === 'MACOS_SLOTS' ? 'macos_slots_full' : 'no_capacity',
+          detail: r.detail,
         });
-        if (this.status(id).status === 'running') booted.push(id);
-      } catch {
-        failed.push(id);
       }
-    }
-    for (const id of plan.boot) {
-      if (lowDisk) {
-        this.#setStatus(id, { status: 'error', reason: 'low_disk', detail: lowDisk });
-        failed.push(id);
-        continue;
+      // PCs that were already running (adopted) only need readiness; a failure stops them (L7, H4).
+      for (const id of waitFor) {
+        try {
+          await this.#serialize(id, async () => {
+            if (this.status(id).status !== 'booting') return;
+            const p = this.#rec(id);
+            try {
+              await this.#waitReady(p);
+            } catch (err) {
+              await this.#failBoot(p, err);
+              throw err;
+            }
+          });
+          if (this.status(id).status === 'running') booted.push(id);
+        } catch {
+          failed.push(id);
+        }
       }
-      try {
-        await this.#serialize(id, () => this.#startLocked(this.#rec(id), { admitted: true }));
-        booted.push(id);
-      } catch (err) {
-        failed.push(id);
-        this.#log?.warn({ pcId: id, err: errText(err) }, 'PC failed to boot');
-      } finally {
-        releases.get(id)?.();
+      for (const id of plan.boot) {
+        if (lowDisk) {
+          this.#setStatus(id, { status: 'error', reason: 'low_disk', detail: lowDisk });
+          failed.push(id);
+          continue;
+        }
+        try {
+          // Re-checked under the PC's lock: an unplug since planning wins (its stop queues behind this).
+          const started = await this.#serialize(id, async () => {
+            const p = this.get(id);
+            if (!p?.plugged) return false;
+            await this.#startLocked(p, { admitted: true });
+            return true;
+          });
+          if (started) booted.push(id);
+        } catch (err) {
+          failed.push(id);
+          this.#log?.warn({ pcId: id, err: errText(err) }, 'PC failed to boot');
+        } finally {
+          releases.get(id)?.();
+        }
       }
+    } finally {
+      // Idempotent; nothing reserved for this plan outlives it, whatever went wrong above.
+      for (const release of releases.values()) release();
     }
     await this.budget();
     return { booted, refused: plan.refused.map((r) => r.id), failed };
@@ -1531,21 +1607,22 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   /** Stops a PC (its container and volumes stay). A failure leaves `error`; the budget still counts a running container. */
   stop(id: string, options: { timeoutSeconds?: number } = {}): Promise<void> {
-    return this.#serialize(id, async () => {
-      const p = this.#rec(id);
-      this.#setStatus(id, { status: 'stopping' });
-      try {
-        await this.#detachViewers(id);
-        await this.#stopContainer(p, options.timeoutSeconds);
-        this.#setStatus(id, { status: 'off' });
-      } catch (err) {
-        this.#setError(id, err, 'stop_failed');
-        throw err;
-      } finally {
-        // H4: the budget learns whether the container really stopped.
-        await this.#inventory();
-      }
-    });
+    return this.#serialize(id, () => this.#stopLocked(this.#rec(id), options));
+  }
+
+  async #stopLocked(p: PcRecord, options: { timeoutSeconds?: number } = {}): Promise<void> {
+    this.#setStatus(p.id, { status: 'stopping' });
+    try {
+      await this.#detachViewers(p.id);
+      await this.#stopContainer(p, options.timeoutSeconds);
+      this.#setStatus(p.id, { status: 'off' });
+    } catch (err) {
+      this.#setError(p.id, err, 'stop_failed');
+      throw err;
+    } finally {
+      // H4: the budget learns whether the container really stopped.
+      await this.#inventory();
+    }
   }
 
   async restart(id: string): Promise<void> {
@@ -1677,12 +1754,20 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     await this.#save();
   }
 
-  /** Plugged = placed in the world. Unplugging stops the PC (disks persist). */
+  /**
+   * Plugged = placed in the world. Unplugging stops the PC (disks persist). The flag changes at once, so
+   * a start still queued (bootAll) sees it under the PC's lock and skips; the stop decision is made under
+   * that lock too, after a start already in flight.
+   */
   async setPlugged(id: string, plugged: boolean): Promise<void> {
     const p = this.#rec(id);
     p.plugged = plugged;
     await this.#save();
-    if (!plugged && ACTIVE.has(this.status(id).status)) await this.stop(id);
+    if (plugged) return;
+    await this.#serialize(id, async () => {
+      const cur = this.get(id);
+      if (cur && !cur.plugged && ACTIVE.has(this.status(id).status)) await this.#stopLocked(cur);
+    });
   }
 
   /** Records use (seat, input) for boot priority. */
@@ -1940,8 +2025,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   /**
    * Stops every active PC in parallel within `shutdownTimeoutMs` (20 s), then lets go of the engine
-   * (`stopEngine`, default true): the driver stops it only when it is ours and no other live MineVibe
-   * process holds a lease on it (N4).
+   * (`stopEngine`, default true) within the same bound (N5): the driver stops it only when it is ours and
+   * no other live MineVibe process holds a lease on it (N4). An engine release that does not finish in
+   * time (a wedged `system stop`, another MineVibe holding the engine lock) leaves the engine running.
    */
   async shutdown(options: { stopEngine?: boolean } = {}): Promise<void> {
     this.stopMonitor();
@@ -1960,10 +2046,13 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     if (this.#frames) await settleWithin(this.#frames.close(), 3000);
     this.pool.close();
     if (options.stopEngine ?? true) {
-      try {
-        await this.driver.shutdownEngine();
-      } catch (err) {
-        this.#log?.warn({ err: errText(err) }, 'engine stop failed');
+      const release = Promise.resolve()
+        .then(() => this.driver.shutdownEngine())
+        .catch((err: unknown) => {
+          this.#log?.warn({ err: errText(err) }, 'engine stop failed');
+        });
+      if ((await settleWithin(release, budgetMs)) === 'timeout') {
+        this.#log?.warn({ timeoutMs: budgetMs }, 'letting go of the engine timed out; leaving it running');
       }
     }
   }

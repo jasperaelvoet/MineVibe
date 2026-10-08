@@ -1,7 +1,8 @@
 /**
  * Regression tests for the second review round: monitor races (N1, N2), atomic admission (N3), stray
  * containers at boot (N7), legacy containers (M1/N4) and visible port-conflict recreates. The first two
- * started as the verifier's reproductions.
+ * started as the verifier's reproductions. The third round adds the builder VM in admission, unplugging
+ * during bootAll and the bounded engine release on shutdown (N5).
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
@@ -10,7 +11,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GiB, type HostFacts } from '../../src/pcs/Budget.js';
 import type { PcContainerInfo } from '../../src/pcs/drivers/PcDriver.js';
-import { PcManager } from '../../src/pcs/PcManager.js';
+import { PcManager, type PcManagerOptions } from '../../src/pcs/PcManager.js';
 import { type FakeContainer, FakeDriver, type FakeHealth, fakePool, serving } from './fakes.js';
 
 const INST = 'unit';
@@ -30,7 +31,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 function mk(
   health: FakeHealth = { json: serving },
   driver = new FakeDriver(),
-  opts: { portProbe?: { attempts?: number; intervalMs?: number } } = {},
+  opts: { portProbe?: { attempts?: number; intervalMs?: number }; extra?: Partial<PcManagerOptions> } = {},
 ) {
   const m = new PcManager({
     stateDir: join(dir, 'state'),
@@ -43,6 +44,7 @@ function mk(
     bootTimeoutMs: 2000,
     imageBuild: { contextDir: dir, file: join(dir, 'Containerfile') },
     portProbe: opts.portProbe ?? { attempts: 2, intervalMs: 10 },
+    ...opts.extra,
   });
   return { m, driver };
 }
@@ -336,5 +338,164 @@ describe('port conflicts: visible recreate, no recreate on a brief false positiv
     expect(driver.log).toEqual([`start ${cname('a')}`]);
     expect(m.get('a')?.hostPort).toBe(port);
     expect(m.status('a')).toEqual({ status: 'running' });
+  });
+});
+
+describe('builder VM: a start that may build its image is admitted with the builder reserved', () => {
+  // 11.5 GiB + 256 MiB VM overhead each: two fit the 24.5 GiB pool, but not with the 2 GiB builder.
+  const mid = { type: 'linux' as const, memMiB: 11 * 1024 + 512, shmMiB: 1024, disk: tiny };
+  /** Worst `allocated + reserves` any budget snapshot showed while a build ran. */
+  function watchBuilds(m: PcManager, driver: FakeDriver) {
+    let worst = 0;
+    driver.onBuild = async () => {
+      const s = await m.budget();
+      worst = Math.max(worst, s.allocated.memBytes + s.reserve.memBytes);
+    };
+    return () => worst;
+  }
+
+  it('a start whose image must be built is refused when PCs + builder exceed the pool (repro)', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    await m.create({ ...mid, id: 'a', boot: true });
+    await m.create({ ...mid, id: 'b' });
+    driver.imagePresent = false;
+    const worst = watchBuilds(m, driver);
+    await expect(m.start('b')).rejects.toMatchObject({ code: 'OVER_BUDGET', resource: 'memory' });
+    expect(m.status('b').status).toBe('no_capacity');
+    expect(driver.log).not.toContain('build');
+    expect(worst()).toBeLessThanOrEqual(host.memBytes);
+    // Once the image exists no builder runs, and the same start fits.
+    driver.imagePresent = true;
+    await m.start('b');
+    expect(m.status('b').status).toBe('running');
+  });
+
+  it('the builder stays reserved from admission to the end of the start, against other starts', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    for (const id of ['a', 'b']) await m.create({ ...mid, id });
+    driver.imagePresent = false;
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const worst = watchBuilds(m, driver);
+    const onBuild = driver.onBuild;
+    driver.onBuild = async () => {
+      await onBuild?.();
+      await gate;
+    };
+    const a = m.start('a');
+    while (m.status('a').status !== 'downloading') await sleep(5);
+    expect((await m.budget()).reserve.memBytes).toBe(25.5 * GiB);
+    await expect(m.start('b')).rejects.toMatchObject({ code: 'OVER_BUDGET', resource: 'memory' });
+    open();
+    await a;
+    expect(worst()).toBeLessThanOrEqual(host.memBytes);
+    expect((await m.budget()).reserve.memBytes).toBe(23.5 * GiB);
+    await m.start('b');
+    expect(['a', 'b'].map((id) => m.status(id).status)).toEqual(['running', 'running']);
+  });
+
+  it('bootAll plans with the builder reserved when a planned start may build, and lets it go after', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    await m.create({ ...mid, id: 'a', pinned: true });
+    await m.create({ ...mid, id: 'b' });
+    driver.imagePresent = false;
+    const worst = watchBuilds(m, driver);
+    const r = await m.bootAll();
+    expect(r).toEqual({ booted: ['a'], refused: ['b'], failed: [] });
+    expect(worst()).toBeLessThanOrEqual(host.memBytes);
+    expect((await m.budget()).reserve.memBytes).toBe(23.5 * GiB);
+    // With the image there, both fit.
+    await m.stop('a');
+    const again = await m.bootAll();
+    expect(again.booted.sort()).toEqual(['a', 'b']);
+  });
+
+  it('create + boot of a PC whose image must be built counts the builder too', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    await m.create({ ...mid, id: 'a', boot: true });
+    driver.imagePresent = false;
+    await expect(m.create({ ...mid, id: 'b', boot: true })).rejects.toMatchObject({ code: 'OVER_BUDGET' });
+    expect(m.get('b')).toBeUndefined();
+  });
+});
+
+describe('unplugging during bootAll', () => {
+  it('a PC unplugged after bootAll planned it is not started (repro)', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    await m.create({ type: 'linux', id: 'a', disk: tiny, pinned: true });
+    await m.create({ type: 'linux', id: 'b', disk: tiny });
+    // Hold a's start so bootAll has b planned but not yet started.
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const realStart = driver.start.bind(driver);
+    driver.start = async (name: string) => {
+      if (name === cname('a')) await gate;
+      return realStart(name);
+    };
+    const boot = m.bootAll();
+    while (m.status('a').status !== 'booting') await sleep(1);
+    await m.setPlugged('b', false);
+    open();
+    const r = await boot;
+    expect(r).toEqual({ booted: ['a'], refused: [], failed: [] });
+    expect(m.get('b')?.plugged).toBe(false);
+    expect(driver.log).not.toContain(`start ${cname('b')}`);
+    expect(driver.containers.get(cname('b'))?.state).not.toBe('running');
+    expect(m.status('b')).toEqual({ status: 'off' });
+    expect((await m.budget()).allocated.memBytes).toBe((4096 + 256) * 1024 * 1024);
+  });
+
+  it('a PC unplugged while its start is in flight is stopped once that start ends', async () => {
+    const { m, driver } = mk();
+    await m.init({ createDefault: false });
+    await m.create({ type: 'linux', id: 'b', disk: tiny });
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const realStart = driver.start.bind(driver);
+    driver.start = async (name: string) => {
+      await gate;
+      return realStart(name);
+    };
+    const boot = m.bootAll();
+    while (m.status('b').status !== 'booting') await sleep(1);
+    const unplug = m.setPlugged('b', false);
+    open();
+    await Promise.all([boot, unplug]);
+    expect(driver.containers.get(cname('b'))?.state).toBe('stopped');
+    expect(m.status('b')).toEqual({ status: 'off' });
+  });
+});
+
+describe('N5: shutdown is bounded', () => {
+  it('an engine release that never returns does not hold up shutdown (repro)', async () => {
+    const driver = new FakeDriver();
+    driver.shutdownEngine = () => new Promise<boolean>(() => {});
+    const { m } = mk(undefined, driver, { extra: { shutdownTimeoutMs: 200 } });
+    await m.init({ createDefault: false });
+    await m.create({ type: 'linux', id: 'a', boot: true, disk: tiny });
+    const r = await Promise.race([m.shutdown().then(() => 'done'), sleep(3000).then(() => 'hung')]);
+    expect(r).toBe('done');
+    expect(driver.containers.get(cname('a'))?.state).toBe('stopped');
+  });
+
+  it('an engine release that fails is logged, not thrown', async () => {
+    const driver = new FakeDriver();
+    driver.shutdownEngine = async () => {
+      throw new Error('system stop exploded');
+    };
+    const { m } = mk(undefined, driver, { extra: { shutdownTimeoutMs: 200 } });
+    await m.init({ createDefault: false });
+    await expect(m.shutdown()).resolves.toBeUndefined();
   });
 });
