@@ -1,15 +1,31 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AppleContainerDriver,
   bindMountArg,
+  buildAppleCreateArgs,
   buildAppleRunArgs,
+  buildNetworkCreateArgs,
   buildVolumeCreateArgs,
   parseAppleContainer,
 } from '../../src/pcs/drivers/AppleContainerDriver.js';
 import type { ContainerRuntime } from '../../src/pcs/drivers/ContainerRuntime.js';
-import { buildDockerRunArgs, parseDockerInspect } from '../../src/pcs/drivers/DockerDriver.js';
+import {
+  buildDockerCreateArgs,
+  buildDockerRunArgs,
+  parseDockerInspect,
+} from '../../src/pcs/drivers/DockerDriver.js';
 import type { ExecResult } from '../../src/pcs/drivers/exec.js';
-import { assertRunSpec, mountProblems, type PcRunSpec } from '../../src/pcs/drivers/PcDriver.js';
+import {
+  assertRunSpec,
+  mountProblems,
+  normalizeImageRef,
+  type PcRunSpec,
+  portProblems,
+  specProblems,
+} from '../../src/pcs/drivers/PcDriver.js';
 
 const TOKEN = 'deadbeefcafebabe0123456789abcdef0123456789abcdef';
 const VAULT = '/Users/me/Code/foo';
@@ -120,12 +136,36 @@ describe('Apple container run arguments (PLAN §8.1/§8.6)', () => {
     expect(() => assertRunSpec(spec({ labels: { 'bad key': 'x' } }))).toThrow(/label/);
     expect(() => assertRunSpec(spec({ env: { CUA_ENV_TOKEN: 'x' } }))).toThrow(/twice/);
     expect(() => assertRunSpec(spec({ volumes: [{ name: 'v', target: '/x', sizeGiB: 0 }] }))).toThrow(/size/);
+    // 1.5.0's --mount parser fails on "=" in a path (measured), L3.
+    expect(() =>
+      assertRunSpec(spec({ binds: [{ source: '/a=b', target: '/a=b', readonly: false }] })),
+    ).toThrow(/bind/);
+    expect(() => assertRunSpec(spec({ shmMiB: 8192 }))).toThrow(/shmMiB/);
+    expect(() => assertRunSpec(spec({ network: 'Bad Net' }))).toThrow(/network/);
+  });
+
+  it('creates with `create` (never -d) and attaches the PC network', () => {
+    const c = buildAppleCreateArgs(spec({ network: 'mv-pc-ab12-linux-1-net' }));
+    expect(c[0]).toBe('create');
+    expect(c).not.toContain('-d');
+    expect(c[c.indexOf('--network') + 1]).toBe('mv-pc-ab12-linux-1-net');
+    expect(c.slice(1)).toEqual(buildAppleRunArgs(spec({ network: 'mv-pc-ab12-linux-1-net' })).slice(2));
+    expect(buildNetworkCreateArgs('n', { minevibe: 'pc' })).toEqual([
+      'network',
+      'create',
+      '--label',
+      'minevibe=pc',
+      'n',
+    ]);
   });
 });
 
 describe('Docker run arguments', () => {
   const args = buildDockerRunArgs(spec());
   it('uses the same safe forms', () => {
+    expect(buildDockerCreateArgs(spec({ network: 'n1' }))).toEqual(
+      expect.arrayContaining(['create', '--network', 'n1']),
+    );
     expect(args).toContain(`type=bind,source=${DOCS},target=${DOCS},readonly`);
     expect(args[args.indexOf('-p') + 1]).toBe('127.0.0.1:43211:3211');
     expect(args).not.toContain('-v');
@@ -222,8 +262,75 @@ describe('inspect parsing and mount verification', () => {
   });
 });
 
-describe('AppleContainerDriver.run', () => {
-  function fakeRuntime(inspectRows: unknown[]) {
+describe('container spec checks (L1, M10)', () => {
+  const info = (over: Record<string, unknown> = {}) =>
+    parseAppleContainer({
+      configuration: {
+        id: 'mv-pc-linux-1',
+        image: { reference: 'minevibe/linux-pc:dev' },
+        labels: { minevibe: 'pc', 'minevibe.pc': 'linux-1' },
+        mounts: [
+          { destination: VAULT, options: [], source: VAULT, type: { virtiofs: {} } },
+          { destination: DOCS, options: ['ro'], source: DOCS, type: { virtiofs: {} } },
+          { destination: '/home/cua', source: '/x', type: { volume: { name: 'mv-pc-linux-1-home' } } },
+          {
+            destination: `${VAULT}/node_modules`,
+            source: '/y',
+            type: { volume: { name: 'mv-pc-linux-1-ov-abc' } },
+          },
+        ],
+        publishedPorts: [{ containerPort: 3211, hostAddress: '127.0.0.1', hostPort: 43211 }],
+        resources: { cpus: 2, memoryInBytes: 4096 * 1024 * 1024 },
+        shmSize: 2048 * 1024 * 1024,
+        networks: [{ network: 'mv-net' }],
+        ...over,
+      },
+      status: { state: 'stopped', networks: [] },
+    });
+
+  it('parses networks and shm size', () => {
+    expect(info()).toMatchObject({ networks: ['mv-net'], shmBytes: 2048 * 1024 * 1024, state: 'stopped' });
+  });
+
+  it('accepts a matching container and names every difference', () => {
+    const want = spec({ network: 'mv-net' });
+    expect(specProblems(want, info())).toEqual([]);
+    expect(specProblems({ ...want, memoryMiB: 8192 }, info())).toEqual([expect.stringMatching(/memory/)]);
+    expect(specProblems({ ...want, cpus: 4 }, info())).toEqual([expect.stringMatching(/cpus/)]);
+    expect(specProblems({ ...want, image: 'ghcr.io/x/y:1' }, info())).toEqual([
+      expect.stringMatching(/image/),
+    ]);
+    expect(specProblems({ ...want, network: 'other' }, info())).toEqual([expect.stringMatching(/network/)]);
+    expect(specProblems({ ...want, labels: { minevibe: 'pc', 'minevibe.pc': 'linux-2' } }, info())).toEqual([
+      'labels differ',
+    ]);
+    expect(specProblems({ ...want, volumes: want.volumes.slice(1) }, info())).toEqual([
+      expect.stringMatching(/unexpected volume at .*node_modules/),
+    ]);
+    const exposed = info({
+      publishedPorts: [{ containerPort: 3211, hostAddress: '0.0.0.0', hostPort: 43211 }],
+    });
+    expect(specProblems(want, exposed)).toEqual([expect.stringMatching(/0\.0\.0\.0/)]);
+    expect(normalizeImageRef('docker.io/library/x:1')).toBe('x:1');
+  });
+
+  it('portProblems wants 127.0.0.1 and the right port', () => {
+    expect(portProblems({ hostPort: 43211 }, info())).toEqual([]);
+    expect(portProblems({ hostPort: 1 }, info())).toEqual([expect.stringMatching(/port 43211/)]);
+    expect(
+      portProblems(
+        { hostPort: 43211 },
+        info({ publishedPorts: [{ containerPort: 3211, hostAddress: '0.0.0.0', hostPort: 43211 }] }),
+      ),
+    ).toEqual([expect.stringMatching(/not 127\.0\.0\.1/)]);
+  });
+});
+
+describe('AppleContainerDriver.create', () => {
+  function fakeRuntime(
+    inspectRows: unknown[],
+    extra: (args: readonly string[]) => ExecResult | undefined = () => undefined,
+  ) {
     const calls: { args: readonly string[]; env?: NodeJS.ProcessEnv }[] = [];
     const ok = (stdout = ''): ExecResult => ({
       code: 0,
@@ -234,39 +341,50 @@ describe('AppleContainerDriver.run', () => {
       timedOut: false,
     });
     const rt = {
+      appRoot: '/nonexistent-app-root',
       exec: async (args: readonly string[], o: { env?: NodeJS.ProcessEnv } = {}) => {
         calls.push({ args, ...(o.env ? { env: o.env } : {}) });
-        if (args[0] === 'volume' && args[1] === 'inspect')
-          return { ...ok(), code: 1, stderr: 'volume not found' };
+        const e = extra(args);
+        if (e) return e;
+        if ((args[0] === 'volume' || args[0] === 'network') && args[1] === 'inspect')
+          return { ...ok(), code: 1, stderr: `${args[0]} not found` };
         if (args[0] === 'inspect') return ok(JSON.stringify(inspectRows));
         return ok();
       },
       execOk: async (args: readonly string[]) => {
         calls.push({ args });
+        const e = extra(args);
+        if (e) return e.stdout;
         return '';
       },
     } as unknown as ContainerRuntime;
     return { rt, calls };
   }
-
-  it('creates capped volumes, passes the token only via env, verifies mounts', async () => {
-    const s = spec({
+  const goodRow = (over: Record<string, unknown> = {}) => ({
+    configuration: {
+      id: 'mv-pc-linux-1',
+      mounts: [
+        { destination: DOCS, options: ['ro'], source: DOCS, type: { virtiofs: {} } },
+        { destination: '/home/cua', source: '/x', type: { volume: { name: 'mv-pc-linux-1-home' } } },
+      ],
+      publishedPorts: [{ containerPort: 3211, hostAddress: '127.0.0.1', hostPort: 43211 }],
+      networks: [{ network: 'mv-net' }],
+      ...over,
+    },
+    status: { state: 'stopped' },
+  });
+  const s = () =>
+    spec({
       binds: [{ source: DOCS, target: DOCS, readonly: true }],
       volumes: [{ name: 'mv-pc-linux-1-home', target: '/home/cua', sizeGiB: 32 }],
+      network: 'mv-net',
+      ownerLabels: { minevibe: 'pc', 'minevibe.pc': 'linux-1' },
     });
-    const { rt, calls } = fakeRuntime([
-      {
-        configuration: {
-          id: 'mv-pc-linux-1',
-          mounts: [
-            { destination: DOCS, options: ['ro'], source: DOCS, type: { virtiofs: {} } },
-            { destination: '/home/cua', source: '/x', type: { volume: { name: 'mv-pc-linux-1-home' } } },
-          ],
-        },
-        status: { state: 'running' },
-      },
-    ]);
-    await new AppleContainerDriver(rt).run(s);
+
+  it('creates capped volumes, uses `create`, passes the token only via env, verifies mounts and port', async () => {
+    const { rt, calls } = fakeRuntime([goodRow()]);
+    const info = await new AppleContainerDriver(rt).create(s());
+    expect(info.state).toBe('stopped');
     const create = calls.find((c) => c.args[0] === 'volume' && c.args[1] === 'create');
     expect(create?.args).toEqual([
       'volume',
@@ -279,22 +397,86 @@ describe('AppleContainerDriver.run', () => {
       'minevibe.pc=linux-1',
       'mv-pc-linux-1-home',
     ]);
-    const run = calls.find((c) => c.args[0] === 'run');
-    expect(run?.env?.CUA_ENV_TOKEN).toBe(TOKEN);
-    expect(run?.args.join(' ')).not.toContain(TOKEN);
+    const made = calls.find((c) => c.args[0] === 'create');
+    expect(made?.env?.CUA_ENV_TOKEN).toBe(TOKEN);
+    expect(made?.args.join(' ')).not.toContain(TOKEN);
+    expect(calls.some((c) => c.args[0] === 'run' || c.args[0] === 'start')).toBe(false);
   });
 
   it('deletes the container and throws when mounts come up wrong', async () => {
-    const s = spec({ binds: [{ source: DOCS, target: DOCS, readonly: true }], volumes: [] });
     const { rt, calls } = fakeRuntime([
-      {
-        configuration: {
-          id: 'x',
-          mounts: [{ destination: DOCS, options: [], source: DOCS, type: { virtiofs: {} } }],
-        },
-      },
+      goodRow({ mounts: [{ destination: DOCS, options: [], source: DOCS, type: { virtiofs: {} } }] }),
     ]);
-    await expect(new AppleContainerDriver(rt).run(s)).rejects.toThrow(/wrong mounts.*read-write/);
+    await expect(new AppleContainerDriver(rt).create(s())).rejects.toThrow(/wrong container.*read-write/);
     expect(calls.some((c) => c.args[0] === 'delete')).toBe(true);
+  });
+
+  it('L1: deletes the container when spacesd is not published on loopback only', async () => {
+    const { rt, calls } = fakeRuntime([
+      goodRow({ publishedPorts: [{ containerPort: 3211, hostAddress: '0.0.0.0', hostPort: 43211 }] }),
+    ]);
+    await expect(new AppleContainerDriver(rt).create(s())).rejects.toThrow(/0\.0\.0\.0/);
+    expect(calls.some((c) => c.args[0] === 'delete')).toBe(true);
+  });
+
+  it('deletes the container when it is not on its network', async () => {
+    const { rt } = fakeRuntime([goodRow({ networks: [{ network: 'default' }] })]);
+    await expect(new AppleContainerDriver(rt).create(s())).rejects.toThrow(/network mv-net/);
+  });
+
+  it('M1: never reuses a volume or network that carries other labels', async () => {
+    const foreign = (args: readonly string[]): ExecResult | undefined =>
+      args[1] === 'inspect' && (args[0] === 'volume' || args[0] === 'network')
+        ? {
+            code: 0,
+            signal: null,
+            stdout: JSON.stringify([
+              { configuration: { labels: { minevibe: 'pc', 'minevibe.pc': 'someone-else' } } },
+            ]),
+            stderr: '',
+            ms: 1,
+            timedOut: false,
+          }
+        : undefined;
+    const { rt, calls } = fakeRuntime([goodRow()], foreign);
+    const d = new AppleContainerDriver(rt);
+    await expect(d.create(s())).rejects.toThrow(/belongs to someone else/);
+    expect(calls.some((c) => c.args[0] === 'create')).toBe(false);
+    await expect(d.ensureNetwork('mv-net', { minevibe: 'pc', 'minevibe.pc': 'linux-1' })).rejects.toThrow(
+      /someone else/,
+    );
+    expect(await d.ensureNetwork('mv-net', { minevibe: 'pc' })).toBe('exists');
+  });
+
+  it('L5: unparsable list output never ends up in an error message', async () => {
+    const secret = 'CUA_ENV_TOKEN=abcdef0123456789';
+    const garbage = (args: readonly string[]): ExecResult | undefined =>
+      args[0] === 'list' || args[1] === 'list'
+        ? { code: 0, signal: null, stdout: `{"x": "${secret}" oops`, stderr: '', ms: 1, timedOut: false }
+        : undefined;
+    const { rt } = fakeRuntime([], garbage);
+    const d = new AppleContainerDriver(rt);
+    for (const call of [() => d.list({}), () => d.listVolumes({}), () => d.listNetworks({})]) {
+      const err = (await call().catch((e: unknown) => e)) as Error;
+      expect(err.message).toMatch(/unparsable JSON output/);
+      expect(err.message).not.toContain('abcdef0123456789');
+    }
+  });
+
+  it('measures allocated blocks of rootfs and volume images', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mv-du-'));
+    try {
+      const img = join(dir, 'volume.img');
+      writeFileSync(img, Buffer.alloc(64 * 1024, 1));
+      const { rt } = fakeRuntime([]);
+      const usage = await new AppleContainerDriver(rt).diskUsage(
+        ['missing'],
+        [{ name: 'v', labels: {}, source: img }],
+      );
+      expect(usage.get('v')).toBeGreaterThanOrEqual(64 * 1024);
+      expect(usage.has('missing')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

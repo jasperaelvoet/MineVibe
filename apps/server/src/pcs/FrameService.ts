@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { encodeFrame, FrameCodec, FrameFlag, FrameKind } from '@minevibe/protocol';
 import type { Logger } from 'pino';
+import { withDeadline } from './deadline.js';
 
 /**
  * PC screen frames for the mod (PLAN §5, §8.4, §8.6).
@@ -13,7 +14,12 @@ import type { Logger } from 'pino';
  * | none                               | —                                        | 0             |
  *
  * - Frames go out as MVF1 through a {@link FrameSink} (`BridgeServer.sendFrame` fits).
- * - At most 2 unacked frames per PC; the latest frame wins (an older pending frame is replaced).
+ * - At most 2 unacked frames per PC; the latest frame wins (an older pending frame is replaced). A frame
+ *   the sink skipped (backpressure, no mod) stays pending and is retried with backoff (M3).
+ * - The focus tier retries the BGRA stream with exponential backoff after a failure, JPEG in between, and
+ *   reopens a closed stream exactly once per session (M4). Failing PCs are polled with backoff, and a PC
+ *   without a slot (not running) is not polled at all until {@link FrameService.wake}.
+ * - Every spacesd call has a deadline.
  * - BGRA frames are damage-driven (0 fps while idle). Each received media frame is acked to the guest
  *   with `frame_ack` the way cua's viewer does.
  * - The guest cursor is NOT composited into frames; its position is polled separately at a low rate
@@ -46,14 +52,19 @@ export interface MediaSessionMin {
   isClosed?(): boolean;
 }
 
-/** The spacesd calls the frame service needs. */
+type CallOpts = { signal: AbortSignal };
+
+/** The spacesd calls the frame service needs (each takes the deadline's signal). */
 export interface FrameClient {
-  screenshot(options: {
-    format?: number;
-    quality?: number;
-    maxDimension?: number;
-    includeCursor: boolean;
-  }): Promise<{ image: ArrayBuffer; width: number; height: number }>;
+  screenshot(
+    options: {
+      format?: number;
+      quality?: number;
+      maxDimension?: number;
+      includeCursor: boolean;
+    },
+    opts?: CallOpts,
+  ): Promise<{ image: ArrayBuffer; width: number; height: number }>;
   openMedia(
     options: {
       maxFps: number;
@@ -63,8 +74,9 @@ export interface FrameClient {
       requestJson?: string;
     },
     sink: { onFrame(frame: MediaFrameLike): void; onEvent(event: { kind: string; json: string }): void },
+    opts?: CallOpts,
   ): Promise<MediaSessionMin>;
-  cursorPosition(): Promise<{ x: number; y: number }>;
+  cursorPosition(opts?: CallOpts): Promise<{ x: number; y: number }>;
 }
 
 export interface Clock {
@@ -142,6 +154,8 @@ export interface FrameServiceOptions {
   maxUnacked?: number;
   /** An unacked frame older than this no longer blocks sending (lost ack, mod reconnect). */
   ackTimeoutMs?: number;
+  /** Deadline of one screenshot / cursor call (default 5 s); `openMedia` gets twice this. */
+  callTimeoutMs?: number;
   onCursor?: (pcId: string, pos: { x: number; y: number }) => void;
   logger?: Logger;
 }
@@ -157,7 +171,14 @@ export interface FrameStats {
   unchanged: number;
   mediaFrames: number;
   errors: number;
+  /** `openMedia` attempts (first open, reopen after close, retries after failure). */
+  mediaOpens: number;
 }
+
+/** Backoff bounds. */
+const SINK_RETRY_MS: [number, number] = [50, 1000];
+const MEDIA_RETRY_MS: [number, number] = [1000, 30_000];
+const ERROR_BACKOFF_MAX_MS = 5000;
 
 interface PcFrames {
   pcId: string;
@@ -173,8 +194,18 @@ interface PcFrames {
   lastHash: string | null;
   media: MediaSessionMin | null;
   mediaFailed: boolean;
+  /** Bumped per `openMedia` attempt and when a session is given up; stale sessions/events are ignored. */
+  mediaGen: number;
+  mediaRetryTimer: unknown;
+  mediaBackoffMs: number;
   cursorTimer: unknown;
   lastCursor: { x: number; y: number } | null;
+  /** Consecutive failures, for backoff. */
+  pollErrors: number;
+  cursorErrors: number;
+  sinkBackoffMs: number;
+  /** No slot (PC not running): all work stopped until `wake`. */
+  parked: boolean;
   stats: FrameStats;
 }
 
@@ -186,21 +217,24 @@ const newStats = (): FrameStats => ({
   unchanged: 0,
   mediaFrames: 0,
   errors: 0,
+  mediaOpens: 0,
 });
 
 export class FrameService {
-  readonly #o: Required<Omit<FrameServiceOptions, 'onCursor' | 'logger' | 'rates'>> & {
+  readonly #o: Required<Omit<FrameServiceOptions, 'onCursor' | 'logger' | 'rates' | 'callTimeoutMs'>> & {
     onCursor?: FrameServiceOptions['onCursor'];
     logger?: Logger;
   };
   readonly #rates: FrameRates;
   readonly #clock: Clock;
   readonly #pcs = new Map<string, PcFrames>();
+  readonly #callTimeoutMs: number;
   #closed = false;
 
   constructor(options: FrameServiceOptions) {
     this.#clock = options.clock ?? realClock;
     this.#rates = { ...DEFAULT_RATES, ...options.rates };
+    this.#callTimeoutMs = options.callTimeoutMs ?? 5000;
     this.#o = {
       sink: options.sink,
       getClient: options.getClient,
@@ -232,8 +266,15 @@ export class FrameService {
         lastHash: null,
         media: null,
         mediaFailed: false,
+        mediaGen: 0,
+        mediaRetryTimer: null,
+        mediaBackoffMs: 0,
         cursorTimer: null,
         lastCursor: null,
+        pollErrors: 0,
+        cursorErrors: 0,
+        sinkBackoffMs: 0,
+        parked: false,
         stats: newStats(),
       };
       this.#pcs.set(pcId, s);
@@ -248,22 +289,54 @@ export class FrameService {
       }
       return;
     }
-    this.#stopWork(s, false);
     s.tier = tier;
+    this.#restart(s);
+  }
+
+  /** Starts the work of the current tier from scratch (new epoch, no backoff). */
+  #restart(s: PcFrames): void {
+    this.#stopWork(s, false);
     s.epoch++;
     s.lastHash = null;
-    if (tier.mode === 'none') {
+    s.parked = false;
+    s.pollErrors = 0;
+    s.cursorErrors = 0;
+    s.mediaBackoffMs = 0;
+    if (s.tier.mode === 'none') {
       s.pending = null;
       s.unacked.clear();
       return;
     }
-    if (tier.mode === 'focus') {
+    if (s.tier.mode === 'focus') {
       s.mediaFailed = false;
       void this.#openMedia(s, s.epoch);
     } else {
       this.#schedulePoll(s, 0);
     }
     this.#scheduleCursor(s, 0);
+  }
+
+  /**
+   * The PC (re)gained its slot, i.e. it is running again: resume a parked PC's work right away and drop
+   * any error backoff (PcManager calls this when a PC turns `running`).
+   */
+  wake(pcId: string): void {
+    const s = this.#pcs.get(pcId);
+    if (!s || this.#closed || s.tier.mode === 'none') return;
+    if (s.parked || s.pollErrors > 0 || s.cursorErrors > 0 || s.mediaFailed) this.#restart(s);
+  }
+
+  /** Whether a PC's frame work is parked (no slot). */
+  isParked(pcId: string): boolean {
+    return this.#pcs.get(pcId)?.parked ?? false;
+  }
+
+  /** No slot: stop every timer and the media session; nothing polls a PC that isn't running. */
+  #park(s: PcFrames): void {
+    if (s.parked) return;
+    this.#stopWork(s, false);
+    s.epoch++;
+    s.parked = true;
   }
 
   tierOf(pcId: string): ViewTier {
@@ -331,13 +404,18 @@ export class FrameService {
     if (s.pollTimer !== null) this.#clock.clearTimeout(s.pollTimer);
     if (s.flushTimer !== null) this.#clock.clearTimeout(s.flushTimer);
     if (s.cursorTimer !== null) this.#clock.clearTimeout(s.cursorTimer);
+    if (s.mediaRetryTimer !== null) this.#clock.clearTimeout(s.mediaRetryTimer);
     s.pollTimer = null;
     s.flushTimer = null;
     s.cursorTimer = null;
-    if (!keepMedia && s.media) {
-      const m = s.media;
-      s.media = null;
-      m.close().catch(() => {});
+    s.mediaRetryTimer = null;
+    if (!keepMedia) {
+      s.mediaGen++;
+      if (s.media) {
+        const m = s.media;
+        s.media = null;
+        m.close().catch(() => {});
+      }
     }
   }
 
@@ -357,6 +435,10 @@ export class FrameService {
 
   #flush(s: PcFrames): void {
     if (!s.pending) return;
+    if (s.parked || s.tier.mode === 'none') {
+      s.pending = null;
+      return;
+    }
     const now = this.#clock.now();
     for (const [k, t] of s.unacked) if (now - t >= this.#o.ackTimeoutMs) s.unacked.delete(k);
     if (s.unacked.size >= this.#o.maxUnacked) {
@@ -372,13 +454,23 @@ export class FrameService {
       return;
     }
     const frame = s.pending;
-    s.pending = null;
     const seq = new DataView(frame.buffer, frame.byteOffset, 32).getUint32(12, false);
     if (this.#o.sink.sendFrame(frame)) {
+      s.pending = null;
       s.unacked.set(seq, now);
       s.stats.sent++;
-    } else {
-      s.stats.sinkSkipped++;
+      s.sinkBackoffMs = 0;
+      return;
+    }
+    // M3: the sink skipped it (backpressure, no mod). Keep it pending (a newer frame still replaces it)
+    // and retry with backoff, so a damage-driven stream that goes quiet still delivers its last frame.
+    s.stats.sinkSkipped++;
+    s.sinkBackoffMs = Math.min(SINK_RETRY_MS[1], Math.max(SINK_RETRY_MS[0], s.sinkBackoffMs * 2));
+    if (s.flushTimer === null) {
+      s.flushTimer = this.#clock.setTimeout(() => {
+        s.flushTimer = null;
+        this.#flush(s);
+      }, s.sinkBackoffMs);
     }
   }
 
@@ -422,18 +514,28 @@ export class FrameService {
   async #pollOnce(s: PcFrames, epoch: number): Promise<void> {
     const plan = this.#pollPlan(s);
     if (!plan || s.epoch !== epoch || this.#closed) return;
+    if (this.#o.slotOf(s.pcId) === undefined) {
+      this.#park(s);
+      return;
+    }
     const interval = 1000 / plan.fps;
     const started = this.#clock.now();
     if (!s.inFlight) {
       s.inFlight = true;
       try {
         const client = await this.#o.getClient(s.pcId);
-        const shot = await client.screenshot({
-          format: this.#o.jpegFormat,
-          quality: this.#rates.jpegQuality,
-          maxDimension: plan.maxDimension,
-          includeCursor: false,
-        });
+        const shot = await withDeadline(this.#callTimeoutMs, 'screenshot', (signal) =>
+          client.screenshot(
+            {
+              format: this.#o.jpegFormat,
+              quality: this.#rates.jpegQuality,
+              maxDimension: plan.maxDimension,
+              includeCursor: false,
+            },
+            { signal },
+          ),
+        );
+        s.pollErrors = 0;
         if (s.epoch === epoch) {
           const bytes = new Uint8Array(shot.image);
           const hash = createHash('sha1').update(bytes).digest('hex');
@@ -448,6 +550,7 @@ export class FrameService {
         }
       } catch (err) {
         s.stats.errors++;
+        s.pollErrors++;
         this.#o.logger?.debug({ pcId: s.pcId, err: String(err) }, 'screenshot failed');
       } finally {
         s.inFlight = false;
@@ -455,12 +558,19 @@ export class FrameService {
     }
     if (s.epoch !== epoch || this.#closed) return;
     const elapsed = this.#clock.now() - started;
-    this.#schedulePoll(s, Math.max(0, interval - elapsed));
+    this.#schedulePoll(s, Math.max(0, backoff(interval, s.pollErrors) - elapsed));
   }
 
   // --- focus tier: BGRA media stream
 
   async #openMedia(s: PcFrames, epoch: number): Promise<void> {
+    if (s.epoch !== epoch || this.#closed || s.tier.mode !== 'focus') return;
+    if (this.#o.slotOf(s.pcId) === undefined) {
+      this.#park(s);
+      return;
+    }
+    const gen = ++s.mediaGen;
+    s.stats.mediaOpens++;
     let session: MediaSessionMin | null = null;
     const earlyAcks: number[] = [];
     const guestAck = (sequence: number) => {
@@ -477,64 +587,90 @@ export class FrameService {
         );
       } catch {}
     };
+    const current = () => s.epoch === epoch && s.mediaGen === gen && s.tier.mode === 'focus' && !this.#closed;
     try {
       const client = await this.#o.getClient(s.pcId);
-      session = await client.openMedia(
-        {
-          maxFps: this.#rates.focusMaxFps,
-          maxDimension: this.#rates.focusMaxDimension,
-          audio: false,
-          disableVideo: false,
-          requestJson: BGRA_REQUEST_JSON,
-        },
-        {
-          onFrame: (f) => {
-            const sequence = Number(f.sequence);
-            guestAck(sequence);
-            if (s.epoch !== epoch) return;
-            s.stats.mediaFrames++;
-            if (f.codec !== 'bgra') return;
-            const payload = new Uint8Array(f.data);
-            if (payload.byteLength !== f.width * f.height * 4) {
-              s.stats.errors++;
-              return;
-            }
-            const frame = this.#encode(s, FrameCodec.BGRA8, f.width, f.height, payload);
-            if (frame) this.#offer(s, frame);
+      session = await withDeadline(this.#callTimeoutMs * 2, 'openMedia', (signal) =>
+        client.openMedia(
+          {
+            maxFps: this.#rates.focusMaxFps,
+            maxDimension: this.#rates.focusMaxDimension,
+            audio: false,
+            disableVideo: false,
+            requestJson: BGRA_REQUEST_JSON,
           },
-          onEvent: (e) => {
-            if (/clos|error|disconnect/i.test(e.kind) && s.epoch === epoch && s.tier.mode === 'focus') {
+          {
+            onFrame: (f) => {
+              const sequence = Number(f.sequence);
+              guestAck(sequence);
+              if (!current()) return;
+              s.stats.mediaFrames++;
+              if (f.codec !== 'bgra') return;
+              const payload = new Uint8Array(f.data);
+              if (payload.byteLength !== f.width * f.height * 4) {
+                s.stats.errors++;
+                return;
+              }
+              const frame = this.#encode(s, FrameCodec.BGRA8, f.width, f.height, payload);
+              if (frame) this.#offer(s, frame);
+            },
+            onEvent: (e) => {
+              // A session may report both "closed" and "error": only the first reopens, once.
+              if (!/clos|error|disconnect/i.test(e.kind) || !current()) return;
               this.#o.logger?.debug({ pcId: s.pcId, kind: e.kind }, 'media session ended; reopening');
-              s.media = null;
-              this.#clock.setTimeout(() => {
-                if (s.epoch === epoch && s.tier.mode === 'focus' && !s.media) void this.#openMedia(s, epoch);
-              }, 500);
-            }
+              s.mediaGen++;
+              if (s.media === session) s.media = null;
+              this.#scheduleMediaRetry(s, epoch, 500);
+            },
           },
-        },
+          { signal },
+        ),
       );
     } catch (err) {
       s.stats.errors++;
-      this.#o.logger?.warn({ pcId: s.pcId, err: String(err) }, 'openMedia failed; falling back to JPEG');
-      if (s.epoch === epoch && s.tier.mode === 'focus') {
-        s.mediaFailed = true;
-        this.#schedulePoll(s, 0);
-      }
+      if (s.epoch !== epoch || s.mediaGen !== gen) return;
+      this.#o.logger?.warn({ pcId: s.pcId, err: String(err) }, 'openMedia failed; JPEG until it reopens');
+      this.#mediaFailed(s, epoch);
       return;
     }
-    if (s.epoch !== epoch || this.#closed) {
+    if (!current()) {
       await session.close().catch(() => {});
       return;
     }
     if (session.codec() !== 'bgra') {
       this.#o.logger?.warn({ pcId: s.pcId, codec: session.codec() }, 'media codec is not BGRA; using JPEG');
+      s.mediaGen++;
       await session.close().catch(() => {});
-      s.mediaFailed = true;
-      this.#schedulePoll(s, 0);
+      this.#mediaFailed(s, epoch);
       return;
     }
     s.media = session;
+    s.mediaBackoffMs = 0;
+    if (s.mediaFailed) {
+      // The JPEG fallback loop ends by itself (#pollPlan returns null once the stream works).
+      s.mediaFailed = false;
+      s.lastHash = null;
+    }
     for (const seq of earlyAcks.splice(0)) guestAck(seq);
+  }
+
+  /** JPEG fallback now, another BGRA attempt later (exponential backoff). */
+  #mediaFailed(s: PcFrames, epoch: number): void {
+    if (s.epoch !== epoch || s.tier.mode !== 'focus') return;
+    if (!s.mediaFailed) {
+      s.mediaFailed = true;
+      if (s.pollTimer === null && !s.inFlight) this.#schedulePoll(s, 0);
+    }
+    s.mediaBackoffMs = Math.min(MEDIA_RETRY_MS[1], Math.max(MEDIA_RETRY_MS[0], s.mediaBackoffMs * 2));
+    this.#scheduleMediaRetry(s, epoch, s.mediaBackoffMs);
+  }
+
+  #scheduleMediaRetry(s: PcFrames, epoch: number, delayMs: number): void {
+    if (s.mediaRetryTimer !== null) return;
+    s.mediaRetryTimer = this.#clock.setTimeout(() => {
+      s.mediaRetryTimer = null;
+      if (s.epoch === epoch && s.tier.mode === 'focus' && !s.media) void this.#openMedia(s, epoch);
+    }, delayMs);
   }
 
   // --- cursor (not composited into frames)
@@ -551,16 +687,32 @@ export class FrameService {
 
   async #pollCursor(s: PcFrames, epoch: number): Promise<void> {
     if (s.epoch !== epoch || s.tier.mode === 'none' || this.#closed) return;
+    if (this.#o.slotOf(s.pcId) === undefined) {
+      this.#park(s);
+      return;
+    }
     try {
       const client = await this.#o.getClient(s.pcId);
-      const p = await client.cursorPosition();
+      const p = await withDeadline(this.#callTimeoutMs, 'cursorPosition', (signal) =>
+        client.cursorPosition({ signal }),
+      );
+      s.cursorErrors = 0;
       if (s.epoch === epoch && (!s.lastCursor || s.lastCursor.x !== p.x || s.lastCursor.y !== p.y)) {
         s.lastCursor = { x: p.x, y: p.y };
         this.#o.onCursor?.(s.pcId, s.lastCursor);
       }
     } catch {
       s.stats.errors++;
+      s.cursorErrors++;
     }
-    if (s.epoch === epoch && !this.#closed) this.#scheduleCursor(s, 1000 / this.#rates.cursorHz);
+    if (s.epoch === epoch && !this.#closed) {
+      this.#scheduleCursor(s, backoff(1000 / this.#rates.cursorHz, s.cursorErrors));
+    }
   }
+}
+
+/** `base` doubled per consecutive error, capped at 5 s (never below `base`). */
+export function backoff(base: number, errors: number): number {
+  if (errors <= 0) return base;
+  return Math.max(base, Math.min(ERROR_BACKOFF_MAX_MS, base * 2 ** Math.min(errors, 8)));
 }

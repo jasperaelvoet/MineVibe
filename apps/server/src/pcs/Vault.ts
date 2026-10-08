@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
-import { mkdir, realpath, stat } from 'node:fs/promises';
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { overlayVolumePrefix } from './PcTypes.js';
 
 /**
  * The Vault: host folders mounted into PCs (PLAN §8.3, §8.6).
@@ -97,8 +98,11 @@ function expandHome(p: string, home: string): string {
   return p;
 }
 
-/** Characters that break `--mount type=bind,source=…` or the `MV_CHOWN_PATHS` list. */
-const BAD_CHARS_RE = /[,:\\]/;
+/**
+ * Characters that break `--mount type=bind,source=…` (`,` splits directives; `=` makes 1.5.0 fail with
+ * "invalid directive format missing value", measured) or the colon-separated `MV_CHOWN_PATHS` list.
+ */
+const BAD_CHARS_RE = /[,:=\\]/;
 
 /** True when `s` holds an ASCII control character (C0 or DEL). */
 export function hasControlChar(s: string): boolean {
@@ -117,7 +121,7 @@ export function refusalReason(p: string, options: VaultOptions = {}): string | n
   const home = resolve(options.home ?? homedir());
   const path = normalize(p);
   if (!isAbsolute(path)) return 'the path must be absolute';
-  if (badChars(path)) return 'the path contains a comma, colon, backslash or control character';
+  if (badChars(path)) return 'the path contains a comma, colon, equals sign, backslash or control character';
   if (path === sep || path === '/') return 'the whole disk cannot be mounted';
   if (inside(home, path, platform)) {
     return key(path, platform) === key(home, platform)
@@ -192,6 +196,75 @@ export async function validateVaultPath(input: string, options: VaultOptions = {
   return { ok: true, path: real, isGitRepo, warnings };
 }
 
+/**
+ * Re-checks a stored mount right before every container create and start (H1). The Vault was validated
+ * when it was configured, but the folder may have been swapped since (by the user, or by an agent of a
+ * PC that mounts a parent folder read-write): it must still be a real directory (lstat, no symlink),
+ * resolve to exactly the stored path (no symlinked ancestor), and pass every refusal again.
+ * Returns the reason it may not be mounted, or null.
+ */
+export async function recheckMount(
+  mount: Pick<VaultMount, 'host'>,
+  options: VaultOptions = {},
+): Promise<string | null> {
+  const home = resolve(options.home ?? homedir());
+  const lexical = refusalReason(mount.host, options);
+  if (lexical) return lexical;
+  let st: Awaited<ReturnType<typeof lstat>>;
+  try {
+    st = await lstat(mount.host);
+  } catch {
+    return 'the folder no longer exists';
+  }
+  if (st.isSymbolicLink()) return 'the folder has been replaced by a symlink';
+  if (!st.isDirectory()) return 'the path is no longer a folder';
+  let real: string;
+  try {
+    real = await realpath(mount.host);
+  } catch {
+    return 'the folder no longer resolves';
+  }
+  if (real !== mount.host) return `the path now resolves to ${real}`;
+  let realHome = home;
+  try {
+    realHome = await realpath(home);
+  } catch {}
+  return refusalReason(real, { ...options, home: realHome });
+}
+
+/** Another PC's mounts, for the cross-PC nesting check. */
+export interface OtherPcMounts {
+  pcId: string;
+  mounts: readonly Pick<VaultMount, 'host' | 'ro'>[];
+}
+
+/**
+ * Refuses a mount nested strictly inside (or around) another PC's mount when the outer one is
+ * read-write (H1): an agent of the outer PC could replace the inner folder with a symlink to `$HOME`
+ * before the inner PC's next start. The same folder in two PCs is fine (a share root cannot be renamed
+ * from inside the guest), and nesting under a read-only mount is fine.
+ */
+export function crossPcNestingProblem(
+  mounts: readonly Pick<VaultMount, 'host' | 'ro'>[],
+  others: readonly OtherPcMounts[],
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  for (const m of mounts) {
+    for (const o of others) {
+      for (const om of o.mounts) {
+        if (key(m.host, platform) === key(om.host, platform)) continue;
+        if (inside(m.host, om.host, platform) && !om.ro) {
+          return `${m.host} is inside ${om.host}, which ${o.pcId} mounts read-write`;
+        }
+        if (inside(om.host, m.host, platform) && !m.ro) {
+          return `${m.host} would contain ${om.host} (mounted by ${o.pcId}) read-write`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /** The honest warning shown for read-write mounts (PLAN §8.3). */
 export const RW_WARNING = 'An agent can put code here that later runs on your Mac.';
 
@@ -219,13 +292,18 @@ export function suggestOverlays(dir: string): string[] {
   return out;
 }
 
-/** Name of the named volume backing one overlay of one mount of one PC. */
-export function overlayVolumeName(pcId: string, mountPath: string, overlay: string): string {
+/** Name of the named volume backing one overlay of one mount of one PC (of one MineVibe instance). */
+export function overlayVolumeName(
+  pcId: string,
+  instance: string,
+  mountPath: string,
+  overlay: string,
+): string {
   const h = createHash('sha256')
     .update(`${mountPath}\0${normalize(overlay)}`)
     .digest('hex')
     .slice(0, 10);
-  return `mv-pc-${pcId}-ov-${h}`;
+  return `${overlayVolumePrefix(pcId, instance)}${h}`;
 }
 
 /** Absolute guest (= host) path of an overlay. */
@@ -278,6 +356,15 @@ export async function prepareOverlayMountpoints(
 ): Promise<{ ready: string[]; skipped: string[] }> {
   const ready: string[] = [];
   const skipped: string[] = [];
+  // Never create anything below a mount root that is not a real directory (H1: swapped for a symlink).
+  let rootSt: ReturnType<typeof lstatSync> | null = null;
+  try {
+    rootSt = lstatSync(mount.host);
+  } catch {
+    rootSt = null;
+  }
+  if (!rootSt || rootSt.isSymbolicLink() || !rootSt.isDirectory())
+    return { ready, skipped: [...mount.overlays] };
   for (const o of mount.overlays) {
     // Walk each component with lstat so no symlink inside the mount is followed.
     const parts = normalize(o).split(sep);

@@ -9,9 +9,12 @@ import type { PcFamily } from './PcTypes.js';
  * - CPU pool (soft) = cores − 4, overcommit up to 1.5× with a warning. Apple `container` gives a guest
  *   `--cpus N` → N+1 vCPUs, so each PC counts `cpus + cpuOverhead`.
  * - macOS: at most 2 running; creating one needs ≥ 40 GB free disk.
- * - Disk: every volume and rootfs has a cap; the sum of caps of every existing PC must fit in the free
- *   disk (plus what PCs already occupy) minus a reserve.
- * - Container VMs don't return freed memory to macOS, so the budget counts allocated limits, not usage.
+ * - Disk: every volume and rootfs has a cap; the sum of caps of every existing PC (and of orphaned
+ *   volumes) must fit in the free disk plus what PCs already occupy (measured) minus a reserve. An edit
+ *   is charged only the growth of its caps (H5).
+ * - Container VMs don't return freed memory to macOS, so the budget counts allocated limits, not usage,
+ *   plus a per-VM overhead (kernel, vminitd, virtio) for every active PC (L11).
+ * - While an image build runs, the builder VM's memory is reserved too (L11).
  */
 
 export const MiB = 1024 * 1024;
@@ -36,6 +39,8 @@ export interface BudgetReserves {
   nodeGiB: number;
   claudePerAgentGiB: number;
   containerSystemGiB: number;
+  /** The `container` builder VM, reserved only while an image build runs. */
+  builderGiB: number;
 }
 
 export interface BudgetSettings {
@@ -51,6 +56,10 @@ export interface BudgetSettings {
   diskReserveGiB: number;
   /** Warn when live free memory drops below this. */
   lowMemoryWarnGiB: number;
+  /** Host memory each running VM costs beyond its limit (kernel, vminitd, virtio queues). */
+  vmMemOverheadMiB: number;
+  /** True while an image build (builder VM) runs. */
+  builderActive: boolean;
 }
 
 export const DEFAULT_RESERVES: BudgetReserves = {
@@ -59,6 +68,7 @@ export const DEFAULT_RESERVES: BudgetReserves = {
   nodeGiB: 0.5,
   claudePerAgentGiB: 1,
   containerSystemGiB: 1,
+  builderGiB: 2,
 };
 
 export function defaultBudgetSettings(overrides: Partial<BudgetSettings> = {}): BudgetSettings {
@@ -70,6 +80,8 @@ export function defaultBudgetSettings(overrides: Partial<BudgetSettings> = {}): 
     macosMinFreeDiskGiB: 40,
     diskReserveGiB: 20,
     lowMemoryWarnGiB: 1,
+    vmMemOverheadMiB: 256,
+    builderActive: false,
     ...overrides,
     reserves: { ...DEFAULT_RESERVES, ...overrides.reserves },
   };
@@ -106,7 +118,10 @@ export type Admission =
   | { ok: true; warnings: string[] }
   | { ok: false; reason: AdmissionReason; resource?: BudgetResource; detail: string };
 
-/** RAM reserved for everything that isn't a PC. */
+/**
+ * RAM reserved for everything that isn't a PC. Computed on demand from `crewCap`, so changing the crew
+ * cap recomputes the claude reserve (L11).
+ */
 export function reservedMemBytes(settings: BudgetSettings): number {
   const r = settings.reserves;
   return (
@@ -114,7 +129,8 @@ export function reservedMemBytes(settings: BudgetSettings): number {
       r.minecraftGiB +
       r.nodeGiB +
       r.claudePerAgentGiB * settings.crewCap +
-      r.containerSystemGiB) *
+      r.containerSystemGiB +
+      (settings.builderActive ? r.builderGiB : 0)) *
     GiB
   );
 }
@@ -122,6 +138,11 @@ export function reservedMemBytes(settings: BudgetSettings): number {
 /** CPUs a PC holds while active. */
 export function cpuCost(pc: Pick<PcAllocation, 'cpus' | 'cpuOverhead'>): number {
   return pc.cpus + pc.cpuOverhead;
+}
+
+/** Host memory a PC holds while active: its limit plus the per-VM overhead. */
+export function memCost(pc: Pick<PcAllocation, 'memMiB'>, settings: BudgetSettings): number {
+  return (pc.memMiB + settings.vmMemOverheadMiB) * MiB;
 }
 
 /** Computes pools, allocations and free capacity. */
@@ -145,7 +166,7 @@ export function computeBudget(
     diskBytes += pc.diskGiB * GiB;
     if (!pc.active) continue;
     cpus += cpuCost(pc);
-    memBytes += pc.memMiB * MiB;
+    memBytes += memCost(pc, settings);
     if (pc.family === 'macos') macosRunning++;
   }
   const warnings: string[] = [];
@@ -194,14 +215,18 @@ export function admit(
   const pc = request.pc;
   const warnings: string[] = [];
 
-  // Disk: every existing PC's caps, including stopped ones. A plain start allocates no new disk.
-  const diskNeed = pc.diskGiB * GiB;
-  if (request.kind !== 'start' && diskNeed > state.free.diskBytes) {
+  // Disk: every existing PC's caps, including stopped ones. A plain start allocates no new disk, and an
+  // edit is charged only the growth of its caps (H5: a CPU-only resize must never fail on disk).
+  const before = pcs.find((p) => p.id === pc.id);
+  const oldDisk = request.kind === 'edit' ? (before?.diskGiB ?? 0) * GiB : 0;
+  const diskNeed = Math.max(0, pc.diskGiB * GiB - oldDisk);
+  const diskFree = state.free.diskBytes - oldDisk;
+  if (request.kind !== 'start' && diskNeed > 0 && diskNeed > diskFree) {
     return {
       ok: false,
       reason: 'OVER_BUDGET',
       resource: 'disk',
-      detail: `needs ${fmtGiB(diskNeed)} of disk, ${fmtGiB(Math.max(0, state.free.diskBytes))} free`,
+      detail: `needs ${fmtGiB(diskNeed)} more disk, ${fmtGiB(Math.max(0, diskFree))} free`,
     };
   }
   if (pc.family === 'macos' && request.kind === 'create') {
@@ -224,7 +249,7 @@ export function admit(
       detail: `Apple allows ${settings.macosMaxRunning} macOS VMs (${state.allocated.macosRunning}/${settings.macosMaxRunning} running)`,
     };
   }
-  const memNeed = pc.memMiB * MiB;
+  const memNeed = memCost(pc, settings);
   if (memNeed > state.free.memBytes) {
     return {
       ok: false,
@@ -289,7 +314,8 @@ export function planBoot(
   const ordered = [...candidates].sort(compareBootPriority);
   const activeIds = new Set(alreadyActive.map((p) => p.id));
   const view = new Map<string, PcAllocation>();
-  for (const p of alreadyActive) view.set(p.id, { ...p, active: true });
+  // `alreadyActive` hold their share first (disk-only entries, like orphaned volumes, keep active=false).
+  for (const p of alreadyActive) view.set(p.id, { ...p });
   for (const c of ordered) if (!view.has(c.id)) view.set(c.id, { ...c, active: false });
   const plan: BootPlan = { boot: [], refused: [], warnings: [] };
   for (const c of ordered) {

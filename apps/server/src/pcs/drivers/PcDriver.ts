@@ -7,6 +7,16 @@ export const SPACESD_GUEST_PORT = 3211;
 export const MANAGED_LABEL = 'minevibe';
 /** Label carrying the PC id. */
 export const PC_ID_LABEL = 'minevibe.pc';
+/** Label carrying the MineVibe instance id (hash of the state dir), so instances sharing an app root never touch each other's PCs. */
+export const PC_INSTANCE_LABEL = 'minevibe.instance';
+
+/** True when `labels` carries every key/value of `want`. */
+export function hasLabels(
+  labels: Readonly<Record<string, string>>,
+  want: Readonly<Record<string, string>>,
+): boolean {
+  return Object.entries(want).every(([k, v]) => labels[k] === v);
+}
 
 export interface BindMount {
   source: string;
@@ -30,9 +40,16 @@ export interface PcRunSpec {
   shmMiB: number;
   /** Loopback host port published to spacesd :3211. */
   hostPort: number;
+  /** The PC's own network (`--network`); omitted = the runtime's default network. */
+  network?: string;
   binds: BindMount[];
   volumes: VolumeMount[];
   labels: Record<string, string>;
+  /**
+   * Labels that prove ownership of the PC's volumes and network (a subset of `labels` without values that
+   * change over the PC's life, like its type). Defaults to `labels`.
+   */
+  ownerLabels?: Record<string, string>;
   /** Plain env (`-e K=V`); never secrets. */
   env: Record<string, string>;
   /**
@@ -58,6 +75,9 @@ export interface PcContainerInfo {
   cpus?: number;
   cpuOverhead?: number;
   memoryBytes?: number;
+  shmBytes?: number;
+  /** Networks the container is attached to (configuration, known before start). */
+  networks?: string[];
   ipv4?: string;
 }
 
@@ -65,6 +85,14 @@ export interface VolumeInfo {
   name: string;
   labels: Record<string, string>;
   sizeBytes?: number;
+  /** Backing file on the host (Apple: `<appRoot>/volumes/<name>/volume.img`). */
+  source?: string;
+}
+
+export interface NetworkInfo {
+  name: string;
+  labels: Record<string, string>;
+  subnet?: string;
 }
 
 export type Progress = (message: string) => void;
@@ -89,11 +117,25 @@ export interface PcDriver {
     onProgress?: Progress,
   ): Promise<void>;
 
+  /**
+   * Creates a capped volume, or accepts an existing one only when it carries every given label (M1: a
+   * volume of the same name owned by another instance is never reused). Throws otherwise.
+   */
   ensureVolume(volume: VolumeMount, labels: Record<string, string>): Promise<'created' | 'exists'>;
   removeVolume(name: string): Promise<void>;
   listVolumes(labels: Record<string, string>): Promise<VolumeInfo[]>;
 
-  /** Creates and starts a container (`run -d`). Verifies the mounts that actually came up. */
+  /** Creates a network, or accepts an existing one only when it carries every given label. */
+  ensureNetwork(name: string, labels: Record<string, string>): Promise<'created' | 'exists'>;
+  removeNetwork(name: string): Promise<void>;
+  listNetworks(labels: Record<string, string>): Promise<NetworkInfo[]>;
+
+  /**
+   * Creates the container without starting it (`create`), then inspects it and verifies mounts, the
+   * loopback port and the network (H1, L1). A container that came out wrong is deleted and this throws.
+   */
+  create(spec: PcRunSpec): Promise<PcContainerInfo>;
+  /** `create` + `start` (tests and tools; PcManager re-checks the Vault in between). */
   run(spec: PcRunSpec): Promise<void>;
   start(name: string): Promise<void>;
   stop(name: string, timeoutSeconds?: number): Promise<void>;
@@ -102,6 +144,11 @@ export interface PcDriver {
   inspect(name: string): Promise<PcContainerInfo | null>;
   /** Containers (running or not) carrying every given label. */
   list(labels: Record<string, string>): Promise<PcContainerInfo[]>;
+  /**
+   * Bytes actually allocated on the host by the given containers' root filesystems and volumes (sparse
+   * images: allocated blocks, not their nominal size). Unknown entries are left out (Docker: none).
+   */
+  diskUsage(containers: readonly string[], volumes: readonly VolumeInfo[]): Promise<Map<string, number>>;
   /** `exec` inside a running container (diagnostics and tests; agents use spacesd). */
   exec(
     name: string,
@@ -118,11 +165,14 @@ export function assertRunSpec(spec: PcRunSpec): void {
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(spec.name)) fail(`name ${spec.name}`);
   if (!Number.isInteger(spec.cpus) || spec.cpus < 1) fail(`cpus ${spec.cpus}`);
   if (!Number.isInteger(spec.memoryMiB) || spec.memoryMiB < 256) fail(`memoryMiB ${spec.memoryMiB}`);
-  if (!Number.isInteger(spec.shmMiB) || spec.shmMiB < 0) fail(`shmMiB ${spec.shmMiB}`);
+  if (!Number.isInteger(spec.shmMiB) || spec.shmMiB < 0 || spec.shmMiB > spec.memoryMiB) {
+    fail(`shmMiB ${spec.shmMiB}`);
+  }
   if (!Number.isInteger(spec.hostPort) || spec.hostPort < 1024 || spec.hostPort > 65535) {
     fail(`hostPort ${spec.hostPort}`);
   }
-  const pathOk = (p: string) => p.startsWith('/') && !/[,\n\r\0]/.test(p) && !p.includes(':');
+  // `,` and `=` break `--mount` directives in 1.5.0; `:` breaks MV_CHOWN_PATHS.
+  const pathOk = (p: string) => p.startsWith('/') && !/[,=:\n\r\0]/.test(p);
   for (const b of spec.binds) {
     if (!pathOk(b.source) || !pathOk(b.target)) fail(`bind ${b.source} -> ${b.target}`);
   }
@@ -131,6 +181,8 @@ export function assertRunSpec(spec: PcRunSpec): void {
     if (!pathOk(v.target)) fail(`volume target ${v.target}`);
     if (!(v.sizeGiB > 0)) fail(`volume size ${v.sizeGiB}`);
   }
+  if (spec.network !== undefined && !/^[a-z0-9][a-z0-9._-]*$/.test(spec.network))
+    fail(`network ${spec.network}`);
   for (const [k, v] of Object.entries(spec.labels)) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(k) || /[\n\r\0=,]/.test(v)) fail(`label ${k}`);
   }
@@ -176,5 +228,54 @@ export function mountProblems(spec: PcRunSpec, info: PcContainerInfo): string[] 
     if (!got) problems.push(`volume ${want.name} at ${want.target} missing`);
     else if (got.name !== want.name) problems.push(`volume at ${want.target} is ${got.name}`);
   }
+  return problems;
+}
+
+/** The spacesd port must be published on 127.0.0.1 only, on the port asked for (L1). */
+export function portProblems(want: Pick<PcRunSpec, 'hostPort'>, info: PcContainerInfo): string[] {
+  const problems: string[] = [];
+  if (info.hostAddress !== '127.0.0.1') {
+    problems.push(`spacesd is published on ${info.hostAddress ?? 'no address'}, not 127.0.0.1`);
+  }
+  if (info.hostPort !== want.hostPort)
+    problems.push(`spacesd is published on port ${info.hostPort ?? 'none'}`);
+  return problems;
+}
+
+/** `docker.io/library/x` and `x` name the same image. */
+export function normalizeImageRef(ref: string): string {
+  return ref.replace(/^docker\.io\//, '').replace(/^library\//, '');
+}
+
+/**
+ * Everything about an existing container that must match the PC record before it is reused or adopted
+ * (M10): image, resources, mounts, volumes, labels, network and a loopback-only port. The token and the
+ * port number are not compared (the token is not visible; the port may differ).
+ */
+export function specProblems(want: PcRunSpec, info: PcContainerInfo): string[] {
+  const problems: string[] = [];
+  if (info.image !== undefined && normalizeImageRef(info.image) !== normalizeImageRef(want.image)) {
+    problems.push(`image is ${info.image}, not ${want.image}`);
+  }
+  if (info.cpus !== undefined && info.cpus !== want.cpus) problems.push(`cpus ${info.cpus} != ${want.cpus}`);
+  if (info.memoryBytes !== undefined && info.memoryBytes !== want.memoryMiB * 1024 * 1024) {
+    problems.push(`memory ${info.memoryBytes} != ${want.memoryMiB} MiB`);
+  }
+  if (info.shmBytes !== undefined && want.shmMiB > 0 && info.shmBytes !== want.shmMiB * 1024 * 1024) {
+    problems.push(`shm ${info.shmBytes} != ${want.shmMiB} MiB`);
+  }
+  problems.push(...mountProblems(want, info));
+  for (const got of info.volumes) {
+    if (!want.volumes.some((v) => v.target === got.target))
+      problems.push(`unexpected volume at ${got.target}`);
+  }
+  if (!hasLabels(info.labels, want.labels)) problems.push('labels differ');
+  if (want.network && info.networks && !info.networks.includes(want.network)) {
+    problems.push(`not on network ${want.network}`);
+  }
+  if (info.hostAddress !== undefined && info.hostAddress !== '127.0.0.1') {
+    problems.push(`spacesd is published on ${info.hostAddress}`);
+  }
+  if (info.hostPort === undefined) problems.push('spacesd port is not published');
   return problems;
 }

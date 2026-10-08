@@ -8,6 +8,7 @@ import {
   defaultBudgetSettings,
   GiB,
   type HostFacts,
+  MiB,
   type PcAllocation,
   planBoot,
   reservedMemBytes,
@@ -46,7 +47,8 @@ describe('pools (PLAN §8.2)', () => {
     expect(cpuCost(linux('a'))).toBe(3);
     const b = computeBudget(host, settings, [linux('a'), linux('b', { active: false })]);
     expect(b.allocated.cpus).toBe(3);
-    expect(b.allocated.memBytes).toBe(4 * GiB);
+    // The limit plus the per-VM overhead (L11).
+    expect(b.allocated.memBytes).toBe(4 * GiB + 256 * MiB);
     // Stopped PCs still hold their disk caps.
     expect(b.allocated.diskBytes).toBe(112 * GiB);
   });
@@ -79,7 +81,7 @@ describe('admission', () => {
     if (!r.ok) {
       expect(r.reason).toBe('OVER_BUDGET');
       expect(r.resource).toBe('memory');
-      expect(r.detail).toMatch(/4\.5 GiB free of 24\.5 GiB/);
+      expect(r.detail).toMatch(/4\.3 GiB free of 24\.5 GiB/);
     }
   });
 
@@ -184,5 +186,66 @@ describe('boot priority and planBoot', () => {
     const plan = planBoot(big, settings, [m('m1', 3), m('m2', 2), m('m3', 1)]);
     expect(plan.boot).toEqual(['m1', 'm2']);
     expect(plan.refused).toEqual([expect.objectContaining({ id: 'm3', reason: 'MACOS_SLOTS' })]);
+  });
+});
+
+describe('H5 + L11', () => {
+  it('an edit is charged only the growth of its disk caps', () => {
+    // The pool shrank below what is allocated (free disk fell as volumes filled up).
+    const tight: HostFacts = { ...host, diskFreeBytes: 60 * GiB }; // pool 40 GiB < 56 allocated
+    const pcs = [linux('a', { diskGiB: 56 })];
+    expect(admit(tight, settings, pcs, { kind: 'edit', pc: linux('a', { cpus: 4, diskGiB: 56 }) }).ok).toBe(
+      true,
+    );
+    expect(admit(tight, settings, pcs, { kind: 'edit', pc: linux('a', { diskGiB: 40 }) }).ok).toBe(true);
+    const grow = admit(tight, settings, pcs, { kind: 'edit', pc: linux('a', { diskGiB: 72 }) });
+    expect(grow).toMatchObject({
+      ok: false,
+      resource: 'disk',
+      detail: expect.stringMatching(/16\.0 GiB more disk/),
+    });
+    const roomy: HostFacts = { ...host, diskFreeBytes: 120 * GiB }; // pool 100: 56 + 16 fits
+    expect(admit(roomy, settings, pcs, { kind: 'edit', pc: linux('a', { diskGiB: 72 }) }).ok).toBe(true);
+  });
+
+  it('counts measured PC disk usage back into the pool', () => {
+    const b = computeBudget(
+      { ...host, diskFreeBytes: 100 * GiB, diskUsedByPcsBytes: 30 * GiB },
+      settings,
+      [],
+    );
+    expect(b.pool.diskBytes).toBe(110 * GiB);
+  });
+
+  it('reserves the builder VM only while a build runs', () => {
+    expect(reservedMemBytes(defaultBudgetSettings({ builderActive: true }))).toBe(25.5 * GiB);
+    expect(reservedMemBytes(defaultBudgetSettings({ builderActive: false }))).toBe(23.5 * GiB);
+  });
+
+  it('charges the per-VM memory overhead per active PC', () => {
+    const s = defaultBudgetSettings({ vmMemOverheadMiB: 512 });
+    const b = computeBudget(host, s, [linux('a'), linux('b'), linux('c', { active: false })]);
+    expect(b.allocated.memBytes).toBe(2 * (4096 + 512) * MiB);
+  });
+
+  it('planBoot keeps disk-only entries (orphaned volumes) inactive', () => {
+    const orphans: PcAllocation = {
+      id: '#orphans',
+      family: 'linux',
+      cpus: 0,
+      memMiB: 0,
+      cpuOverhead: 0,
+      active: false,
+      diskGiB: 10,
+    };
+    const plan = planBoot(host, settings, [{ ...linux('a', { active: false }) }], [orphans]);
+    expect(plan.boot).toEqual(['a']);
+    const full = planBoot(
+      { ...host, diskFreeBytes: 30 * GiB },
+      settings,
+      [{ ...linux('a', { active: false }) }],
+      [orphans],
+    );
+    expect(full.boot).toEqual(['a']); // a start allocates no new disk
   });
 });

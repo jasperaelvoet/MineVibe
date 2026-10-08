@@ -1,14 +1,17 @@
-import { CliError, type ExecFn, type ExecResult, execWithTimeout } from './exec.js';
+import { CliError, type ExecFn, type ExecResult, execWithTimeout, parseCliJson } from './exec.js';
 import {
   assertRunSpec,
   type BindMount,
   type ContainerState,
+  hasLabels,
   mountProblems,
+  type NetworkInfo,
   orderedMounts,
   type PcContainerInfo,
   type PcDriver,
   type PcRunSpec,
   type Progress,
+  portProblems,
   SPACESD_GUEST_PORT,
   type VolumeInfo,
   type VolumeMount,
@@ -19,13 +22,10 @@ import {
  * Same interface as the Apple driver; volume size caps are not enforced by Docker's local driver.
  */
 
-/** Builds `docker run` arguments (pure; unit-tested). */
-export function buildDockerRunArgs(spec: PcRunSpec): string[] {
+function dockerCommonArgs(spec: PcRunSpec): string[] {
   assertRunSpec(spec);
   const { binds, volumes } = orderedMounts(spec);
   const args = [
-    'run',
-    '-d',
     '--name',
     spec.name,
     '--cpus',
@@ -38,6 +38,7 @@ export function buildDockerRunArgs(spec: PcRunSpec): string[] {
   if (spec.shmMiB > 0) args.push('--shm-size', `${spec.shmMiB}m`);
   for (const k of Object.keys(spec.secretEnv)) args.push('-e', k);
   for (const [k, v] of Object.entries(spec.env)) args.push('-e', `${k}=${v}`);
+  if (spec.network) args.push('--network', spec.network);
   args.push('-p', `127.0.0.1:${spec.hostPort}:${SPACESD_GUEST_PORT}`);
   for (const b of binds) {
     args.push('--mount', `type=bind,source=${b.source},target=${b.target}${b.readonly ? ',readonly' : ''}`);
@@ -46,6 +47,16 @@ export function buildDockerRunArgs(spec: PcRunSpec): string[] {
   for (const [k, v] of Object.entries(spec.labels)) args.push('--label', `${k}=${v}`);
   args.push(spec.image);
   return args;
+}
+
+/** Builds `docker run -d` arguments (pure; unit-tested). */
+export function buildDockerRunArgs(spec: PcRunSpec): string[] {
+  return ['run', '-d', ...dockerCommonArgs(spec)];
+}
+
+/** Builds `docker create` arguments (pure; unit-tested). */
+export function buildDockerCreateArgs(spec: PcRunSpec): string[] {
+  return ['create', ...dockerCommonArgs(spec)];
 }
 
 interface DockerInspectJson {
@@ -57,8 +68,14 @@ interface DockerInspectJson {
   NetworkSettings?: {
     Ports?: Record<string, { HostIp?: string; HostPort?: string }[] | null>;
     IPAddress?: string;
+    Networks?: Record<string, unknown>;
   };
-  HostConfig?: { NanoCpus?: number; Memory?: number };
+  HostConfig?: {
+    NanoCpus?: number;
+    Memory?: number;
+    ShmSize?: number;
+    PortBindings?: Record<string, { HostIp?: string; HostPort?: string }[] | null>;
+  };
 }
 
 export function parseDockerInspect(j: DockerInspectJson): PcContainerInfo {
@@ -79,7 +96,9 @@ export function parseDockerInspect(j: DockerInspectJson): PcContainerInfo {
     else if (m.Type === 'bind')
       binds.push({ source: m.Source ?? '', target: m.Destination, readonly: m.RW === false });
   }
-  const port = j.NetworkSettings?.Ports?.[`${SPACESD_GUEST_PORT}/tcp`]?.[0];
+  // Ports are only in NetworkSettings while running; PortBindings holds what was asked for.
+  const key = `${SPACESD_GUEST_PORT}/tcp`;
+  const port = j.NetworkSettings?.Ports?.[key]?.[0] ?? j.HostConfig?.PortBindings?.[key]?.[0];
   return {
     name: (j.Name ?? '').replace(/^\//, ''),
     state,
@@ -92,6 +111,8 @@ export function parseDockerInspect(j: DockerInspectJson): PcContainerInfo {
     volumes,
     ...(j.HostConfig?.NanoCpus ? { cpus: j.HostConfig.NanoCpus / 1e9, cpuOverhead: 0 } : {}),
     ...(j.HostConfig?.Memory ? { memoryBytes: j.HostConfig.Memory } : {}),
+    ...(j.HostConfig?.ShmSize ? { shmBytes: j.HostConfig.ShmSize } : {}),
+    ...(j.NetworkSettings?.Networks ? { networks: Object.keys(j.NetworkSettings.Networks) } : {}),
   };
 }
 
@@ -144,7 +165,19 @@ export class DockerDriver implements PcDriver {
   }
 
   async ensureVolume(volume: VolumeMount, labels: Record<string, string>): Promise<'created' | 'exists'> {
-    if ((await this.#run(['volume', 'inspect', volume.name])).code === 0) return 'exists';
+    const r = await this.#run(['volume', 'inspect', volume.name]);
+    if (r.code === 0) {
+      const rows = parseCliJson<{ Labels?: Record<string, string> | null }[]>(
+        'docker volume inspect',
+        r.stdout,
+      );
+      if (!hasLabels(rows[0]?.Labels ?? {}, labels)) {
+        throw new Error(
+          `volume ${volume.name} exists but belongs to someone else (labels differ); not reusing it`,
+        );
+      }
+      return 'exists';
+    }
     const args = ['volume', 'create'];
     for (const [k, v] of Object.entries(labels)) args.push('--label', `${k}=${v}`);
     args.push(volume.name);
@@ -168,19 +201,71 @@ export class DockerDriver implements PcDriver {
       .map((name) => ({ name, labels: { ...labels } }));
   }
 
-  async run(spec: PcRunSpec): Promise<void> {
-    for (const v of spec.volumes) await this.ensureVolume(v, spec.labels);
-    const r = await this.#run(buildDockerRunArgs(spec), 180_000, spec.secretEnv);
+  async ensureNetwork(name: string, labels: Record<string, string>): Promise<'created' | 'exists'> {
+    const r = await this.#run(['network', 'inspect', name]);
+    if (r.code === 0) {
+      const rows = parseCliJson<{ Labels?: Record<string, string> | null }[]>(
+        'docker network inspect',
+        r.stdout,
+      );
+      if (!hasLabels(rows[0]?.Labels ?? {}, labels)) {
+        throw new Error(`network ${name} exists but belongs to someone else (labels differ); not using it`);
+      }
+      return 'exists';
+    }
+    const args = ['network', 'create'];
+    for (const [k, v] of Object.entries(labels)) args.push('--label', `${k}=${v}`);
+    args.push(name);
+    await this.#ok(args);
+    return 'created';
+  }
+
+  async removeNetwork(name: string): Promise<void> {
+    const r = await this.#run(['network', 'rm', name]);
+    if (r.code !== 0 && !/not found|no such network/i.test(r.stderr))
+      throw new CliError('docker network rm', r);
+  }
+
+  async listNetworks(labels: Record<string, string>): Promise<NetworkInfo[]> {
+    const args = ['network', 'ls', '--format', '{{.Name}}'];
+    for (const [k, v] of Object.entries(labels)) args.push('--filter', `label=${k}=${v}`);
+    return (await this.#ok(args))
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((name) => ({ name, labels: { ...labels } }));
+  }
+
+  async create(spec: PcRunSpec): Promise<PcContainerInfo> {
+    for (const v of spec.volumes) await this.ensureVolume(v, spec.ownerLabels ?? spec.labels);
+    const r = await this.#run(buildDockerCreateArgs(spec), 180_000, spec.secretEnv);
     if (r.code !== 0 || r.timedOut) {
       await this.remove(spec.name).catch(() => {});
-      throw new CliError('docker run', r, Object.values(spec.secretEnv));
+      throw new CliError('docker create', r, Object.values(spec.secretEnv));
     }
     const info = await this.inspect(spec.name);
-    const problems = info ? mountProblems(spec, info) : ['container vanished after run'];
-    if (problems.length > 0) {
+    const problems = info
+      ? [...mountProblems(spec, info), ...portProblems(spec, info)]
+      : ['container vanished after create'];
+    if (!info || problems.length > 0) {
       await this.remove(spec.name).catch(() => {});
-      throw new Error(`docker run produced the wrong mounts: ${problems.join('; ')}`);
+      throw new Error(`docker create produced the wrong container: ${problems.join('; ')}`);
     }
+    return info;
+  }
+
+  async run(spec: PcRunSpec): Promise<void> {
+    await this.create(spec);
+    try {
+      await this.start(spec.name);
+    } catch (err) {
+      await this.remove(spec.name).catch(() => {});
+      throw err;
+    }
+  }
+
+  async diskUsage(): Promise<Map<string, number>> {
+    return new Map();
   }
 
   async start(name: string): Promise<void> {
@@ -201,7 +286,7 @@ export class DockerDriver implements PcDriver {
     const r = await this.#run(['inspect', '--type', 'container', name]);
     if (r.code !== 0 && /no such/i.test(r.stderr)) return null;
     if (r.code !== 0 || r.timedOut) throw new CliError('docker inspect', r);
-    const rows = JSON.parse(r.stdout) as DockerInspectJson[];
+    const rows = parseCliJson<DockerInspectJson[]>('docker inspect', r.stdout);
     return rows[0] ? parseDockerInspect(rows[0]) : null;
   }
 
@@ -214,7 +299,9 @@ export class DockerDriver implements PcDriver {
       .filter(Boolean);
     if (ids.length === 0) return [];
     const r = await this.#ok(['inspect', '--type', 'container', ...ids]);
-    return (JSON.parse(r) as DockerInspectJson[]).map(parseDockerInspect);
+    return parseCliJson<DockerInspectJson[]>('docker inspect', r)
+      .map(parseDockerInspect)
+      .filter((c) => hasLabels(c.labels, labels));
   }
 
   exec(

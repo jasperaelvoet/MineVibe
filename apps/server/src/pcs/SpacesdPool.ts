@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SpacesdClientLike } from '@trycua/cua';
 import type { Logger } from 'pino';
+import { withDeadline } from './deadline.js';
 
 /**
  * One `@trycua/cua` spacesd client per PC (PLAN §3, §8.6).
@@ -12,6 +13,8 @@ import type { Logger } from 'pino';
  * - Readiness means `health().status === "HEALTH_STATUS_SERVING"`; `health()` also resolves while
  *   spacesd reports NOT_SERVING (S5).
  * - A transport failure drops the client; the next call reconnects.
+ * - Every connect and call has a deadline (H3): the promise rejects at the deadline even when the native
+ *   call ignores its AbortSignal, so a hung guest never blocks a caller.
  */
 
 /** The parts of the `@trycua/cua` module MineVibe uses. */
@@ -113,6 +116,8 @@ export interface SpacesdPoolOptions {
   loader?: () => Promise<CuaModule>;
   connectTimeoutMs?: number;
   healthTimeoutMs?: number;
+  /** Default deadline for {@link SpacesdPool.call}. */
+  callTimeoutMs?: number;
 }
 
 interface Entry {
@@ -127,6 +132,7 @@ export class SpacesdPool {
   readonly #log: Logger | undefined;
   readonly #connectTimeoutMs: number;
   readonly #healthTimeoutMs: number;
+  readonly #callTimeoutMs: number;
   #module: CuaModule | null = null;
 
   constructor(options: SpacesdPoolOptions) {
@@ -134,6 +140,7 @@ export class SpacesdPool {
     this.#log = options.logger;
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
     this.#healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
+    this.#callTimeoutMs = options.callTimeoutMs ?? 10_000;
   }
 
   /** Loads the cua module (idempotent) and returns it. */
@@ -190,36 +197,42 @@ export class SpacesdPool {
 
   async #connect(endpoint: PcEndpoint): Promise<SpacesdClientLike> {
     const mod = await this.module();
-    const signal = AbortSignal.timeout(this.#connectTimeoutMs);
-    return mod.embedded().spacesd(endpoint.url, endpoint.token, { signal });
+    return withDeadline(this.#connectTimeoutMs, 'spacesd connect', (signal) =>
+      mod.embedded().spacesd(endpoint.url, endpoint.token, { signal }),
+    );
   }
 
   /**
-   * Runs `fn` with the PC's client. A transport error drops the client; with `retry` (default true, for
-   * idempotent calls) it reconnects and tries once more.
+   * Runs `fn` with the PC's client under a deadline (`timeoutMs`, default `callTimeoutMs`); `fn` gets the
+   * deadline's signal to pass on. A transport error (a deadline counts) drops the client; with `retry`
+   * (default true, for idempotent calls) it reconnects and tries once more.
    */
   async call<T>(
     pcId: string,
-    fn: (c: SpacesdClientLike) => Promise<T>,
-    options: { retry?: boolean } = {},
+    fn: (c: SpacesdClientLike, signal: AbortSignal) => Promise<T>,
+    options: { retry?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
     const retry = options.retry ?? true;
+    const ms = options.timeoutMs ?? this.#callTimeoutMs;
+    const once = async () => {
+      const c = await this.client(pcId);
+      return withDeadline(ms, 'spacesd call', (signal) => fn(c, signal));
+    };
     try {
-      return await fn(await this.client(pcId));
+      return await once();
     } catch (err) {
       if (!isTransportError(err)) throw err;
       this.invalidate(pcId);
       if (!retry) throw err;
       this.#log?.debug({ pcId }, 'spacesd reconnecting');
-      return fn(await this.client(pcId));
+      return once();
     }
   }
 
   /** One health probe. */
   async health(pcId: string): Promise<HealthReport> {
-    return this.call(pcId, async (c) => {
-      const signal = AbortSignal.timeout(this.#healthTimeoutMs);
-      return parseHealth(await c.health({ signal }));
+    return this.call(pcId, async (c, signal) => parseHealth(await c.health({ signal })), {
+      timeoutMs: this.#healthTimeoutMs,
     });
   }
 

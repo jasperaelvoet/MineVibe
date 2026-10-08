@@ -5,12 +5,16 @@
 #    named volume is an empty, root-owned ext4 with only lost+found).
 # 2. chowns 1000:1000 the home and every build-dir overlay listed in MV_CHOWN_PATHS (colon-separated
 #    absolute paths, e.g. /Users/me/Code/foo/node_modules). Only named-volume mount points are touched,
-#    never a host bind mount and never recursively.
+#    never a host bind mount and never recursively. Globbing is off while the list is split (L3).
+# 3. Prepares the capped /tmp and /var/tmp volumes (PLAN §8.6, M6): mode 1777, no lost+found, and /tmp
+#    emptied on every boot like a tmpfs (a stale /tmp/.X1-lock would keep Xvnc from starting).
 set -u
 
 SKEL=/opt/minevibe/skel-home
 HOME_DIR=/home/cua
 CUA_ENTRYPOINT=/opt/cua/desktop/entrypoint.sh
+TMP_DIR=/tmp
+VAR_TMP_DIR=/var/tmp
 CUA_UID=1000
 CUA_GID=1000
 
@@ -49,6 +53,7 @@ chmod 0750 "$HOME_DIR" 2>/dev/null || true
 # --- 2. build-dir overlays -------------------------------------------------------------------------------
 if [ -n "${MV_CHOWN_PATHS:-}" ]; then
   old_ifs=$IFS
+  set -f
   IFS=':'
   for p in $MV_CHOWN_PATHS; do
     IFS=$old_ifs
@@ -72,7 +77,24 @@ if [ -n "${MV_CHOWN_PATHS:-}" ]; then
     chown "$CUA_UID:$CUA_GID" "$p" || log "chown $p failed"
   done
   IFS=$old_ifs
+  set +f
 fi
 unset MV_CHOWN_PATHS
+
+# --- 3. capped /tmp and /var/tmp -------------------------------------------------------------------------
+for d in "$TMP_DIR" "$VAR_TMP_DIR"; do
+  mountpoint -q "$d" 2>/dev/null || continue
+  t=$(fs_type "$d")
+  case "$t" in
+    ext4 | ext3 | ext2 | xfs | btrfs) ;;
+    *) continue ;;
+  esac
+  if [ "$d" = "$TMP_DIR" ]; then
+    find "$TMP_DIR" -xdev -mindepth 1 -delete 2>/dev/null || log "clearing $TMP_DIR failed"
+  else
+    rmdir "$d/lost+found" 2>/dev/null || true
+  fi
+  chown 0:0 "$d" && chmod 1777 "$d" || log "chmod $d failed"
+done
 
 exec "$CUA_ENTRYPOINT" "$@"

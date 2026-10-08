@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -12,10 +13,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  crossPcNestingProblem,
   overlayTarget,
   overlayVolumeName,
   prepareOverlayMountpoints,
   RW_WARNING,
+  recheckMount,
   refusalReason,
   suggestOverlays,
   validateMounts,
@@ -74,6 +77,7 @@ describe('refusals (PLAN §8.3)', () => {
     ['relative/path', /absolute/],
     ['HOME/Code/a,b', /comma/],
     ['HOME/Code/a:b', /colon/],
+    ['HOME/Code/a=b', /equals/],
   ])('refuses %s', (p, why) => {
     const path = p.replace('HOME', home).replace('ROOT', root);
     expect(refusalReason(path, opts())).toMatch(why);
@@ -159,11 +163,12 @@ describe('overlays', () => {
   });
 
   it('names overlay volumes per PC, mount and entry', () => {
-    const a = overlayVolumeName('linux-1', '/x/foo', 'node_modules');
-    expect(a).toMatch(/^mv-pc-linux-1-ov-[0-9a-f]{10}$/);
-    expect(overlayVolumeName('linux-1', '/x/foo', 'node_modules')).toBe(a);
-    expect(overlayVolumeName('linux-1', '/x/bar', 'node_modules')).not.toBe(a);
-    expect(overlayVolumeName('linux-2', '/x/foo', 'node_modules')).not.toBe(a);
+    const a = overlayVolumeName('linux-1', 'ab12cd34', '/x/foo', 'node_modules');
+    expect(a).toMatch(/^mv-pc-ab12cd34-linux-1-ov-[0-9a-f]{10}$/);
+    expect(overlayVolumeName('linux-1', 'ab12cd34', '/x/foo', 'node_modules')).toBe(a);
+    expect(overlayVolumeName('linux-1', 'ab12cd34', '/x/bar', 'node_modules')).not.toBe(a);
+    expect(overlayVolumeName('linux-2', 'ab12cd34', '/x/foo', 'node_modules')).not.toBe(a);
+    expect(overlayVolumeName('linux-1', 'ffff0000', '/x/foo', 'node_modules')).not.toBe(a);
     expect(overlayTarget('/x/foo', 'apps/web/node_modules')).toBe('/x/foo/apps/web/node_modules');
   });
 
@@ -180,6 +185,74 @@ describe('overlays', () => {
     expect(lstatSync(join(foo, 'node_modules')).isDirectory()).toBe(true);
     expect(existsSync(join(foo, 'a', 'b', 'build'))).toBe(true);
     expect(existsSync(join(home, '.ssh', 'target'))).toBe(false);
+  });
+
+  it('creates nothing when the mount root itself became a symlink', async () => {
+    const foo = join(code, 'foo');
+    renameSync(foo, `${foo}-real`);
+    symlinkSync(home, foo);
+    const r = await prepareOverlayMountpoints({ host: foo, ro: false, overlays: ['node_modules'] });
+    expect(r).toEqual({ ready: [], skipped: ['node_modules'] });
+    expect(existsSync(join(home, 'node_modules'))).toBe(false);
+  });
+});
+
+describe('H1: re-checks before every run', () => {
+  it('accepts an unchanged mount', async () => {
+    expect(await recheckMount({ host: join(code, 'foo') }, opts())).toBeNull();
+  });
+
+  it('refuses a mount swapped for a symlink, a symlinked ancestor, a file and a missing folder', async () => {
+    const foo = join(code, 'foo');
+    renameSync(foo, `${foo}-real`);
+    symlinkSync(home, foo);
+    expect(await recheckMount({ host: foo }, opts())).toMatch(/symlink/);
+    rmSync(foo);
+    expect(await recheckMount({ host: foo }, opts())).toMatch(/no longer exists/);
+    writeFileSync(foo, 'x');
+    expect(await recheckMount({ host: foo }, opts())).toMatch(/no longer a folder/);
+    rmSync(foo);
+    // An ancestor replaced by a symlink: the path resolves elsewhere now.
+    mkdirSync(join(root, 'elsewhere', 'foo'), { recursive: true });
+    renameSync(code, `${code}-real`);
+    symlinkSync(join(root, 'elsewhere'), code);
+    expect(await recheckMount({ host: foo }, opts())).toMatch(/now resolves to/);
+  });
+
+  it('applies the refusals again (a stored path that became forbidden)', async () => {
+    const state = join(code, 'bar', 'state');
+    expect(await recheckMount({ host: join(code, 'bar') }, { ...opts(), forbidden: [state] })).toMatch(
+      /MineVibe data/,
+    );
+  });
+
+  it("refuses nesting under another PC's read-write mount (both directions)", () => {
+    const foo = join(code, 'foo');
+    const others = [{ pcId: 'a', mounts: [{ host: code, ro: false }] }];
+    expect(crossPcNestingProblem([{ host: foo, ro: true }], others, 'darwin')).toMatch(
+      /inside .* a mounts read-write/,
+    );
+    expect(
+      crossPcNestingProblem(
+        [{ host: foo, ro: true }],
+        [{ pcId: 'a', mounts: [{ host: code, ro: true }] }],
+        'darwin',
+      ),
+    ).toBeNull();
+    expect(
+      crossPcNestingProblem(
+        [{ host: code, ro: false }],
+        [{ pcId: 'b', mounts: [{ host: foo, ro: true }] }],
+        'darwin',
+      ),
+    ).toMatch(/would contain/);
+    expect(
+      crossPcNestingProblem(
+        [{ host: foo, ro: false }],
+        [{ pcId: 'b', mounts: [{ host: foo, ro: false }] }],
+        'darwin',
+      ),
+    ).toBeNull();
   });
 });
 

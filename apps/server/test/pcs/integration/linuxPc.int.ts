@@ -4,10 +4,13 @@
  *
  * Provision runtime → build/pull image → create a PC with a temp Vault + overlay → SERVING → JPEG
  * screenshot → 3 s BGRA stream → input into a terminal → spawn as cua in the mount → read-only mount →
- * recreate keeps the home volume → budget refusal → guest cannot reach host loopback → cleanup.
+ * capped /tmp + /var/tmp → spacesd refuses a missing/wrong token → recreate keeps the home volume →
+ * budget refusals (by resource) → per-PC networks isolate PCs → guest cannot reach host loopback →
+ * monitor → cleanup.
  *
- * Everything it creates carries the label `minevibe=pc-test` and is deleted at the end; the container
- * system is stopped at the end when it is ours. Roots default to the dev roots outside ~/Documents.
+ * Everything it creates carries a per-run label `minevibe=pc-test-<run>` and a per-run instance id (the
+ * temp state dir), and is deleted at the end. The container system is stopped at the end only when this
+ * run started it. Roots default to the dev roots outside ~/Documents.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -39,17 +42,21 @@ import { MANAGED_LABEL } from '../../../src/pcs/drivers/PcDriver.js';
 import type { FrameService } from '../../../src/pcs/FrameService.js';
 import type { InputRouter } from '../../../src/pcs/InputRouter.js';
 import { PcError, PcManager } from '../../../src/pcs/PcManager.js';
-import { containerName, homeVolumeName, LINUX_PC_IMAGE_DEV } from '../../../src/pcs/PcTypes.js';
+import { LINUX_PC_IMAGE_DEV } from '../../../src/pcs/PcTypes.js';
+import type { CuaModule } from '../../../src/pcs/SpacesdPool.js';
 import { SpacesdPool } from '../../../src/pcs/SpacesdPool.js';
 
-const LABEL = 'pc-test';
+const RUN = `${process.pid.toString(36)}${Date.now().toString(36).slice(-4)}`;
+/** Per-run label (M1): concurrent runs and other dev servers never see each other's resources. */
+const LABEL = `pc-test-${RUN}`;
 const repo = findRepoRoot(fileURLToPath(import.meta.url)) as string;
 const roots = {
   appRoot: process.env.MINEVIBE_CONTAINER_APP_ROOT ?? devContainerRoots().appRoot,
   installRoot: process.env.MINEVIBE_CONTAINER_INSTALL_ROOT ?? devContainerRoots().installRoot,
 };
 const ID = `it-${process.pid.toString(36)}`;
-const NAME = containerName(ID);
+const ID_B = `${ID}-b`;
+let NAME: string;
 
 const results: Record<string, unknown> = {};
 const note = (k: string, v: unknown) => {
@@ -72,10 +79,12 @@ let driver: AppleContainerDriver;
 let pool: SpacesdPool;
 let manager: PcManager;
 let pc: SpacesdClientLike;
+let engineBefore = 'unknown';
 
 async function cleanupLabelled(): Promise<void> {
   for (const c of await driver.list({ [MANAGED_LABEL]: LABEL })) await driver.remove(c.name);
   for (const v of await driver.listVolumes({ [MANAGED_LABEL]: LABEL })) await driver.removeVolume(v.name);
+  for (const n of await driver.listNetworks({ [MANAGED_LABEL]: LABEL })) await driver.removeNetwork(n.name);
 }
 
 async function asCua(pcId: string, script: string, cwd?: string) {
@@ -141,6 +150,7 @@ beforeAll(async () => {
   await runtime.provision((m) => console.log(`[pcs] ${m}`));
   note('provision_ms', ms(t0));
   const before = await runtime.status();
+  engineBefore = before.ownership;
   note('engine_before', before.ownership);
   t0 = performance.now();
   await driver.ensureEngine();
@@ -173,22 +183,30 @@ beforeAll(async () => {
     },
   });
   await manager.init({ createDefault: false });
+  NAME = manager.containerNameOf(ID);
+  note('instance', manager.instanceId);
 });
 
 afterAll(async () => {
-  try {
-    if (manager?.get(ID)) await manager.decommission(ID);
-  } catch (err) {
-    console.log(`[pcs] decommission failed: ${String(err)}`);
+  for (const id of [ID_B, ID]) {
+    try {
+      if (manager?.get(id)) await manager.decommission(id);
+    } catch (err) {
+      console.log(`[pcs] decommission ${id} failed: ${String(err)}`);
+    }
   }
   try {
     if (driver) await cleanupLabelled();
     const left = driver ? await driver.list({ [MANAGED_LABEL]: LABEL }) : [];
     const leftVols = driver ? await driver.listVolumes({ [MANAGED_LABEL]: LABEL }) : [];
+    const leftNets = driver ? await driver.listNetworks({ [MANAGED_LABEL]: LABEL }) : [];
     note('leftover_containers', left.length);
     note('leftover_volumes', leftVols.length);
+    note('leftover_networks', leftNets.length);
     await manager?.shutdown({ stopEngine: false });
-    if (runtime) note('engine_stopped', await runtime.stopIfOurs());
+    // M1: stop the engine only when this run started it (never one that was already running).
+    if (runtime && engineBefore === 'not_running') note('engine_stopped', await runtime.stopIfOurs());
+    else note('engine_stopped', `left running (was ${engineBefore} before the run)`);
   } finally {
     if (tmp) rmSync(tmp, { recursive: true, force: true });
     console.log(`[pcs] RESULTS ${JSON.stringify(results)}`);
@@ -219,6 +237,8 @@ describe('Linux PC on Apple container', () => {
     expect(manager.status(ID).status).toBe('running');
     const info = await driver.inspect(NAME);
     expect(info?.hostAddress).toBe('127.0.0.1');
+    expect(info?.networks).toEqual([manager.networkNameOf(ID)]);
+    expect(info?.labels).toMatchObject({ [MANAGED_LABEL]: LABEL, 'minevibe.instance': manager.instanceId });
     expect(info?.binds).toEqual(
       expect.arrayContaining([
         { source: vaultRw, target: vaultRw, readonly: false },
@@ -226,7 +246,7 @@ describe('Linux PC on Apple container', () => {
       ]),
     );
     expect(info?.volumes.map((v) => v.target).sort()).toEqual(
-      ['/home/cua', join(vaultRw, 'node_modules')].sort(),
+      ['/home/cua', '/tmp', '/var/tmp', join(vaultRw, 'node_modules')].sort(),
     );
     note('cpus_seen_by_runtime', { cpus: info?.cpus, cpuOverhead: info?.cpuOverhead });
     pc = await pool.client(ID);
@@ -450,6 +470,46 @@ describe('Linux PC on Apple container', () => {
     expect(existsSync(join(vaultRo, 'nope.txt'))).toBe(false);
   });
 
+  it('/tmp and /var/tmp are capped volumes (1777; /tmp starts empty)', async () => {
+    const r = await asCua(
+      ID,
+      'for d in /tmp /var/tmp; do echo "$d $(stat -c %a $d) $(df -BG --output=size $d | tail -1 | tr -d " ")"; done; touch /tmp/mv-x && echo tmp-writable; ls -A /tmp | grep -c lost+found || true',
+    );
+    note('tmp_volumes', r.stdout.replace(/\n/g, ' | '));
+    const lines = r.stdout.split('\n');
+    const size = (d: string) =>
+      Number((lines.find((l) => l.startsWith(`${d} `)) ?? '').split(' ')[2]?.replace('G', ''));
+    expect(lines[0]).toMatch(/^\/tmp 1777 /);
+    expect(lines[1]).toMatch(/^\/var\/tmp 1777 /);
+    expect(size('/tmp')).toBeLessThanOrEqual(8);
+    expect(size('/var/tmp')).toBeLessThanOrEqual(4);
+    expect(r.stdout).toContain('tmp-writable');
+  });
+
+  it('spacesd rejects a missing or wrong token (L10)', async () => {
+    const mod = (await pool.module()) as CuaModule;
+    const port = manager.get(ID)?.hostPort as number;
+    const url = `http://127.0.0.1:${port}`;
+    const attempt = async (token: string | undefined) => {
+      const signal = AbortSignal.timeout(8000);
+      const c = await mod.embedded().spacesd(url, token, { signal });
+      return (c as unknown as SpacesdClientLike).displays({ signal });
+    };
+    const wrong = await attempt('0'.repeat(48)).then(
+      () => 'accepted',
+      (e: unknown) => String(e).slice(0, 160),
+    );
+    const missing = await attempt(undefined).then(
+      () => 'accepted',
+      (e: unknown) => String(e).slice(0, 160),
+    );
+    note('spacesd_auth', { wrong, missing });
+    expect(wrong).not.toBe('accepted');
+    expect(missing).not.toBe('accepted');
+    // Positive control: the real token works.
+    expect(JSON.parse(await pc.displays()).length).toBeGreaterThan(0);
+  });
+
   it('recreate (resize) keeps the home volume and the Vault', async () => {
     const marker = `persist-${Date.now()}`;
     expect((await asCua(ID, `echo ${marker} > /home/cua/mv-persist.txt`)).ok).toBe(true);
@@ -464,20 +524,32 @@ describe('Linux PC on Apple container', () => {
     note('after_recreate', r.stdout.replace(/\n/g, ' | '));
     expect(r.stdout.split('\n').slice(0, 2)).toEqual([marker, 'from-guest']);
     expect((await driver.listVolumes({ [MANAGED_LABEL]: LABEL })).map((v) => v.name)).toContain(
-      homeVolumeName(ID),
+      manager.homeVolumeOf(ID),
     );
   });
 
-  it('refuses an over-budget resize and an over-budget PC', async () => {
+  it('refuses an over-budget resize and an over-budget PC, naming the resource (H5)', async () => {
     const err = await manager.resize(ID, { memMiB: 60 * 1024 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PcError);
-    expect(err).toMatchObject({ code: 'OVER_BUDGET' });
+    expect(err).toMatchObject({ code: 'OVER_BUDGET', resource: 'memory' });
     note('budget_refusal', (err as Error).message);
     const err2 = await manager
-      .create({ type: 'linux', id: `${ID}-big`, cpus: 16, memMiB: 64 * 1024, boot: true })
+      .create({
+        type: 'linux',
+        id: `${ID}-big`,
+        cpus: 16,
+        memMiB: 64 * 1024,
+        // Tiny disk caps, so the refusal is about memory whatever this Mac's free disk is.
+        disk: { homeGiB: 1, overlayGiB: 1, tmpGiB: 1, varTmpGiB: 1, rootfsGiB: 0 },
+        boot: true,
+      })
       .catch((e: unknown) => e);
-    expect(err2).toMatchObject({ code: 'OVER_BUDGET' });
+    expect(err2).toMatchObject({ code: 'OVER_BUDGET', resource: 'memory' });
     expect(manager.get(`${ID}-big`)).toBeUndefined();
+    const err3 = await manager
+      .create({ type: 'linux', id: `${ID}-disk`, disk: { homeGiB: 4000 } })
+      .catch((e: unknown) => e);
+    expect(err3).toMatchObject({ code: 'OVER_BUDGET', resource: 'disk' });
     const b = await manager.budget();
     note('budget', {
       ramPoolGiB: +(b.pool.memBytes / 2 ** 30).toFixed(1),
@@ -485,8 +557,39 @@ describe('Linux PC on Apple container', () => {
       allocatedCpus: b.allocated.cpus,
       allocatedMemGiB: +(b.allocated.memBytes / 2 ** 30).toFixed(1),
       diskCapsGiB: +(b.allocated.diskBytes / 2 ** 30).toFixed(1),
+      diskUsedByPcsGiB: +((b.host.diskUsedByPcsBytes ?? 0) / 2 ** 30).toFixed(2),
     });
+    expect(b.host.diskUsedByPcsBytes).toBeGreaterThan(0);
     expect(manager.status(ID).status).toBe('running');
+  });
+
+  it('every PC has its own network; PCs cannot reach each other (M7)', async () => {
+    await manager.create({ type: 'linux-slim', id: ID_B, cpus: 1, memMiB: 2048, boot: true });
+    const a = await driver.inspect(NAME);
+    const bInfo = await driver.inspect(manager.containerNameOf(ID_B));
+    expect(bInfo?.networks).toEqual([manager.networkNameOf(ID_B)]);
+    expect(a?.ipv4).toBeTruthy();
+    expect(bInfo?.ipv4).toBeTruthy();
+    const nets = await driver.listNetworks({ [MANAGED_LABEL]: LABEL });
+    note(
+      'networks',
+      nets.map((n) => `${n.name} ${n.subnet}`),
+    );
+    const probe = (ip: string) =>
+      `timeout 4 bash -c "</dev/tcp/${ip}/3211" 2>/dev/null && echo open || echo closed`;
+    const fromA = await asCua(ID, `${probe(a?.ipv4 as string)}; ${probe(bInfo?.ipv4 as string)}`);
+    const fromB = await asCua(ID_B, probe(a?.ipv4 as string));
+    note('pc_isolation', {
+      aSelf: fromA.stdout.split('\n')[0],
+      aToB: fromA.stdout.split('\n')[1],
+      bToA: fromB.stdout,
+    });
+    expect(fromA.stdout.split('\n')).toEqual(['open', 'closed']);
+    expect(fromB.stdout).toBe('closed');
+    await manager.decommission(ID_B);
+    expect((await driver.listNetworks({ [MANAGED_LABEL]: LABEL })).map((n) => n.name)).toEqual([
+      manager.networkNameOf(ID),
+    ]);
   });
 
   it('a guest cannot reach a host service bound to 127.0.0.1', async () => {
@@ -504,5 +607,19 @@ describe('Linux PC on Apple container', () => {
     } finally {
       srv.close();
     }
+  });
+
+  it('the monitor sees a healthy PC and a crash (H4)', async () => {
+    await manager.monitorOnce();
+    expect(manager.status(ID).status).toBe('running');
+    // Kill the container behind the manager's back: the next pass marks it crashed.
+    await driver.stop(NAME, 2);
+    await manager.monitorOnce();
+    expect(manager.status(ID)).toMatchObject({ status: 'error', reason: 'crashed' });
+    // A start brings it back on the same container (rootfs kept).
+    const t0 = performance.now();
+    await manager.start(ID);
+    note('restart_after_crash_ms', ms(t0));
+    expect(manager.status(ID).status).toBe('running');
   });
 });

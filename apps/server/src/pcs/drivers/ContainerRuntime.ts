@@ -140,11 +140,14 @@ export interface SystemStatus {
 /**
  * Classifies a `system status --format json` answer against our roots (PLAN §8.1):
  * our app root + our install root = ours; our app root + another install root = ours but stale (the app
- * moved or updated: stop and restart); anything else = foreign (never stopped).
+ * moved or updated: stop and restart); anything else = foreign (never stopped). With `expectVersion`,
+ * an apiserver of ours that reports another server version is stale too (M5: it still runs a binary
+ * from before the install root was replaced).
  */
 export function classifyStatus(
   r: Pick<ExecResult, 'code' | 'stdout' | 'stderr' | 'timedOut'>,
   ours: ContainerRoots,
+  expectVersion?: string,
 ): SystemStatus {
   if (r.timedOut) return { ownership: 'unknown', timedOut: true, detail: 'system status timed out' };
   const text = r.stdout.trim();
@@ -179,7 +182,16 @@ export function classifyStatus(
   const appOurs = normalizeRoot(json.paths.appRoot) === normalizeRoot(ours.appRoot);
   const installOurs =
     !!json.paths.installRoot && normalizeRoot(json.paths.installRoot) === normalizeRoot(ours.installRoot);
-  if (appOurs && installOurs) return { ...base, ownership: 'ours' };
+  if (appOurs && installOurs) {
+    if (expectVersion && base.serverVersion && base.serverVersion !== expectVersion) {
+      return {
+        ...base,
+        ownership: 'ours_stale_install',
+        detail: `apiserver ${base.serverVersion} != locked ${expectVersion}`,
+      };
+    }
+    return { ...base, ownership: 'ours' };
+  }
   if (appOurs) return { ...base, ownership: 'ours_stale_install' };
   return { ...base, ownership: 'foreign' };
 }
@@ -381,6 +393,11 @@ export class ContainerRuntime {
         const got = await sha256File(join(payload, rel)).catch(() => 'missing');
         if (got !== want) throw new Error(`container pkg: ${rel} sha256 ${got} != lock ${want}`);
       }
+      // M5: never pull the install root out from under a running apiserver of ours.
+      if (existsSync(this.installRoot)) {
+        const stopped = await this.stopIfOurs();
+        if (stopped) onProgress?.('stopped the container system running from the old install root');
+      }
       await rm(this.installRoot, { recursive: true, force: true });
       await rename(payload, this.installRoot);
     } finally {
@@ -432,7 +449,7 @@ export class ContainerRuntime {
       };
     }
     const r = await this.exec(['system', 'status', '--format', 'json'], { timeoutMs: this.#t.status });
-    return classifyStatus(r, this.roots);
+    return classifyStatus(r, this.roots, this.lock.version);
   }
 
   /** The `program` of the registered apiserver launchd job (null when none is registered). */
@@ -474,8 +491,18 @@ export class ContainerRuntime {
       if (prog) await this.bootoutOurs();
       else if (st.timedOut) throw new EngineError('ENGINE_TIMEOUT', 'container system status timed out');
     }
+    if (st.ownership === 'not_running') {
+      // L9: the launchd label is shared. A registered job whose program is not ours means another
+      // install owns it, even when `system status` says it is not running: never replace it.
+      const prog = await this.apiserverProgram();
+      if (prog && !isInside(normalizeRoot(prog), normalizeRoot(this.installRoot))) {
+        throw new EngineError('ENGINE_FOREIGN', `another container apiserver is registered (${prog})`);
+      }
+    }
     if (st.ownership === 'ours_stale_install') {
-      onProgress?.('restarting container system from the current install root');
+      onProgress?.(
+        `restarting container system from the current install root${st.detail ? ` (${st.detail})` : ''}`,
+      );
       await this.#stopOurs();
     }
     onProgress?.('starting container system');
@@ -519,7 +546,16 @@ export class ContainerRuntime {
    * stopped something. Falls back to `launchctl bootout` of our own labels when `system stop` hangs.
    */
   async stopIfOurs(): Promise<boolean> {
-    if (!existsSync(this.bin)) return false;
+    if (!existsSync(this.bin)) {
+      // No CLI to ask (mid-provision): launchd tells whether the job runs from our install root.
+      const prog = await this.apiserverProgram();
+      if (prog && isInside(normalizeRoot(prog), normalizeRoot(this.installRoot))) {
+        await this.bootoutOurs();
+        this.#startedByUs = false;
+        return true;
+      }
+      return false;
+    }
     const st = await this.status();
     if (st.ownership === 'ours' || st.ownership === 'ours_stale_install') {
       await this.#stopOurs();

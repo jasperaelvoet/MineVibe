@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -18,6 +19,7 @@ import {
   type ExecFn,
   type ExecResult,
   execWithTimeout,
+  parseCliJson,
   redact,
 } from '../../src/pcs/drivers/exec.js';
 
@@ -45,11 +47,11 @@ const lock: ContainerLock = {
   pkg: { name: 'container.pkg', url: 'https://invalid.example/container.pkg', sha256: 'a'.repeat(64) },
 };
 
-function statusJson(appRoot: string, installRoot: string, status = 'running'): string {
+function statusJson(appRoot: string, installRoot: string, status = 'running', version = '1.5.0'): string {
   return JSON.stringify({
     status,
     paths: { appRoot: `${appRoot}/`, installRoot: `${installRoot}/` },
-    server: { version: '1.5.0' },
+    server: { version },
   });
 }
 
@@ -80,6 +82,18 @@ describe('ownership classification (PLAN §8.1)', () => {
   it('anything else is foreign', () => {
     const brew = statusJson(join(homedir(), 'Library/Application Support/com.apple.container'), '/usr/local');
     expect(classifyStatus(ok(brew), roots).ownership).toBe('foreign');
+  });
+
+  it('M5: ours with another server version than the lock is stale', () => {
+    expect(
+      classifyStatus(ok(statusJson(roots.appRoot, roots.installRoot, 'running', '1.4.0')), roots, '1.5.0'),
+    ).toMatchObject({
+      ownership: 'ours_stale_install',
+      detail: expect.stringMatching(/1\.4\.0 != locked 1\.5\.0/),
+    });
+    expect(classifyStatus(ok(statusJson(roots.appRoot, roots.installRoot)), roots, '1.5.0').ownership).toBe(
+      'ours',
+    );
   });
 
   it('reads "unregistered" and timeouts', () => {
@@ -245,6 +259,31 @@ describe('start/stop never touch a foreign apiserver', () => {
     expect(calls.some((c) => c.args[0] === 'bootout')).toBe(false);
   });
 
+  it('M5: an apiserver of ours running an older version is stopped and restarted', async () => {
+    let restarted = false;
+    const { rt, calls } = runtime((_f, a) => {
+      if (isCall({ args: a }, 'system', 'status')) {
+        return ok(statusJson(roots.appRoot, roots.installRoot, 'running', restarted ? '1.5.0' : '1.4.0'));
+      }
+      if (isCall({ args: a }, 'system', 'start')) restarted = true;
+      return undefined;
+    });
+    await rt.ensureStarted();
+    const order = calls.filter((c) => c.args[0] === 'system' && c.args[1] !== 'status').map((c) => c.args[1]);
+    expect(order).toEqual(['stop', 'start']);
+  });
+
+  it('L9: not running, but the shared launchd label belongs to another install: never start over it', async () => {
+    const { rt, calls } = runtime((file, a) => {
+      if (isCall({ args: a }, 'system', 'status')) return ok('{"status":"unregistered"}', 1);
+      if (file === '/bin/launchctl' && a[0] === 'print')
+        return ok('program = /usr/local/bin/container-apiserver\n');
+      return undefined;
+    });
+    await expect(rt.ensureStarted()).rejects.toMatchObject({ code: 'ENGINE_FOREIGN' });
+    expect(calls.some((c) => isCall(c, 'system', 'start'))).toBe(false);
+  });
+
   it('every CLI call carries the roots in env and a timeout', async () => {
     const seen: { env?: NodeJS.ProcessEnv; timeoutMs: number }[] = [];
     const rt = new ContainerRuntime({
@@ -282,6 +321,44 @@ describe('provisioning', () => {
     expect(calls.some((c) => c.args.includes('--expand-full'))).toBe(false);
   });
 
+  it('M5: stops our running apiserver before replacing the install root', async () => {
+    // An old binary is installed; the lock wants a new one.
+    writeFileSync(join(roots.installRoot, 'bin', 'container'), 'old binary');
+    const pkg = join(dir, 'container.pkg');
+    writeFileSync(pkg, 'the pkg');
+    const newBin = 'new binary';
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    const lk: ContainerLock = {
+      version: '1.5.0',
+      pkg: { name: 'container.pkg', url: 'https://invalid.example/x', sha256: sha('the pkg') },
+      installRootFiles: { 'bin/container': sha(newBin) },
+    };
+    const order: string[] = [];
+    const exec: ExecFn = async (file, args) => {
+      if (file === '/usr/sbin/pkgutil' && args[0] === '--expand-full') {
+        const out = args[2] as string;
+        mkdirSync(join(out, 'Payload', 'bin'), { recursive: true });
+        writeFileSync(join(out, 'Payload', 'bin', 'container'), newBin);
+        order.push('expand');
+        return ok();
+      }
+      if (args[0] === 'system' && args[1] === 'status') {
+        // Answered by the old binary still in place: proves we asked before replacing it.
+        order.push(`status:${readFileSync(join(roots.installRoot, 'bin', 'container'), 'utf8')}`);
+        return ok(statusJson(roots.appRoot, roots.installRoot));
+      }
+      if (args[0] === 'system' && args[1] === 'stop') {
+        order.push('stop');
+        return ok();
+      }
+      return ok();
+    };
+    const rt = new ContainerRuntime({ ...roots, lock: lk, cacheDir: dir, pkgPath: pkg, exec });
+    await rt.provision();
+    expect(order).toEqual(['expand', 'status:old binary', 'stop']);
+    expect(readFileSync(join(roots.installRoot, 'bin', 'container'), 'utf8')).toBe(newBin);
+  });
+
   it('is a no-op when the install root already matches', async () => {
     const { exec, calls } = fakeExec(() => undefined);
     const rt = new ContainerRuntime({ ...roots, lock, cacheDir: dir, exec });
@@ -296,6 +373,35 @@ describe('exec helpers', () => {
     expect(r.timedOut).toBe(true);
     expect(r.ms).toBeLessThan(2000);
     expect(r.signal).toBe('SIGKILL');
+  });
+
+  it('L2: kills the whole process group and resolves even when a grandchild holds the pipes', async () => {
+    const r = await execWithTimeout('/bin/sh', ['-c', 'sleep 30 & echo $!; wait'], {
+      timeoutMs: 300,
+      exitGraceMs: 200,
+    });
+    expect(r.timedOut).toBe(true);
+    expect(r.ms).toBeLessThan(3000);
+    const grandchild = Number(r.stdout.trim());
+    expect(grandchild).toBeGreaterThan(0);
+    await new Promise((res) => setTimeout(res, 100));
+    expect(() => process.kill(grandchild, 0)).toThrow(); // gone with the group
+    // A child that exits while a background grandchild keeps stdout open: resolve after the grace.
+    const t0 = Date.now();
+    const r2 = await execWithTimeout('/bin/sh', ['-c', '(sleep 5 &); echo done'], {
+      timeoutMs: 10_000,
+      exitGraceMs: 200,
+    });
+    expect(r2.code).toBe(0);
+    expect(r2.stdout).toContain('done');
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+
+  it('L5: unparsable JSON never echoes its input', () => {
+    expect(() => parseCliJson('container list', '{"env":"CUA_ENV_TOKEN=abcdef0123" nope')).toThrow(
+      /^container list: unparsable JSON output \(\d+ bytes\)$/,
+    );
+    expect(parseCliJson<{ a: number }>('x', '{"a":1}')).toEqual({ a: 1 });
   });
 
   it('redacts tokens in output and errors', () => {

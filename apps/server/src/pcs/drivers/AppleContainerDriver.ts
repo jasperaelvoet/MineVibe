@@ -1,16 +1,21 @@
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Logger } from 'pino';
 import type { ContainerRuntime } from './ContainerRuntime.js';
-import { CliError, type ExecResult, redact } from './exec.js';
+import { CliError, type ExecResult, parseCliJson } from './exec.js';
 import {
   assertRunSpec,
   type BindMount,
   type ContainerState,
+  hasLabels,
   mountProblems,
+  type NetworkInfo,
   orderedMounts,
   type PcContainerInfo,
   type PcDriver,
   type PcRunSpec,
   type Progress,
+  portProblems,
   SPACESD_GUEST_PORT,
   type VolumeInfo,
   type VolumeMount,
@@ -20,7 +25,10 @@ import {
  * Linux PCs on Apple `container` 1.5.0 (PLAN §8.1, §8.6).
  *
  * - Vault binds use `--mount type=bind,source=P,target=P[,readonly]`, never `-v src:dst:ro` (which
- *   silently creates a writable mount at `dst`+"o" in 1.5.0). Mounts are re-checked after `run`.
+ *   silently creates a writable mount at `dst`+"o" in 1.5.0).
+ * - PCs are made with `create` → `inspect` (mounts, loopback port, network verified) → `start`, never
+ *   `run -d`, so nothing boots with a mount or port that came out wrong (H1, L1).
+ * - Every PC gets its own network (`--network`): 1.5.0 isolates networks from each other (M7).
  * - Named volumes are created up front with `volume create -s <cap>` (default would be 512 GiB sparse)
  *   and mounted with `--mount type=volume,…`.
  * - spacesd is published on loopback only: `-p 127.0.0.1:<port>:3211`.
@@ -46,23 +54,15 @@ const DEFAULT_TIMEOUTS: AppleContainerTimeouts = {
   default: 60_000,
 };
 
-/** Builds `container run` arguments (pure; unit-tested). */
-export function buildAppleRunArgs(spec: PcRunSpec): string[] {
+/** Arguments shared by `container run` and `container create` (pure; unit-tested). */
+function commonArgs(spec: PcRunSpec): string[] {
   assertRunSpec(spec);
   const { binds, volumes } = orderedMounts(spec);
-  const args = [
-    'run',
-    '-d',
-    '--name',
-    spec.name,
-    '--cpus',
-    String(spec.cpus),
-    '--memory',
-    `${spec.memoryMiB}M`,
-  ];
+  const args = ['--name', spec.name, '--cpus', String(spec.cpus), '--memory', `${spec.memoryMiB}M`];
   if (spec.shmMiB > 0) args.push('--shm-size', `${spec.shmMiB}M`);
   for (const k of Object.keys(spec.secretEnv)) args.push('-e', k);
   for (const [k, v] of Object.entries(spec.env)) args.push('-e', `${k}=${v}`);
+  if (spec.network) args.push('--network', spec.network);
   args.push('-p', `127.0.0.1:${spec.hostPort}:${SPACESD_GUEST_PORT}`);
   for (const b of binds) args.push('--mount', bindMountArg(b));
   for (const v of volumes) args.push('--mount', `type=volume,source=${v.name},target=${v.target}`);
@@ -71,9 +71,27 @@ export function buildAppleRunArgs(spec: PcRunSpec): string[] {
   return args;
 }
 
+/** Builds `container run -d` arguments (pure; unit-tested). */
+export function buildAppleRunArgs(spec: PcRunSpec): string[] {
+  return ['run', '-d', ...commonArgs(spec)];
+}
+
+/** Builds `container create` arguments (pure; unit-tested). */
+export function buildAppleCreateArgs(spec: PcRunSpec): string[] {
+  return ['create', ...commonArgs(spec)];
+}
+
 /** `type=bind,source=…,target=…[,readonly]` */
 export function bindMountArg(b: BindMount): string {
   return `type=bind,source=${b.source},target=${b.target}${b.readonly ? ',readonly' : ''}`;
+}
+
+/** `network create --label k=v <name>` */
+export function buildNetworkCreateArgs(name: string, labels: Record<string, string>): string[] {
+  const args = ['network', 'create'];
+  for (const [k, v] of Object.entries(labels)) args.push('--label', `${k}=${v}`);
+  args.push(name);
+  return args;
 }
 
 /** `volume create -s <cap>G --label k=v <name>` */
@@ -99,6 +117,8 @@ interface AppleContainerJson {
     mounts?: AppleMountJson[];
     publishedPorts?: { containerPort?: number; hostAddress?: string; hostPort?: number; proto?: string }[];
     resources?: { cpus?: number; cpuOverhead?: number; memoryInBytes?: number };
+    shmSize?: number;
+    networks?: { network?: string }[];
   };
   status?: { state?: string; networks?: { ipv4Address?: string }[] } | string;
 }
@@ -139,8 +159,21 @@ export function parseAppleContainer(j: AppleContainerJson): PcContainerInfo {
     ...(c.resources?.cpus !== undefined ? { cpus: c.resources.cpus } : {}),
     ...(c.resources?.cpuOverhead !== undefined ? { cpuOverhead: c.resources.cpuOverhead } : {}),
     ...(c.resources?.memoryInBytes !== undefined ? { memoryBytes: c.resources.memoryInBytes } : {}),
+    ...(c.shmSize !== undefined ? { shmBytes: c.shmSize } : {}),
+    ...(c.networks ? { networks: c.networks.map((n) => n.network ?? '').filter(Boolean) } : {}),
     ...(ip ? { ipv4: ip.split('/')[0] } : {}),
   };
+}
+
+interface AppleVolumeJson {
+  id?: string;
+  configuration?: { name?: string; labels?: Record<string, string>; sizeInBytes?: number; source?: string };
+}
+
+interface AppleNetworkJson {
+  id?: string;
+  configuration?: { name?: string; labels?: Record<string, string> };
+  status?: { ipv4Subnet?: string };
 }
 
 const isNotFound = (r: ExecResult) => r.code !== 0 && /not ?found/i.test(r.stderr + r.stdout);
@@ -221,8 +254,17 @@ export class AppleContainerDriver implements PcDriver {
 
   async ensureVolume(volume: VolumeMount, labels: Record<string, string>): Promise<'created' | 'exists'> {
     const r = await this.runtime.exec(['volume', 'inspect', volume.name], { timeoutMs: this.#t.default });
-    if (r.code === 0 && !r.timedOut) return 'exists';
     if (r.timedOut) throw new CliError('container volume inspect', r);
+    if (r.code === 0) {
+      const rows = parseCliJson<AppleVolumeJson[]>('container volume inspect', r.stdout.trim() || '[]');
+      const got = rows[0]?.configuration?.labels ?? {};
+      if (!hasLabels(got, labels)) {
+        throw new Error(
+          `volume ${volume.name} exists but belongs to someone else (labels differ); not reusing it`,
+        );
+      }
+      return 'exists';
+    }
     await this.runtime.execOk(buildVolumeCreateArgs(volume, labels), { timeoutMs: this.#t.default });
     return 'created';
   }
@@ -236,36 +278,87 @@ export class AppleContainerDriver implements PcDriver {
     const out = await this.runtime.execOk(['volume', 'list', '--format', 'json'], {
       timeoutMs: this.#t.default,
     });
-    const rows = JSON.parse(out.trim() || '[]') as {
-      id?: string;
-      configuration?: { name?: string; labels?: Record<string, string>; sizeInBytes?: number };
-    }[];
+    const rows = parseCliJson<AppleVolumeJson[]>('container volume list', out.trim() || '[]');
     return rows
       .map((v) => ({
         name: v.configuration?.name ?? v.id ?? '',
         labels: v.configuration?.labels ?? {},
         ...(v.configuration?.sizeInBytes !== undefined ? { sizeBytes: v.configuration.sizeInBytes } : {}),
+        ...(v.configuration?.source ? { source: v.configuration.source } : {}),
       }))
-      .filter((v) => Object.entries(labels).every(([k, val]) => v.labels[k] === val));
+      .filter((v) => hasLabels(v.labels, labels));
+  }
+
+  async ensureNetwork(name: string, labels: Record<string, string>): Promise<'created' | 'exists'> {
+    const r = await this.runtime.exec(['network', 'inspect', name], { timeoutMs: this.#t.default });
+    if (r.timedOut) throw new CliError('container network inspect', r);
+    if (r.code === 0) {
+      const rows = parseCliJson<AppleNetworkJson[]>('container network inspect', r.stdout.trim() || '[]');
+      if (!hasLabels(rows[0]?.configuration?.labels ?? {}, labels)) {
+        throw new Error(`network ${name} exists but belongs to someone else (labels differ); not using it`);
+      }
+      return 'exists';
+    }
+    await this.runtime.execOk(buildNetworkCreateArgs(name, labels), { timeoutMs: this.#t.default });
+    return 'created';
+  }
+
+  async removeNetwork(name: string): Promise<void> {
+    const r = await this.runtime.exec(['network', 'delete', name], { timeoutMs: this.#t.default });
+    if (r.code !== 0 && !isNotFound(r)) throw new CliError('container network delete', r);
+  }
+
+  async listNetworks(labels: Record<string, string>): Promise<NetworkInfo[]> {
+    const out = await this.runtime.execOk(['network', 'list', '--format', 'json'], {
+      timeoutMs: this.#t.default,
+    });
+    return parseCliJson<AppleNetworkJson[]>('container network list', out.trim() || '[]')
+      .map((n) => ({
+        name: n.configuration?.name ?? n.id ?? '',
+        labels: n.configuration?.labels ?? {},
+        ...(n.status?.ipv4Subnet ? { subnet: n.status.ipv4Subnet } : {}),
+      }))
+      .filter((n) => hasLabels(n.labels, labels));
+  }
+
+  /**
+   * `container create` (never `run -d`), then verify what came out: binds (source, target, read-only),
+   * volumes, the loopback-only port and the network. Anything wrong deletes the container and throws.
+   * A create the Node timeout killed is deleted too (the apiserver may still finish it; PcManager's
+   * monitor stops any container that should not run).
+   */
+  async create(spec: PcRunSpec): Promise<PcContainerInfo> {
+    const args = buildAppleCreateArgs(spec);
+    const secrets = Object.values(spec.secretEnv);
+    for (const v of spec.volumes) await this.ensureVolume(v, spec.ownerLabels ?? spec.labels);
+    const r = await this.runtime.exec(args, { timeoutMs: this.#t.run, env: { ...spec.secretEnv } });
+    if (r.code !== 0 || r.timedOut) {
+      await this.remove(spec.name).catch(() => {});
+      throw new CliError('container create', r, secrets);
+    }
+    const info = await this.inspect(spec.name);
+    const problems = info
+      ? [...mountProblems(spec, info), ...portProblems(spec, info)]
+      : ['container vanished after create'];
+    if (info && spec.network && !(info.networks ?? []).includes(spec.network)) {
+      problems.push(`not attached to network ${spec.network}`);
+    }
+    if (!info || problems.length > 0) {
+      await this.remove(spec.name).catch(() => {});
+      throw new Error(`container create produced the wrong container: ${problems.join('; ')}`);
+    }
+    this.#log?.info({ name: spec.name, port: spec.hostPort, ms: r.ms }, 'pc container created');
+    return info;
   }
 
   async run(spec: PcRunSpec): Promise<void> {
-    const args = buildAppleRunArgs(spec);
-    const secrets = Object.values(spec.secretEnv);
-    for (const v of spec.volumes) await this.ensureVolume(v, spec.labels);
-    const r = await this.runtime.exec(args, { timeoutMs: this.#t.run, env: { ...spec.secretEnv } });
-    if (r.code !== 0 || r.timedOut) {
-      // A failed run can leave a stopped container behind; clean it so a retry is possible.
+    await this.create(spec);
+    try {
+      await this.start(spec.name);
+    } catch (err) {
       await this.remove(spec.name).catch(() => {});
-      throw new CliError('container run', r, secrets);
+      throw err;
     }
-    const info = await this.inspect(spec.name);
-    const problems = info ? mountProblems(spec, info) : ['container vanished after run'];
-    if (problems.length > 0) {
-      await this.remove(spec.name).catch(() => {});
-      throw new Error(`container run produced the wrong mounts: ${problems.join('; ')}`);
-    }
-    this.#log?.info({ name: spec.name, port: spec.hostPort, ms: r.ms }, 'pc container running');
   }
 
   async start(name: string): Promise<void> {
@@ -294,12 +387,7 @@ export class AppleContainerDriver implements PcDriver {
     if (isNotFound(r)) return null;
     if (r.code !== 0 || r.timedOut) throw new CliError('container inspect', r);
     // Never let the raw output (it holds CUA_ENV_TOKEN in plaintext) reach a log.
-    let rows: AppleContainerJson[];
-    try {
-      rows = JSON.parse(r.stdout) as AppleContainerJson[];
-    } catch {
-      throw new Error(`container inspect: unparsable output: ${redact(r.stdout).slice(0, 200)}`);
-    }
+    const rows = parseCliJson<AppleContainerJson[]>('container inspect', r.stdout);
     const row = rows[0];
     return row ? parseAppleContainer(row) : null;
   }
@@ -308,10 +396,33 @@ export class AppleContainerDriver implements PcDriver {
     const out = await this.runtime.execOk(['list', '--all', '--format', 'json'], {
       timeoutMs: this.#t.default,
     });
-    const rows = JSON.parse(out.trim() || '[]') as AppleContainerJson[];
-    return rows
-      .map(parseAppleContainer)
-      .filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
+    const rows = parseCliJson<AppleContainerJson[]>('container list', out.trim() || '[]');
+    return rows.map(parseAppleContainer).filter((c) => hasLabels(c.labels, labels));
+  }
+
+  /** Allocated blocks of `<appRoot>/containers/<name>/rootfs.ext4` and of each volume's image. */
+  async diskUsage(
+    containers: readonly string[],
+    volumes: readonly VolumeInfo[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    const allocated = async (path: string) => {
+      try {
+        const st = await stat(path);
+        return st.blocks * 512;
+      } catch {
+        return undefined;
+      }
+    };
+    for (const name of containers) {
+      const b = await allocated(join(this.runtime.appRoot, 'containers', name, 'rootfs.ext4'));
+      if (b !== undefined) out.set(name, b);
+    }
+    for (const v of volumes) {
+      const b = await allocated(v.source ?? join(this.runtime.appRoot, 'volumes', v.name, 'volume.img'));
+      if (b !== undefined) out.set(v.name, b);
+    }
+    return out;
   }
 
   exec(
