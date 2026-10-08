@@ -28,7 +28,8 @@ import type { AppBundleLayout } from './appLayout.js';
  *    checked against the bundled `vendor.lock.json` and never provisioned (the bundle is read-only).
  * 2. The engine is started (`system start --app-root … --install-root … --enable-kernel-install`; the first start
  *    downloads the kernel), and this process takes an engine lease. A stale apiserver of ours (another install root
- *    or version) is restarted, a wedged one booted out; one that belongs to another install is never touched.
+ *    or version) is restarted, a wedged one booted out, a kernel-less one (an interrupted first start) restarted, but
+ *    never under another live MineVibe's lease; one that belongs to another install is never touched.
  * 3. The startup reaper's container part: `PcManager.reconcile` stops this instance's orphaned containers (labels
  *    `minevibe=pc` + `minevibe.instance`) and adopts still-running ones that match their record.
  * 4. `linux-1` is created on first run, and the Linux PC image is built locally from the bundled `images/linux-pc`
@@ -155,13 +156,27 @@ export function abortableExec(signal: AbortSignal, base: ExecFn = execWithTimeou
 }
 
 /**
- * The app's `container` driver: like {@link AppleContainerDriver}, except that it never provisions an install root
- * inside the bundle (it only checks it), and it refuses to restart an apiserver of ours that runs from another
- * install root while another live MineVibe still holds a lease on it (that would pull the engine out from under
- * its PCs).
+ * Whether the engine's default kernel is installed in `appRoot` (`kernels/default.kernel-arm64`, a symlink to the
+ * downloaded `vmlinux-*`). It is the last thing a first `system start --enable-kernel-install` installs, so a start
+ * that was killed or crashed during the kernel download (or a cache cleaner that emptied the app root) leaves it
+ * missing, even when the apiserver itself kept running.
+ */
+export function defaultKernelInstalled(appRoot: string): boolean {
+  return existsSync(join(appRoot, 'kernels', 'default.kernel-arm64'));
+}
+
+/**
+ * The app's `container` driver: like {@link AppleContainerDriver}, except that
+ * - it never provisions an install root inside the bundle (it only checks it);
+ * - it never stops our apiserver while another live MineVibe holds a lease on it: not to restart it from another
+ *   install root (stale), and not to boot it out when it does not answer (wedged). That would pull the engine out
+ *   from under the other MineVibe's PCs;
+ * - it restarts our running apiserver when its kernel is missing (an interrupted first start), so the restart's
+ *   `system start --enable-kernel-install` installs it; adopting it as is would fail every PC create and build.
  */
 export class AppContainerDriver extends AppleContainerDriver {
   readonly #mayProvision: boolean;
+  readonly #appLog: Logger | undefined;
   #lastError: string | null = null;
 
   constructor(
@@ -170,6 +185,7 @@ export class AppContainerDriver extends AppleContainerDriver {
   ) {
     super(runtime, options.logger ? { logger: options.logger } : {});
     this.#mayProvision = options.mayProvision;
+    this.#appLog = options.logger;
   }
 
   /** Why the engine last failed to start (null after a successful start). */
@@ -194,13 +210,39 @@ export class AppContainerDriver extends AppleContainerDriver {
       await runtime.leases.withLock(async () => {
         await runtime.leases.acquire();
         const st = await runtime.status();
+        const pids = async () => (await runtime.leases.others()).map((o) => o.pid).join(', ');
         if (st.ownership === 'ours_stale_install') {
-          const others = await runtime.leases.others();
-          if (others.length > 0) {
+          const others = await pids();
+          if (others) {
             throw new EngineError(
               'ENGINE_IN_USE',
-              `the container system runs from another install root (${st.installRoot ?? '?'}) for a MineVibe that is still running (pid ${others.map((o) => o.pid).join(', ')}); quit it first`,
+              `the container system runs from another install root (${st.installRoot ?? '?'}) for a MineVibe that is still running (pid ${others}); quit it first`,
             );
+          }
+        } else if (st.ownership === 'unknown') {
+          // ensureStarted boots out a wedged apiserver whose launchd program is ours; not under a live MineVibe.
+          const others = await pids();
+          const prog = others ? await runtime.apiserverProgram() : null;
+          if (prog && isInside(normalizeRoot(prog), normalizeRoot(runtime.installRoot))) {
+            throw new EngineError(
+              'ENGINE_IN_USE',
+              `the container system does not answer (${st.detail ?? 'no status'}), and a MineVibe that is still running uses it (pid ${others}); quit it first`,
+            );
+          }
+        } else if (st.ownership === 'ours' && !defaultKernelInstalled(runtime.appRoot)) {
+          const others = await pids();
+          if (others) {
+            this.#appLog?.warn(
+              { others },
+              'the container system has no kernel, but another MineVibe uses it',
+            );
+          } else {
+            this.#appLog?.warn(
+              { appRoot: runtime.appRoot },
+              'the container system runs without its kernel (an interrupted first start): restarting it',
+            );
+            onProgress?.('restarting the container system to install its kernel');
+            await runtime.stopIfOurs();
           }
         }
         await runtime.ensureStarted(onProgress);
@@ -315,9 +357,10 @@ export class AppPcs {
       return { engine: 'down', detail, image: 'skipped' };
     };
     try {
-      await this.manager.init({ createDefault: true });
+      // `linux-1` comes with the first run only (no pcs.json yet): a player who removed every PC keeps none.
+      await this.manager.init({ createDefault: !existsSync(this.manager.pcsFile) });
       if (this.#abort.signal.aborted) return down('MineVibe is quitting');
-      const firstRun = !existsSync(join(this.appRoot, 'kernels'));
+      const firstRun = !defaultKernelInstalled(this.appRoot);
       this.#emit({ step: 'engine', firstRun });
       const t0 = performance.now();
       this.#engineUp = await this.manager.engineUp((m) => {
@@ -401,10 +444,11 @@ export class AppPcs {
 
   /**
    * Boots the plugged PCs in the background (budget admission, boot order; a missing image is built first) and
-   * starts the monitor. A no-op when the engine is down or the app is quitting.
+   * starts the monitor. A no-op when the engine is down or the app is quitting (a quit during the PC setup must not
+   * start PCs while the teardown stops them).
    */
   boot(): Promise<void> {
-    if (!this.#engineUp || this.#closed) return Promise.resolve();
+    if (!this.#engineUp || this.#closed || this.#abort.signal.aborted) return Promise.resolve();
     this.#booting ??= (async () => {
       try {
         const result = await this.manager.bootAll();

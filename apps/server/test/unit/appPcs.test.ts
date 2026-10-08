@@ -21,6 +21,7 @@ import {
   abortableExec,
   bundledInstallRootProblems,
   createAppPcs,
+  defaultKernelInstalled,
   installRootMismatches,
   isLongContainerCall,
   type PcPrepEvent,
@@ -237,12 +238,100 @@ describe('AppContainerDriver', () => {
     expect((err as EngineError).code).toBe('ENGINE_IN_USE');
     expect(calls.filter((c) => /system (stop|start)|bootout/.test(c))).toEqual([]);
   });
+
+  /** Our apiserver, running from the bundled root; `system stop` / `start` flip it. */
+  function oursRunning(liveOthers: boolean) {
+    const { root, lock } = installRoot(FILES);
+    let running = true;
+    const rt = runtimeFor(
+      root,
+      lock,
+      (args) => {
+        if (args[0] !== 'system') return undefined;
+        if (args[1] === 'status')
+          return running ? status(rt.appRoot, root) : ok('{"status":"unregistered"}', 1);
+        if (args[1] === 'stop') running = false;
+        if (args[1] === 'start') running = true;
+        return undefined;
+      },
+      liveOthers,
+    );
+    if (liveOthers) {
+      mkdirSync(join(rt.appRoot, 'minevibe-leases'), { recursive: true });
+      writeFileSync(
+        join(rt.appRoot, 'minevibe-leases', '777-abcd.json'),
+        JSON.stringify({ pid: 777, started: 'x', holder: 'npm run dev', at: 1 }),
+      );
+    }
+    const kernel = () => {
+      mkdirSync(join(rt.appRoot, 'kernels'), { recursive: true });
+      writeFileSync(join(rt.appRoot, 'kernels', 'default.kernel-arm64'), 'vmlinux');
+    };
+    return { ...rt, kernel };
+  }
+  const engineCalls = (calls: string[]) =>
+    calls.filter((c) => /container system (stop|start)|bootout/.test(c)).map((c) => c.split(' --')[0]);
+
+  it('restarts our running apiserver when its kernel is missing (an interrupted first start)', async () => {
+    const { runtime, calls, appRoot } = oursRunning(false);
+    expect(defaultKernelInstalled(appRoot)).toBe(false);
+    await new AppContainerDriver(runtime, { mayProvision: false }).ensureEngine();
+    // Stopped, then started again with --enable-kernel-install (which installs the kernel).
+    expect(engineCalls(calls)).toEqual(['container system stop', 'container system start']);
+    expect(calls.find((c) => c.startsWith('container system start'))).toContain('--enable-kernel-install');
+  });
+
+  it('adopts our running apiserver as is when its kernel is there', async () => {
+    const { runtime, calls, kernel, appRoot } = oursRunning(false);
+    kernel();
+    expect(defaultKernelInstalled(appRoot)).toBe(true);
+    await new AppContainerDriver(runtime, { mayProvision: false }).ensureEngine();
+    expect(engineCalls(calls)).toEqual([]);
+  });
+
+  it('never restarts a kernel-less apiserver another live MineVibe uses', async () => {
+    const { runtime, calls } = oursRunning(true);
+    await new AppContainerDriver(runtime, { mayProvision: false }).ensureEngine();
+    expect(engineCalls(calls)).toEqual([]);
+  });
+
+  it('never boots out a wedged apiserver of ours while another MineVibe holds a lease on it', async () => {
+    const { root, lock } = installRoot(FILES);
+    const wedged: ExecResult = { ...ok(), code: null, signal: 'SIGKILL', ms: 15_000, timedOut: true };
+    const program = ok(
+      `gui/501/com.apple.container.apiserver = {\n\tprogram = ${root}/bin/container-apiserver\n}\n`,
+    );
+    const { runtime, calls, appRoot } = runtimeFor(
+      root,
+      lock,
+      (args) => {
+        if (args[0] === 'system' && args[1] === 'status') return wedged;
+        if (args[0] === 'print') return program;
+        if (args[0] === 'list') return ok(`-\t0\tcom.apple.container.apiserver\n`);
+        return undefined;
+      },
+      true,
+    );
+    mkdirSync(join(appRoot, 'minevibe-leases'), { recursive: true });
+    writeFileSync(
+      join(appRoot, 'minevibe-leases', '777-abcd.json'),
+      JSON.stringify({ pid: 777, started: 'x', holder: 'npm run dev', at: 1 }),
+    );
+    const err = await new AppContainerDriver(runtime, { mayProvision: false })
+      .ensureEngine()
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'ENGINE_IN_USE' });
+    expect((err as Error).message).toMatch(/does not answer.*pid 777/);
+    expect(engineCalls(calls)).toEqual([]);
+  });
 });
 
 /** An AppPcs over the in-memory driver (no engine, no CLI). */
-function fakeAppPcs(options: { engineError?: Error; imagePresent?: boolean } = {}) {
-  const dir = tmp();
-  const driver = new FakeDriver();
+function fakeAppPcs(
+  options: { engineError?: Error; imagePresent?: boolean; dir?: string; driver?: FakeDriver } = {},
+) {
+  const dir = options.dir ?? tmp();
+  const driver = options.driver ?? new FakeDriver();
   driver.imagePresent = options.imagePresent ?? false;
   if (options.engineError) driver.engineError = options.engineError;
   const manager = new PcManager({
@@ -388,6 +477,46 @@ describe('AppPcs', () => {
     const b = fakeAppPcs();
     await b.pcs.shutdown();
     expect(b.driver.log).toEqual([]);
+  });
+});
+
+describe('AppPcs on later launches', () => {
+  it('a quit during the PC setup boots nothing, even once the engine is up', async () => {
+    const { pcs, driver } = fakeAppPcs({ imagePresent: true });
+    expect(await pcs.prepare()).toMatchObject({ engine: 'up' });
+    const quit = new AbortController();
+    void pcs.prepare(quit.signal);
+    quit.abort();
+    await pcs.boot();
+    expect(driver.log.filter((l) => l.startsWith('create') || l.startsWith('start'))).toEqual([]);
+    await pcs.shutdown();
+  });
+
+  it('creates linux-1 on the first run only: a player who removed every PC keeps none', async () => {
+    const first = fakeAppPcs({ imagePresent: true });
+    await first.pcs.prepare();
+    expect(first.manager.list().map((p) => p.id)).toEqual(['linux-1']);
+    await first.manager.decommission('linux-1');
+    await first.pcs.shutdown();
+    const next = fakeAppPcs({ imagePresent: true, dir: first.dir, driver: first.driver });
+    await next.pcs.prepare();
+    expect(next.manager.list()).toEqual([]);
+    await next.pcs.shutdown();
+  });
+
+  it('is no first run once the kernel is installed, and is one again when it went missing', async () => {
+    const warm = fakeAppPcs({ imagePresent: true });
+    mkdirSync(join(warm.dir, 'container', 'kernels'), { recursive: true });
+    writeFileSync(join(warm.dir, 'container', 'kernels', 'default.kernel-arm64'), 'vmlinux');
+    await warm.pcs.prepare();
+    expect(warm.events[0]).toEqual({ step: 'engine', firstRun: false });
+    await warm.pcs.shutdown();
+    // An interrupted kernel download can leave kernels/ without the default kernel.
+    const broken = fakeAppPcs({ imagePresent: true });
+    mkdirSync(join(broken.dir, 'container', 'kernels'), { recursive: true });
+    await broken.pcs.prepare();
+    expect(broken.events[0]).toEqual({ step: 'engine', firstRun: true });
+    await broken.pcs.shutdown();
   });
 });
 

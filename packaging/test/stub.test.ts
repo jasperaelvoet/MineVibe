@@ -51,6 +51,11 @@ rl.on('line', (line) => {
     send({ t: 'progress', phase: 'install', work: false, title: 'Checking' });
     send({ t: 'ready' });
   }
+  if (cmd.cmd === 'shutdown' && mode === 'v2-stubborn') {
+    // A server of another version keeps talking: the stub must not show its error or open its window.
+    send({ t: 'error', message: 'Claude Code is too old', detail: 'from the other version' });
+    send({ t: 'progress', phase: 'install', work: true, title: 'Downloading' });
+  }
   if (cmd.cmd === 'shutdown' && mode !== 'stubborn' && mode !== 'v2-stubborn') {
     record('exiting');
     process.exit(selftest ? (mode === 'fail' ? 1 : 0) : 130);
@@ -274,7 +279,14 @@ describe.skipIf(!haveSwiftc())('MineVibe stub', () => {
     });
     await until(() => readFileSync(nodeLog, 'utf8').includes('cmd shutdown protocol-mismatch'));
     expect(readFileSync(nodeLog, 'utf8')).not.toContain('cmd hello');
-    expect(readFileSync(join(home, 'Logs', 'launcher.log'), 'utf8')).toContain('protocol mismatch');
+    const launcherLog = join(home, 'Logs', 'launcher.log');
+    expect(readFileSync(launcherLog, 'utf8')).toContain('protocol mismatch');
+    // What that server says next is ignored: its error never replaces "MineVibe is damaged".
+    await until(() => readFileSync(launcherLog, 'utf8').includes('ignored progress'));
+    expect(readFileSync(launcherLog, 'utf8')).toContain(
+      'ignored error from a server of another protocol version',
+    );
+    expect(readFileSync(launcherLog, 'utf8')).not.toContain('node error:');
     run.child.kill('SIGKILL');
     await run.exit;
     await until(() => !isAlive(nodePid(nodeLog)));

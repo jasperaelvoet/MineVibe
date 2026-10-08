@@ -111,11 +111,20 @@ function stubMismatch(v: number): { message: string; detail: string } {
 }
 
 /**
+ * How long a launch without first-run PC work (no kernel download, no image build) holds the game for the PC setup.
+ * A warm engine start takes about a second; one that hangs (a wedged apiserver, apple/container#2275) must not keep
+ * the game away with no window on screen. The setup then goes on in the background, and the PCs boot after it.
+ */
+export const WARM_PC_WAIT_MS = 30_000;
+
+/**
  * The app's {@link PlayHooks} (until the shared runtime takes them over):
  * - afterLock: the startup reaper's file part, then the PC setup starts in the background (engine from the bundle,
- *   this instance's orphaned containers, `linux-1`, the image), alongside the game install;
- * - beforeLaunch: the game waits for the PC setup (on first run the window shows it), then the PCs boot in the
- *   background;
+ *   this instance's orphaned containers, `linux-1`, the image), alongside the game install. A PC setup that cannot
+ *   even be created leaves the session without PCs; it never fails the launch;
+ * - beforeLaunch: the game waits for the PC setup while it does first-run work (the window shows the kernel download
+ *   and the image build), else at most {@link WARM_PC_WAIT_MS}, and never past a quit; then the PCs boot in the
+ *   background (never after a quit);
  * - beforeTeardown: the PCs and the engine are stopped.
  */
 export function appHooks(options: {
@@ -125,41 +134,88 @@ export function appHooks(options: {
   log: Logger;
   progress: LaunchProgress;
   createPcs: ((options: AppPcsOptions) => Promise<AppPcs | null>) | null;
+  /** Default {@link WARM_PC_WAIT_MS}. */
+  warmWaitMs?: number;
 }): PlayHooks {
   const { log, progress } = options;
   let pcs: AppPcs | null = null;
   let prepared: Promise<PcPrepOutcome> | null = null;
   let settled = false;
+  /** The PC setup is downloading the kernel or building the image (shown in the window). */
+  let firstRunWork = false;
+  const report = (outcome: PcPrepOutcome) =>
+    log.info(
+      {
+        engine: outcome.engine,
+        image: outcome.image,
+        ...(outcome.detail ? { detail: outcome.detail } : {}),
+      },
+      'Linux PCs prepared',
+    );
   return {
     async afterLock({ paths, signal }) {
       await reapStaleRunFiles(paths, { logger: log });
       if (!options.createPcs) return;
-      pcs = await options.createPcs({
-        paths,
-        layout: options.layout,
-        repoRoot: options.repoRoot,
-        env: options.env,
-        logger: log,
-        onProgress: (event) => progress.onPcs(event),
-      });
+      try {
+        pcs = await options.createPcs({
+          paths,
+          layout: options.layout,
+          repoRoot: options.repoRoot,
+          env: options.env,
+          logger: log,
+          onProgress: (event) => {
+            if (event.step === 'image' || (event.step === 'engine' && event.firstRun)) firstRunWork = true;
+            progress.onPcs(event);
+          },
+        });
+      } catch (err) {
+        log.error({ err }, 'Linux PCs unavailable: the PC setup could not be created');
+        pcs = null;
+        return;
+      }
       prepared =
         pcs?.prepare(signal).finally(() => {
           settled = true;
         }) ?? null;
     },
-    async beforeLaunch() {
-      if (!prepared) return;
+    async beforeLaunch({ signal }) {
+      const setup = prepared;
+      if (!setup || !pcs) return;
+      const appPcs = pcs;
       if (!settled) progress.waitForPcs();
-      const outcome = await prepared;
-      log.info(
-        {
-          engine: outcome.engine,
-          image: outcome.image,
-          ...(outcome.detail ? { detail: outcome.detail } : {}),
-        },
-        'Linux PCs prepared',
-      );
-      void pcs?.boot();
+      let timer: NodeJS.Timeout | undefined;
+      let onAbort: (() => void) | undefined;
+      const quit = new Promise<'quit'>((resolvePromise) => {
+        onAbort = () => resolvePromise('quit');
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      const slow = new Promise<'slow'>((resolvePromise) => {
+        timer = setTimeout(() => resolvePromise('slow'), options.warmWaitMs ?? WARM_PC_WAIT_MS);
+      });
+      try {
+        let outcome = await Promise.race([setup, quit, slow]);
+        // First-run work is on screen (with a Quit button): the game waits for it.
+        if (outcome === 'slow' && firstRunWork) outcome = await Promise.race([setup, quit]);
+        // A quit: the teardown stops the PC setup (bounded); nothing boots.
+        if (outcome === 'quit') return;
+        if (outcome === 'slow') {
+          log.warn(
+            { waitedMs: options.warmWaitMs ?? WARM_PC_WAIT_MS },
+            'the Linux PC setup is slow; launching the game, the PCs follow in the background',
+          );
+          void setup.then((late) => {
+            report(late);
+            if (!signal.aborted) void appPcs.boot();
+          });
+          return;
+        }
+        report(outcome);
+        if (!signal.aborted) void appPcs.boot();
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      }
     },
     async beforeTeardown() {
       await pcs?.shutdown();

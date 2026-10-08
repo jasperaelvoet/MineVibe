@@ -144,9 +144,10 @@ a crashed run's `run/bridge.json` (`app/reaper.ts`) and the Linux PC setup start
 (`app/appPcs.ts`): the engine from `Runtime/container` (never provisioned; a stale or wedged apiserver of ours is
 restarted or booted out, someone else's is never touched), this home's orphaned PC containers stopped
 (`PcManager.reconcile`, instance-labelled), `linux-1` created, and on first run the image built from
-`Resources/linux-pc` (then `builder stop` and `builder delete`). The game launches once that is done (on first run the
-window shows it), the PCs boot in the background, and quitting stops them and the engine (only when it is ours and no
-other MineVibe holds a lease on it). A PC failure never stops the game: the PCs show `engine_down` or `error`.
+`Resources/linux-pc` (then `builder stop` and `builder delete`). The game waits for that while it is first-run work the
+window shows (the kernel download, the image build), else at most 30 s; the PCs boot in the background, never after a
+quit, and quitting stops them and the engine (only when it is ours and no other MineVibe holds a lease on it). A PC
+failure never stops the game: the PCs show `engine_down` or `error`.
 
 **Lifelines and quitting (PLAN §9.2).**
 

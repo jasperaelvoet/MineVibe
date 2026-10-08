@@ -178,6 +178,28 @@ describe('LaunchProgress', () => {
     first.progress.dispose();
   });
 
+  it('a first-run PC step alone does not make the game files look like a download', () => {
+    const { sent, progress } = collect(0);
+    progress.onPcs({ step: 'engine', firstRun: true });
+    progress.onPlay({ phase: 'install', state: 'start' });
+    expect(sent.at(-1)).toMatchObject({ phase: 'install', work: true, title: 'Checking the game files' });
+    progress.onPlay({ phase: 'install', state: 'done' });
+    expect(sent.at(-1)).toMatchObject({ title: 'Game files ready' });
+    expect(sent.at(-1)).not.toHaveProperty('detail');
+
+    const both = collect(0);
+    both.progress.onPcs({ step: 'engine', firstRun: true });
+    both.progress.onPlay({ phase: 'install', state: 'start' });
+    both.progress.request('https://cdn.modrinth.com/data/x.jar');
+    expect(both.sent.at(-1)).toMatchObject({
+      work: true,
+      title: 'Downloading Minecraft, Fabric and mods',
+      detail: 'Fetching mods…',
+    });
+    progress.dispose();
+    both.progress.dispose();
+  });
+
   it('shows the latest build line, cleaned and throttled, while the game waits for the image', () => {
     vi.useFakeTimers();
     const { sent, progress } = collect(250);

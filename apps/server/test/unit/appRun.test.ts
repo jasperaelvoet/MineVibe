@@ -670,7 +670,7 @@ describe('appHooks', () => {
     return { pcs, log, finish: (o: PcPrepOutcome) => finish(o) };
   }
 
-  function setup(createPcs: Parameters<typeof appHooks>[0]['createPcs']) {
+  function setup(createPcs: Parameters<typeof appHooks>[0]['createPcs'], warmWaitMs?: number) {
     const sent: LaunchProgressMessage[] = [];
     const progress = new LaunchProgress((m) => sent.push(m), { throttleMs: 0 });
     const home = join(tmp(), 'home');
@@ -683,9 +683,11 @@ describe('appHooks', () => {
       log: silentLogger(),
       progress,
       createPcs,
+      ...(warmWaitMs !== undefined ? { warmWaitMs } : {}),
     });
-    const context = { paths, signal: new AbortController().signal, logger: silentLogger() };
-    return { hooks, context, paths, sent, progress };
+    const quit = new AbortController();
+    const context = { paths, signal: quit.signal, logger: silentLogger() };
+    return { hooks, context, paths, sent, progress, quit };
   }
 
   it('afterLock reaps a stale bridge file and starts the PC setup without waiting for it', async () => {
@@ -733,6 +735,64 @@ describe('appHooks', () => {
     const { hooks, context } = setup(null);
     await hooks.afterLock?.(context);
     await hooks.beforeLaunch?.(context);
+    await hooks.beforeTeardown?.(context);
+  });
+
+  it('a warm launch holds the game only so long for a slow PC setup; the PCs boot once it is done', async () => {
+    const fake = fakePcs();
+    const { hooks, context } = setup(async () => fake.pcs, 30);
+    await hooks.afterLock?.(context);
+    const t0 = Date.now();
+    await hooks.beforeLaunch?.(context); // the setup never finished: the game goes ahead
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(25);
+    expect(fake.log).toEqual(['prepare aborted=false']);
+    fake.finish({ engine: 'up', image: 'present' });
+    await tick();
+    expect(fake.log).toEqual(['prepare aborted=false', 'boot']);
+  });
+
+  it('first-run work (the kernel download, the image build) holds the game until it is done', async () => {
+    const fake = fakePcs();
+    const { hooks, context } = setup(async (o) => {
+      o.onProgress?.({ step: 'engine', firstRun: true });
+      return fake.pcs;
+    }, 10);
+    await hooks.afterLock?.(context);
+    let launched = false;
+    const waiting = hooks.beforeLaunch?.(context).then(() => {
+      launched = true;
+    });
+    await tick(60);
+    expect(launched).toBe(false);
+    fake.finish({ engine: 'up', image: 'built' });
+    await waiting;
+    expect(fake.log).toEqual(['prepare aborted=false', 'boot']);
+  });
+
+  it('a quit stops the wait at once, and nothing boots even when the setup finishes later', async () => {
+    const fake = fakePcs();
+    const { hooks, context, quit } = setup(async (o) => {
+      o.onProgress?.({ step: 'image' });
+      return fake.pcs;
+    });
+    await hooks.afterLock?.(context);
+    const waiting = hooks.beforeLaunch?.(context);
+    await tick();
+    quit.abort();
+    await waiting;
+    fake.finish({ engine: 'up', image: 'failed' });
+    await tick();
+    expect(fake.log).toEqual(['prepare aborted=false']);
+    await hooks.beforeTeardown?.(context);
+    expect(fake.log.at(-1)).toBe('shutdown');
+  });
+
+  it('a PC setup that cannot be created never fails the launch', async () => {
+    const { hooks, context } = setup(async () => {
+      throw new Error('EACCES: permission denied, mkdir');
+    });
+    await expect(hooks.afterLock?.(context)).resolves.toBeUndefined();
+    await expect(hooks.beforeLaunch?.(context)).resolves.toBeUndefined();
     await hooks.beforeTeardown?.(context);
   });
 });

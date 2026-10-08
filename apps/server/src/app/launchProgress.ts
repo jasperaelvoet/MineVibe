@@ -76,13 +76,17 @@ export interface LaunchProgressOptions {
 
 /**
  * Turns {@link play}'s milestones and the launcher's network traffic into the stub's `progress` / `ready`
- * messages. `work` turns true at the first network request and stays true: the stub opens its first-run window
- * only then, so a normal launch (everything installed and verified offline) shows no window at all.
+ * messages. `work` turns true at the first network request (or a first-run PC step: the kernel download, the image
+ * build) and stays true: the stub opens its first-run window only then, so a normal launch (everything installed and
+ * verified offline) shows no window at all. The install titles speak of downloading only when game files are.
  */
 export class LaunchProgress {
   readonly #send: (message: LaunchProgressMessage) => void;
   readonly #throttleMs: number;
+  /** Something is downloaded or built (the game files, the PC kernel or image): the stub may open its window. */
   #work = false;
+  /** The game files are being downloaded (a PC step alone is not that). */
+  #downloading = false;
   #bytes = 0;
   #label = 'game files';
   #phase: AppPhase = 'start';
@@ -110,7 +114,8 @@ export class LaunchProgress {
   /** A network request started. */
   request(url: string): void {
     this.#label = downloadLabel(url);
-    if (!this.#work) {
+    if (!this.#downloading) {
+      this.#downloading = true;
       this.#work = true;
       if (this.#phase === 'install') this.#title = 'Downloading Minecraft, Fabric and mods';
       this.#detail = `Fetching ${this.#label}…`;
@@ -134,13 +139,13 @@ export class LaunchProgress {
         if (event.state === 'start') {
           this.#set(
             'install',
-            this.#work ? 'Downloading Minecraft, Fabric and mods' : 'Checking the game files',
+            this.#downloading ? 'Downloading Minecraft, Fabric and mods' : 'Checking the game files',
           );
         } else {
           this.#set(
             'install',
             'Game files ready',
-            this.#work ? `${formatBytes(this.#bytes)} downloaded` : undefined,
+            this.#downloading ? `${formatBytes(this.#bytes)} downloaded` : undefined,
           );
         }
         break;

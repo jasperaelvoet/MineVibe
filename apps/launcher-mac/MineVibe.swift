@@ -334,6 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastError: (message: String, detail: String?)?
     private var pickerOpen = false
     private var sawHello = false
+    /// Node speaks another protocol version: nothing else it says is trusted (its dialog stays "damaged").
+    private var protocolBroken = false
     /// The game connected: the first-run window is done and never comes back.
     private var gameReady = false
 
@@ -397,12 +399,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handle(_ message: [String: Any]) {
+        if protocolBroken {
+            StubLog.write("ignored \(message["t"] as? String ?? "?") from a server of another protocol version")
+            return
+        }
         switch message["t"] as? String {
         case "hello":
             sawHello = true
             if let mismatch = protocolMismatch(message) {
                 // A server from another build would misread everything we send: never answer it, just stop it.
                 StubLog.write("protocol mismatch: \(mismatch)")
+                protocolBroken = true
                 lastError = ("MineVibe is damaged", mismatch)
                 beginShutdown("protocol-mismatch")
                 return

@@ -230,6 +230,8 @@ export async function play(options: PlayOptions): Promise<number> {
     if (hooks.afterLock) {
       hooked = true;
       await hooks.afterLock(hookContext);
+      // A stop that came during the hook (or before it): no bridge, no installs.
+      abort.signal.throwIfAborted();
     }
     const settings = await loadLauncherSettings(paths.state, env, (msg) => log.warn(msg));
     const resources = resolveResources(repoRoot, env);
