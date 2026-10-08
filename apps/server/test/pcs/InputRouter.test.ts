@@ -2,17 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   chunkText,
   type InputClient,
+  InputError,
   InputRouter,
   MAX_BATCH_EVENTS,
+  normalizeKeyName,
   parseInputEvent,
-  splitChord,
   TEXT_CHUNK,
 } from '../../src/pcs/InputRouter.js';
 
 type Call = [string, unknown];
 
 /** A fake spacesd input client; `gate()` holds the next call until released. */
-function fakeClient() {
+function fakeClient(options: { failPointer?: (json: Record<string, unknown>) => boolean } = {}) {
   const calls: Call[] = [];
   let hold: Promise<void> | null = null;
   let release: (() => void) | null = null;
@@ -21,8 +22,10 @@ function fakeClient() {
   };
   const client: InputClient = {
     pointerJson: async (j) => {
-      calls.push(['pointer', JSON.parse(j)]);
+      const json = JSON.parse(j) as Record<string, unknown>;
+      calls.push(['pointer', json]);
       await wait();
+      if (options.failPointer?.(json)) throw new Error('pointer failed');
       return '{}';
     },
     keyboardJson: async (j) => {
@@ -59,6 +62,11 @@ function fakeClient() {
 const player = { kind: 'player' as const, id: 'jasper' };
 const ada = { kind: 'agent' as const, id: 'ada' };
 
+const move = (x: number, y: number) => ({ k: 'move', x, y });
+const button = (b: string, down: boolean, x = 0, y = 0) => ({ k: 'button', button: b, down, x, y });
+const key = (k: string, down: boolean) => ({ k: 'key', key: k, down });
+const text = (t: string) => ({ k: 'text', text: t });
+
 function setup() {
   const f = fakeClient();
   const router = new InputRouter({ getClient: async () => f.client });
@@ -66,47 +74,82 @@ function setup() {
   return { f, router };
 }
 
-describe('pc.input tuples', () => {
-  it('parses the PLAN §5 tuples', () => {
-    expect(parseInputEvent(['m', 10.4, 20.6])).toEqual(['m', 10, 21]);
-    expect(parseInputEvent(['bd', 'left'])).toEqual(['bd', 'left']);
-    expect(parseInputEvent(['bu', 'right'])).toEqual(['bu', 'right']);
-    expect(parseInputEvent(['s', 0, -3])).toEqual(['s', 0, -3]);
-    expect(parseInputEvent(['t', 'héllo'])).toEqual(['t', 'héllo']);
-    expect(parseInputEvent(['kd', 'KEY_SHIFT'])).toEqual(['kd', 'KEY_SHIFT']);
-    expect(parseInputEvent(['ku', 'a'])).toEqual(['ku', 'a']);
-    expect(parseInputEvent(['k', 'ctrl+c'])).toEqual(['k', 'ctrl+c']);
+describe('pc.input events (T0 objects)', () => {
+  it('parses every T0 event and normalizes it', () => {
+    expect(parseInputEvent({ k: 'move', x: 10.4, y: 20.6 })).toEqual({ k: 'move', x: 10, y: 21 });
+    expect(parseInputEvent({ k: 'button', button: 'left', down: true, x: 1, y: 2 })).toEqual({
+      k: 'button',
+      button: 'left',
+      down: true,
+      x: 1,
+      y: 2,
+    });
+    expect(parseInputEvent({ k: 'scroll', dx: 0, dy: -3, x: 5, y: 6 })).toEqual({
+      k: 'scroll',
+      dx: 0,
+      dy: -3,
+      x: 5,
+      y: 6,
+    });
+    expect(parseInputEvent({ k: 'key', key: 'KEY_SHIFT', down: true })).toEqual({
+      k: 'key',
+      key: 'KEY_SHIFT',
+      down: true,
+    });
+    // Friendly names (the T0 schema allows any [A-Za-z0-9_] name) become cua KEY_* names.
+    expect(parseInputEvent({ k: 'key', key: 'ctrl', down: false })).toEqual({
+      k: 'key',
+      key: 'KEY_CONTROL',
+      down: false,
+    });
+    expect(parseInputEvent({ k: 'text', text: 'héllo' })).toEqual({ k: 'text', text: 'héllo' });
+    expect(parseInputEvent({ k: 'release_all' })).toEqual({ k: 'release_all' });
   });
 
-  it('rejects malformed ones', () => {
+  it('rejects malformed ones (and the old tuple format)', () => {
     for (const bad of [
       null,
-      ['m', 'x', 1],
-      ['m', 1],
-      ['bd', 'thumb'],
-      ['kd', 'shift'],
-      ['kd', '\u0007'],
-      ['t', ''],
-      ['t', 'x'.repeat(5000)],
-      ['k', 'ctrl+'],
-      ['zz', 1, 2],
-      ['m', Number.NaN, 1],
+      ['m', 1, 2],
+      { k: 'move', x: 'a', y: 1 },
+      { k: 'move', x: 1 },
+      { k: 'button', button: 'thumb', down: true, x: 0, y: 0 },
+      { k: 'button', button: 'left', x: 0, y: 0 },
+      { k: 'key', key: 'notakey', down: true },
+      { k: 'key', key: '\u0007', down: true },
+      { k: 'text', text: '' },
+      { k: 'text', text: 'x'.repeat(20_000) },
+      { k: 'scroll', dx: 1e9, dy: 0, x: 0, y: 0 },
+      { k: 'move', x: Number.NaN, y: 1 },
+      { k: 'zz' },
     ]) {
       expect(parseInputEvent(bad)).toBeNull();
     }
   });
 
-  it('splits chords, including a literal plus', () => {
-    expect(splitChord('ctrl+shift+t')).toEqual(['ctrl', 'shift', 't']);
-    expect(splitChord('ctrl++')).toEqual(['ctrl', '+']);
-    expect(splitChord('KEY_LEFTMETA+KEY_L')).toEqual(['KEY_LEFTMETA', 'KEY_L']);
+  it('maps key names to cua names', () => {
+    expect(normalizeKeyName('KEY_ENTER')).toBe('KEY_ENTER');
+    expect(normalizeKeyName('Enter')).toBe('KEY_ENTER');
+    expect(normalizeKeyName('return')).toBe('KEY_ENTER');
+    expect(normalizeKeyName('ctrl')).toBe('KEY_CONTROL');
+    expect(normalizeKeyName('Cmd')).toBe('KEY_META');
+    expect(normalizeKeyName('Page Up')).toBe('KEY_PAGE_UP');
+    expect(normalizeKeyName('arrow_left')).toBe('KEY_ARROW_LEFT');
+    expect(normalizeKeyName('F5')).toBe('KEY_F5');
+    expect(normalizeKeyName('f24')).toBe('KEY_F24');
+    expect(normalizeKeyName('key_escape')).toBe('KEY_ESCAPE');
+    expect(normalizeKeyName('a')).toBe('a');
+    expect(normalizeKeyName('é')).toBe('é');
+    expect(normalizeKeyName(' ')).toBe('KEY_SPACE');
+    expect(normalizeKeyName('plus')).toBe('+');
+    expect(normalizeKeyName('hyperdrive')).toBeNull();
+    expect(normalizeKeyName('f25')).toBeNull();
   });
 });
 
 describe('InputRouter', () => {
   it('obeys only the occupant', async () => {
     const { f, router } = setup();
-    expect(router.submit('linux-1', ada, [['t', 'hi']])).toMatchObject({
+    expect(router.submit('linux-1', ada, [text('hi')])).toMatchObject({
       accepted: 0,
       reason: 'NOT_OCCUPANT',
     });
@@ -114,18 +157,16 @@ describe('InputRouter', () => {
     expect(f.calls).toEqual([]);
   });
 
-  it('maps tuples to spacesd calls', async () => {
+  it('maps T0 events to spacesd calls', async () => {
     const { f, router } = setup();
     router.submit('linux-1', player, [
-      ['m', 100, 50],
-      ['bd', 'left'],
-      ['bu', 'left'],
-      ['s', 0, -10],
-      ['t', 'héllo'],
-      ['kd', 'KEY_SHIFT'],
-      ['ku', 'KEY_SHIFT'],
-      ['k', 'ctrl+c'],
-      ['k', 'KEY_ENTER'],
+      move(100, 50),
+      button('left', true, 100, 50),
+      button('left', false, 100, 50),
+      { k: 'scroll', dx: 0, dy: -10, x: 100, y: 50 },
+      text('héllo'),
+      key('KEY_SHIFT', true),
+      key('KEY_SHIFT', false),
     ]);
     await router.idle('linux-1');
     expect(f.calls).toEqual([
@@ -136,17 +177,33 @@ describe('InputRouter', () => {
       ['type', 'héllo'],
       ['keyboard', { down: { key: { named: 'KEY_SHIFT' } } }],
       ['keyboard', { up: { key: { named: 'KEY_SHIFT' } } }],
-      ['hotkey', ['ctrl', 'c']],
-      ['keyboard', { press: { key: { named: 'KEY_ENTER' } } }],
+    ]);
+  });
+
+  it('a button or scroll at a new position moves the pointer there first', async () => {
+    const { f, router } = setup();
+    router.submit('linux-1', player, [
+      button('right', true, 30, 40),
+      button('right', false, 31, 41),
+      { k: 'scroll', dx: 0, dy: 2, x: 7, y: 8 },
+    ]);
+    await router.idle('linux-1');
+    expect(f.calls.map(([k, v]) => `${k}:${JSON.stringify(v)}`)).toEqual([
+      'pointer:{"move":{"position":{"x":30,"y":40}}}',
+      'pointer:{"down":{"button":"MOUSE_BUTTON_RIGHT"}}',
+      'pointer:{"move":{"position":{"x":31,"y":41}}}',
+      'pointer:{"up":{"button":"MOUSE_BUTTON_RIGHT"}}',
+      'pointer:{"move":{"position":{"x":7,"y":8}}}',
+      'pointer:{"scroll":{"position":{"x":7,"y":8},"deltaX":0,"deltaY":2}}',
     ]);
   });
 
   it('coalesces moves while a call is in flight (only the latest move is kept)', async () => {
     const { f, router } = setup();
     f.gate();
-    router.submit('linux-1', player, [['m', 1, 1]]);
+    router.submit('linux-1', player, [move(1, 1)]);
     await Promise.resolve();
-    for (let i = 2; i <= 50; i++) router.submit('linux-1', player, [['m', i, i]]);
+    for (let i = 2; i <= 50; i++) router.submit('linux-1', player, [move(i, i)]);
     f.open();
     await router.idle('linux-1');
     expect(f.calls).toEqual([
@@ -156,19 +213,19 @@ describe('InputRouter', () => {
     expect(router.stats('linux-1')?.coalesced).toBe(48);
   });
 
-  it('keeps order around clicks: moves coalesce only when adjacent', async () => {
+  it('keeps order around clicks: moves coalesce only when adjacent, scrolls add up', async () => {
     const { f, router } = setup();
     f.gate();
-    router.submit('linux-1', player, [['t', 'x']]);
+    router.submit('linux-1', player, [text('x')]);
     router.submit('linux-1', player, [
-      ['m', 1, 1],
-      ['m', 2, 2],
-      ['bd', 'left'],
-      ['m', 3, 3],
-      ['m', 4, 4],
-      ['bu', 'left'],
-      ['s', 0, 1],
-      ['s', 0, 2],
+      move(1, 1),
+      move(2, 2),
+      button('left', true, 2, 2),
+      move(3, 3),
+      move(4, 4),
+      button('left', false, 4, 4),
+      { k: 'scroll', dx: 0, dy: 1, x: 4, y: 4 },
+      { k: 'scroll', dx: 0, dy: 2, x: 4, y: 4 },
     ]);
     f.open();
     await router.idle('linux-1');
@@ -182,35 +239,37 @@ describe('InputRouter', () => {
     ]);
   });
 
-  it('tracks held keys and buttons and releases all of them', async () => {
+  it('tracks held keys and buttons; release_all and releaseAll release all of them', async () => {
     const { f, router } = setup();
     router.submit('linux-1', player, [
-      ['kd', 'KEY_SHIFT'],
-      ['kd', 'KEY_LEFTCTRL'],
-      ['ku', 'KEY_LEFTCTRL'],
-      ['kd', 'a'],
-      ['bd', 'right'],
+      key('KEY_SHIFT', true),
+      key('KEY_CONTROL', true),
+      key('KEY_CONTROL', false),
+      key('a', true),
+      button('right', true),
     ]);
     await router.idle('linux-1');
     expect(router.held('linux-1')).toEqual({ keys: ['KEY_SHIFT', 'a'], buttons: ['right'] });
     f.calls.length = 0;
-    await router.releaseAll('linux-1');
+    router.submit('linux-1', player, [{ k: 'release_all' }]);
+    await router.idle('linux-1');
     expect(f.calls).toEqual([
       ['keyboard', { up: { key: { named: 'KEY_SHIFT' } } }],
       ['keyboard', { up: { key: { character: 'a' } } }],
       ['pointer', { up: { button: 'MOUSE_BUTTON_RIGHT' } }],
     ]);
     expect(router.held('linux-1')).toEqual({ keys: [], buttons: [] });
+    router.submit('linux-1', player, [key('KEY_ALT', true)]);
+    await router.idle('linux-1');
+    await router.releaseAll('linux-1');
+    expect(router.held('linux-1')).toEqual({ keys: [], buttons: [] });
   });
 
   it('an occupant change (kick) drops queued input and releases held keys', async () => {
     const { f, router } = setup();
     f.gate();
-    router.submit('linux-1', player, [['kd', 'KEY_SHIFT']]);
-    router.submit('linux-1', player, [
-      ['t', 'never typed'],
-      ['m', 9, 9],
-    ]);
+    router.submit('linux-1', player, [key('KEY_SHIFT', true)]);
+    router.submit('linux-1', player, [text('never typed'), move(9, 9)]);
     router.setOccupant('linux-1', ada);
     f.open();
     await router.idle('linux-1');
@@ -218,16 +277,16 @@ describe('InputRouter', () => {
       ['keyboard', { down: { key: { named: 'KEY_SHIFT' } } }],
       ['keyboard', { up: { key: { named: 'KEY_SHIFT' } } }],
     ]);
-    expect(router.submit('linux-1', player, [['t', 'x']]).reason).toBe('NOT_OCCUPANT');
-    expect(router.submit('linux-1', ada, [['t', 'x']]).accepted).toBe(1);
+    expect(router.submit('linux-1', player, [text('x')]).reason).toBe('NOT_OCCUPANT');
+    expect(router.submit('linux-1', ada, [text('x')]).accepted).toBe(1);
   });
 
   it('clamps pointer coordinates to the display', async () => {
     const { f, router } = setup();
     router.setDisplay('linux-1', 1280, 800);
-    router.submit('linux-1', player, [['m', 5000, -20]]);
+    router.submit('linux-1', player, [move(5000, 900)]);
     await router.idle('linux-1');
-    expect(f.calls[0]).toEqual(['pointer', { move: { position: { x: 1279, y: 0 } } }]);
+    expect(f.calls[0]).toEqual(['pointer', { move: { position: { x: 1279, y: 799 } } }]);
   });
 
   it('keeps going after a failed call', async () => {
@@ -245,24 +304,114 @@ describe('InputRouter', () => {
       }),
     });
     router.setOccupant('p', player);
-    router.submit('p', player, [
-      ['bd', 'left'],
-      ['bu', 'left'],
-    ]);
+    router.submit('p', player, [move(3, 3), button('left', true, 3, 3)]);
     await router.idle('p');
     expect(n).toBe(2);
     expect(router.stats('p')).toMatchObject({ errors: 1, calls: 1 });
   });
 });
 
+describe('InputRouter.perform (the seated agent)', () => {
+  it('resolves once spacesd accepted every call: click counts, drag, chords, text', async () => {
+    const f = fakeClient();
+    const cursor: unknown[] = [];
+    const router = new InputRouter({
+      getClient: async () => ({
+        ...f.client,
+        drag: async (...a) => void f.calls.push(['drag', a.slice(0, 4)]),
+      }),
+      onPointer: (pcId, pos) => cursor.push([pcId, pos]),
+    });
+    router.setOccupant('p', ada);
+    await router.perform('p', ada, [
+      { k: 'click', x: 10, y: 20, button: 'left', count: 2 },
+      { k: 'drag', x: 1, y: 2, toX: 30, toY: 40 },
+      { k: 'chord', keys: ['ctrl', 'c'] },
+      { k: 'chord', keys: ['Enter'] },
+      text('ok'),
+    ]);
+    expect(f.calls).toEqual([
+      ['pointer', { click: { position: { x: 10, y: 20 }, button: 'MOUSE_BUTTON_LEFT', count: 2 } }],
+      ['drag', [1, 2, 30, 40]],
+      ['hotkey', ['KEY_CONTROL', 'c']],
+      ['keyboard', { press: { key: { named: 'KEY_ENTER' } } }],
+      ['type', 'ok'],
+    ]);
+    expect(cursor).toEqual([
+      ['p', { x: 10, y: 20 }],
+      ['p', { x: 30, y: 40 }],
+    ]);
+  });
+
+  it('drags with down/move/up when the client has no drag', async () => {
+    const { f, router } = setup();
+    router.setOccupant('linux-1', ada);
+    await router.perform('linux-1', ada, [{ k: 'drag', x: 1, y: 2, toX: 3, toY: 4 }]);
+    expect(f.calls.map(([, v]) => Object.keys(v as object)[0])).toEqual(['move', 'down', 'move', 'up']);
+  });
+
+  it('rejects a caller who is not the occupant, and malformed events, without queueing anything', async () => {
+    const { f, router } = setup();
+    await expect(router.perform('linux-1', ada, [move(1, 1)])).rejects.toMatchObject({
+      code: 'NOT_OCCUPANT',
+    });
+    router.setOccupant('linux-1', ada);
+    await expect(router.perform('linux-1', ada, [move(1, 1), { k: 'warp' }])).rejects.toBeInstanceOf(
+      InputError,
+    );
+    await router.idle('linux-1');
+    expect(f.calls).toEqual([]);
+  });
+
+  it('a failed call rejects the batch (the rest still runs)', async () => {
+    const f = fakeClient({ failPointer: (j) => 'click' in j });
+    const router = new InputRouter({ getClient: async () => f.client });
+    router.setOccupant('p', ada);
+    await expect(
+      router.perform('p', ada, [{ k: 'click', x: 1, y: 1, button: 'left', count: 1 }, text('after')]),
+    ).rejects.toMatchObject({ code: 'FAILED' });
+    expect(f.calls.at(-1)).toEqual(['type', 'after']);
+  });
+
+  it('an occupant change while queued rejects the batch and releases what it held', async () => {
+    const { f, router } = setup();
+    router.setOccupant('linux-1', ada);
+    f.gate();
+    const first = router.perform('linux-1', ada, [key('KEY_SHIFT', true)]);
+    const queued = router.perform('linux-1', ada, [text('never')]);
+    router.setOccupant('linux-1', player);
+    f.open();
+    await first;
+    await expect(queued).rejects.toMatchObject({ code: 'NOT_OCCUPANT' });
+    await router.idle('linux-1');
+    expect(f.calls.map(([k]) => k)).toEqual(['keyboard', 'keyboard']);
+    expect(router.held('linux-1')).toEqual({ keys: [], buttons: [] });
+  });
+
+  it('is all or nothing when the queue is full', async () => {
+    const f = fakeClient();
+    const router = new InputRouter({ getClient: async () => f.client, maxQueue: 3 });
+    router.setOccupant('p', ada);
+    f.gate();
+    void router.perform('p', ada, [text('in flight')]);
+    await Promise.resolve();
+    await expect(
+      router.perform('p', ada, [move(1, 1), move(2, 2), move(3, 3), move(4, 4)]),
+    ).rejects.toMatchObject({ code: 'QUEUE_FULL' });
+    expect(router.queued('p')).toBe(0);
+    f.open();
+    await router.idle('p');
+  });
+});
+
 describe('H2: no stuck keys', () => {
   it('a queued key-up dropped by an occupant change is still released', async () => {
     const { f, router } = setup();
-    router.submit('linux-1', player, [['kd', 'KEY_SHIFT']]);
+    router.submit('linux-1', player, [key('KEY_SHIFT', true)]);
     await router.idle('linux-1');
     f.gate();
-    router.submit('linux-1', player, [['t', 'slow']]); // in flight
-    router.submit('linux-1', player, [['ku', 'KEY_SHIFT']]); // queued behind it
+    router.submit('linux-1', player, [text('slow')]); // in flight
+    router.submit('linux-1', player, [key('KEY_SHIFT', false)]); // queued behind it
     router.setOccupant('linux-1', ada); // drops the queued key-up
     f.open();
     await router.idle('linux-1');
@@ -293,23 +442,17 @@ describe('H2: no stuck keys', () => {
       }),
     });
     router.setOccupant('p', player);
-    router.submit('p', player, [
-      ['kd', 'KEY_LEFTCTRL'],
-      ['ku', 'KEY_LEFTCTRL'],
-    ]);
+    router.submit('p', player, [key('KEY_CONTROL', true), key('KEY_CONTROL', false)]);
     await router.idle('p');
-    expect(router.held('p').keys).toEqual(['KEY_LEFTCTRL']);
+    expect(router.held('p').keys).toEqual(['KEY_CONTROL']);
     await router.releaseAll('p');
-    expect(ups).toEqual(['KEY_LEFTCTRL', 'KEY_LEFTCTRL']);
+    expect(ups).toEqual(['KEY_CONTROL', 'KEY_CONTROL']);
     expect(router.held('p').keys).toEqual([]);
   });
 
   it('only accepted key-downs count as held', async () => {
     const { router } = setup();
-    router.submit('linux-1', player, [
-      ['kd', 'KEY_A'],
-      ['bd', 'left'],
-    ]);
+    router.submit('linux-1', player, [key('KEY_A', true), button('left', true)]);
     expect(router.held('linux-1')).toEqual({ keys: [], buttons: [] });
     await router.idle('linux-1');
     expect(router.held('linux-1')).toEqual({ keys: ['KEY_A'], buttons: ['left'] });
@@ -335,10 +478,7 @@ describe('H3: bounded calls, queues and batches', () => {
       }),
     });
     router.setOccupant('p', player);
-    router.submit('p', player, [
-      ['m', 1, 1],
-      ['k', 'KEY_ENTER'],
-    ]);
+    router.submit('p', player, [move(1, 1), key('KEY_ENTER', true)]);
     const t0 = Date.now();
     await router.idle('p');
     expect(Date.now() - t0).toBeLessThan(1000);
@@ -367,14 +507,9 @@ describe('H3: bounded calls, queues and batches', () => {
       }),
     });
     router.setOccupant('p', player);
-    router.submit('p', player, [
-      ['m', 1, 1],
-      ['kd', 'a'],
-      ['t', 'x'],
-      ['k', 'ctrl+c'],
-    ]);
+    router.submit('p', player, [move(1, 1), key('a', true), text('x')]);
     await router.idle('p');
-    expect(signals).toHaveLength(4);
+    expect(signals).toHaveLength(3);
     expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
   });
 
@@ -391,7 +526,7 @@ describe('H3: bounded calls, queues and batches', () => {
       }),
     });
     router.setOccupant('p', player);
-    router.submit('p', player, [['kd', 'KEY_SHIFT']]);
+    router.submit('p', player, [key('KEY_SHIFT', true)]);
     await router.idle('p');
     hang = true;
     const t0 = Date.now();
@@ -404,25 +539,25 @@ describe('H3: bounded calls, queues and batches', () => {
     const f = fakeClient();
     const router = new InputRouter({ getClient: async () => f.client, maxQueue: 4 });
     router.setOccupant('p', player);
-    const big = Array.from({ length: MAX_BATCH_EVENTS + 1 }, () => ['m', 1, 1]);
+    const big = Array.from({ length: MAX_BATCH_EVENTS + 1 }, () => move(1, 1));
     expect(router.submit('p', player, big)).toMatchObject({ accepted: 0, reason: 'TOO_LARGE' });
     f.gate();
-    router.submit('p', player, [['t', 'in flight']]);
+    router.submit('p', player, [text('in flight')]);
     await Promise.resolve();
     const r = router.submit('p', player, [
-      ['kd', 'a'],
-      ['kd', 'b'],
-      ['kd', 'c'],
-      ['kd', 'd'],
-      ['kd', 'e'],
-      ['bd', 'left'],
+      key('a', true),
+      key('b', true),
+      key('c', true),
+      key('d', true),
+      key('e', true),
+      button('left', true),
     ]);
     expect(r).toMatchObject({ accepted: 4, rejected: 2 });
     expect(router.queued('p')).toBe(4);
     // Key-ups get some slack past the cap…
-    expect(router.submit('p', player, [['ku', 'a']]).accepted).toBe(1);
+    expect(router.submit('p', player, [key('a', false)]).accepted).toBe(1);
     // …and a flood of them collapses the queue into one release.
-    const flood = Array.from({ length: 200 }, () => ['ku', 'b']);
+    const flood = Array.from({ length: 200 }, () => key('b', false));
     router.submit('p', player, flood);
     expect(router.queued('p')).toBeLessThanOrEqual(4 + 64);
     expect(router.stats('p')?.overflows).toBeGreaterThan(0);
@@ -432,12 +567,12 @@ describe('H3: bounded calls, queues and batches', () => {
 
   it('types long text in chunks of code points', async () => {
     const { f, router } = setup();
-    const text = `${'é'.repeat(TEXT_CHUNK - 1)}😀${'x'.repeat(10)}`;
-    router.submit('linux-1', player, [['t', text]]);
+    const long = `${'é'.repeat(TEXT_CHUNK - 1)}😀${'x'.repeat(10)}`;
+    router.submit('linux-1', player, [text(long)]);
     await router.idle('linux-1');
     const typed = f.calls.filter(([k]) => k === 'type').map(([, v]) => v as string);
     expect(typed).toHaveLength(2);
-    expect(typed.join('')).toBe(text);
+    expect(typed.join('')).toBe(long);
     expect([...(typed[0] as string)]).toHaveLength(TEXT_CHUNK);
     expect(chunkText('')).toEqual([]);
   });

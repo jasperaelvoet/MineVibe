@@ -385,6 +385,72 @@ describe('recreate, reimage, decommission', () => {
     expect(m.status('linux-1').status).toBe('running');
   });
 
+  it('reconfigure applies type, resources and mounts with one admission and one recreate', async () => {
+    const { m, driver } = manager();
+    await m.init();
+    await m.bootAll();
+    driver.log.length = 0;
+    const res = await m.reconfigure('linux-1', {
+      type: 'linux-slim',
+      cpus: 1,
+      memMiB: 2048,
+      mounts: [{ host: vault, overlays: ['node_modules'] }],
+    });
+    expect(res).toMatchObject({ recreated: true, restarted: true });
+    expect(res.warnings.join('\n')).toMatch(/An agent can put code here/);
+    expect(driver.log).toEqual([
+      `stop ${cname('linux-1')}`,
+      `rm ${cname('linux-1')}`,
+      `create ${cname('linux-1')}`,
+      `start ${cname('linux-1')}`,
+    ]);
+    expect(m.get('linux-1')).toMatchObject({ type: 'linux-slim', cpus: 1, memMiB: 2048 });
+    expect(m.get('linux-1')?.mounts).toEqual([{ host: vault, ro: false, overlays: ['node_modules'] }]);
+    expect(m.status('linux-1').status).toBe('running');
+    // Nothing differs: nothing happens.
+    driver.log.length = 0;
+    expect(await m.reconfigure('linux-1', { cpus: 1 })).toMatchObject({ recreated: false });
+    expect(driver.log).toEqual([]);
+    // Only mounts: `remounting`.
+    const seen: string[] = [];
+    m.on('pc.status', (_id, s) => void seen.push(s.status));
+    await m.reconfigure('linux-1', { mounts: [] });
+    expect(seen[0]).toBe('remounting');
+  });
+
+  it('reconfigure refuses a type change across families, an over-budget edit and a refused folder', async () => {
+    host.diskFreeBytes = 499 * GiB;
+    const { m, driver } = manager();
+    await m.init();
+    await m.bootAll();
+    driver.log.length = 0;
+    await expect(m.reconfigure('linux-1', { type: 'macos' })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    await expect(m.reconfigure('linux-1', { memMiB: 30 * 1024 })).rejects.toMatchObject({
+      code: 'OVER_BUDGET',
+    });
+    await expect(m.reconfigure('linux-1', { mounts: [{ host: join(dir, 'home') }] })).rejects.toMatchObject({
+      code: 'PATH_REFUSED',
+    });
+    await expect(m.reconfigure('nope', { cpus: 1 })).rejects.toMatchObject({ code: 'UNKNOWN_PC' });
+    expect(m.get('linux-1')).toMatchObject({ type: 'linux', memMiB: 4096 });
+    expect(driver.log).toEqual([]);
+  });
+
+  it('names and wipe-on-death persist; a bad name is refused', async () => {
+    const { m } = manager();
+    await m.init();
+    await m.setName('linux-1', '  Workbench ');
+    await m.setWipeOnDeath('linux-1', true);
+    await expect(m.setName('linux-1', 'x'.repeat(40))).rejects.toMatchObject({ code: 'INVALID' });
+    const again = manager();
+    await again.m.init();
+    expect(again.m.get('linux-1')).toMatchObject({ name: 'Workbench', wipeOnDeath: true });
+    await again.m.setName('linux-1', 'linux-1');
+    await again.m.setWipeOnDeath('linux-1', false);
+    expect(again.m.get('linux-1')?.name).toBeUndefined();
+    expect(again.m.get('linux-1')?.wipeOnDeath).toBeUndefined();
+  });
+
   it('an over-budget resize is refused and changes nothing', async () => {
     const { m, driver } = manager();
     await m.init();

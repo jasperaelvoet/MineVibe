@@ -35,7 +35,7 @@ import {
 } from './drivers/PcDriver.js';
 import { FrameService, type FrameServiceOptions, type FrameSink } from './FrameService.js';
 import { freeDiskBytes, freeLoopbackPort, isLoopbackPortFree, readHostFacts } from './host.js';
-import { InputRouter } from './InputRouter.js';
+import { InputRouter, type InputRouterOptions } from './InputRouter.js';
 import {
   assertPcId,
   clampResources,
@@ -108,6 +108,18 @@ export interface PcRecord {
   image?: string;
   createdAt: number;
   lastUsedAt?: number;
+  /** Display name (`pc.config{name}`); the id when unset. */
+  name?: string;
+  /** Reimage this PC when the world ends (PLAN §8.1 "World reset"). */
+  wipeOnDeath?: boolean;
+}
+
+/** A display name: one line of 1–32 printable characters, or null. */
+export function cleanPcName(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this strips
+  const n = name.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return n.length >= 1 && [...n].length <= 32 ? n : null;
 }
 
 interface PcsFile {
@@ -253,6 +265,22 @@ const ORPHANS_ID = '#orphaned-volumes';
 const fmtGiB = (b: number) => `${(b / GiB).toFixed(1)} GiB`;
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
+/** Same folders, modes and overlays, in the same order. */
+export function sameMounts(a: readonly VaultMount[], b: readonly VaultMount[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((m, i) => {
+      const o = b[i] as VaultMount;
+      return (
+        m.host === o.host &&
+        m.ro === o.ro &&
+        m.overlays.length === o.overlays.length &&
+        m.overlays.every((x, j) => x === o.overlays[j])
+      );
+    })
+  );
+}
+
 interface Inventory {
   /** Containers of this instance, by PC id. */
   live: Map<string, PcContainerInfo>;
@@ -359,7 +387,14 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const raw = JSON.parse(await readFile(this.pcsFile, 'utf8')) as Partial<PcsFile>;
       const pcs = (raw.pcs ?? [])
         .filter((p) => isPcType(p.type) && typeof p.id === 'string' && PC_ID_RE.test(p.id))
-        .map((p) => ({ ...p, disk: sanitizeDiskCaps(p.type, p.disk) }));
+        .map((p) => {
+          const rec: PcRecord = { ...p, disk: sanitizeDiskCaps(p.type, p.disk) };
+          const name = cleanPcName(p.name);
+          if (name) rec.name = name;
+          else delete rec.name;
+          if (typeof p.wipeOnDeath !== 'boolean') delete rec.wipeOnDeath;
+          return rec;
+        });
       const maxSlot = pcs.reduce((n, p) => Math.max(n, p.slot ?? 0), 0);
       this.#file = { version: 1, nextSlot: Math.max(raw.nextSlot ?? 1, maxSlot + 1), pcs };
     }
@@ -813,10 +848,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   /** An InputRouter whose clients come from this manager. */
-  createInputRouter(): InputRouter {
+  createInputRouter(options: Partial<Omit<InputRouterOptions, 'getClient'>> = {}): InputRouter {
     this.#input = new InputRouter({
       getClient: (id) => this.pool.client(id),
       ...(this.#log ? { logger: this.#log } : {}),
+      ...options,
     });
     return this.#input;
   }
@@ -1752,6 +1788,109 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   async setPinned(id: string, pinned: boolean): Promise<void> {
     this.#rec(id).pinned = pinned;
     await this.#save();
+  }
+
+  /** Renames a PC (display only; ids never change). */
+  async setName(id: string, name: string): Promise<void> {
+    const clean = cleanPcName(name);
+    if (!clean) throw new PcError('INVALID', 'a PC name is 1–32 characters on one line');
+    const p = this.#rec(id);
+    if (clean === p.id) delete p.name;
+    else p.name = clean;
+    await this.#save();
+    this.emit('pc.state', this.views());
+  }
+
+  /** Whether the PC is reimaged when the world ends. */
+  async setWipeOnDeath(id: string, on: boolean): Promise<void> {
+    const p = this.#rec(id);
+    if (on) p.wipeOnDeath = true;
+    else delete p.wipeOnDeath;
+    await this.#save();
+    this.emit('pc.state', this.views());
+  }
+
+  /**
+   * One edit of what defines a PC's container (PcConfigScreen "Apply"): its type (Linux ⇄ Linux slim), CPUs,
+   * memory and Vault mounts. The edit is admitted once and applied with a single recreate (`remounting` when only
+   * the mounts change), instead of one recreate per setting. Nothing changes when nothing differs.
+   */
+  async reconfigure(
+    id: string,
+    change: {
+      type?: PcType;
+      cpus?: number;
+      memMiB?: number;
+      mounts?: { host: string; ro?: boolean; overlays?: string[] }[];
+    },
+  ): Promise<{ recreated: boolean; restarted: boolean; warnings: string[] }> {
+    const bad = resourceProblem({
+      ...(change.cpus !== undefined ? { cpus: change.cpus } : {}),
+      ...(change.memMiB !== undefined ? { memMiB: change.memMiB } : {}),
+    });
+    if (bad) throw new PcError('INVALID', bad);
+    if (change.mounts && change.mounts.length > MAX_MOUNTS)
+      throw new PcError('INVALID', `at most ${MAX_MOUNTS} mounts`);
+    if (change.mounts?.some((m) => (m.overlays?.length ?? 0) > MAX_OVERLAYS_PER_MOUNT)) {
+      throw new PcError('INVALID', `at most ${MAX_OVERLAYS_PER_MOUNT} overlays per mount`);
+    }
+    const v = change.mounts ? await validateMounts(change.mounts, this.#vaultOptions()) : null;
+    if (v && !v.ok) throw new PcError('PATH_REFUSED', v.reason);
+    const validated = v?.ok ? v : null;
+    return this.#serialize(id, async () => {
+      const cur = this.#rec(id);
+      const type = change.type ?? cur.type;
+      if (!isPcType(type) || PC_TYPE_SPECS[type].family !== PC_TYPE_SPECS[cur.type].family) {
+        throw new PcError('UNAVAILABLE', 'only Linux ⇄ Linux slim changes are possible in place');
+      }
+      const res = clampResources(type, {
+        cpus: change.cpus ?? cur.cpus,
+        memMiB: change.memMiB ?? cur.memMiB,
+        shmMiB: cur.shmMiB,
+      });
+      const mounts = validated ? validated.mounts : cur.mounts;
+      if (validated) {
+        const nested = crossPcNestingProblem(validated.mounts, this.#otherMounts(id));
+        if (nested) throw new PcError('PATH_REFUSED', nested);
+      }
+      const typeChanged = type !== cur.type;
+      const resChanged = res.cpus !== cur.cpus || res.memMiB !== cur.memMiB || res.shmMiB !== cur.shmMiB;
+      const mountsChanged = validated !== null && !sameMounts(cur.mounts, validated.mounts);
+      const warnings = [...(validated?.warnings ?? [])];
+      if (!typeChanged && !resChanged && !mountsChanged)
+        return { recreated: false, restarted: false, warnings };
+      const next: PcRecord = { ...cur, type, ...res, mounts };
+      const active = ACTIVE.has(this.status(id).status);
+      const adm = await this.#admit('edit', next, {
+        active,
+        apply: () => {
+          Object.assign(cur, { type, ...res, mounts });
+          if (cur.image && !isAllowedImage(type, cur.image)) delete cur.image;
+        },
+      });
+      try {
+        await this.#save();
+        await this.#recreateLocked(cur, typeChanged || resChanged ? 'booting' : 'remounting');
+      } finally {
+        adm.release();
+      }
+      return { recreated: true, restarted: active, warnings: [...warnings, ...adm.warnings] };
+    });
+  }
+
+  /** The crew cap the claude reserve is computed from. */
+  get crewCap(): number {
+    return this.#budget.crewCap;
+  }
+
+  /** The CPU overcommit factor of the soft CPU limit. */
+  get cpuOvercommit(): number {
+    return this.#budget.cpuOvercommit;
+  }
+
+  /** Sum of a PC's disk caps in GiB (rootfs allowance, home, /tmp, /var/tmp and overlays). */
+  diskGiBOf(id: string): number {
+    return this.#diskGiB(this.#rec(id));
   }
 
   /**

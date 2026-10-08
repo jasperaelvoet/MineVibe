@@ -255,6 +255,11 @@ export interface ContainerRuntimeOptions extends ContainerRoots {
   leases?: Partial<ConstructorParameters<typeof EngineLeases>[0]>;
   /** Who holds this process's lease (`minevibe-server`, `test:pcs`). */
   leaseHolder?: string;
+  /**
+   * The install root is read-only (MineVibe.app's `Contents/Runtime/container`): {@link ContainerRuntime.provision}
+   * only checks it and never downloads, expands or replaces anything there.
+   */
+  readOnlyInstall?: boolean;
 }
 
 /** Hashes a file with sha256 (streaming). */
@@ -275,6 +280,7 @@ export class ContainerRuntime {
   readonly #t: ContainerRuntimeTimeouts;
   readonly #uid: number;
   readonly #fetch: typeof fetch;
+  readonly #readOnlyInstall: boolean;
   /** Set once we started the apiserver (or found it ours) in this process. */
   #startedByUs = false;
   /** This process's hold on the engine (N4). */
@@ -291,6 +297,7 @@ export class ContainerRuntime {
     this.#t = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
     this.#uid = options.uid ?? process.getuid?.() ?? 501;
     this.#fetch = options.fetchImpl ?? fetch;
+    this.#readOnlyInstall = options.readOnlyInstall ?? false;
     this.leases = new EngineLeases({
       dir: join(this.appRoot, 'minevibe-leases'),
       exec: this.#exec,
@@ -386,6 +393,13 @@ export class ContainerRuntime {
   async provision(onProgress?: (msg: string) => void): Promise<void> {
     this.assertRootsUsable();
     if (await this.isProvisioned()) return;
+    if (this.#readOnlyInstall) {
+      // Inside MineVibe.app the install root is part of the signed bundle: never write there (PLAN §9.1).
+      throw new EngineError(
+        'NOT_PROVISIONED',
+        `the bundled container install at ${this.installRoot} is missing or modified; reinstall MineVibe`,
+      );
+    }
     const pkg = await this.#obtainPkg(onProgress);
     if (this.lock.signer) {
       const sig = await this.#exec('/usr/sbin/pkgutil', ['--check-signature', pkg], { timeoutMs: 60_000 });

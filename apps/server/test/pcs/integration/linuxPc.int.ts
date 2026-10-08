@@ -430,19 +430,21 @@ describe('Linux PC on Apple container', () => {
     const cy = Math.round(b.y + b.height / 2);
     const h0 = await shotHash();
     const t0 = performance.now();
+    // The T0 `pc.input` event objects, as PcControlScreen sends them.
     router.submit(ID, player, [
-      ['m', cx - 40, cy - 20],
-      ['m', cx - 20, cy - 10],
-      ['m', cx, cy],
-      ['bd', 'left'],
-      ['bu', 'left'],
+      { k: 'move', x: cx - 40, y: cy - 20 },
+      { k: 'move', x: cx - 20, y: cy - 10 },
+      { k: 'move', x: cx, y: cy },
+      { k: 'button', button: 'left', down: true, x: cx, y: cy },
+      { k: 'button', button: 'left', down: false, x: cx, y: cy },
     ]);
     await router.idle(ID);
     await sleep(200);
     router.submit(ID, player, [
-      ['t', 'echo mv-typed-$((6*7)) > /tmp/mv-typed.txt'],
-      ['k', 'KEY_ENTER'],
-      ['kd', 'KEY_SHIFT'],
+      { k: 'text', text: 'echo mv-typed-$((6*7)) > /tmp/mv-typed.txt' },
+      { k: 'key', key: 'KEY_ENTER', down: true },
+      { k: 'key', key: 'KEY_ENTER', down: false },
+      { k: 'key', key: 'KEY_SHIFT', down: true },
     ]);
     await router.idle(ID);
     expect(router.held(ID).keys).toEqual(['KEY_SHIFT']);
