@@ -64,6 +64,44 @@ describe('AgentSession', () => {
     expect(session.lastUsage?.contextTokens).toBe(5120);
   });
 
+  it("measures the context from the turn's last API call, not the result's sum over all calls", async () => {
+    const { session, q } = makeSession({});
+    session.send('collect logs');
+    await q.waitForSent(1);
+    const call = (input: number, read: number, output: number) =>
+      q.emit({
+        type: 'assistant',
+        message: {
+          id: `msg_${input}`,
+          model: 'claude-opus-5-5',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'working' }],
+          usage: {
+            input_tokens: input,
+            cache_read_input_tokens: read,
+            cache_creation_input_tokens: 1000,
+            output_tokens: output,
+          },
+        },
+        parent_tool_use_id: null,
+        uuid: `u-${input}`,
+        session_id: 's',
+      } as never);
+    // Five calls in one turn, each re-reading a ~33k prompt (acceptance run: 165,948 summed, a /compact for nothing).
+    for (const n of [1, 2, 3, 4, 5]) call(100 * n, 32_000, 50);
+    q.result({
+      num_turns: 5,
+      usage: {
+        input_tokens: 1500,
+        output_tokens: 250,
+        cache_read_input_tokens: 160_000,
+        cache_creation_input_tokens: 5000,
+      },
+    });
+    await settle();
+    expect(session.lastUsage?.contextTokens).toBe(500 + 32_000 + 1000 + 50);
+  });
+
   it('keeps the turn open when more queued turns follow, and counts an interrupted zero-turn result', async () => {
     const ends: number[] = [];
     const { session, q } = makeSession({ onTurnEnd: (r) => ends.push(r.num_turns) });

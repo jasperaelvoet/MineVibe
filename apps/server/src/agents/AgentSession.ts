@@ -123,18 +123,29 @@ export interface SwapResult {
 
 /** Usage numbers of the last real turn (context guard, accounting). */
 export interface TurnUsage {
-  /** Prompt tokens the next request re-sends (input + cache read + cache write + output). */
+  /** Prompt tokens the next request re-sends (input + cache read + cache write + output of the turn's last call). */
   readonly contextTokens: number;
   readonly totalCostUsd: number;
 }
 
-function usageOf(result: SDKResultMessage): TurnUsage {
-  const u = result.usage as unknown as Record<string, number | undefined>;
-  const contextTokens =
+type UsageFields = Record<string, number | undefined>;
+
+function tokensOf(u: UsageFields): number {
+  return (
     (u.input_tokens ?? 0) +
     (u.cache_read_input_tokens ?? 0) +
     (u.cache_creation_input_tokens ?? 0) +
-    (u.output_tokens ?? 0);
+    (u.output_tokens ?? 0)
+  );
+}
+
+/**
+ * The context size after a turn. A result's `usage` adds up every API call of the turn (a turn with 5 tool calls
+ * reads its prompt 5 times), so it measures cost, not context: the size is the last assistant message's own usage.
+ * The result's sum is only the fallback when the stream carried no per-call usage.
+ */
+function usageOf(result: SDKResultMessage, lastCall: UsageFields | null): TurnUsage {
+  const contextTokens = tokensOf(lastCall ?? (result.usage as unknown as UsageFields));
   return { contextTokens, totalCostUsd: result.total_cost_usd ?? 0 };
 }
 
@@ -153,6 +164,8 @@ export class AgentSession {
   #interruptPending = false;
   #commandPending = false;
   #lastUsage: TurnUsage | null = null;
+  /** Usage of the latest API call in the current turn (an assistant message's own `usage`). */
+  #lastCallUsage: UsageFields | null = null;
   #swapWaiter: ((input: PostModelSwitchHookInput) => void) | null = null;
   #lastSwitch: PostModelSwitchHookInput | null = null;
 
@@ -376,6 +389,8 @@ export class AgentSession {
         if (a.error) this.#cb.onAssistantError?.(a.error);
         const model = typeof a.message?.model === 'string' ? a.message.model : null;
         if (model && model !== '<synthetic>') this.#model = model;
+        const usage = a.message?.usage as unknown as UsageFields | undefined;
+        if (usage && model !== '<synthetic>' && tokensOf(usage) > 0) this.#lastCallUsage = usage;
         for (const block of a.message?.content ?? []) {
           if (block.type === 'text' && block.text.trim().length > 0)
             this.#cb.onAssistantText?.(block.text, model);
@@ -397,7 +412,8 @@ export class AgentSession {
         if (contextOnly) return;
         this.#interruptPending = false;
         this.#commandPending = false;
-        this.#lastUsage = usageOf(r);
+        this.#lastUsage = usageOf(r, this.#lastCallUsage);
+        this.#lastCallUsage = null;
         this.#inTurn = (r.queued_turn_count ?? 0) > 0;
         this.#cb.onTurnEnd?.(r);
         return;
