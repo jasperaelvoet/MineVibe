@@ -762,7 +762,7 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 - **Disk.** Volumes and the root filesystem default to **512 GiB sparse**, so every volume and rootfs gets an explicit size cap, which the budget counts. Time Machine exclusion (`tmutil addexclusion`) for the container app root is still untested.
 - **Isolation.**
   - Guests reach the host's **0.0.0.0** services through 192.168.64.1 and the LAN IP. A 127.0.0.1-bound TCP port was refused (IPv4 only so far), so **everything MineVibe runs binds 127.0.0.1**.
-  - Guests share one L2 segment and can reach each other, so per-PC tokens matter. Per-PC networks (`container network create`) are a follow-up.
+  - On the default network, guests share one L2 segment and can reach each other. Since the review fixes below, every PC has its own network.
   - IPv6/`::` binds, UDP and DNS are still untested (S5b).
 - **Users.** spacesd refuses to run as root, and `cua` is in the sudo group. The "root shell" fallback is `sudo -n` inside the guest.
 - **Vault semantics.**
@@ -772,6 +772,70 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 - **Tokens.** `container inspect` shows `CUA_ENV_TOKEN` in plaintext while the container exists. That's acceptable for a local single-user app; tokens are rotated per PC create and deleted with the PC.
 - **cua telemetry.** Set `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` and `CUA_HOME=<MineVibe Caches>/cua` before importing `@trycua/cua`.
 - **Timings.** Cold `system start` takes 32 s (kernel download), image pull 124 s (1.19 GB), warm `run` 0.6 s with spacesd up about 2.9 s later; stop 1.6 s, start 0.7 s, recreate keeps volumes.
+- **PC manager build (M4, 2026-10-08), which corrects the S5 items above:**
+  - **No rootfs cap.** `container` 1.5.0 has no rootfs size flag (`run`/`create` have none and `system property list` has no rootfs key), so the root filesystem stays a 512 GiB sparse image. Only volumes are capped (`volume create -s <N>G`; a 1 G volume shows 1008M in the guest). The budget counts a per-type rootfs *allowance* (Linux 24 GiB), and user data lives on the capped home volume.
+  - **Overlays inside a read-only bind** fail at `run` with EROFS ("failed to create directory 'node_modules'") unless the mountpoint already exists on the host. PcManager creates it first, walking with `lstat` and skipping any symlink.
+  - **Volume mounts use `--mount type=volume,source=…,target=…`**, which works, so the `-v` parser is never used. `inspect` reports a read-only bind as `options: ["ro"]`, and the driver checks this after every `run`.
+  - `system status --format json` prints `{"status":"unregistered"}` and exits 1 when nothing is running.
+  - The cua base already ships git and build-essential, so the image layer adds only tmux and ripgrep. A local `container build` takes 47 s with a fresh builder, because the builder VM pulls the base itself rather than using the local image store; the builder is then stopped and deleted.
+  - **Measured through PcManager** (`npm run test:pcs`):
+
+    | Step | Result |
+    |---|---|
+    | Create to SERVING (volume create + `run` + boot hook) | 3.1 s |
+    | Recreate (resize) to SERVING | 5.8 s |
+    | BGRA via FrameService, 1280×800 | 29.6 fps, 121 MB/s |
+    | JPEG 1280 | p50 8.7–9 ms |
+    | Visible tier | 4 fps at 640×400 |
+    | Input batch round trip | 0.23 s |
+    | Warm `system start` | 0.35 s |
+- **Review fixes (2026-10-08), which correct the M4 items above:**
+  - **Per-PC networks.** 1.5.0 has `container network create` and `create/run --network`. Each network gets its own /24 (192.168.65.0/24, .66.0/24, …) with NAT, so the internet works. Networks are isolated from each other: TCP from one network to a guest or to the gateway of another times out, while guests on the same network reach each other (measured with three probe containers). Every PC gets its own `mv-pc-<inst>-<id>-net`, and `npm run test:pcs` checks that two PCs cannot open each other's spacesd port while each can open its own. `network delete` refuses while any container (even a stopped one) refers to the network, so decommission deletes the container first. With the shared L2 segment gone, `cua` keeps its NOPASSWD sudo and the root-shell fallback above stays. The token still crosses vmnet in plaintext, but only between the host and that one guest.
+  - **create → verify → start.** `container create` leaves the container `stopped` (not `created`), with `mounts`, `publishedPorts` and `networks` already visible to `inspect`. PcManager re-checks the Vault (lstat with no symlink, realpath equal to the stored path, every refusal, cross-PC nesting), creates the container, verifies binds, volumes, the 127.0.0.1-only port and the network, re-checks the Vault once more, and only then starts it. After the start it checks the port again. A reused or adopted container must match its record (image, CPUs, memory, shm, binds, volumes, labels, network, loopback port). Otherwise it is recreated (start) or stopped (adoption). A plain start recreates only on a recognized port conflict (the stored port is probed by binding it first). Every other start failure is `error`, and the rootfs is kept.
+  - **Cross-PC nesting.** A Vault folder strictly inside another PC's read-write folder, or a read-write folder around another PC's folder, is refused: the outer PC's agent could swap the inner folder for a symlink to `$HOME` before the inner PC's next start. The same folder in two PCs is allowed, and so is nesting under a read-only mount.
+  - **`--mount` and `=`.** `--mount type=bind,source=/a=b,…` fails with "invalid directive format missing value", so the Vault refuses `=` (as well as `,`, `:` and `\`) in paths and overlays. The boot hook splits `MV_CHOWN_PATHS` with globbing off (`set -f`).
+  - **Instance scoping.** Container, volume and network names and labels carry an instance id: 8 hex characters of sha256(realpath(state dir)). The names are `mv-pc-<inst>-<id>`, plus `-home`, `-tmp`, `-vartmp`, `-ov-<hash>` and `-net`. The labels are `minevibe=pc` (tests: `pc-test-<run>`), `minevibe.instance` and `minevibe.pc`. Nothing is reused, stopped or removed by name without checking those labels, and an existing volume or network with other labels is never reused. Two dev servers, or a dev server and `npm run test:pcs`, can share `~/Library/Application Support/MineVibe-dev`. The test stops the engine only if it started it.
+  - **Rootfs and disk.**
+    - Capped named volumes now cover `/tmp` (8 GiB, 4 on slim) and `/var/tmp` (4 GiB, 2 on slim). The boot hook empties `/tmp` on every boot (tmpfs semantics: a stale `/tmp/.X1-lock` would stop Xvnc) and sets both to 1777.
+    - `/usr/local` (662 MB) and `/opt` (581 MB) hold the image's toolchains (Node, Go, Rust, cua). A volume there would hide them unless it were seeded like the home, so it is not done.
+    - The rest of the rootfs stays the uncapped 512 GiB sparse image. A **free-disk watchdog** (`monitorOnce`, every 10 s) therefore warns (`host.disk`) below 20 GiB free and, below 10 GiB, stops every PC with `error`/`low_disk` and refuses starts.
+    - The budget measures what PC disks already occupy (allocated blocks of `rootfs.ext4`, at most the rootfs allowance, and of each `volume.img`, at most its cap) and counts it back into the pool. An edit is charged only the growth of its caps, so a CPU-only resize never fails on disk.
+    - A fresh PC's `rootfs.ext4` already has about 4.1 GiB allocated (`du`). Part of that may be APFS-cloned from the image, so the measurement errs on the generous side.
+  - **Engine version drift.** An apiserver of ours whose `server.version` differs from the lock is stale: it is stopped, then started from the current install root. Provisioning stops our apiserver before it replaces the install root. If `system status` says not running but the shared launchd label is registered to another program, the engine is foreign and is never started over.
+  - **What runs is what counts.** The budget charges every container that actually runs, whatever its PC's status says. A failed boot (including a SERVING timeout) stops its container. Shutdown stops every container that runs. The monitor marks a crashed PC `error`/`crashed`, marks a spacesd that fails 3 health probes in a row `unresponsive` (see round 2 below: it stays `running`), and stops containers that run for an inactive PC (for example a `create` that finished after the Node timeout killed the CLI).
+  - **Budget details.** Each running VM costs `vmMemOverheadMiB` (256) on top of its limit. The builder VM (2 GiB) is reserved while an image build runs. `setCrewCap` recomputes the claude reserve. Overlay volumes orphaned by a mount change keep counting until `orphanVolumes({ remove: true })`.
+  - **Bounded calls.**
+    - Every spacesd call has a deadline (input 5 s, screenshot and cursor 5 s, `openMedia` 10 s, health 5 s, other calls 10 s). The deadline rejects even when the native call ignores its AbortSignal.
+    - Viewers detach within 2 s.
+    - Input tracks a key as held only after spacesd accepted its key-down (or might have: a failed key-down counts). A release releases whatever is held when it runs, and a failed key-up stays held for the next release. Long text is typed in 128-code-point chunks, a batch is at most 256 events, and key-ups get only a little slack past the queue cap.
+    - CLI calls run in their own process group, which is killed as a whole on timeout. They resolve at most 2 s after the CLI exits, even when a grandchild still holds the pipes.
+    - CLI JSON parse errors never quote the output (it holds the token).
+  - **Frames.** A frame the sink skipped stays pending and is retried with backoff. The focus tier retries BGRA with exponential backoff (1 s up to 30 s) and shows JPEG in the meantime, and it reopens a closed session once per session. A failing PC is polled with backoff (up to 5 s). A PC without a slot is not polled at all until it turns `running` again (`wake`).
+  - **spacesd auth.** With a wrong or a missing token, spacesd answers `CuaError.Unauthenticated: missing or invalid bearer token` (checked by `npm run test:pcs`). The transport `@trycua/cua` picks is `grpc-web`.
+- **Review fixes, round 2 (2026-10-08), which correct the items above:**
+  - **Monitor races.** The container list a monitor pass starts with is only a hint. A PC with an operation in progress, or whose status changed since the list was taken, is skipped for that pass, and every action (marking `crashed`, stopping a stray) first re-inspects that one container under the PC's lock. A PC that finishes booting during a pass is never marked crashed and never stopped as a stray.
+  - **Unresponsive is degraded, not dead.** After 3 failed health probes a PC stays `running` with reason `unresponsive` and a detail, keeps its budget share, and is probed every 1, 2, 4 … up to 16 passes until it answers again (which clears the reason and wakes its frames). Only a crash, the disk watchdog or the user stops it.
+  - **Atomic admission.** One admission runs at a time, and an admitted start, `create` with `boot`, edit (resize, type, mounts) or `bootAll` plan holds a reservation until its operation ends. A PC counts as active while it downloads its image, boots, or sits between awaits, so concurrent starts can no longer be admitted past the RAM pool. A failed operation releases its reservation.
+  - **Shared engine.** Every process that uses an app root holds a lease file in `<appRoot>/minevibe-leases/` (pid and process start time from `ps -o lstart=`, so a reused pid does not keep a dead lease alive). Quitting drops the lease and stops the engine only when no other live lease remains; an undecidable lease counts as live. Taking a lease plus starting, and dropping it plus stopping, run under an exclusive `engine.lock` (broken when its holder is dead). Provisioning refuses to replace an install root another live MineVibe still uses (`ENGINE_IN_USE`).
+  - **Legacy containers.** Containers from before instance scoping (`mv-pc-<id>`, `minevibe=pc`, no `minevibe.instance`) are listed by `reconcile`. One is stopped (never deleted) only when it is provably this instance's: a record with that id, the legacy name, and the fingerprint (sha256) of the `CUA_ENV_TOKEN` that `inspect` shows equal to the token we hold. Others are left alone and reported. The driver keeps only the token's fingerprint, never the token.
+  - **Strays at boot.** `bootAll` first adopts a plugged PC's container that still runs under an inactive status (when it matches its record and token) or stops it, so the monitor never kills it later.
+  - **Adoption is strict.** A container must report spacesd on `127.0.0.1` explicitly (a missing host address is refused) and carry this PC's token.
+  - **Port conflicts are visible.** The stored port counts as taken only when 6 probes 250 ms apart all find it bound, so a port the engine frees a moment after a stop (`restart`) never triggers a recreate. A real conflict recreates the container on a new port and the PC shows `running` with reason `port_conflict` and a detail saying that changes outside `/home/cua` and the Vault were reset. `npm run test:pcs` checks that a rootfs marker survives a crash-restart and `restart()`, and is gone (with the home kept) after a port-conflict recreate.
+  - **Bounded teardown, no leaks.** Shutdown waits at most 2–3 s for media sessions to close. A media session or spacesd client that only arrives after its deadline is closed at once, a failed `openMedia` attempt bumps the session generation so its late frames are ignored, and at most 8 early acks are kept.
+  - **Docker** verifies the network after `create` like the Apple driver. Unknown `disk.*` keys are refused on create and dropped when `pcs.json` is loaded. spacesd's refusal of a wrong or missing token is asserted as `CuaError` tag `Unauthenticated`.
+  - **Measured through PcManager** (`npm run test:pcs`, with a per-PC network and five volumes):
+
+    | Step | Result |
+    |---|---|
+    | Image build (fresh builder) | 47 s |
+    | Create to SERVING (network + volumes + `create` + verify + `start` + boot hook) | 3.3–3.4 s |
+    | Recreate (resize) to SERVING | 5.4–5.5 s |
+    | Restart of a crashed PC (container reused) | 2.8–2.9 s |
+    | BGRA via FrameService, 1280×800 | 29.3–29.6 fps, 120–121 MB/s |
+    | JPEG 1280 | p50 8.7–9.3 ms |
+    | Visible tier | 4 fps at 640×400 |
+    | Input batch round trip | 0.23 s |
+    | Measured disk use of one fresh PC (rootfs + 5 volumes, allocated) | 4.1 GiB |
 
 ## 9. MineVibe.app and first run
 
