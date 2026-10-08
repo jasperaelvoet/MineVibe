@@ -7,7 +7,14 @@ import { resolvePaths } from '../../src/config/paths.js';
 import { silentLogger } from '../../src/log.js';
 import type { RuntimeContext } from '../../src/orchestrator/modules.js';
 import { GiB, type HostFacts } from '../../src/pcs/Budget.js';
-import { containerRootsFor, loadContainerLock, PcModuleImpl } from '../../src/pcs/module.js';
+import { AppleContainerDriver } from '../../src/pcs/drivers/AppleContainerDriver.js';
+import {
+  buildPcParts,
+  containerRootsFor,
+  createPcModule,
+  loadContainerLock,
+  PcModuleImpl,
+} from '../../src/pcs/module.js';
 import { PcManager } from '../../src/pcs/PcManager.js';
 import { FakePcBridge } from './fakeBridge.js';
 import { FakeDriver, fakePool } from './fakes.js';
@@ -115,6 +122,26 @@ describe('PcModuleImpl', () => {
     await mod.booting;
     expect(manager.status('linux-1').status).toBe('engine_down');
     await mod.stop();
+  });
+});
+
+describe('createPcModule', () => {
+  it('builds the dev stack on the MineVibe-dev roots, with the repo image context and a writable install', () => {
+    const parts = buildPcParts(context(new FakePcBridge()), { runtime: 'container' });
+    expect(parts.manager.driver).toBeInstanceOf(AppleContainerDriver);
+    const rt = (parts.manager.driver as AppleContainerDriver).runtime;
+    if (!process.env.MINEVIBE_CONTAINER_APP_ROOT) {
+      expect(rt.appRoot).toBe(join(homedir(), 'Library', 'Application Support', 'MineVibe-dev', 'container'));
+    }
+    expect(rt.lock.version).toBe('1.5.0');
+    expect(parts.manager.pcsFile).toBe(join(dir, 'mv', 'state', 'pcs.json'));
+  });
+
+  it('uses Docker with runtime docker, and returns a module whose pcApi exists before start', () => {
+    const parts = buildPcParts(context(new FakePcBridge()), { runtime: 'docker' });
+    expect(parts.manager.driver.kind).toBe('docker');
+    const mod = createPcModule(context(new FakePcBridge()), { runtime: 'docker' });
+    expect(typeof mod.pcApi.exec).toBe('function');
   });
 });
 
