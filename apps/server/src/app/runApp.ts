@@ -6,6 +6,7 @@ import { pino } from 'pino';
 import { findRepoRoot, resolvePaths } from '../config/paths.js';
 import { type FetchLike, launcherFetch } from '../launcher/download.js';
 import { type Logger, REDACT_PATHS } from '../log.js';
+import { createNullPcModule } from '../orchestrator/placeholderModules.js';
 import {
   MOD_JAR_ENV,
   type PlayControl,
@@ -365,6 +366,10 @@ export async function runApp(options: RunAppOptions): Promise<number> {
       fetch,
       onProgress: (event) => progress.onPlay(event),
       mode: 'app',
+      // AppPcs (appPcs.ts) owns the app's container engine, PcManager and linux-1 here. The runtime's own PC module
+      // stays the null one, so one state directory never gets two PcManagers or two engine leases. When the real PC
+      // module (pcs/module.ts) is wired into factories.ts, it must take AppPcs's manager and driver instead.
+      runtime: { modules: { pc: createNullPcModule } },
       hooks: appHooks({
         layout,
         repoRoot,
