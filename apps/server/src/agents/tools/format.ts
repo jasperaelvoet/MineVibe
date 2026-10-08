@@ -372,7 +372,7 @@ export function describeResult(
         facts.push(`placed crafting_table at ${posText(asPos(r.placedTable) as BlockPos)}`);
       } else if (asPos(r.placedFurnace)) {
         facts.push(`placed furnace at ${posText(asPos(r.placedFurnace) as BlockPos)}`);
-      } else if (meta.skill === 'craft' && r.table === undefined && r.crafted !== undefined && !r.steps) {
+      } else if (meta.skill === 'craft' && typeof r.recipe === 'string' && r.table === undefined) {
         facts.push('2x2 grid');
       }
       const fuel = idText(r.fuel);

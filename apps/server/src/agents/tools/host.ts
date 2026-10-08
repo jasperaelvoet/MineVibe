@@ -111,6 +111,7 @@ const COORD_RE = /(-?\d{1,8})\s*[, ]\s*(-?\d{1,4})\s*[, ]\s*(-?\d{1,8})/;
 export async function resolveCodexPlace(
   host: Pick<McHost, 'actor' | 'org'>,
   place: string,
+  options: { readonly exact?: boolean } = {},
 ): Promise<{ x: number; y: number; z: number }> {
   const actor = host.actor();
   let page: Awaited<ReturnType<OrgApi['codex']['read']>> | null = null;
@@ -121,7 +122,11 @@ export async function resolveCodexPlace(
   }
   if (!page) {
     const hits = await host.org.codex.search(actor, { query: place, category: 'places', limit: 1 });
-    const hit = hits[0];
+    const want = place.trim().toLowerCase();
+    // `exact` (v2 goto): only a page whose title names the place, not just any page the search ranked first.
+    const hit = options.exact
+      ? hits.find((h) => h.title.toLowerCase().includes(want) || want.includes(h.title.toLowerCase()))
+      : hits[0];
     if (!hit) throw new ApiError('UNKNOWN_PLACE', `no Codex place called "${place}"`);
     page = await host.org.codex.read(actor, hit.id);
   }

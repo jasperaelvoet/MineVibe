@@ -333,7 +333,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
     here: () => host.here()?.pos ?? null,
     codexPlace: async (name) => {
       try {
-        return await resolveCodexPlace(host, name);
+        return await resolveCodexPlace(host, name, { exact: true });
       } catch (err) {
         if (isApiError(err, 'UNKNOWN_PLACE')) return null;
         throw err;
@@ -343,10 +343,16 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   };
 
   /** Errors as v2 text: `failed: <what> | CODE: msg` and the code's next step. */
-  const failure = (what: string, err: unknown, meta: JobMeta | null, footer: boolean): Out => {
+  const failure = (
+    what: string,
+    err: unknown,
+    meta: JobMeta | null,
+    footer: boolean,
+    args?: Readonly<Record<string, unknown>>,
+  ): Out => {
     const code = isApiError(err) ? err.code : 'INTERNAL';
     const msg = err instanceof Error ? err.message : String(err);
-    const m: JobMeta = meta ?? { tool: what.split(' ')[0] ?? what, skill: '', what };
+    const m: JobMeta = meta ?? { tool: what.split(' ')[0] ?? what, skill: '', what, args };
     const next = code === 'BAD_ARGS' ? null : hintFor(code, m, ctx());
     const lines = [`failed: ${what} | ${code}: ${singleLine(msg, 400)}`];
     if (next) lines.push(nextLine(next));
@@ -354,11 +360,16 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   };
 
   /** Runs a handler; any throw becomes a v2 failure (with the footer when `footer`). */
-  const run = async (what: string, footer: boolean, fn: () => Promise<Out>): Promise<CallToolResult> => {
+  const run = async (
+    what: string,
+    footer: boolean,
+    fn: () => Promise<Out>,
+    args?: Readonly<Record<string, unknown>>,
+  ): Promise<CallToolResult> => {
     try {
       return toResult(await fn());
     } catch (err) {
-      return toResult(failure(what, err, null, footer));
+      return toResult(failure(what, err, null, footer, args));
     }
   };
 
@@ -589,13 +600,13 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   // --- World jobs -------------------------------------------------------------------------------------------------
   push(
     tool('goto', MC_V2_DESCRIPTIONS.goto, SHAPES.goto, (args) =>
-      run(`goto ${args.to}`, true, async () => runWire(await translateGoto(args, translateHost))),
+      run(`goto ${args.to}`, true, async () => runWire(await translateGoto(args, translateHost)), args),
     ),
     tool(
       'gather',
       MC_V2_DESCRIPTIONS.gather,
       SHAPES.gather,
-      (args) => run(`gather ${short(args.item)}`, true, async () => runWire(translateGather(args, translateHost))),
+      (args) => run(`gather ${short(args.item)}`, true, async () => runWire(translateGather(args, translateHost)), args),
       DESTRUCTIVE,
     ),
     tool('craft', MC_V2_DESCRIPTIONS.craft, SHAPES.craft, (args) =>
@@ -608,14 +619,14 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       'build',
       MC_V2_DESCRIPTIONS.build,
       SHAPES.build,
-      (args) => run(`build ${args.action}`, true, async () => runWire(translateBuild(args, translateHost))),
+      (args) => run(`build ${args.action}`, true, async () => runWire(translateBuild(args, translateHost)), args),
       DESTRUCTIVE,
     ),
     tool(
       'use',
       MC_V2_DESCRIPTIONS.use,
       SHAPES.use,
-      (args) => run(`use ${args.action}`, true, async () => runWire(translateUse(args, translateHost))),
+      (args) => run(`use ${args.action}`, true, async () => runWire(translateUse(args, translateHost)), args),
       DESTRUCTIVE,
     ),
     tool('items', MC_V2_DESCRIPTIONS.items, SHAPES.items, (args) =>
