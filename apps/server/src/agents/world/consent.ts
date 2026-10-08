@@ -14,20 +14,23 @@
  *      itself ("the house", "the base", "the pillars", the refused block), with no negation, hedge or question, in
  *      at most 16 words. A pronoun ("yes, take it") is ambiguous: the player may be answering another question, so
  *      it needs the card. A chat grant needs the refused positions: a zone-wide grant is card-only.
- * 3. Node issues a consent for exactly the refused positions (or, card only, the zone when the mod named none), for
- *    that agent, valid {@link CONSENT_TTL_MS}. The `mc` server attaches it to that agent's world jobs (`skill.run`
- *    `consent`) until it expires. A new refusal or grant replaces the old one; death and world end clear them.
+ * 3. Node grants the mod's own consent token of that refusal (`result.protected.consentId`: single use, bound by the
+ *    mod to that agent and the box of the refused blocks), valid {@link CONSENT_TTL_MS} and never past the mod's own
+ *    expiry. The `mc` server hands it back (`skill.run` `consent: { token }`) on that agent's next block-changing job
+ *    that asks for it (`allow_protected`), once. A refusal Node raised itself carries no token and cannot be allowed.
+ *    A new refusal or grant replaces the old one; death and world end clear them.
  */
 
-import { randomBytes } from 'node:crypto';
 import type { BlockPos, SkillConsent, ZoneKind } from '@minevibe/protocol';
 import type { QuestionCard } from '../PendingStore.js';
 import type { Refusal } from './guard.js';
 
 /** How long an issued consent is valid. */
 export const CONSENT_TTL_MS = 5 * 60_000;
+/** The mod's tokens expire 10 minutes after the refusal; Node stops using one a little earlier. */
+export const MOD_TOKEN_TTL_MS = 10 * 60_000 - 30_000;
 /** How long after a refusal the player's answer can still grant it. */
-export const REFUSAL_TTL_MS = 10 * 60_000;
+export const REFUSAL_TTL_MS = 9 * 60_000;
 /** A chat grant longer than this is not "plain". */
 const CHAT_GRANT_MAX_WORDS = 16;
 
@@ -36,7 +39,16 @@ export interface OpenRefusal extends Refusal {
   readonly at: number;
 }
 
-export interface ConsentGrant extends SkillConsent {
+/** A consent the player gave: the mod's token for one refusal, and what it covers (for toasts and notices). */
+export interface ConsentGrant {
+  readonly token: string;
+  readonly agentId: string;
+  /** The refused blocks the mod reported (it unlocks the box around them). */
+  readonly positions: readonly BlockPos[];
+  /** How many protected blocks the refusal met, when the mod said. */
+  readonly count?: number | undefined;
+  readonly zone: ZoneKind;
+  readonly expiresAt: number;
   readonly via: 'card' | 'chat';
 }
 
@@ -47,6 +59,9 @@ export type GrantVerdict =
   | { readonly kind: 'none' }
   /** It might be a grant, but not clearly: the player should use the card. */
   | { readonly kind: 'unclear'; readonly reason: string };
+
+/** Why a clear "Allow" grants nothing: the refusal came from Node itself, so the mod offered no token. */
+const NO_TOKEN = 'that refusal cannot be allowed yet: retry the job so the game itself can ask';
 
 const AFFIRM_RE =
   /^(yes|yeah|yep|yup|sure|ok|okay|alright|all right|go ahead|go for it|fine|allowed|you may|you can|permission granted|approved?)\b/;
@@ -125,13 +140,11 @@ function soundsLikeYes(text: string): boolean {
 
 export class ConsentLedger {
   readonly #now: () => number;
-  readonly #mintId: () => string;
   readonly #refusals = new Map<string, OpenRefusal>();
   readonly #grants = new Map<string, ConsentGrant>();
 
-  constructor(options: { now?: () => number; mintId?: () => string } = {}) {
+  constructor(options: { now?: () => number } = {}) {
     this.#now = options.now ?? Date.now;
-    this.#mintId = options.mintId ?? (() => `consent-${randomBytes(8).toString('hex')}`);
   }
 
   /** A job of `agentId` was refused `PROTECTED`. */
@@ -182,7 +195,10 @@ export class ConsentLedger {
       if (clearlyGrants(value, refusal.blocks)) granted = true;
       else if (soundsLikeYes(value)) unclear = true;
     }
-    if (granted) return { kind: 'granted', grant: this.#issue(refusal, 'card') };
+    if (granted) {
+      const grant = this.#issue(refusal, 'card');
+      return grant ? { kind: 'granted', grant } : { kind: 'unclear', reason: NO_TOKEN };
+    }
     return unclear
       ? { kind: 'unclear', reason: 'only an "Allow" option that names the protected blocks allows it' }
       : { kind: 'none' };
@@ -200,19 +216,27 @@ export class ConsentLedger {
     if (refusal.positions.length === 0) {
       return { kind: 'unclear', reason: 'a permission for a whole area needs the card' };
     }
-    return { kind: 'granted', grant: this.#issue(refusal, 'chat') };
+    const grant = this.#issue(refusal, 'chat');
+    return grant ? { kind: 'granted', grant } : { kind: 'unclear', reason: NO_TOKEN };
   }
 
-  /** The agent's valid consent (attached to its world jobs), or null. */
-  active(agentId: string): SkillConsent | null {
+  /** The agent's valid consent (what it may change), or null. Does not use it up. */
+  active(agentId: string): ConsentGrant | null {
     const g = this.#grants.get(agentId);
     if (!g) return null;
     if (g.expiresAt <= this.#now()) {
       this.#grants.delete(agentId);
       return null;
     }
-    const { via: _via, ...consent } = g;
-    return consent;
+    return g;
+  }
+
+  /** Uses up the agent's valid consent for one `skill.run` (the mod's token is single use), or null. */
+  take(agentId: string): SkillConsent | null {
+    const g = this.active(agentId);
+    if (!g) return null;
+    this.#grants.delete(agentId);
+    return { token: g.token };
   }
 
   /** Drops an agent's refusal and consent (death, dismissal), or everyone's (world end). */
@@ -226,14 +250,15 @@ export class ConsentLedger {
     this.#grants.delete(agentId);
   }
 
-  #issue(refusal: OpenRefusal, via: 'card' | 'chat'): ConsentGrant {
-    const positions: BlockPos[] = refusal.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    const zone: ZoneKind = refusal.zone ?? 'base';
+  #issue(refusal: OpenRefusal, via: 'card' | 'chat'): ConsentGrant | null {
+    if (!refusal.consentId) return null;
     const grant: ConsentGrant = {
-      consentId: this.#mintId(),
+      token: refusal.consentId,
       agentId: refusal.agentId,
-      ...(positions.length > 0 ? { positions } : { zone }),
-      expiresAt: this.#now() + CONSENT_TTL_MS,
+      positions: refusal.positions.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+      ...(refusal.count !== undefined ? { count: refusal.count } : {}),
+      zone: refusal.zone ?? 'base',
+      expiresAt: Math.min(this.#now() + CONSENT_TTL_MS, refusal.at + MOD_TOKEN_TTL_MS),
       via,
     };
     this.#grants.set(refusal.agentId, grant);
@@ -243,8 +268,8 @@ export class ConsentLedger {
 }
 
 /** "4 protected blocks" / "protected blocks in the Base", for toasts and notices. */
-export function grantScope(grant: SkillConsent): string {
-  const n = grant.positions?.length ?? 0;
+export function grantScope(grant: Pick<ConsentGrant, 'positions' | 'count' | 'zone'>): string {
+  const n = Math.max(grant.positions.length, grant.count ?? 0);
   if (n > 0) return `${n} protected block${n === 1 ? '' : 's'}`;
   return grant.zone === 'built' ? 'protected player-built blocks' : 'protected blocks of the Base';
 }

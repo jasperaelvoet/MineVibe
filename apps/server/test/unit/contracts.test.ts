@@ -371,12 +371,7 @@ describe('createBridgeSkillApi', () => {
     expect(sent[0]?.payload).not.toHaveProperty('consent');
     expect(sent[0]?.timeoutMs).toBe(25_000);
     // Node's consent (protocol §7.4.3) goes out as skill.run.consent; it is never part of args.
-    const consent = {
-      consentId: 'consent-1',
-      agentId: 'ada',
-      positions: [{ x: 1, y: 2, z: 3 }],
-      expiresAt: 5,
-    };
+    const consent = { token: '3f9c2a7be41d08c65a9e0b7d21c4f8e1' };
     await rejectsWith(
       api.runSkill({ agentId: 'ada', skill: 'mine', args: { block: 'oak_log', count: 1 }, consent }),
       'BUSY',

@@ -159,7 +159,7 @@ async function runScenario(scenario: ScenarioName, env: NodeJS.ProcessEnv): Prom
           inCombat: false,
           playerDistance: 4,
           // Today's mod sends no zone: the scene then works the Base out from the office box.
-          ...(scenario === 'legacy' ? {} : { zone: { kind: 'base' as const, name: 'Base (office)' } }),
+          ...(scenario === 'legacy' ? {} : { zone: 'in Base' }),
         },
       ],
     });

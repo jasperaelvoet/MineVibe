@@ -103,6 +103,14 @@ public final class MenuJobs {
 			if (agent.level().getBlockState(this.pos).isAir()) {
 				return this.fail("NOT_FOUND", "no container at " + this.pos.toShortString());
 			}
+			if ("take".equals(this.action)) {
+				// W1: a chest the player placed (either half of a double chest) is theirs; the office's own chest is the
+				// crew's shared supply.
+				dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.checkContainer(agent.level(), this.pos, agent.agentId());
+				if (v != null) {
+					return this.refuseProtected(agent, v, List.of(this.pos));
+				}
+			}
 			if (this.ticks == 1 && MenuView.isOpen(agent)) {
 				agent.closeContainer();
 			}
@@ -243,6 +251,9 @@ public final class MenuJobs {
 		}
 
 		private Status opened(final AgentPlayer agent) {
+			if (this.pos != null) {
+				noteOpened(agent, this.pos);
+			}
 			JsonObject snapshot = MenuView.snapshot(agent);
 			for (String key : snapshot.keySet()) {
 				this.result.add(key, snapshot.get(key));
@@ -266,6 +277,10 @@ public final class MenuJobs {
 
 		@Override
 		protected Status step(final AgentPlayer agent) {
+			Status refused = this.guardPlayerContainer(agent);
+			if (refused != null) {
+				return refused;
+			}
 			String error = MenuView.click(agent, this.slot, this.button, this.input);
 			if (error != null) {
 				return this.fail("BAD_CLICK", error);
@@ -275,6 +290,46 @@ public final class MenuJobs {
 				this.result.add(key, snapshot.get(key));
 			}
 			return this.done();
+		}
+
+		/**
+		 * W1: in the menu of a chest the player placed (opened by any right-click of the agent's: {@code open_menu},
+		 * {@code use_block}...), clicks on the chest's own slots and "collect all" would take the player's things:
+		 * refused. Putting things in stays allowed.
+		 */
+		private @Nullable Status guardPlayerContainer(final AgentPlayer agent) {
+			OpenedAt at = OPENED_AT.get(agent.agentId());
+			AbstractContainerMenu menu = agent.containerMenu;
+			if (at == null || at.menu() != menu || menu == agent.inventoryMenu
+				|| !(agent.level().getBlockEntity(at.pos()) instanceof net.minecraft.world.Container)) {
+				return null;
+			}
+			boolean takes = this.input == ContainerInput.PICKUP_ALL
+				|| this.slot >= 0 && this.slot < menu.slots.size() && menu.getSlot(this.slot).container != agent.getInventory();
+			if (!takes) {
+				return null;
+			}
+			dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.checkContainer(agent.level(), at.pos(), agent.agentId());
+			if (v != null) {
+				return this.refuseProtected(agent, v, List.of(at.pos()));
+			}
+			return null;
+		}
+	}
+
+	/** The menu an agent opened by right-clicking a block, and where (W1 container guard). */
+	record OpenedAt(AbstractContainerMenu menu, BlockPos pos) {
+	}
+
+	private static final Map<String, OpenedAt> OPENED_AT = new java.util.concurrent.ConcurrentHashMap<>();
+
+	/**
+	 * Remembers that the menu {@code agent} has open now came from the block at {@code pos} ({@code AgentControls#useBlock}
+	 * calls it for every right-click that opened a menu), so {@code menu_click} can tell whose container it is.
+	 */
+	public static void noteOpened(final AgentPlayer agent, final BlockPos pos) {
+		if (agent.containerMenu != agent.inventoryMenu) {
+			OPENED_AT.put(agent.agentId(), new OpenedAt(agent.containerMenu, pos.immutable()));
 		}
 	}
 

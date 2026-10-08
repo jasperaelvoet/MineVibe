@@ -260,7 +260,12 @@ public final class AgentControls {
 		Vec3 hit = Vec3.atCenterOf(pos).add(face.getStepX() * 0.5, face.getStepY() * 0.5, face.getStepZ() * 0.5);
 		BlockHitResult hitResult = new BlockHitResult(hit, face, pos, false);
 		InteractionHand hand = InteractionHand.MAIN_HAND;
+		net.minecraft.world.inventory.AbstractContainerMenu before = this.player.containerMenu;
 		InteractionResult result = this.player.gameMode.useItemOn(this.player, level, this.player.getItemInHand(hand), hand, hitResult);
+		if (this.player.containerMenu != before) {
+			// W1: whose container this menu shows (menu_click refuses to take from the player's chests).
+			dev.minevibe.agent.job.MenuJobs.noteOpened(this.player, pos);
+		}
 		this.player.swing(hand, this.player.getItemInHand(hand).getInteractAnimation(), false);
 		if (result.consumesAction()) {
 			this.itemUseCooldown = 4;
