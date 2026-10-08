@@ -222,9 +222,9 @@ query({ prompt: gatedInbox, options: {
 
 | Tool | Wandering (Haiku/xhigh) | Seated at PC *P* (Opus/medium) |
 |---|---|---|
-| `mc__` observe / social / eat / equip / remember / `stand_up` | allow (`stand_up` denied) | allow |
+| `mc__` observe / social / eat / equip / remember / `stand_up` | allow (`stand_up` denied) | allow only PC mode's set (`status`, `look_around`, `say`, `tell`, `remember`, `stand_up`); the rest deny: `mode` (see "Tools per mode") |
 | `mc__` movement / world jobs / `sit_at_pc` | allow | deny: "stand up first" |
-| `mc__request_hire` | CEO only | CEO only |
+| `mc__request_hire` | CEO only | deny: `mode` (a Minecraft-mode tool: stand up first) |
 | `pc__*` (screenshot, click, double/right_click, move, drag, scroll, type, key, clipboard, bash, bash_output, bash_kill, read, write, edit, glob, grep, info, handoff_note) | deny: "walk to a PC and sit" | allow only if `occupant(P)==agent` and the SeatFSM is `seated`. Mutating tools are denied while `permission_mode==='plan'`. |
 | WebSearch / WebFetch | deny | allow. WebFetch denies loopback, RFC1918 and link-local targets. |
 | `mc__codex_*` | reads allowed anywhere; writes allowed, within the write budget | allow |
@@ -233,6 +233,31 @@ query({ prompt: gatedInbox, options: {
 | AskUserQuestion | broker | broker |
 | ExitPlanMode | deny ("not in plan mode") | broker in plan mode (plan-first sessions only); deny otherwise |
 | EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
+
+- **Tools per mode (spike S3b, `agents/modes.ts`).** On top of the rows above, every agent is in one of three
+  mode profiles. They are defined by tags in the tool catalog: an untagged mc tool is wander-only and an untagged pc
+  tool seated-only, so a new tool never leaks into another mode.
+
+  | Mode | Seat states (`modeForSeat`) | Tools |
+  |---|---|---|
+  | `wander` (Minecraft mode) | `wandering`, `walking_to_seat`, `standing_pending_swap` | every `mc__*`; AskUserQuestion. No `pc__*`, no Bash/Read/… aliases, no web. |
+  | `seated` (PC mode) | PC seat: `seated_pending_swap`, `seated`, `away_from_seat` | every `pc__*` (with the Bash/Read/Edit/Write/Glob/Grep aliases), WebSearch, WebFetch, AskUserQuestion, ExitPlanMode (plan-first only), and from `mc__` only `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task`. No movement, mining, crafting or building. |
+  | `meeting` (Meeting mode) | meeting seat: `seated` | `mc__` `say`, `tell`, `emote`, `remember`, `codex_*`, `calendar_*`, `report_task`, `stand_up`; AskUserQuestion |
+
+  - **The model is offered every tool in every mode.** CC 2.1.293 pins the tool list to the conversation's first
+    request, and the pin survives `resume`. Later `setMcpServers` or MCP `tools/list_changed` changes only arrive as
+    in-message `deferred_tools_delta` attachments (additions with full schemas, removals as a notice). So both servers
+    stay registered, and ToolGate is what makes a tool unavailable. After the seat rules above, an allowed call of a
+    tool outside the seat's mode is denied with teaching text (code `mode`, e.g. "mcp__mc__inventory is not available
+    in PC mode. Stand up first (mcp__mc__stand_up). Here you have …"). The MODE banner (6.3) tells the model what each
+    mode has.
+  - `disallowedTools` / `permissions.deny` never remove an MCP tool from the model's list, not even at the first
+    request; they only block calls, after PreToolUse. **Never put mode rules into `options.settings.permissions` or
+    `applyFlagSettings({permissions})`:** launch-time rules can't be lifted live, and built-ins denied at launch never
+    return (S3b M1). `FORBIDDEN_INIT_TOOLS` stays valid (it covers built-ins only).
+  - `system/init.tools` is the CLI's current list and `getContextUsage().mcpTools` ignores deny rules: neither shows
+    what the model is offered.
+  - Size (tools v2 catalog, `apps/server/scripts/tool-tokens.ts`): see `docs/design/EVALS.md` "Mode profiles".
 
 - **All file and shell work happens inside the PC.** `pc__read/write/edit/glob/grep` run in the guest through spacesd (`rg`, upload/download, an exact-string edit with the same semantics as Edit). The host never opens a path an agent controls, so there's no symlink race.
 - **`pc__bash`** uses spacesd `spawn` as the `cua` user (root as a fallback if bind-mount permissions require it [U S5]). Details:
@@ -263,7 +288,25 @@ query({ prompt: gatedInbox, options: {
   3. Queue a **kickoff** message: PC info, mounts, an excerpt of the mount's `CLAUDE.md`, handoff notes, and the task.
   4. Standing up mirrors this: back to Haiku/xhigh and `bypassPermissions` (USER DECISION 2026-10-08; never `default`).
 - **Debounce.** A stand and re-sit on the same PC within 60 s skips the swap.
-- **Fallback** if S3 fails: T3 Code's `close()` + `resume` with explicit model and effort.
+- **Mode switch (spike S3b).** The mode (6.2 "Tools per mode") follows the seat, and the model hears about it at the
+  same boundary as the swap:
+  1. The swap changes only model and effort. The tool list and the system prompt stay byte-identical across modes and
+     agents' sessions (the persona carries a short, mode-independent "## Modes" section; the world, PC and meeting
+     guidance moved into the banners). The up-swap rewrites the Opus prefix anyway; nothing else is invalidated.
+  2. The first turn after the boundary opens with the new mode's **MODE banner**, in the same user message as the
+     kickoff (sit) or the next wake (stand, kick, damage, meeting): `[MV:<nonce> MODE] PC mode: you sit at an office
+     PC.`, the mode's persona section (stable within a mode), "Available now: …" and "Blocked until you stand up: …".
+     About 160–340 tokens per switch, appended, so the cache prefix survives.
+  3. Mid-turn edges (stand_up, kick, damage, survival, PC down) take effect in ToolGate at once, because it holds
+     each call to the seat's current mode; the banner follows with the next turn. `away_from_seat` keeps PC mode (the
+     turn is in flight). Death, world end and dismissal stop the brain: no banner.
+  4. Debounce rules are unchanged: a turn within the re-sit debounce runs on Opus in Minecraft mode, and the later
+     downswap adds no banner. An agent pulled from its PC into a meeting stays on Opus (the stretched debounce) and
+     gets Meeting mode, then PC mode with the kickoff when it sits back down.
+  5. A new or resumed session, and every compaction, make the next turn announce the mode again.
+- **Fallback** if S3 fails: T3 Code's `close()` + `resume` with explicit model and effort. S3b measured it: the
+  conversation and the pinned tool list are kept, each switch costs 0.86–1.43 s plus a CLI respawn, and no
+  PostModelSwitch hook fires (Node marks such a swap `acked: false`).
 - **Kick, damage, survival, death or PC down:**
   1. `interrupt()`.
   2. Kill the agent's tagged guest processes and close ShellMirror.
@@ -1088,6 +1131,7 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 | S2 SDK routing and auth | 2026-10-08 | PASS with one change | Subscription auth works with the allowlist env and no keychain prompt; `toolAliases` route to `pc__*` (hooks see the alias target). The **plan text arrives via Write, not `input.plan`**, hence PlanCapture. Remove TodoWrite; no `allowedTools` for mc/pc. See `spikes/s2-s3-sdk/result.md`. |
 | S2b bypass mode (USER DECISION 2026-10-08) | 2026-10-08 | PASS | Agents run in `bypassPermissions` + `allowDangerouslySkipPermissions`. Live, bundled claude 2.1.293, 3 Haiku turns: PreToolUse hooks still run (they report `permission_mode: bypassPermissions`) and a hook deny still blocks the call; AskUserQuestion and ExitPlanMode (plan-first via `setPermissionMode('plan')`) still reach canUseTool and the answers reach the model; Node's switch back to `bypassPermissions` works before or after the allow. A call the hook leaves undecided is auto-allowed, so ToolGate must decide every mc/pc/web call (it does). No PreToolUse card fallback needed. See `spikes/s2-s3-sdk/result.md` ("bypass mode"). |
 | S3 model and effort | 2026-10-08 | PASS | `applyFlagSettings` at turn boundaries swaps haiku/xhigh ⇄ opus/medium in under 100 ms. The prompt cache on the subscription lasts 1 h, and a canUseTool held for 180 s is fine. |
+| S3b mode switch | 2026-10-09 | No tool-set switching; mode banner instead | Hiding mc tools while seated (and pc tools while wandering) at the swap: 12 live turns over four mechanisms. CC 2.1.293 pins the model's tool list to the conversation's first request (also across `resume`); deny rules never remove MCP tools; `setMcpServers` / `list_changed` only add in-message deltas; close + resume costs 0.86–1.43 s and hides nothing. Adopted: one stable tool list, ToolGate enforces per-mode profiles, a MODE banner opens the first turn after each switch (§6.2 "Tools per mode", §6.3 "Mode switch"). See `spikes/s3b-mode-switch/result.md`. |
 | S5 Apple container PC | 2026-10-08 | PASS with changes | See §8.6. TCC placement, `--mount …,readonly`, volume seeding, SERVING readiness, self-drawn cursor, cpu+1, disk caps. Follow-up S5b: IPv6/UDP isolation, per-PC networks, Time Machine. `spikes/s5-container/result.md`. |
 | S1 fake player | 2026-10-08 | PASS | Carpet-style `AgentPlayer` on 26.3: role skins, hidden from the tab list, 51 blocks of `path_course` in 301 ticks (3.4 blocks/s, 2 plans, swim, 2-block drop), door opened and closed, log mined in 9 ticks (vanilla 10), creeper back-off to 8.3 blocks, lava escape, seat single occupancy, grave + no respawn, restore across reload. **4 agents cost 0.034-0.062 ms per agent tick** (target 0.5); A* 1.0-1.3 ms per 40-block segment warm. `NavProxyMob` kept. 26.3 facts: seat type must be saveable, 60-tick spawn invulnerability, client-authoritative movement, fake connections don't tick, chunk sending stalls without acks (API_MAP §7). Review fixes: dimension change and End exit, phantoms, graves, dead bodies; agents stay real players (§7.1). 26 GameTests. See `spikes/s1-fake-player/result.md`. |
 | S7 boot and reset | 2026-10-08 | PASS | Never shows TitleScreen; the Esc menu never pauses (60 server ticks in 3 s); death -> Game Over in 20-52 ms (budget 3 s); Begin -> standing in the new world in 2.4-4.1 s (budget 20 s); `SIGKILL` on Game Over relaunches straight into Game Over, then the next world; the dead marker covers a death Node never heard of; parent exit -> saved and gone in 1.3-1.6 s. Quick Play fallback not needed. After the review, Begin waits for Node (closed re-sent until acked, then Node's `world.open`); a Node restart right after Begin still lands in the next world (6.9-7.2 s). Harness `node spikes/s7-boot/run.mjs`: 32/32 checks. See `spikes/s7-boot/result.md`. |

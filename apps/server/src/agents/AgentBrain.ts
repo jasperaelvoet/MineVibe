@@ -914,7 +914,8 @@ export class AgentBrain {
       return;
     }
     const parts: string[] = [];
-    const banner = this.#modeBanner();
+    const mode = modeForSeat(this.fsm.snapshot);
+    const banner = this.#modeBanner(mode);
     if (banner) parts.push(banner);
     const digest = meeting.length > 0 ? null : this.digest.take(this.record.nonce);
     if (digest) parts.push(digest);
@@ -934,21 +935,21 @@ export class AgentBrain {
     // Gate epochs of calls whose handler never ran (e.g. rejected input) must not leak into this turn.
     this.#pcEpochs.clear();
     session.send(parts.join('\n\n'));
+    if (banner) {
+      this.#log.info({ from: this.#announcedMode, to: mode, model: session.model }, 'mode switched');
+      this.#announcedMode = mode;
+    }
     this.bark(BARKS.wake);
     this.#setStatus();
   }
 
   /**
-   * The MODE banner when the mode changed since the model last heard it (agents/modes.ts), else null. Turns start only
-   * after the turn boundary (and its swap) ran, so the banner of a sit or stand rides on the first turn of the swapped
-   * model; a kickoff follows it in the same message.
+   * The MODE banner when `mode` is not the one the model last heard about (agents/modes.ts), else null. Turns start
+   * only after the turn boundary (and its swap) ran, so the banner of a sit or stand rides on the first turn of the
+   * swapped model, ahead of the kickoff or wake in the same message.
    */
-  #modeBanner(): string | null {
-    const mode = modeForSeat(this.fsm.snapshot);
+  #modeBanner(mode: BrainMode): string | null {
     if (mode === this.#announcedMode) return null;
-    const from = this.#announcedMode;
-    this.#announcedMode = mode;
-    this.#log.info({ from, to: mode, model: this.#session?.model ?? null }, 'mode switched');
     return modeBanner(mode, { nonce: this.record.nonce, playerName: this.#env.playerName() });
   }
 

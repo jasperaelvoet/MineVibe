@@ -66,6 +66,10 @@ hunger, an inventory and a skin for its role (CEO, Engineer, Miner, Farmer, Guar
 - **Models.** A wandering agent runs on **Haiku 5.5** at `xhigh` effort. An agent seated at a PC runs on
   **Opus 5.5** at `medium` effort. The name tag shows `[H]` or `[O]`. The switch happens between turns, and
   a quick stand-up and re-sit within 60 seconds skips it.
+- **Minecraft mode and PC mode.** A seated agent works the computer: it can still check on its body and
+  surroundings, talk, take notes and use the calendar, but it stands up before it walks, mines, crafts or
+  builds. A wandering agent has no computer and no web until it sits at a PC. At the meeting table agents
+  only talk, take notes and plan.
 - **Reflexes, not tokens.** Survival is handled by in-game reflexes at zero cost: escaping lava and
   drowning, backing off from creepers, eating, fighting, protecting you, feeding you when you are hungry,
   and sheltering at dusk. The language model only hands out long-running jobs, so it is never on a

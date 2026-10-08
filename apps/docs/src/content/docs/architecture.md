@@ -73,14 +73,22 @@ user's `claude` binary.
 - **Tools.** Agents get two in-process MCP servers: `mc` (the body: observe, move, mine, craft, build, talk,
   Codex, Calendar) and `pc` (screen, input, shell and file tools inside a PC). Claude Code's built-in shell
   and file tools are disabled or aliased onto `pc`.
+- **Modes.** An agent is always in one of three modes: **Minecraft mode** (on its feet: every `mc` tool, no
+  PC or web tools), **PC mode** (seated at a PC: the `pc` tools, the web and a minimal `mc` set to watch its
+  body, talk, take notes and stand up) and **Meeting mode** (at the meeting table: talk, notes, Codex,
+  calendar). Claude Code fixes the tool list a conversation is offered at its first request, so every session
+  keeps both servers; a mode switch is a short MODE notice at the start of the first turn after the switch
+  (how to act in that mode, what is available, what waits), and ToolGate enforces it.
 - **ToolGate** is a `PreToolUse` hook that decides, fail-closed, which tools an agent may use in its current
-  state (wandering, seated, plan mode). Agents run in Claude Code's `bypassPermissions` mode, so there are no
-  permission prompts and ToolGate is the sandbox guard: it allows or denies every game, PC and web tool call
-  explicitly. Agents can't enter plan mode themselves; only the player's Plan-first toggle starts it.
+  state (wandering, seated, plan mode) and mode. Agents run in Claude Code's `bypassPermissions` mode, so
+  there are no permission prompts and ToolGate is the sandbox guard: it allows or denies every game, PC and
+  web tool call explicitly, and refuses a tool outside the current mode with a note on how to get it back.
+  Agents can't enter plan mode themselves; only the player's Plan-first toggle starts it.
 - **InteractionBroker** turns `AskUserQuestion`, `ExitPlanMode` and hires into cards the player answers in
   game (see [Answering cards](/MineVibe/playing/#answering-cards)).
 - **SeatFSM** tracks walking to a chair, sitting, standing and being kicked. The model swap (Haiku 5.5 at
-  `xhigh` effort while wandering, Opus 5.5 at `medium` effort while seated) only happens at turn boundaries.
+  `xhigh` effort while wandering, Opus 5.5 at `medium` effort while seated) only happens at turn boundaries,
+  and the mode switches at the same boundary: the first turn on the new model opens with the new mode.
 - **EventRouter and Digest** feed game events in cheaply: most events are context; only a few wake an agent.
 - **BrainScheduler** runs at most 2 work turns at once, with a reserved slot for the player's messages.
   **UsageGovernor** reads rate-limit events and moves the crew to Tired or Asleep.

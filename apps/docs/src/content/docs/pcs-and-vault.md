@@ -91,8 +91,10 @@ visible around the edges and keeps running.
 ## Agents at PCs
 
 An agent that needs a computer walks to a free PC and sits down. Once seated it switches to **Opus 5.5** and
-gets its PC tools: screenshots, mouse and keyboard, a shell, and file tools (read, write, edit, search). All
-of them act **inside that PC**.
+**PC mode**, and gets its PC tools: screenshots, mouse and keyboard, a shell, file tools (read, write, edit,
+search) and the web. All of them act **inside that PC**. Of its game tools it keeps only what a seated body
+needs (its status and surroundings, talking, notes, the Codex and the calendar); walking, mining, crafting
+and building wait until it stands up.
 
 - **Plan first.** Coding roles start in plan mode: the agent can look around and run read-only commands, and
   nothing changes until you approve its plan card.
