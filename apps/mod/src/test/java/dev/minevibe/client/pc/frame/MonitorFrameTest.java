@@ -1,7 +1,9 @@
 package dev.minevibe.client.pc.frame;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -68,11 +70,13 @@ class MonitorFrameTest {
 	@Test
 	void decodedPixelsAndResizes() {
 		MonitorFrame f = new MonitorFrame();
+		assertNull(f.size(), "no size before the first frame");
 		f.patchRgba(2, 2, 0, 0, 2, 2, pixels(1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255, 4, 4, 4, 255), 1);
 		assertEquals(0xFF040404, f.pixel(1, 1));
 		drain(f);
 		f.patchRgba(3, 1, 1, 0, 1, 1, pixels(9, 9, 9, 255), 2);
 		assertEquals(3, f.width());
+		assertArrayEquals(new int[] {3, 1}, f.size(), "width and height change together");
 		assertEquals(0xFF000000, f.pixel(0, 0), "a new size starts black");
 		assertEquals(0xFF090909, f.pixel(1, 0));
 		Upload u = drain(f).getFirst();

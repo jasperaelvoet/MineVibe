@@ -15,6 +15,8 @@ import net.minecraft.network.chat.Component;
  */
 public final class PcWatchScreen extends Screen {
 	private final String pcId;
+	/** {@code watch} was sent and {@code unwatch} not yet: init runs again on every resize, removed only once. */
+	private boolean watching;
 
 	public PcWatchScreen(final String pcId) {
 		super(Component.translatable("screen.minevibe.pc.watch"));
@@ -23,14 +25,20 @@ public final class PcWatchScreen extends Screen {
 
 	@Override
 	protected void init() {
-		PcViewTracker.setWatching(this.pcId);
-		PcBridge.action("watch", this.pcId, null, null);
+		if (!this.watching) {
+			this.watching = true;
+			PcViewTracker.setWatching(this.pcId);
+			PcBridge.action("watch", this.pcId, null, null);
+		}
 	}
 
 	@Override
 	public void removed() {
-		PcViewTracker.setWatching(null);
-		PcBridge.action("unwatch", this.pcId, null, null);
+		if (this.watching) {
+			this.watching = false;
+			PcViewTracker.setWatching(null);
+			PcBridge.action("unwatch", this.pcId, null, null);
+		}
 	}
 
 	@Override

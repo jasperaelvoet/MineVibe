@@ -62,6 +62,8 @@ public final class PcClientInit implements ClientModInitializer {
 				Minecraft.getInstance().execute(() -> MonitorTextures.release(info.pcId()));
 			}
 		});
+		// A PC a hello.ok snapshot no longer lists (deleted while the bridge was down): free its GPU texture too.
+		PcStates.addRemovalListener(pcId -> Minecraft.getInstance().execute(() -> MonitorTextures.release(pcId)));
 
 		ClientBlockEntityEvents.BLOCK_ENTITY_LOAD.register((be, level) -> {
 			if (be instanceof PcBlockEntity desk) {

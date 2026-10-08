@@ -53,6 +53,18 @@ class PcStatesTest {
 	}
 
 	@Test
+	void pcsDroppedByTheSnapshotAreReportedOnce() {
+		List<String> removed = new ArrayList<>();
+		PcStates.addRemovalListener(removed::add);
+		PcStates.put(pc("keep-1", 11, "running", true));
+		PcStates.put(pc("gone-1", 12, "running", true));
+		PcStates.replaceAll(List.of(pc("keep-1", 11, "running", true)), null);
+		assertEquals(List.of("gone-1"), removed, "the client frees gone-1's monitor texture, the server turns its LED off");
+		PcStates.replaceAll(List.of(pc("keep-1", 11, "running", true)), null);
+		assertEquals(List.of("gone-1"), removed, "a PC is reported once");
+	}
+
+	@Test
 	void ledFollowsTheStatus() {
 		assertEquals(PcLed.GREEN, PcLed.of("running"));
 		assertEquals(PcLed.AMBER, PcLed.of("booting"));

@@ -52,6 +52,8 @@ public final class PcBlockEntity extends BlockEntity {
 	private boolean creating;
 	/** Set when a creative player breaks the desk: no item drop. */
 	private boolean suppressDrop;
+	/** Set before {@link PcWorkstation#removeQuietly}: no item drop and no unplug (the PC stays plugged). */
+	private boolean quiet;
 
 	public PcBlockEntity(final BlockPos pos, final BlockState state) {
 		super(PcContent.PC_BLOCK_ENTITY, pos, state);
@@ -79,6 +81,11 @@ public final class PcBlockEntity extends BlockEntity {
 	}
 
 	void suppressDrop() {
+		this.suppressDrop = true;
+	}
+
+	void markQuiet() {
+		this.quiet = true;
 		this.suppressDrop = true;
 	}
 
@@ -199,7 +206,7 @@ public final class PcBlockEntity extends BlockEntity {
 			Block.popResource(serverLevel, pos, WorkstationItem.stackFor(this.type, this.pcId));
 		}
 		String id = this.pcId;
-		if (id != null) {
+		if (id != null && !this.quiet) {
 			LOG.info("Desk of PC {} removed at {}: unplugging", id, pos);
 			PcBridge.action("unplug", id, null, null).whenComplete((ok, err) -> {
 				if (err != null) {

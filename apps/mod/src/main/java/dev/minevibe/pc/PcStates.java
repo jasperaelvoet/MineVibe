@@ -22,6 +22,7 @@ public final class PcStates {
 	private static final Map<Long, String> BY_SLOT = new ConcurrentHashMap<>();
 	private static final Map<String, Pc.PcCursor> CURSORS = new ConcurrentHashMap<>();
 	private static final List<Consumer<Pc.PcInfo>> LISTENERS = new CopyOnWriteArrayList<>();
+	private static final List<Consumer<String>> REMOVAL_LISTENERS = new CopyOnWriteArrayList<>();
 	private static final AtomicLong VERSION = new AtomicLong();
 
 	private static volatile Pc.@Nullable Budget budget;
@@ -45,16 +46,21 @@ public final class PcStates {
 		}
 	}
 
-	/** The full snapshot of {@code hello.ok}: PCs Node no longer lists are dropped. */
+	/**
+	 * The full snapshot of {@code hello.ok}: PCs Node no longer lists are dropped (and reported to the
+	 * {@link #addRemovalListener removal listeners}).
+	 */
 	public static void replaceAll(final Collection<Pc.PcInfo> pcs, final Pc.@Nullable Budget newBudget) {
 		List<String> gone = new ArrayList<>(BY_ID.keySet());
 		for (Pc.PcInfo info : pcs) {
 			gone.remove(info.pcId());
 		}
+		List<String> removedIds = new ArrayList<>();
 		for (String id : gone) {
 			Pc.PcInfo removed = BY_ID.remove(id);
 			if (removed != null) {
 				BY_SLOT.remove(removed.slot(), id);
+				removedIds.add(id);
 			}
 			CURSORS.remove(id);
 		}
@@ -63,6 +69,11 @@ public final class PcStates {
 		}
 		connected = true;
 		VERSION.incrementAndGet();
+		for (String id : removedIds) {
+			for (Consumer<String> listener : REMOVAL_LISTENERS) {
+				listener.accept(id);
+			}
+		}
 		for (Pc.PcInfo info : pcs) {
 			put(info);
 		}
@@ -116,6 +127,14 @@ public final class PcStates {
 	/** Called on the thread that changes a PC (a bridge thread), so listeners must hand work off. */
 	public static void addListener(final Consumer<Pc.PcInfo> listener) {
 		LISTENERS.add(listener);
+	}
+
+	/**
+	 * Called with the id of every PC a {@code hello.ok} snapshot no longer lists (Node deleted it while the bridge was
+	 * down), on the bridge thread, so listeners must hand work off (free its monitor texture, turn its LED off).
+	 */
+	public static void addRemovalListener(final Consumer<String> listener) {
+		REMOVAL_LISTENERS.add(listener);
 	}
 
 	/** Forgets everything (tests). */

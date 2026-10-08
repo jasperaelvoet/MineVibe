@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.concurrent.locks.ReentrantLock;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The CPU copy of one PC's screen: tightly packed RGBA8 rows ({@code w * h * 4} bytes, a direct buffer the GPU upload
@@ -30,6 +31,8 @@ public final class MonitorFrame {
 	private ByteBuffer pixels = ByteBuffer.allocateDirect(4);
 	private int width;
 	private int height;
+	/** {@code width << 32 | height}, written under the lock, read by the render thread without it. */
+	private volatile long size;
 	private int dirtyY0 = Integer.MAX_VALUE;
 	private int dirtyY1;
 	private boolean resized;
@@ -38,11 +41,20 @@ public final class MonitorFrame {
 	private volatile long lastPatchNanos;
 
 	public int width() {
-		return this.width;
+		return (int) (this.size >>> 32);
 	}
 
 	public int height() {
-		return this.height;
+		return (int) this.size;
+	}
+
+	/**
+	 * The frame size as one consistent pair ({@code [w, h]}), or null before the first frame. Any thread: a resize
+	 * never shows as a new width with the old height.
+	 */
+	public int @Nullable [] size() {
+		long s = this.size;
+		return s == 0 ? null : new int[] {(int) (s >>> 32), (int) s};
 	}
 
 	/** Sequence number of the last frame patched in, -1 before the first. */
@@ -131,6 +143,7 @@ public final class MonitorFrame {
 		}
 		this.width = frameW;
 		this.height = frameH;
+		this.size = ((long) frameW << 32) | frameH;
 		this.resized = true;
 		this.dirtyY0 = 0;
 		this.dirtyY1 = frameH;

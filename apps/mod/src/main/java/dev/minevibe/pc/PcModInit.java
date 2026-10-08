@@ -46,6 +46,8 @@ public final class PcModInit implements ModInitializer {
 			}
 		});
 		PcStates.addListener(info -> PcRegistry.onStatusChanged(server, info.pcId()));
+		// A PC Node no longer knows: its desk's LED goes off.
+		PcStates.addRemovalListener(pcId -> PcRegistry.onStatusChanged(server, pcId));
 
 		CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS).register(output -> {
 			output.accept(PcContent.LINUX_WORKSTATION);

@@ -9,6 +9,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import org.jspecify.annotations.Nullable;
@@ -72,5 +73,39 @@ public final class PcWorkstation {
 			be.bind(pcId);
 		}
 		return be;
+	}
+
+	/**
+	 * Removes the desk {@code anyPart} belongs to without its side effects, for OfficeBuilder clearing or rebuilding an
+	 * area: no workstation item drops, no {@code pc.action{unplug}} (the PC stays plugged), and the registry forgets the
+	 * desk. The chair is left alone. Returns false when {@code anyPart} is not a desk block.
+	 *
+	 * <p>{@code Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS} (256) is not enough for this: removing any other part with
+	 * it still breaks the monitor through its shape update ({@code Block.updateOrDestroy} calls {@code destroyBlock},
+	 * which sets air with flags 3), and that drops the item and unplugs the PC; on the monitor itself it also skips the
+	 * registry clean-up.
+	 */
+	public static boolean removeQuietly(final ServerLevel level, final BlockPos anyPart) {
+		BlockState state = level.getBlockState(anyPart);
+		if (!(state.getBlock() instanceof PcDeskBlock)) {
+			return false;
+		}
+		BlockPos origin = PcDeskBlock.origin(anyPart, state);
+		Direction facing = state.getValue(PcDeskBlock.FACING);
+		if (level.getBlockEntity(PcDeskBlock.monitorPos(origin)) instanceof PcBlockEntity be) {
+			be.markQuiet();
+		}
+		List<BlockPos> parts = footprint(origin, facing).subList(0, 4);
+		// Known shape: no part turns the others into air on its way out; the neighbours get one shape update below.
+		for (BlockPos pos : parts) {
+			if (level.getBlockState(pos).getBlock() instanceof PcDeskBlock) {
+				level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+			}
+		}
+		for (BlockPos pos : parts) {
+			Blocks.AIR.defaultBlockState().updateNeighbourShapes(level, pos, Block.UPDATE_CLIENTS);
+			level.updateNeighborsAt(pos, Blocks.AIR);
+		}
+		return true;
 	}
 }

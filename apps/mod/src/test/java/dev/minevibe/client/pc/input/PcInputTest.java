@@ -163,6 +163,21 @@ class PcInputTest {
 	}
 
 	@Test
+	void theSequenceIsPerPcAndSurvivesAReopenedScreen() {
+		// Each PcControlScreen has its own batcher; reopening it (after the overlay, a stand-up) must not restart seq.
+		PcInputBatcher first = PcInputBatcher.forPc("seq-test-a");
+		first.add(Pc.InputEvent.releaseAll());
+		long s1 = first.drain("seq-test-a").getFirst().seq();
+		PcInputBatcher reopened = PcInputBatcher.forPc("seq-test-a");
+		reopened.add(Pc.InputEvent.releaseAll());
+		long s2 = reopened.drain("seq-test-a").getFirst().seq();
+		assertEquals(s1 + 1, s2, "the reopened screen continues the PC's sequence");
+		PcInputBatcher other = PcInputBatcher.forPc("seq-test-b");
+		other.add(Pc.InputEvent.releaseAll());
+		assertEquals(1, other.drain("seq-test-b").getFirst().seq(), "another PC has its own sequence");
+	}
+
+	@Test
 	void batchesMatchTheWireSchema() {
 		PcInputBatcher batcher = new PcInputBatcher();
 		PcInputTranslator in = new PcInputTranslator(batcher, false);

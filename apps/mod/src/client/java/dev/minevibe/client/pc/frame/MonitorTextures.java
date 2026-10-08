@@ -45,6 +45,8 @@ public final class MonitorTextures {
 		if (e == null) {
 			return null;
 		}
+		// The previous frame's duration: constant during one frame's extraction, different from frame to frame except
+		// when two frames take exactly as long (then one upload waits a frame; the dirty rows are kept).
 		long token = Minecraft.getInstance().getFrameTimeNs();
 		if (e.lastAttemptToken != token) {
 			e.lastAttemptToken = token;
@@ -74,10 +76,7 @@ public final class MonitorTextures {
 	/** Frame size in pixels ({@code [w, h]}), or null before the first frame. */
 	public static int @Nullable [] size(final String pcId) {
 		Entry e = ENTRIES.get(pcId);
-		if (e == null || e.frame.width() == 0) {
-			return null;
-		}
-		return new int[] {e.frame.width(), e.frame.height()};
+		return e == null ? null : e.frame.size();
 	}
 
 	/** Nanoseconds since the last decoded frame of {@code pcId}, or {@link Long#MAX_VALUE} without one. */

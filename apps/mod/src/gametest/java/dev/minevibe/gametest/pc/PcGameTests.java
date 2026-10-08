@@ -153,6 +153,27 @@ public final class PcGameTests {
 		helper.succeed();
 	}
 
+	@GameTest(maxTicks = 20)
+	public void removingQuietlyDropsNothingAndForgetsTheDesk(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		BlockPos origin = helper.absolutePos(new BlockPos(2, 0, 3));
+		Direction facing = Direction.WEST;
+		PcWorkstation.place(level, origin, facing, "linux", "gt-quiet");
+		BlockPos chair = PcDeskBlock.chairPos(origin, facing);
+		// From a lower side part: the path that a flag-256 removal gets wrong (the monitor breaks with flags 3).
+		helper.assertTrue(PcWorkstation.removeQuietly(level, origin.relative(PcDeskBlock.sideDirection(facing))), "a desk was there");
+		for (BlockPos p : PcWorkstation.footprint(origin, facing).subList(0, 4)) {
+			helper.assertTrue(level.getBlockState(p).isAir(), "every desk block is gone: " + p);
+		}
+		List<ItemEntity> drops = level.getEntitiesOfClass(ItemEntity.class, new AABB(origin).inflate(3));
+		helper.assertTrue(drops.isEmpty(), "no workstation item dropped (found " + drops.size() + ")");
+		helper.assertTrue(PcRegistry.deskOf("gt-quiet") == null, "the registry forgot the desk");
+		helper.assertTrue(PcRegistry.pcAtChair(level, chair) == null, "and its chair");
+		helper.assertTrue(level.getBlockState(chair).is(MvWorldContent.OFFICE_CHAIR), "the chair is left alone");
+		helper.assertFalse(PcWorkstation.removeQuietly(level, origin), "nothing left to remove");
+		helper.succeed();
+	}
+
 	// ------------------------------------------------------------------ LED
 
 	@GameTest(maxTicks = 40)

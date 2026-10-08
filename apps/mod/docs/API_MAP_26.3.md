@@ -714,8 +714,10 @@ Verified by reading the sources and by `spikes/s4-monitor` (a real client with S
 - **GUI.** `GuiGraphicsExtractor#blit(GpuTextureView, GpuSampler, x0, y0, x1, y1, u0, u1, v0, v1)` draws any texture
   with its own sampler. `Screen#extractBackground` is called before `extractRenderState` (override it for no blur).
 - **Frames.** `Minecraft#runTick` runs `GameRenderer#extract` (level, then GUI) before `GameRenderer#render`, so
-  `LevelRenderEvents.END_MAIN` comes after both extractions of the same frame. `Minecraft#getFrameTimeNs()` changes
-  every frame and is stable within one: a cheap "once per frame" token.
+  `LevelRenderEvents.END_MAIN` comes after both extractions of the same frame. `Minecraft#getFrameTimeNs()` is set
+  once per frame, after `render` (it is the previous frame's *duration*, `Util.getNanos() - renderStartTimer`), so it is
+  stable within one frame's extraction: a cheap "once per frame" token. Two frames of exactly the same duration share a
+  token, which only skips one upload (the dirty rows wait for the next frame).
 - **SDL input.** `SDLEventHandler#pollEvents` turns `SDL_EVENT_KEY_DOWN/UP` (768/769) into
   `KeyEvent(scancode, keycode, mod)` with action `-1` for repeats, and copies `SDL_EVENT_TEXT_INPUT` (771) text at poll
   time (`textString()`) into `KeyboardHandler#textInput`, one `charTyped` per code point. `CharacterEvent` carries no

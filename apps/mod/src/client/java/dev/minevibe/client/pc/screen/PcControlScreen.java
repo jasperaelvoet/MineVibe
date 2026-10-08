@@ -45,7 +45,7 @@ public final class PcControlScreen extends Screen {
 	private static final int HINT_HEIGHT = 14;
 
 	private final String pcId;
-	private final PcInputBatcher batcher = new PcInputBatcher();
+	private final PcInputBatcher batcher;
 	private final PcInputTranslator input;
 	private final boolean macGuest;
 	private long openedNanos;
@@ -60,6 +60,8 @@ public final class PcControlScreen extends Screen {
 		this.pcId = pcId;
 		Pc.PcInfo info = PcStates.get(pcId);
 		this.macGuest = info != null && "macos".equals(info.type());
+		// pc.input seq is per PC: a reopened screen continues where the last one stopped.
+		this.batcher = PcInputBatcher.forPc(pcId);
 		this.input = new PcInputTranslator(this.batcher, this.macGuest);
 	}
 
@@ -134,6 +136,8 @@ public final class PcControlScreen extends Screen {
 	@Override
 	public void extractRenderState(final GuiGraphicsExtractor g, final int mouseX, final int mouseY, final float a) {
 		float hurt = this.minecraft.player != null && this.minecraft.player.hurtTime > 0 ? this.minecraft.player.hurtTime / 10f : 0;
+		// Keys still reach the PC while looking around, so the batch goes out on every path.
+		this.flush(false);
 		if (this.looking) {
 			g.centeredText(this.font, Component.translatable("screen.minevibe.pc.looking"), this.width / 2, this.height - 24, 0xFFFFFFFF);
 			PcBorderStrip.extract(g, this.font, this.width, hurt);
@@ -159,7 +163,6 @@ public final class PcControlScreen extends Screen {
 		PcBorderStrip.extract(g, this.font, this.width, hurt);
 		g.fill(0, this.height - HINT_HEIGHT, this.width, this.height, 0xC0101418);
 		g.centeredText(this.font, this.hint(), this.width / 2, this.height - HINT_HEIGHT + 3, 0xFFD1D5DB);
-		this.flush(false);
 	}
 
 	/** The longest hint line that fits the window. */
@@ -179,9 +182,13 @@ public final class PcControlScreen extends Screen {
 	@Override
 	public void tick() {
 		// Focus went elsewhere (Cmd+Tab, a click outside): key-ups may never come, so let go of everything now.
-		if (!this.minecraft.isWindowActive() && this.input.anythingDown()) {
-			this.input.releaseAll();
-			this.flush(true);
+		if (!this.minecraft.isWindowActive()) {
+			// The middle button's release may never come either.
+			this.looking = false;
+			if (this.input.anythingDown()) {
+				this.input.releaseAll();
+				this.flush(true);
+			}
 		}
 	}
 
@@ -294,7 +301,8 @@ public final class PcControlScreen extends Screen {
 			return true;
 		}
 		String name = buttonName(event.button());
-		if (!name.isEmpty() && this.picture.contains(event.x(), event.y())) {
+		// While looking around the picture is not drawn, so its rect is stale: no presses on it.
+		if (!name.isEmpty() && !this.looking && this.picture.contains(event.x(), event.y())) {
 			int[] p = this.guest(event.x(), event.y());
 			this.input.mouseButton(name, true, p[0], p[1], event.modifiers());
 		}
