@@ -1,19 +1,25 @@
 /**
- * OrgServices: CodexStore + CalendarService + MeetingRunner + ApproachQueue behind the {@link OrgApi} facade.
+ * OrgServices: CodexStore + CalendarService + MeetingRunner + ApproachQueue, the engine behind the OrgApi
+ * (contracts/OrgApi.ts; implemented over this class by contractApi.ts, wired to the bridge and the crew by module.ts).
  *
  * Wiring
  * - Calendar meetings → MeetingRunner; attendees count as "in a meeting" for the calendar (tasks deferred).
  * - Meeting minutes → CodexStore (`minutes`, world scope); action items → CalendarService (as the chair).
- * - Calendar approval cards (agent-created recurring events and meetings) → the host's card store and the
- *   ApproachQueue, so the creating agent comes to the player like with a hire.
- * - Pushes (`codex.index`, `calendar.state`, `calendar.fired`, `meeting.state`) are coalesced per tick.
+ * - Calendar approval cards (agent-created recurring events and meetings) → the host's card store (the crew's
+ *   pending cards, which feed the ApproachQueue), or straight into the ApproachQueue when the host keeps no cards,
+ *   so the creating agent comes to the player like with a hire.
+ * - Pushes are protocol payloads (wire.ts): `codex.index`, `calendar.state` and `meeting.state` are coalesced per
+ *   tick; `calendar.fired` goes out when an occurrence fires and again, with a longer `walk`, as each assignee's
+ *   brain accepts the task (the host's `deliver` resolves).
  *
  * The host supplies crew and world queries and delivers messages; everything here is testable without the mod.
  */
 
 import { join } from 'node:path';
+import type { PayloadOf, Place } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { type MineVibePaths, worldDir } from '../config/paths.js';
+import type { OrgToolResult } from '../contracts/OrgApi.js';
 import {
   type ApproachCard,
   type ApproachEffects,
@@ -54,6 +60,7 @@ import {
   type AttendeeMode,
   type MeetingBrain,
   type MeetingEffects,
+  type MeetingRequest,
   MeetingRunner,
   type MeetingState,
   type PlayerSnapshot,
@@ -68,10 +75,12 @@ import {
   CodexReadInput,
   CodexSearchInput,
   CodexWriteToolInput,
-  type OrgApi,
-  type OrgToolResult,
+  normalizeToolInput,
   ReportTaskInput,
-} from './OrgApi.js';
+} from './toolInputs.js';
+import { toWireCalendarFired, toWireCalendarState, toWireCodexIndex, toWireMeetingState } from './wire.js';
+
+export type { OrgToolResult };
 
 /** A crew member as the org services see it (from the agent runtime and the mod's 1 Hz agent.state). */
 export interface OrgCrewMember {
@@ -102,18 +111,36 @@ export interface OrgHost {
   etaSeconds(agentId: string): number | null;
   tableDimension(): string;
   statusLine?(agentId: string): StatusLine;
-  /** A wake at a priority, or a `shouldQuery:false` context message. */
+  /**
+   * A wake at a priority, or a `shouldQuery:false` context message. For a calendar task (`eventId` and
+   * `occurrence` set) the returned promise resolves once the agent's brain has accepted the task: the agent then
+   * walks to the event's location (`calendar.fired` re-sent with the agent in `walk`).
+   */
   deliver(
     agentId: string,
     text: string,
-    how: { priority: DeliveryPriority; eventId?: string | undefined; location?: string | undefined },
-  ): void;
+    how: {
+      priority: DeliveryPriority;
+      eventId?: string | undefined;
+      location?: string | undefined;
+      occurrence?: number | undefined;
+    },
+  ): undefined | Promise<unknown> | unknown;
   chargeWake?(creatorId: string, assigneeId: string): boolean;
   toast?(text: string): void;
   reminder?(r: { eventId: string; title: string; assignees: readonly string[]; text: string }): void;
-  requestApproval?(card: CalendarApprovalCard): void;
-  withdrawApproval?(cardId: string): void;
-  push?(type: OrgPushType, payload: unknown): void;
+  /**
+   * Raises the approval card in the host's card store and returns its card id; the card then reaches the
+   * ApproachQueue through the store ({@link OrgServices.cardPending}). Without a store (no id returned) the
+   * ApproachQueue gets the card directly as `cal:<eventId>`.
+   */
+  requestApproval?(card: CalendarApprovalCard): string | undefined | unknown;
+  /** The approval card is no longer needed: the event changed, was cancelled, or was decided elsewhere. */
+  withdrawApproval?(cardId: string, reason?: string): void;
+  /** Where an event location (`pc:<id>`, `meeting_table`, a Codex place) is, for `calendar.fired.target`. */
+  placeOf?(location: string): Place | null;
+  /** A protocol push (`payload` is the message payload, already in the wire shape). */
+  push?<T extends OrgPushType>(type: T, payload: PayloadOf<T>): void;
   readonly meetingBrain: MeetingBrain;
   readonly meetingEffects?: MeetingEffects | undefined;
   readonly approachEffects?: ApproachEffects | undefined;
@@ -142,10 +169,14 @@ export interface OrgServicesOptions {
   readonly nonce?: ControlNonce | undefined;
   readonly clock?: OrgClock | undefined;
   readonly timeZone?: string | undefined;
-  readonly playerName?: string | undefined;
+  /** The player's name, or a getter (it is known only once the mod says hello). */
+  readonly playerName?: string | (() => string) | undefined;
   readonly gitBinary?: string | null | undefined;
   readonly logger?: Logger | undefined;
 }
+
+/** `calendar.fired` occurrences remembered for their `walk` re-sends. */
+const FIRED_MEMORY = 64;
 
 function invalid(error: unknown): OrgToolResult {
   const issues =
@@ -161,16 +192,18 @@ function invalid(error: unknown): OrgToolResult {
   return { ok: false, code: 'INVALID', text: `Invalid input (${singleLine(issues, 300)}).` };
 }
 
-export class OrgServices implements OrgApi {
+export class OrgServices {
   readonly nonce: ControlNonce;
   readonly codex: CodexStore;
   readonly calendar: CalendarService;
   readonly meetings: MeetingRunner;
   readonly approach: ApproachQueue;
   readonly #host: OrgHost;
-  readonly #playerName: string;
+  readonly #playerNameOf: () => string;
   readonly #log: Logger | undefined;
-  readonly #pending = new Set<OrgPushType>();
+  /** Fired task occurrences (`eventId@occurrence`) and the assignees that accepted them so far. */
+  readonly #fired = new Map<string, { eventId: string; occurrence: number; walk: Set<string> }>();
+  readonly #pending = new Set<'codex.index' | 'calendar.state' | 'meeting.state'>();
   #flushScheduled = false;
   #lastMeetingState: MeetingState | null = null;
   #lastDay: number | null = null;
@@ -179,7 +212,8 @@ export class OrgServices implements OrgApi {
     const host = options.host;
     const clock = options.clock ?? systemClock;
     this.#host = host;
-    this.#playerName = options.playerName ?? 'the player';
+    const playerName = options.playerName ?? 'the player';
+    this.#playerNameOf = typeof playerName === 'function' ? playerName : () => playerName;
     this.#log = options.logger;
     this.nonce = options.nonce ?? new ControlNonce();
 
@@ -206,13 +240,30 @@ export class OrgServices implements OrgApi {
       crew,
       clock,
       timeZone: options.timeZone,
-      playerName: this.#playerName,
+      playerName: this.#playerNameOf,
       lastingFile: options.paths.lastingCalendar,
       worldFile: options.paths.worldCalendar,
       logger: options.logger,
       sink: {
-        deliverTask: (d) =>
-          host.deliver(d.agentId, d.text, { priority: d.priority, eventId: d.eventId, location: d.location }),
+        deliverTask: (d) => {
+          let accepted: unknown;
+          try {
+            accepted = host.deliver(d.agentId, d.text, {
+              priority: d.priority,
+              eventId: d.eventId,
+              location: d.location,
+              occurrence: d.occurrence,
+            });
+          } catch (e) {
+            this.#log?.warn({ err: e, agentId: d.agentId, eventId: d.eventId }, 'task delivery failed');
+            return;
+          }
+          void Promise.resolve(accepted).then(
+            () => this.#taskAccepted(d.eventId, d.occurrence, d.agentId),
+            (e: unknown) =>
+              this.#log?.warn({ err: e, agentId: d.agentId, eventId: d.eventId }, 'task not accepted'),
+          );
+        },
         reminder: (r) => host.reminder?.(r),
         startMeeting: ({ event, occurrence }) => {
           this.meetings.request({
@@ -231,7 +282,8 @@ export class OrgServices implements OrgApi {
         chargeWake: (creator, assignee) => host.chargeWake?.(creator, assignee) ?? true,
         toast: (text) => host.toast?.(text),
         requestApproval: (card) => {
-          host.requestApproval?.(card);
+          const stored = host.requestApproval?.(card);
+          if (typeof stored === 'string') return; // the crew's card store feeds the ApproachQueue
           this.approach.enqueue({
             cardId: card.cardId,
             agentId: card.agentId,
@@ -243,7 +295,7 @@ export class OrgServices implements OrgApi {
           host.withdrawApproval?.(cardId);
           this.approach.resolve(cardId);
         },
-        fired: (eventId, occurrence) => host.push?.('calendar.fired', { eventId, occurrence }),
+        fired: (eventId, occurrence) => this.#onFired(eventId, occurrence),
         changed: () => this.#schedulePush('calendar.state'),
       },
     });
@@ -279,7 +331,7 @@ export class OrgServices implements OrgApi {
       codex: this.codex,
       calendar: this.calendar,
       clock,
-      playerName: this.#playerName,
+      playerName: this.#playerNameOf,
       formatNow: () => {
         const t = this.calendar.gameTicks;
         return t === null
@@ -300,6 +352,10 @@ export class OrgServices implements OrgApi {
     this.approach = new ApproachQueue({ clock, effects: host.approachEffects });
   }
 
+  get #playerName(): string {
+    return this.#playerNameOf();
+  }
+
   // -------------------------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------------------------
@@ -314,6 +370,8 @@ export class OrgServices implements OrgApi {
   async stop(): Promise<void> {
     this.calendar.stop();
     this.meetings.cancelAll('MineVibe is closing');
+    // The adjourned meeting writes its partial minutes before the Codex closes.
+    await this.meetings.idle();
     await this.calendar.flush();
     await this.codex.close();
   }
@@ -327,8 +385,10 @@ export class OrgServices implements OrgApi {
   async worldEnded(
     worldId: string,
   ): Promise<{ codexArchived: number; orphanedEvents: string[]; notice: string }> {
-    // Queued and postponed meetings of the dead world must not run in the next one.
+    // Queued and postponed meetings of the dead world must not run in the next one. The adjourned meeting writes
+    // its partial minutes into the dead world's Codex first, so they are archived with it.
     this.meetings.cancelAll('the world ended');
+    await this.meetings.idle();
     const codexArchived = await this.codex.archiveWorld(worldId);
     const orphanedEvents = await this.calendar.onWorldEnded(worldId);
     const lasting = this.codex.list({ scope: 'lasting' }).length;
@@ -397,7 +457,7 @@ export class OrgServices implements OrgApi {
   }
 
   codexSearch(_agentId: string, input: unknown): OrgToolResult {
-    const parsed = CodexSearchInput.safeParse(input);
+    const parsed = CodexSearchInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const hits = this.codex.search(parsed.data.query, {
       tags: parsed.data.tags,
@@ -407,7 +467,7 @@ export class OrgServices implements OrgApi {
   }
 
   codexRead(_agentId: string, input: unknown): OrgToolResult {
-    const parsed = CodexReadInput.safeParse(input);
+    const parsed = CodexReadInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const page = this.codex.get(parsed.data.id);
     if (!page) {
@@ -421,14 +481,14 @@ export class OrgServices implements OrgApi {
   }
 
   async codexWrite(agentId: string, input: unknown): Promise<OrgToolResult> {
-    const parsed = CodexWriteToolInput.safeParse(input);
+    const parsed = CodexWriteToolInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const res = await this.codex.write(this.#agentActor(agentId), parsed.data);
     return { ok: res.ok, code: res.ok ? undefined : res.code, text: formatWriteResult(res) };
   }
 
   codexList(_agentId: string, input: unknown): OrgToolResult {
-    const parsed = CodexListInput.safeParse(input ?? {});
+    const parsed = CodexListInput.safeParse(normalizeToolInput(input ?? {}));
     if (!parsed.success) return invalid(parsed.error);
     return { ok: true, text: formatListForAgent(this.codex.list(parsed.data)) };
   }
@@ -441,7 +501,7 @@ export class OrgServices implements OrgApi {
   }
 
   calendarList(_agentId: string, input: unknown): OrgToolResult {
-    const parsed = CalendarListInput.safeParse(input ?? {});
+    const parsed = CalendarListInput.safeParse(normalizeToolInput(input ?? {}));
     if (!parsed.success) return invalid(parsed.error);
     let agent: string | undefined;
     if (parsed.data.agent) {
@@ -458,7 +518,7 @@ export class OrgServices implements OrgApi {
   }
 
   calendarAdd(agentId: string, input: unknown): OrgToolResult {
-    const parsed = CalendarAddToolInput.safeParse(input);
+    const parsed = CalendarAddToolInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const assignees = this.#resolveAssignees(parsed.data.assignees);
     if (assignees && typeof assignees === 'object' && 'error' in assignees) {
@@ -482,7 +542,7 @@ export class OrgServices implements OrgApi {
   }
 
   calendarUpdate(agentId: string, input: unknown): OrgToolResult {
-    const parsed = CalendarUpdateToolInput.safeParse(input);
+    const parsed = CalendarUpdateToolInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const { id, ...patch } = parsed.data;
     const assignees = this.#resolveAssignees(patch.assignees);
@@ -499,15 +559,17 @@ export class OrgServices implements OrgApi {
   }
 
   calendarCancel(agentId: string, input: unknown): OrgToolResult {
-    const parsed = CalendarCancelInput.safeParse(input);
+    const parsed = CalendarCancelInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
-    const res = this.calendar.cancel(this.#agentActor(agentId), parsed.data.id);
+    const scope = parsed.data.scope ?? 'all';
+    const res = this.calendar.cancel(this.#agentActor(agentId), parsed.data.id, scope);
     if (!res.ok) return { ok: false, code: res.code, text: `Not cancelled (${res.code}): ${res.message}` };
-    return { ok: true, text: `Cancelled [${res.event.id}] "${singleLine(res.event.title)}".` };
+    const what = scope === 'next' ? 'the next occurrence of ' : '';
+    return { ok: true, text: `Cancelled ${what}[${res.event.id}] "${singleLine(res.event.title)}".` };
   }
 
   reportTask(agentId: string, input: unknown): OrgToolResult {
-    const parsed = ReportTaskInput.safeParse(input);
+    const parsed = ReportTaskInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return invalid(parsed.error);
     const res = this.calendar.reportTask(agentId, parsed.data);
     if (!res.ok) return { ok: false, code: res.code, text: `Not recorded (${res.code}): ${res.message}` };
@@ -547,7 +609,7 @@ export class OrgServices implements OrgApi {
   }
 
   async codexPut(input: unknown): Promise<CodexWriteResult> {
-    const parsed = CodexWriteToolInput.safeParse(input);
+    const parsed = CodexWriteToolInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return { ok: false, code: 'INVALID', message: invalid(parsed.error).text };
     return this.codex.write(this.#player(), parsed.data);
   }
@@ -584,7 +646,7 @@ export class OrgServices implements OrgApi {
 
   calendarPut(input: unknown): { ok: boolean; message?: string; event?: CalendarEvent } {
     const player: CalendarActor = { kind: 'player', name: this.#playerName };
-    const withId = CalendarUpdateToolInput.safeParse(input);
+    const withId = CalendarUpdateToolInput.safeParse(normalizeToolInput(input));
     const isEdit = withId.success && typeof (input as { id?: unknown }).id === 'string';
     if (isEdit && withId.success) {
       const { id, ...patch } = withId.data;
@@ -594,7 +656,7 @@ export class OrgServices implements OrgApi {
       const res = this.calendar.update(player, id, { ...patch, assignees } as Partial<CalendarAddInput>);
       return res.ok ? { ok: true, event: res.event } : { ok: false, message: res.message };
     }
-    const parsed = CalendarAddToolInput.safeParse(input);
+    const parsed = CalendarAddToolInput.safeParse(normalizeToolInput(input));
     if (!parsed.success) return { ok: false, message: invalid(parsed.error).text };
     const assignees = this.#resolveAssignees(parsed.data.assignees);
     if (assignees && typeof assignees === 'object' && 'error' in assignees)
@@ -619,6 +681,8 @@ export class OrgServices implements OrgApi {
     note?: string,
   ): { ok: boolean; message?: string } {
     const res = this.calendar.decideApproval(eventId, approved, note);
+    // Decided in CalendarScreen or through the card itself: either way the card is done.
+    if (res.ok) this.#host.withdrawApproval?.(`cal:${eventId}`, approved ? 'approved' : 'declined');
     this.approach.resolve(`cal:${eventId}`);
     return res.ok ? { ok: true } : { ok: false, message: res.message };
   }
@@ -636,6 +700,11 @@ export class OrgServices implements OrgApi {
       playerChairs: options.playerChairs,
       quick: options.quick,
     });
+  }
+
+  /** Queues a meeting (`meeting.start`, a scheduled meeting started early, ...). Returns its id. */
+  requestMeeting(request: MeetingRequest): string {
+    return this.meetings.request(request);
   }
 
   endMeeting(): void {
@@ -660,6 +729,11 @@ export class OrgServices implements OrgApi {
 
   later(agentId: string): boolean {
     return this.approach.later(agentId);
+  }
+
+  /** The player parked this card ("later" from AgentScreen, the G card or chat). */
+  parkCard(cardId: string): boolean {
+    return this.approach.park(cardId);
   }
 
   setPingPreference(agentId: string, ping: boolean): void {
@@ -691,7 +765,7 @@ export class OrgServices implements OrgApi {
   // Pushes
   // -------------------------------------------------------------------------------------------
 
-  #schedulePush(type: OrgPushType): void {
+  #schedulePush(type: 'codex.index' | 'calendar.state' | 'meeting.state'): void {
     this.#pending.add(type);
     if (this.#flushScheduled) return;
     this.#flushScheduled = true;
@@ -701,7 +775,12 @@ export class OrgServices implements OrgApi {
       this.#pending.clear();
       for (const t of types) {
         try {
-          this.#host.push?.(t, this.#payload(t));
+          if (t === 'codex.index') this.#host.push?.(t, this.codexIndexPayload());
+          else if (t === 'calendar.state') this.#host.push?.(t, this.calendarStatePayload());
+          else {
+            const meeting = this.meetingStatePayload();
+            if (meeting) this.#host.push?.(t, meeting);
+          }
         } catch (e) {
           this.#log?.warn({ err: e, type: t }, 'org push failed');
         }
@@ -709,16 +788,79 @@ export class OrgServices implements OrgApi {
     });
   }
 
-  #payload(type: OrgPushType): unknown {
-    switch (type) {
-      case 'codex.index':
-        return { pages: this.codex.index() };
-      case 'calendar.state':
-        return this.calendar.snapshot();
-      case 'meeting.state':
-        return this.#lastMeetingState;
-      default:
-        return null;
+  /** The `codex.index` payload. */
+  codexIndexPayload(): PayloadOf<'codex.index'> {
+    return toWireCodexIndex(this.codex.index());
+  }
+
+  /** The `calendar.state` payload. */
+  calendarStatePayload(): PayloadOf<'calendar.state'> {
+    return toWireCalendarState(this.calendar.list({ includeInactive: true }), this.calendar.timeZone);
+  }
+
+  /** The `meeting.state` payload of the running meeting (or of the one that just ended), or null. */
+  meetingStatePayload(): PayloadOf<'meeting.state'> | null {
+    const m = this.meetings.active ?? this.#lastMeetingState;
+    return m ? toWireMeetingState(m) : null;
+  }
+
+  /** The `calendar.fired` payload of an occurrence with the assignees that accepted so far, or null. */
+  firedPayload(eventId: string, occurrence: number): PayloadOf<'calendar.fired'> | null {
+    const ev = this.calendar.get(eventId);
+    if (!ev) return null;
+    const occ = ev.ring.find((o) => o.at === occurrence);
+    const assignees =
+      ev.assignees !== 'all'
+        ? ev.assignees
+        : occ?.assignees && Object.keys(occ.assignees).length > 0
+          ? Object.keys(occ.assignees)
+          : this.#host
+              .crew()
+              .filter((c) => c.status === 'alive')
+              .map((c) => c.agentId);
+    const target = ev.location ? (this.#host.placeOf?.(ev.location) ?? null) : null;
+    const walk = this.#fired.get(`${eventId}@${occurrence}`)?.walk ?? new Set<string>();
+    return toWireCalendarFired(ev, occurrence, assignees, target, [...walk]);
+  }
+
+  #onFired(eventId: string, occurrence: number): void {
+    const key = `${eventId}@${occurrence}`;
+    if (!this.#fired.has(key)) {
+      this.#fired.set(key, { eventId, occurrence, walk: new Set() });
+      while (this.#fired.size > FIRED_MEMORY) {
+        const oldest = this.#fired.keys().next().value;
+        if (oldest === undefined) break;
+        this.#fired.delete(oldest);
+      }
+    }
+    this.#pushFired(eventId, occurrence);
+  }
+
+  /** An assignee's brain took the task: it walks to the location now (reflex 38), so `walk` is re-sent. */
+  #taskAccepted(eventId: string, occurrence: number, agentId: string): void {
+    const key = `${eventId}@${occurrence}`;
+    let entry = this.#fired.get(key);
+    if (!entry) {
+      // A deferred delivery released later (after a meeting, a usage reset, a restart).
+      entry = { eventId, occurrence, walk: new Set() };
+      this.#fired.set(key, entry);
+    }
+    if (entry.walk.has(agentId)) return;
+    entry.walk.add(agentId);
+    const payload = this.firedPayload(eventId, occurrence);
+    if (payload?.target) this.#pushFiredPayload(payload);
+  }
+
+  #pushFired(eventId: string, occurrence: number): void {
+    const payload = this.firedPayload(eventId, occurrence);
+    if (payload) this.#pushFiredPayload(payload);
+  }
+
+  #pushFiredPayload(payload: PayloadOf<'calendar.fired'>): void {
+    try {
+      this.#host.push?.('calendar.fired', payload);
+    } catch (e) {
+      this.#log?.warn({ err: e }, 'calendar.fired push failed');
     }
   }
 }

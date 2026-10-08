@@ -33,6 +33,7 @@ import { buildCodexDigest } from './digest.js';
 import { formatCoords } from './format.js';
 import { isValidPageId, normalizeTags, parsePage, serializePage, slugify } from './frontmatter.js';
 import { CodexGit, identityFor } from './git.js';
+import { encodeRev } from './rev.js';
 import { scanForSecrets } from './secretScan.js';
 import { findSimilar } from './similarity.js';
 import { buildSnippet } from './snippet.js';
@@ -641,7 +642,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
     }
     let coords: Coords | undefined = existing?.coords;
     if (input.here) {
-      const pos = this.#positionOf(actor.id);
+      const pos = input.position ?? this.#positionOf(actor.id);
       if (!pos) return err('NO_POSITION', 'MineVibe could not read your position; try again in a moment');
       coords = { x: Math.round(pos.x), y: Math.round(pos.y), z: Math.round(pos.z), dim: pos.dim };
       notes.push(`stamped your position ${formatCoords(coords)}`);
@@ -721,7 +722,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       if (input.base_rev === undefined) {
         return err(
           'REV_REQUIRED',
-          `update needs base_rev (read the page first; it is at rev ${existing.rev})`,
+          `update needs base_rev (read the page first; it is at rev ${encodeRev(existing.rev)})`,
           {
             current: existing,
           },
@@ -730,7 +731,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       if (input.base_rev !== existing.rev) {
         return err(
           'REV_CONFLICT',
-          `the page changed since rev ${input.base_rev} (now rev ${existing.rev}); merge your change into the current text`,
+          `the page changed since ${input.base_rev >= 0 ? `rev ${encodeRev(input.base_rev)}` : 'the revision you gave'} (now rev ${encodeRev(existing.rev)}); merge your change into the current text`,
           { current: existing },
         );
       }
@@ -895,7 +896,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       page.category,
       page.scope,
       page.tags.length ? `tags: ${page.tags.join(', ')}` : '',
-      `rev ${page.rev}`,
+      `rev ${encodeRev(page.rev)}`,
       `updated ${page.updated.slice(0, 10)}`,
     ].filter(Boolean);
     const coords = page.coords ? `\nLocation (stamped by MineVibe): ${formatCoords(page.coords)}\n` : '';

@@ -59,7 +59,13 @@ async function call(reg: Registered, name: string, args: Record<string, unknown>
 
 function mcHost(over: Partial<McHost> = {}) {
   const skills = new FakeSkillApi();
-  const org = new FakeOrgApi({ now: () => 1_000 });
+  const org = new FakeOrgApi({
+    now: () => 1_000,
+    clockTime: () => 30_000,
+    positionOf: () => ({ pos: { x: 10, y: 64, z: -3 }, dim: 'minecraft:overworld' }),
+    isCeo: (agentId) => agentId === 'ada-1',
+    playerName: () => 'Jasper',
+  });
   const log: string[] = [];
   const host: McHost = {
     agentId: 'ada-1',

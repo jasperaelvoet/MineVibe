@@ -8,9 +8,10 @@ import {
   ERROR_CODES,
   type MeetingStartResult,
   type PayloadOf,
+  type Place,
 } from '@minevibe/protocol';
 import { TypedEmitter } from '../util/TypedEmitter.js';
-import { type Actor, ApiError } from './common.js';
+import { type Actor, ApiError, agentActor } from './common.js';
 import type {
   CalendarAddResult,
   CalendarApi,
@@ -22,10 +23,12 @@ import type {
   CodexWriteResult,
   MeetingApi,
   MeetingStartRequest,
+  OrgAgentTools,
   OrgApi,
   OrgEvents,
   TaskReport,
 } from './OrgApi.js';
+import { structuredOrgTools } from './orgTools.js';
 
 function authorOf(actor: Actor): Author {
   return actor.kind === 'player'
@@ -51,6 +54,8 @@ export class FakeOrgApi extends TypedEmitter<OrgEvents> implements OrgApi {
   readonly codex: CodexApi;
   readonly calendar: CalendarApi;
   readonly meeting: MeetingApi;
+  /** The agent tools, built on the structured calls ({@link structuredOrgTools}). */
+  readonly tools: OrgAgentTools;
 
   readonly #pages = new Map<string, CodexPage>();
   readonly #events = new Map<string, CalendarEvent>();
@@ -59,7 +64,17 @@ export class FakeOrgApi extends TypedEmitter<OrgEvents> implements OrgApi {
   #seq = 0;
   readonly #now: () => number;
 
-  constructor(options: { now?: () => number; tz?: string } = {}) {
+  constructor(
+    options: {
+      now?: () => number;
+      tz?: string;
+      /** For the agent tools: the overworld clock (`when:"now"`), positions (`here`), who is CEO, the player. */
+      clockTime?: () => number | null;
+      positionOf?: (agentId: string) => Place | null;
+      isCeo?: (agentId: string) => boolean;
+      playerName?: () => string;
+    } = {},
+  ) {
     super();
     this.#now = options.now ?? Date.now;
     const tz = options.tz ?? 'UTC';
@@ -105,6 +120,18 @@ export class FakeOrgApi extends TypedEmitter<OrgEvents> implements OrgApi {
           throw new ApiError(ERROR_CODES.CALENDAR_NOT_FOUND, 'no such event');
         this.#reports.push(report);
       },
+      decide: async (actor, eventId, decision) => {
+        if (actor.kind !== 'player') throw new ApiError(ERROR_CODES.FORBIDDEN, 'only the player decides');
+        const event = this.#events.get(eventId);
+        if (!event) throw new ApiError(ERROR_CODES.CALENDAR_NOT_FOUND, 'no such event');
+        if (event.status !== 'pending_approval') return;
+        this.#events.set(eventId, {
+          ...event,
+          status: decision.approve ? 'active' : 'cancelled',
+          nextAt: decision.approve ? event.nextAt : null,
+        });
+        this.#emitCalendar();
+      },
       state: () => ({ events: [...this.#events.values()], tz }),
     };
     this.meeting = {
@@ -118,6 +145,13 @@ export class FakeOrgApi extends TypedEmitter<OrgEvents> implements OrgApi {
       },
       state: () => this.#meeting,
     };
+    this.tools = structuredOrgTools(this, {
+      actor: (agentId) => agentActor(agentId, options.isCeo?.(agentId) ?? false),
+      here: (agentId) => options.positionOf?.(agentId) ?? null,
+      clockTime: () => options.clockTime?.() ?? null,
+      now: () => this.#now(),
+      playerName: () => options.playerName?.() ?? 'Player',
+    });
   }
 
   /** Task reports received, in order. */

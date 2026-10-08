@@ -127,7 +127,9 @@ describe('OrgServices (M7 acceptance, scripted)', () => {
       here: true,
     });
     expect(write.ok).toBe(true);
-    expect(write.text).toMatch(/^Created Codex page \[iron-cave\] rev 1 \(world\)\. stamped your position/);
+    expect(write.text).toMatch(
+      /^Created Codex page \[iron-cave\] rev 0000001 \(world\)\. stamped your position/,
+    );
     h.setCrew([...h.crew(), crewMember('neo', 'Neo')]);
     const found = h.org.codexSearch('neo', { query: 'iron' });
     expect(found.text).toContain('[iron-cave] Iron cave (places, world, by Bram): Iron cave at (120,40,-80)');

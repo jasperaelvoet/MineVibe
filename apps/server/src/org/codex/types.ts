@@ -88,6 +88,8 @@ export interface CodexWriteInput {
   readonly mode: CodexWriteMode;
   /** Stamp the writer's real position (places). */
   readonly here?: boolean | undefined;
+  /** With `here`: the position to stamp, when the caller already knows it (else the store asks for it). */
+  readonly position?: Coords | undefined;
 }
 
 export type CodexErrorCode =
