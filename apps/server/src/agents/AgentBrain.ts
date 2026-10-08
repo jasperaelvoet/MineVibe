@@ -224,11 +224,14 @@ export function isUsageLimitText(text: unknown): boolean {
   );
 }
 
-/** First 1-2 sentences of `text`, at most {@link BUBBLE_MAX_CHARS}. */
+/**
+ * First 1-2 sentences of `text`, at most {@link BUBBLE_MAX_CHARS}. A sentence ends at `.`, `!` or `?` followed by a
+ * space or the end, so a dot inside a token (`6.18.35`, `app.ts`) never splits one, and nothing before it is lost.
+ */
 export function bubbleText(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  const sentences = flat.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [flat];
-  let out = sentences.slice(0, 2).join('').trim();
+  const sentences = flat.match(/\S.*?[.!?]+(?=\s|$)|\S.*$/g) ?? [flat];
+  let out = sentences.slice(0, 2).join(' ').trim();
   if (out.length === 0) out = flat;
   return out.length > BUBBLE_MAX_CHARS ? `${out.slice(0, BUBBLE_MAX_CHARS - 1)}…` : out;
 }
