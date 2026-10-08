@@ -1,0 +1,14 @@
+{
+  "t": "meeting.state",
+  "v": 1,
+  "meetingId": "mtg-2",
+  "title": "Standup",
+  "phase": "coffee",
+  "chair": "ada",
+  "speaker": null,
+  "attendees": [],
+  "eventId": null,
+  "startedAt": 1791484800000,
+  "endsBy": 1791484800000,
+  "quick": true
+}

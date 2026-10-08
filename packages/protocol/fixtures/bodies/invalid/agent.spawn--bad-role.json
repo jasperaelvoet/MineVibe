@@ -1,0 +1,12 @@
+{
+  "t": "agent.spawn",
+  "v": 1,
+  "id": "n-20",
+  "agentId": "cleo",
+  "handle": "cleo",
+  "name": "Cleo",
+  "role": "wizard",
+  "ceo": false,
+  "restore": false,
+  "mode": "wander"
+}

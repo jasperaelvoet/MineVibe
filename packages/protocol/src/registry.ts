@@ -1,102 +1,37 @@
 import type { z } from 'zod';
 import { MAX_TEXT_FRAME_BYTES, PROTOCOL_VERSION } from './constants.js';
 import { Envelope, ErrReply, OkReply } from './envelope.js';
-import {
-  AgentSay,
-  ChatSend,
-  ClientStopping,
-  DebugClickBegin,
-  DebugKillPlayer,
-  DebugOpenMenu,
-  DebugState,
-  Hello,
-  HelloOk,
-  PlayerDied,
-  ServerShutdown,
-  UiToast,
-  WorldNext,
-  WorldOpen,
-  WorldState,
-} from './messages.js';
+import { bodyMessages } from './messages/bodies.js';
+import { debugMessages } from './messages/debug.js';
+import type { CatalogEntry, Direction, MessageGroup } from './messages/define.js';
+import { orgMessages } from './messages/org.js';
+import { pcMessages } from './messages/pc.js';
+import { seatMessages } from './messages/seats.js';
+import { skillMessages } from './messages/skills.js';
+import { uiMessages } from './messages/ui.js';
+import { worldMessages } from './messages/world.js';
 
-/** Which peer sends a message type. */
-export type Direction = 'mod_to_node' | 'node_to_mod' | 'both';
+const replyMessages = {
+  ok: { schema: OkReply, direction: 'both', group: 'reply', summary: 'Success reply to a request.' },
+  err: { schema: ErrReply, direction: 'both', group: 'reply', summary: 'Failure reply to a request.' },
+} as const satisfies Record<string, CatalogEntry>;
 
 /**
- * The message catalog: type name -> schema, direction and a one-line description.
- * Generated docs and the Java contract tests are driven from this table and `fixtures/`.
+ * The message catalog: type name -> schema, direction, group, one-line summary and (for requests) the schema of
+ * the `ok` reply. Each group lives in `src/messages/<group>.ts`. Generated docs and the Java contract tests are
+ * driven from this table and `fixtures/`.
  */
 export const messageCatalog = {
-  hello: {
-    schema: Hello,
-    direction: 'mod_to_node',
-    summary: 'Mod handshake; sent first on every connection.',
-  },
-  'hello.ok': {
-    schema: HelloOk,
-    direction: 'node_to_mod',
-    summary: 'Handshake reply with a full state snapshot.',
-  },
-  'world.open': {
-    schema: WorldOpen,
-    direction: 'node_to_mod',
-    summary: 'Open or create the given hardcore world.',
-  },
-  'world.state': {
-    schema: WorldState,
-    direction: 'mod_to_node',
-    summary: 'World lifecycle phase and 1 Hz clock updates.',
-  },
-  'player.died': {
-    schema: PlayerDied,
-    direction: 'mod_to_node',
-    summary: 'The player died (request; re-sent until acked).',
-  },
-  'world.next': {
-    schema: WorldNext,
-    direction: 'node_to_mod',
-    summary: 'Next world allocated, plus the summary of the one that ended.',
-  },
-  'client.stopping': {
-    schema: ClientStopping,
-    direction: 'mod_to_node',
-    summary: 'The game client is shutting down.',
-  },
-  'server.shutdown': {
-    schema: ServerShutdown,
-    direction: 'node_to_mod',
-    summary: 'Node is shutting down.',
-  },
-  'ui.toast': { schema: UiToast, direction: 'node_to_mod', summary: 'Show a toast.' },
-  'agent.say': { schema: AgentSay, direction: 'node_to_mod', summary: 'Speech bubble above an agent.' },
-  'chat.send': {
-    schema: ChatSend,
-    direction: 'mod_to_node',
-    summary: 'Player chat line or AgentScreen reply (request; Node routes it).',
-  },
-  'debug.state': {
-    schema: DebugState,
-    direction: 'node_to_mod',
-    summary: 'E2E only: snapshot of the client (request; reply carries DebugStateResult).',
-  },
-  'debug.kill_player': {
-    schema: DebugKillPlayer,
-    direction: 'node_to_mod',
-    summary: 'E2E only: kill the local player (request).',
-  },
-  'debug.open_menu': {
-    schema: DebugOpenMenu,
-    direction: 'node_to_mod',
-    summary: 'E2E only: open the in-game menu as Esc would (request).',
-  },
-  'debug.click_begin': {
-    schema: DebugClickBegin,
-    direction: 'node_to_mod',
-    summary: 'E2E only: press Begin on the Game Over screen (request).',
-  },
-  ok: { schema: OkReply, direction: 'both', summary: 'Success reply to a request.' },
-  err: { schema: ErrReply, direction: 'both', summary: 'Failure reply to a request.' },
-} as const satisfies Record<string, { schema: z.ZodType; direction: Direction; summary: string }>;
+  ...worldMessages,
+  ...bodyMessages,
+  ...skillMessages,
+  ...seatMessages,
+  ...uiMessages,
+  ...pcMessages,
+  ...orgMessages,
+  ...debugMessages,
+  ...replyMessages,
+} as const satisfies Record<string, CatalogEntry>;
 
 type Catalog = typeof messageCatalog;
 
@@ -138,6 +73,26 @@ export function isMessageType(t: unknown): t is MessageType {
 
 export function directionOf(t: MessageType): Direction {
   return messageCatalog[t].direction;
+}
+
+export function groupOf(t: MessageType): MessageGroup {
+  return messageCatalog[t].group;
+}
+
+/** Request types: the ones whose catalog entry defines the `ok` reply. */
+export type RequestType = {
+  [K in MessageType]: Catalog[K] extends { reply: z.ZodType } ? K : never;
+}[MessageType];
+
+/** The `ok` result keys of request type `T`. */
+export type ReplyOf<T extends RequestType> = Catalog[T] extends { reply: infer R extends z.ZodType }
+  ? z.infer<R>
+  : never;
+
+/** The schema of the `ok` result of `t`, or null when the catalog defines none (the reply is then `ok {}`). */
+export function replySchemaOf(t: MessageType): z.ZodType | null {
+  const entry: CatalogEntry = messageCatalog[t];
+  return entry.reply ?? null;
 }
 
 /** Raised by the throwing helpers on malformed input. */

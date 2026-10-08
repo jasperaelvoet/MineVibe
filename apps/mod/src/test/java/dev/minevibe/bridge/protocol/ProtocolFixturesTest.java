@@ -8,14 +8,21 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
@@ -24,14 +31,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * The contract test (PLAN §13.2): every fixture in {@code packages/protocol/fixtures} is read with Gson exactly as
- * the TypeScript side reads it with zod. Valid fixtures parse into their records, invalid ones are rejected,
- * unknown types are ignored, and the messages the mod sends survive a round trip unchanged.
+ * The contract test (PLAN §13.2): every fixture in {@code packages/protocol/fixtures/<group>/} is read with Gson exactly
+ * as the TypeScript side reads it with zod. Valid fixtures parse into their records (and every JSON key maps to a record
+ * component, so no field is silently dropped), invalid ones are rejected, unknown types are ignored, and every message
+ * the mod sends survives a round trip unchanged.
  */
 class ProtocolFixturesTest {
-	/** Types the mod encodes itself; their fixtures must re-encode to the same JSON. */
-	private static final Set<String> MOD_ENCODES = Set.of("hello", "world.state", "player.died", "client.stopping", "chat.send", "ok", "err");
-
 	private static Path fixtures() {
 		String dir = System.getProperty("minevibe.protocolFixtures");
 		assertNotNull(dir, "minevibe.protocolFixtures is not set (run through Gradle)");
@@ -40,12 +45,33 @@ class ProtocolFixturesTest {
 		return path;
 	}
 
+	/** Every {@code .json} under {@code dir}, recursively, sorted. */
 	private static List<Path> jsonFiles(Path dir) {
-		try (Stream<Path> files = Files.list(dir)) {
+		try (Stream<Path> files = Files.walk(dir)) {
 			return files.filter(p -> p.getFileName().toString().endsWith(".json")).sorted().toList();
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		}
+	}
+
+	private static boolean under(Path file, String dirName) {
+		for (Path part : fixtures().relativize(file)) {
+			if (part.toString().equals(dirName)) return true;
+		}
+		return false;
+	}
+
+	/** {@code <group>/<type>[--variant].json}: neither under an {@code invalid} nor an {@code unknown} directory. */
+	private static List<Path> validFiles() {
+		return jsonFiles(fixtures()).stream().filter(f -> !under(f, "invalid") && !under(f, "unknown")).toList();
+	}
+
+	private static List<Path> invalidFiles() {
+		return jsonFiles(fixtures()).stream().filter(f -> under(f, "invalid")).toList();
+	}
+
+	private static Path fixture(String group, String name) {
+		return fixtures().resolve(group).resolve(name);
 	}
 
 	private static String read(Path file) {
@@ -54,6 +80,10 @@ class ProtocolFixturesTest {
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		}
+	}
+
+	private static String name(Path file) {
+		return fixtures().relativize(file).toString();
 	}
 
 	/** {@code <type>.json} or {@code <type>--<variant>.json}. */
@@ -65,19 +95,49 @@ class ProtocolFixturesTest {
 
 	@TestFactory
 	Stream<DynamicTest> validFixturesParse() {
-		List<Path> files = jsonFiles(fixtures());
+		List<Path> files = validFiles();
 		assertFalse(files.isEmpty());
-		return files.stream().map(file -> DynamicTest.dynamicTest(file.getFileName().toString(), () -> {
+		return files.stream().map(file -> DynamicTest.dynamicTest(name(file), () -> {
 			String text = read(file);
 			ProtocolCodec.Parsed parsed = ProtocolCodec.parse(text);
 			ProtocolCodec.Valid valid = assertInstanceOf(ProtocolCodec.Valid.class, parsed, () -> file + ": " + parsed);
 			assertEquals(typeOf(file), valid.type().name());
 			assertNotNull(valid.payload());
-			if (MOD_ENCODES.contains(valid.type().name())) {
+			if (valid.type() != Messages.OK) {
+				List<String> unmapped = new ArrayList<>();
+				JsonObject json = JsonParser.parseString(text).getAsJsonObject();
+				for (String key : List.of("t", "v", "id", "re")) json.remove(key);
+				unmappedKeys(json, valid.type().payloadClass(), "", unmapped);
+				assertEquals(List.of(), unmapped, "JSON keys without a record component in " + valid.type().payloadClass().getName());
+			}
+			if (valid.type().direction().modSends()) {
 				String encoded = encodeAs(valid.type(), valid.payload(), valid.id(), valid.re());
-				assertEquals(JsonParser.parseString(text), JsonParser.parseString(encoded), "round trip of " + file.getFileName());
+				assertEquals(JsonParser.parseString(text), JsonParser.parseString(encoded), "round trip of " + name(file));
 			}
 		}));
+	}
+
+	/** Collects the JSON object keys under {@code json} that have no matching component in the record type {@code type}. */
+	private static void unmappedKeys(JsonElement json, Type type, String path, List<String> out) {
+		Class<?> raw = type instanceof ParameterizedType p ? (Class<?>) p.getRawType() : type instanceof Class<?> c ? c : null;
+		if (raw == null) return;
+		if (List.class.isAssignableFrom(raw) && json instanceof JsonArray array && type instanceof ParameterizedType p) {
+			for (int i = 0; i < array.size(); i++) unmappedKeys(array.get(i), p.getActualTypeArguments()[0], path + "." + i, out);
+			return;
+		}
+		if (!raw.isRecord() || !(json instanceof JsonObject obj)) return;
+		RecordComponent[] components = raw.getRecordComponents();
+		for (Map.Entry<String, JsonElement> e : obj.entrySet()) {
+			RecordComponent match = null;
+			for (RecordComponent c : components) {
+				if (c.getName().equals(e.getKey())) match = c;
+			}
+			if (match == null) {
+				out.add(path + "." + e.getKey());
+			} else {
+				unmappedKeys(e.getValue(), match.getGenericType(), path + "." + e.getKey(), out);
+			}
+		}
 	}
 
 	@SuppressWarnings("unchecked")
@@ -87,9 +147,9 @@ class ProtocolFixturesTest {
 
 	@TestFactory
 	Stream<DynamicTest> invalidFixturesAreRejected() {
-		List<Path> files = jsonFiles(fixtures().resolve("invalid"));
+		List<Path> files = invalidFiles();
 		assertFalse(files.isEmpty());
-		return files.stream().map(file -> DynamicTest.dynamicTest(file.getFileName().toString(), () -> {
+		return files.stream().map(file -> DynamicTest.dynamicTest(name(file), () -> {
 			ProtocolCodec.Parsed parsed = ProtocolCodec.parse(read(file));
 			assertInstanceOf(ProtocolCodec.Invalid.class, parsed, () -> file + " was accepted: " + parsed);
 		}));
@@ -97,7 +157,7 @@ class ProtocolFixturesTest {
 
 	@TestFactory
 	Stream<DynamicTest> unknownTypesAreIgnored() {
-		return jsonFiles(fixtures().resolve("unknown")).stream().map(file -> DynamicTest.dynamicTest(file.getFileName().toString(), () -> {
+		return jsonFiles(fixtures().resolve("unknown")).stream().map(file -> DynamicTest.dynamicTest(name(file), () -> {
 			ProtocolCodec.Parsed parsed = ProtocolCodec.parse(read(file));
 			assertInstanceOf(ProtocolCodec.UnknownType.class, parsed, () -> file + ": " + parsed);
 		}));
@@ -106,7 +166,7 @@ class ProtocolFixturesTest {
 	@Test
 	void everyJavaCatalogTypeHasAFixture() {
 		Set<String> covered = new TreeSet<>();
-		for (Path f : jsonFiles(fixtures())) covered.add(typeOf(f));
+		for (Path f : validFiles()) covered.add(typeOf(f));
 		Set<String> missing = new TreeSet<>(Messages.catalog().keySet());
 		missing.removeAll(covered);
 		assertEquals(Set.of(), missing, "Java knows types that have no fixture");
@@ -117,21 +177,21 @@ class ProtocolFixturesTest {
 
 	@Test
 	void readsNestedPayloads() {
-		Messages.HelloOk ok = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixtures().resolve("hello.ok.json")))).payloadAs(Messages.HELLO_OK);
+		Messages.HelloOk ok = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixture("world", "hello.ok.json")))).payloadAs(Messages.HELLO_OK);
 		assertEquals("world-7", ok.world().id());
 		assertEquals(7, ok.world().gen());
 		assertEquals(2, ok.crew().size());
 		assertEquals("dead", ok.crew().get(1).status());
-		assertTrue(ok.budget().isJsonNull());
+		assertNull(ok.budget());
 		assertNull(ok.brains().utilization());
 
-		Messages.WorldNext next = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixtures().resolve("world.next.json")))).payloadAs(Messages.WORLD_NEXT);
+		Messages.WorldNext next = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixture("world", "world.next.json")))).payloadAs(Messages.WORLD_NEXT);
 		assertEquals("world-8", next.worldId());
 		assertEquals("world-7", next.summary().worldId());
 		assertEquals("Fell into lava on Day 3", next.summary().crewFates().get(1).detail());
 		assertEquals(14, next.summary().vaultCommits().get(0).commits());
 
-		Messages.WorldOpen open = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixtures().resolve("world.open.json")))).payloadAs(Messages.WORLD_OPEN);
+		Messages.WorldOpen open = ((ProtocolCodec.Valid) ProtocolCodec.parse(read(fixture("world", "world.open.json")))).payloadAs(Messages.WORLD_OPEN);
 		assertTrue(open.hardcore());
 		assertNull(open.seed());
 	}

@@ -1,0 +1,11 @@
+{
+  "t": "calendar.fired",
+  "v": 1,
+  "eventId": "ev-4",
+  "occurrence": 78000,
+  "kind": "reminder",
+  "title": "Check the furnace",
+  "assignees": ["ada"],
+  "target": null,
+  "walk": []
+}

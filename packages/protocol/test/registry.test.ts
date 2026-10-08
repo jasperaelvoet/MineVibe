@@ -146,7 +146,7 @@ describe('debug messages (E2E)', () => {
       v: _v,
       re: _re,
       ...payload
-    } = JSON.parse(readFileSync(join(fixturesDir, 'ok--debug-state.json'), 'utf8')) as Record<
+    } = JSON.parse(readFileSync(join(fixturesDir, 'reply', 'ok--debug-state.json'), 'utf8')) as Record<
       string,
       unknown
     >;

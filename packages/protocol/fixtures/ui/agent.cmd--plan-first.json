@@ -1,0 +1,8 @@
+{
+  "t": "agent.cmd",
+  "v": 1,
+  "id": "m-80",
+  "agentId": "bram",
+  "cmd": "plan_first",
+  "on": false
+}

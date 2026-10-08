@@ -1,0 +1,8 @@
+{
+  "t": "obs.query",
+  "v": 1,
+  "id": "n-1",
+  "agentId": "ada",
+  "query": "weather",
+  "args": {}
+}

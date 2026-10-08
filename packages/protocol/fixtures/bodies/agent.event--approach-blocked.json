@@ -1,0 +1,11 @@
+{
+  "t": "agent.event",
+  "v": 1,
+  "agentId": "ada",
+  "kind": "approach_blocked",
+  "urgency": 0,
+  "text": "Cannot walk to Jasper: night outside a lit area",
+  "data": {
+    "why": "night"
+  }
+}

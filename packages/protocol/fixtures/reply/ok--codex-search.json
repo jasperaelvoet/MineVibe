@@ -1,0 +1,15 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "m-100",
+  "hits": [
+    {
+      "id": "iron-cave",
+      "title": "Iron cave at (120, 40, -80)",
+      "category": "places",
+      "scope": "world",
+      "snippet": "…found iron ore at the far end…",
+      "score": 7.25
+    }
+  ]
+}

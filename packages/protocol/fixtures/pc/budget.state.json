@@ -1,0 +1,21 @@
+{
+  "t": "budget.state",
+  "v": 1,
+  "cpu": {
+    "total": 12,
+    "used": 3,
+    "free": 9,
+    "maxOvercommit": 1.5
+  },
+  "memoryMiB": {
+    "pool": 25088,
+    "used": 4096,
+    "free": 20992
+  },
+  "diskFreeGiB": 412,
+  "macos": {
+    "running": 0,
+    "max": 2
+  },
+  "crewCap": 4
+}

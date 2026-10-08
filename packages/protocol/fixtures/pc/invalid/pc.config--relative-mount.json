@@ -1,0 +1,12 @@
+{
+  "t": "pc.config",
+  "v": 1,
+  "id": "m-1",
+  "pcId": "linux-1",
+  "mounts": [
+    {
+      "hostPath": "Code/foo",
+      "mode": "rw"
+    }
+  ]
+}
