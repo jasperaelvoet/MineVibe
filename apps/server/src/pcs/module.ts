@@ -202,6 +202,13 @@ export class PcModuleImpl implements PcModule {
       router: this.router,
       seats: this.seats,
       jpegFormat: () => this.#jpegFormat(),
+      pngFormat: () => {
+        try {
+          return parts.pool.pngFormat;
+        } catch {
+          return 0; // ImageFormat.Png
+        }
+      },
       logger: this.#log,
     });
     this.mirror = new ShellMirror({

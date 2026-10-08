@@ -23,7 +23,7 @@ import type {
 import type { Logger } from 'pino';
 import { ApiError, agentActor } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
-import type { PcApi } from '../contracts/PcApi.js';
+import type { JobExit, PcApi } from '../contracts/PcApi.js';
 import type { SkillApi } from '../contracts/SkillApi.js';
 import type { BaseArea } from '../world/baseArea.js';
 import { AgentSession, type SwapResult } from './AgentSession.js';
@@ -64,7 +64,8 @@ import { createToolGateHook, type GateContext, type GateObservation } from './To
 import type { TranscriptStore } from './TranscriptStore.js';
 import { type PcToolName, pcToolName } from './tools/catalog.js';
 import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
-import { createPcServer, type PcHost } from './tools/pcServer.js';
+import { jobSummary, taskNotification } from './tools/pc/formats.js';
+import { BatchBook, createPcServer, type PcHost, PcJobBook } from './tools/pcServer.js';
 import type { UsageGovernor } from './UsageGovernor.js';
 import type { ConsentLedger } from './world/consent.js';
 import { PerceptionMemory, sceneLine } from './world/scene.js';
@@ -256,6 +257,7 @@ export function describeTool(name: string, input: unknown): string {
   const pick = (...keys: string[]) =>
     keys.map((k) => i[k]).find((v) => typeof v === 'string' || typeof v === 'number');
   let detail: unknown;
+  const at = Array.isArray(i.coordinate) ? ` at ${i.coordinate.join(',')}` : typeof i.ref === 'string' ? ` ${i.ref}` : '';
   switch (short) {
     case 'bash':
       detail = i.description ?? i.command;
@@ -265,6 +267,32 @@ export function describeTool(name: string, input: unknown): string {
     case 'edit':
       detail = i.file_path;
       break;
+    // PC tools V2: the computer actions as verbs.
+    case 'left_click':
+    case 'right_click':
+    case 'middle_click':
+    case 'double_click':
+    case 'triple_click':
+      return singleLine(`${short === 'left_click' ? '' : `${short.replace('_click', '')}-`}clicked${at}`, 160);
+    case 'type':
+      return `typed ${typeof i.text === 'string' ? [...i.text].length : 0} chars`;
+    case 'key':
+    case 'hold_key':
+      return singleLine(`${short === 'key' ? 'pressed' : 'held'} ${String(i.text ?? '')}`, 160);
+    case 'screenshot':
+      return 'looked at the screen';
+    case 'zoom':
+      return 'zoomed into the screen';
+    case 'open':
+      return singleLine(`opened ${String(i.target ?? '')}`, 160);
+    case 'ui':
+      return singleLine(`ui ${String(i.action ?? '')}${typeof i.query === 'string' ? ` "${i.query}"` : ''}`, 160);
+    case 'ui_act':
+      return singleLine(`${String(i.op ?? 'act')} ${String(i.ref ?? i.window ?? '')}`, 160);
+    case 'wait_for':
+      return singleLine(`waiting for ${String(i.text ?? i.name ?? i.window ?? (i.stable ? 'a still screen' : ''))}`, 160);
+    case 'task_stop':
+      return singleLine(`stopped ${String(i.task_id ?? i.shell_id ?? '')}`, 160);
     default:
       detail = pick(
         'block',
@@ -339,7 +367,8 @@ export class AgentBrain {
   #activity: string | null = null;
   #turn = { calls: 0, startedAt: 0, pausedAt: 0 as number, pausedMs: 0, pendingStrikes: 0, capStrikes: 0 };
   #waitingCards = new Set<string>();
-  readonly #pcEpochs = new Map<PcToolName, number[]>();
+  /** Per `pc` tool, the seat epochs (and tool_use ids) the gate allowed calls under, oldest first. */
+  readonly #pcEpochs = new Map<PcToolName, { epoch: number; toolUseId: string }[]>();
   readonly #jobs = new Map<string, string>();
   readonly #turnEndWaiters: ((r: SDKResultMessage) => void)[] = [];
   #debounceTimer: NodeJS.Timeout | null = null;
@@ -349,8 +378,13 @@ export class AgentBrain {
   #lastSwap: SwapResult | null = null;
   #lastPlayerAt = 0;
   #lastAutonomousAt: number | null = null;
-  /** Background `pc__bash` jobs this agent started (`ownJobKey`s: PC and job id), across session restarts. */
-  readonly #bashJobs = new Set<string>();
+  /** Background `pc__bash` jobs this agent started, across session restarts (ownership and notifications). */
+  readonly #pcJobs = new PcJobBook();
+  /** Which `pc` calls each assistant message made (PC tools V2 batches), fed from the stream. */
+  readonly #batch = new BatchBook();
+  /** The `pc` tool server's compaction listeners (read-state and the last image are forgotten). */
+  readonly #compactionListeners: (() => void)[] = [];
+  #unsubscribeJobs: (() => void) | null = null;
   /** Meeting turns collecting the running turn's text. */
   #collectors: TurnCollector[] = [];
   /** The session is being closed on purpose to resume it with another model (no crash handling). */
@@ -372,6 +406,7 @@ export class AgentBrain {
       [home, '/home/cua'].filter((h) => h.length > 0),
       { now: () => env.now() },
     );
+    this.#unsubscribeJobs = env.pcs.onJobExit((exit) => this.#onPcJobExit(exit));
   }
 
   get agentId(): string {
@@ -539,7 +574,18 @@ export class AgentBrain {
       {
         onInit: (init, first) => this.#onInit(init, first),
         onAssistantText: (text) => this.#onText(text),
-        onToolUse: (name, input) => this.#onToolUse(name, input),
+        onToolUse: (name, input, toolUseId, messageId) => {
+          if (messageId) this.#batch.toolUse(messageId, toolUseId, name);
+          this.#onToolUse(name, input);
+        },
+        onStream: (mark) => {
+          if (mark.kind === 'message_start') this.#batch.messageStart(mark.messageId);
+          else if (mark.kind === 'tool_use') this.#batch.toolUse(mark.messageId, mark.toolUseId, mark.name);
+          else this.#batch.messageStop(mark.messageId);
+        },
+        onCompacted: () => {
+          for (const listener of this.#compactionListeners) listener();
+        },
         onTurnEnd: (result) => this.#onTurnEnd(result),
         onRateLimit: (info) => env.governor.onRateLimit(info as never),
         onAssistantError: (error) => {
@@ -557,6 +603,7 @@ export class AgentBrain {
     );
     this.#session = session;
     this.#trackedMode = AGENT_PERMISSION_MODE;
+    this.#batch.reset();
     session.start();
     for (const text of options.contexts ?? []) this.context(text);
     for (const item of this.#contexts.splice(0)) session.send(item, { shouldQuery: false });
@@ -568,6 +615,8 @@ export class AgentBrain {
   /** Closes the session and cancels everything (dismissal, death, world end, shutdown). */
   async stop(reason: string, options: { keepCards?: boolean } = {}): Promise<void> {
     this.#stopped = true;
+    this.#unsubscribeJobs?.();
+    this.#unsubscribeJobs = null;
     this.#clearTimers();
     this.#env.scheduler.cancel(this.agentId);
     this.#grant = null;
@@ -795,7 +844,7 @@ export class AgentBrain {
     const pc = pcToolName(o.toolName);
     if (o.decision.behavior === 'allow' && pc !== null) {
       const list = this.#pcEpochs.get(pc) ?? [];
-      list.push(this.fsm.epoch);
+      list.push({ epoch: this.fsm.epoch, toolUseId: o.toolUseId });
       this.#pcEpochs.set(pc, list);
     }
     if (o.decision.behavior === 'deny') {
@@ -808,14 +857,55 @@ export class AgentBrain {
     }
   }
 
-  /** The seat a `pc` handler may use: seated, and the same epoch the gate allowed the call under. */
-  #pcAccess(tool: PcToolName): { pcId: string; epoch: number } | null {
-    const allowedAt = this.#pcEpochs.get(tool)?.shift();
+  /**
+   * The seat a `pc` handler may use: seated, and the same epoch the gate allowed the call under; with the call's
+   * tool_use id as the gate saw it (mutating `pc` calls run one at a time, so the oldest allowed call is this one).
+   */
+  #pcAccess(tool: PcToolName): { pcId: string; epoch: number; toolUseId?: string } | null {
+    const allowed = this.#pcEpochs.get(tool)?.shift();
     const s = this.fsm.snapshot;
     if (!this.fsm.hasPcAccess || s.pcId === null) return null;
-    if (allowedAt !== undefined && allowedAt !== s.epoch) return null;
+    if (allowed !== undefined && allowed.epoch !== s.epoch) return null;
     if (this.#env.occupant(s.pcId) !== this.agentId) return null;
-    return { pcId: s.pcId, epoch: s.epoch };
+    return { pcId: s.pcId, epoch: s.epoch, ...(allowed?.toolUseId ? { toolUseId: allowed.toolUseId } : {}) };
+  }
+
+  /**
+   * A background `pc__bash` command ended: one notification wake (Claude Code's `<task-notification>`) while the seat
+   * it started under still holds; a job the agent stopped itself, or whose seat ended, is only forgotten.
+   */
+  #onPcJobExit(exit: JobExit): void {
+    const job = this.#pcJobs.get(exit.pcId, exit.jobId);
+    if (!job) return;
+    this.#pcJobs.delete(exit.pcId, exit.jobId);
+    const s = this.fsm.snapshot;
+    if (this.#stopped || exit.reason === 'stopped' || exit.reason === 'seat') return;
+    if (s.pcId !== exit.pcId || s.epoch !== job.epoch || !this.fsm.hasPcAccess) return;
+    const status = exit.reason === 'exited' ? (exit.exitCode === 0 ? 'completed' : 'failed') : 'killed';
+    const why =
+      exit.reason === 'lifetime'
+        ? 'it ran past its time limit'
+        : exit.reason === 'lost'
+          ? 'MineVibe lost track of it'
+          : undefined;
+    const block = taskNotification({
+      taskId: job.jobId,
+      toolUseId: job.toolUseId,
+      outputFile: job.outputPath,
+      status,
+      summary: jobSummary(singleLine(job.description, 160), {
+        status,
+        exitCode: exit.exitCode,
+        ...(why ? { why } : {}),
+      }),
+    });
+    this.enqueue({
+      mode: 'wake',
+      priority: 3,
+      kind: 'PC JOB',
+      text: `${control(this.record.nonce, 'PC JOB', 'A background command ended.')}\n${block}`,
+      key: `pcjob:${exit.pcId}:${exit.jobId}`,
+    });
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -1834,7 +1924,12 @@ export class AgentBrain {
       handoffs: env.handoffs,
       access: (tool) => this.#pcAccess(tool),
       authorName: () => this.record.name,
-      ownJobs: this.#bashJobs,
+      jobs: this.#pcJobs,
+      batch: this.#batch,
+      playerName: () => env.playerName(),
+      onCompaction: (listener) => {
+        this.#compactionListeners.push(listener);
+      },
     };
   }
 

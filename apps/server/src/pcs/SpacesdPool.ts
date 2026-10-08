@@ -171,6 +171,12 @@ export class SpacesdPool {
     return this.#module.ImageFormat.Jpeg;
   }
 
+  /** `ImageFormat.Png` of the loaded module (load first). */
+  get pngFormat(): number {
+    if (!this.#module) throw new Error('SpacesdPool: cua module not loaded');
+    return this.#module.ImageFormat.Png;
+  }
+
   /** Sets (or replaces) a PC's endpoint. A changed URL or token drops the old client. */
   register(pcId: string, endpoint: PcEndpoint): void {
     const cur = this.#entries.get(pcId);

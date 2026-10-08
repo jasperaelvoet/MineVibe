@@ -165,7 +165,23 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
 
   it('plan mode: denies file and GUI mutators, allows reads and bash with a read-only note', async () => {
     const c = ctx({ state: 'seated', trackedMode: 'plan' });
-    for (const tool of ['write', 'edit', 'click', 'double_click', 'right_click', 'drag', 'type', 'key']) {
+    for (const tool of [
+      'write',
+      'edit',
+      'left_click',
+      'right_click',
+      'middle_click',
+      'double_click',
+      'triple_click',
+      'left_click_drag',
+      'left_mouse_down',
+      'left_mouse_up',
+      'type',
+      'key',
+      'hold_key',
+      'ui_act',
+      'open',
+    ]) {
       expect(
         await decide(`mcp__pc__${tool}`, { file_path: '/Users/jasper/Code/foo/a.ts' }, c),
         tool,
@@ -178,7 +194,21 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
       code: 'plan_mode',
     });
     expect((await decide('mcp__pc__clipboard', {}, c)).behavior).toBe('allow');
-    for (const tool of ['read', 'glob', 'grep', 'screenshot', 'move', 'scroll', 'info', 'bash_output']) {
+    for (const tool of [
+      'read',
+      'glob',
+      'grep',
+      'screenshot',
+      'zoom',
+      'cursor_position',
+      'mouse_move',
+      'scroll',
+      'wait',
+      'ui',
+      'wait_for',
+      'info',
+      'task_stop',
+    ]) {
       expect((await decide(`mcp__pc__${tool}`, {}, c)).behavior, tool).toBe('allow');
     }
     const bash = await decide('mcp__pc__bash', { command: 'git status' }, c);

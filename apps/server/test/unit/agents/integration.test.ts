@@ -16,7 +16,7 @@ import { PlanCapture } from '../../../src/agents/PlanCapture.js';
 import type { SDKSystemMessage } from '../../../src/agents/sdk.js';
 import { TranscriptStore } from '../../../src/agents/TranscriptStore.js';
 import { createMcServer, type McHost, splitFooter } from '../../../src/agents/tools/mcServer.js';
-import { createPcServer, type PcHost } from '../../../src/agents/tools/pcServer.js';
+import { createPcServer, type PcHost, PcJobBook } from '../../../src/agents/tools/pcServer.js';
 import { agentActor } from '../../../src/contracts/common.js';
 import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakePcApi } from '../../../src/contracts/FakePcApi.js';
@@ -578,12 +578,7 @@ describe('TranscriptStore sequence numbers', () => {
 });
 
 describe('bash job ownership', () => {
-  function server(
-    agentId: string,
-    pcs: PcHost['pcs'],
-    ownJobs?: Set<string>,
-    at: () => string = () => 'linux-1',
-  ) {
+  function server(agentId: string, pcs: PcHost['pcs'], jobs?: PcJobBook, at: () => string = () => 'linux-1') {
     const host: PcHost = {
       agentId,
       pcs,
@@ -591,40 +586,44 @@ describe('bash job ownership', () => {
       handoffs: new HandoffNotes(join(mkdtempSync(join(tmpdir(), 'mv-handoff-')), 'h')),
       access: () => ({ pcId: at(), epoch: 1 }),
       authorName: () => agentId,
-      ...(ownJobs ? { ownJobs } : {}),
+      settle: { windowMs: 0, pollMs: 1, minMs: 0, maxMs: 0, batchWaitMs: 0 },
+      ...(jobs ? { jobs } : {}),
     };
     return registry(createPcServer(host));
   }
+  const idOf = (text: string) => /ID: (\S+?)\./.exec(text)?.[1] ?? '';
 
-  it('bash_output and bash_kill only reach the caller own background jobs', async () => {
+  it('task_stop only reaches the caller own background jobs; their output is a file the read tool reads', async () => {
     const pcs = new FakePcApi();
     const ada = server('ada-1', pcs);
     const bram = server('bram-1', pcs);
     const started = await call(ada, 'bash', { command: 'npm run dev', run_in_background: true });
-    const jobId = /ID: (\S+)\./.exec(started.text)?.[1] ?? '';
-    expect(jobId).not.toBe('');
-    const peek = await call(bram, 'bash_output', { bash_id: jobId });
+    const jobId = idOf(started.text);
+    expect(jobId).toMatch(/^b[0-9a-f]{8}$/);
+    expect(started.text).toBe(
+      `Command running in background with ID: ${jobId}. Output is being written to: /home/cua/.mv/jobs/${jobId}.out. You will be notified when it completes. To check interim output, use Read on that file path.`,
+    );
+    const peek = await call(bram, 'task_stop', { task_id: jobId });
     expect(peek).toMatchObject({
       isError: true,
-      text: `No background command ${jobId} of yours on linux-1.`,
+      text: `No background command with ID ${jobId} is running on linux-1 for this seat: it has already finished or been stopped, or it was never yours.`,
     });
-    expect((await call(bram, 'bash_kill', { shell_id: jobId })).isError).toBe(true);
-    expect((await call(ada, 'bash_output', { bash_id: jobId })).text).toContain('<status>running</status>');
-    expect((await call(ada, 'bash_kill', { shell_id: jobId })).text).toBe(`Killed ${jobId}.`);
+    expect((await call(ada, 'task_stop', { shell_id: jobId })).text).toBe(
+      `Successfully stopped task: ${jobId} (npm run dev)`,
+    );
+    expect((await call(ada, 'task_stop', { task_id: jobId })).isError).toBe(true);
   });
 
   it('the brain keeps its jobs across a new tool server (session restart)', async () => {
     const pcs = new FakePcApi();
-    const jobs = new Set<string>();
+    const jobs = new PcJobBook();
     const first = server('ada-1', pcs, jobs);
     const started = await call(first, 'bash', { command: 'sleep 100', run_in_background: true });
-    const jobId = /ID: (\S+)\./.exec(started.text)?.[1] ?? '';
     const second = server('ada-1', pcs, jobs);
-    expect((await call(second, 'bash_output', { bash_id: jobId })).isError).toBe(false);
+    expect((await call(second, 'task_stop', { task_id: idOf(started.text) })).isError).toBe(false);
   });
 
   it('the same job id on two PCs stays the caller own on both (review fix)', async () => {
-    // Each PC numbers its jobs on its own, so both start at job-1.
     const byPc = {
       'linux-1': new FakePcApi([{ pcId: 'linux-1' }]),
       'linux-2': new FakePcApi([{ pcId: 'linux-2' }]),
@@ -636,15 +635,17 @@ describe('bash job ownership', () => {
           (byPc[pcId] as unknown as Record<string, (...a: unknown[]) => unknown>)[method]?.(pcId, ...rest),
     });
     let at = 'linux-1';
-    const ada = server('ada-1', pcs, new Set(), () => at);
+    const jobs = new PcJobBook();
+    const ada = server('ada-1', pcs, jobs, () => at);
     const one = await call(ada, 'bash', { command: 'npm run dev', run_in_background: true });
     at = 'linux-2';
     const two = await call(ada, 'bash', { command: 'npm test', run_in_background: true });
-    expect(/ID: (\S+)\./.exec(two.text)?.[1]).toBe(/ID: (\S+)\./.exec(one.text)?.[1]);
+    expect(jobs.get('linux-1', idOf(one.text))?.command).toBe('npm run dev');
+    expect(jobs.get('linux-2', idOf(two.text))?.command).toBe('npm test');
+    expect(jobs.get('linux-2', idOf(one.text))).toBeUndefined();
     at = 'linux-1';
-    expect((await call(ada, 'bash_output', { bash_id: 'job-1' })).isError).toBe(false);
-    at = 'linux-2';
-    expect((await call(ada, 'bash_kill', { shell_id: 'job-1' })).text).toBe('Killed job-1.');
+    expect((await call(ada, 'task_stop', { task_id: idOf(two.text) })).isError).toBe(true);
+    expect((await call(ada, 'task_stop', { task_id: idOf(one.text) })).isError).toBe(false);
   });
 });
 

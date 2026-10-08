@@ -31,6 +31,35 @@ import type {
   SDKUserMessage,
 } from './sdk.js';
 
+/** The parts of the stream the batch bookkeeping needs. */
+export type StreamMark =
+  | { readonly kind: 'message_start'; readonly messageId: string }
+  | { readonly kind: 'tool_use'; readonly messageId: string | null; readonly toolUseId: string; readonly name: string }
+  | { readonly kind: 'message_stop'; readonly messageId: string | null };
+
+/** A raw streaming event as a {@link StreamMark}, or null for every other event. */
+export function streamMark(event: unknown, current: string | null): StreamMark | null {
+  const e = event as {
+    type?: string;
+    message?: { id?: string };
+    content_block?: { type?: string; id?: string; name?: string };
+  } | null;
+  switch (e?.type) {
+    case 'message_start':
+      return typeof e.message?.id === 'string' ? { kind: 'message_start', messageId: e.message.id } : null;
+    case 'content_block_start':
+      return e.content_block?.type === 'tool_use' &&
+        typeof e.content_block.id === 'string' &&
+        typeof e.content_block.name === 'string'
+        ? { kind: 'tool_use', messageId: current, toolUseId: e.content_block.id, name: e.content_block.name }
+        : null;
+    case 'message_stop':
+      return { kind: 'message_stop', messageId: current };
+    default:
+      return null;
+  }
+}
+
 /** A push-driven async iterable of user messages (the streaming prompt). */
 export class Inbox implements AsyncIterable<SDKUserMessage> {
   #queue: SDKUserMessage[] = [];
@@ -85,7 +114,13 @@ export interface SessionCallbacks {
   onInit?(init: SDKSystemMessage, first: boolean): void;
   /** Main-thread assistant text (one call per text block). */
   onAssistantText?(text: string, model: string | null): void;
-  onToolUse?(name: string, input: unknown, toolUseId: string): void;
+  /** A tool_use block of a complete main-thread assistant message (`messageId`: the API message's id). */
+  onToolUse?(name: string, input: unknown, toolUseId: string, messageId: string | null): void;
+  /**
+   * The main thread's streaming events (`includePartialMessages`): a message starts, a tool_use block starts, a
+   * message stops. The `pc` tools learn their batches from them (PC tools V2 §4.2).
+   */
+  onStream?(event: StreamMark): void;
   onAssistantError?(error: NonNullable<SDKAssistantMessage['error']>): void;
   /** A real turn ended (zero-turn context results are filtered out). */
   onTurnEnd?(result: SDKResultMessage): void;
@@ -168,6 +203,8 @@ export class AgentSession {
   #lastCallUsage: UsageFields | null = null;
   #swapWaiter: ((input: PostModelSwitchHookInput) => void) | null = null;
   #lastSwitch: PostModelSwitchHookInput | null = null;
+  /** The id of the main-thread message being streamed. */
+  #streaming: string | null = null;
 
   constructor(config: SessionConfig, callbacks: SessionCallbacks = {}) {
     this.#config = config;
@@ -391,10 +428,26 @@ export class AgentSession {
         if (model && model !== '<synthetic>') this.#model = model;
         const usage = a.message?.usage as unknown as UsageFields | undefined;
         if (usage && model !== '<synthetic>' && tokensOf(usage) > 0) this.#lastCallUsage = usage;
+        const messageId = typeof a.message?.id === 'string' ? a.message.id : null;
         for (const block of a.message?.content ?? []) {
           if (block.type === 'text' && block.text.trim().length > 0)
             this.#cb.onAssistantText?.(block.text, model);
-          else if (block.type === 'tool_use') this.#cb.onToolUse?.(block.name, block.input, block.id);
+          else if (block.type === 'tool_use')
+            this.#cb.onToolUse?.(block.name, block.input, block.id, messageId);
+        }
+        return;
+      }
+      case 'stream_event': {
+        const s = m as { event?: unknown; parent_tool_use_id?: string | null };
+        if (s.parent_tool_use_id) return; // subagent traffic (none expected)
+        const mark = streamMark(s.event, this.#streaming);
+        if (!mark) return;
+        if (mark.kind === 'message_start') this.#streaming = mark.messageId;
+        else if (mark.kind === 'message_stop') this.#streaming = null;
+        try {
+          this.#cb.onStream?.(mark);
+        } catch (err) {
+          this.#config.log?.warn({ err }, 'stream callback failed');
         }
         return;
       }

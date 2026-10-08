@@ -30,12 +30,30 @@ export type MouseButtonName = 'left' | 'right' | 'middle';
 /** An event the router accepts: a T0 `pc.input` event, or one of the agent-only actions. */
 export type RouterEvent =
   | InputEvent
-  /** Click `count` times at x,y (spacesd `PointerClick`, so a double click is one call). */
-  | { k: 'click'; x: number; y: number; button: MouseButtonName; count: number }
-  /** Left-button drag from x,y to toX,toY. */
-  | { k: 'drag'; x: number; y: number; toX: number; toY: number }
+  /**
+   * Click `count` times at x,y, or at the pointer when both are absent (spacesd `PointerClick`, so a double click is
+   * one call), holding `modifiers` (cua modifier keys) during the click.
+   */
+  | {
+      k: 'click';
+      x?: number | undefined;
+      y?: number | undefined;
+      button: MouseButtonName;
+      count: number;
+      modifiers?: string[] | undefined;
+    }
+  /** Left-button drag from x,y to toX,toY, holding `modifiers`. */
+  | { k: 'drag'; x: number; y: number; toX: number; toY: number; modifiers?: string[] | undefined }
   /** Press keys together (a hotkey); one key is a plain press. */
-  | { k: 'chord'; keys: string[] };
+  | { k: 'chord'; keys: string[] }
+  /** `key` with `modifiers` held, `repeat` times (spacesd `KeyPress`). */
+  | { k: 'press'; key: string; modifiers: string[]; repeat: number }
+  /** Keys down in order, held for `ms` (cut short by any release), then up in reverse order. */
+  | { k: 'hold'; keys: string[]; ms: number }
+  /** A mouse button down or up where the pointer is. */
+  | { k: 'mouse'; button: MouseButtonName; down: boolean }
+  /** Wheel notches at x,y, or at the pointer when both are absent (dy > 0 scrolls down). */
+  | { k: 'wheel'; dx: number; dy: number; x?: number | undefined; y?: number | undefined };
 
 export interface Occupant {
   kind: 'player' | 'agent';
@@ -70,6 +88,10 @@ export const MAX_BATCH_EVENTS = 256;
 const MAX_COORD = 65_535;
 /** Largest scroll delta per event. */
 const MAX_SCROLL = 10_000;
+/** Longest key hold (an agent's `hold_key`, 300 s). */
+export const MAX_HOLD_MS = 300_000;
+/** Most repeats of one key press. */
+const MAX_REPEAT = 100;
 /** Extra queue room for key-ups and button-ups beyond `maxQueue`. */
 const RELEASE_SLACK = 64;
 const KEY_NAME_RE = /^KEY_[A-Z0-9_]{1,32}$/;
@@ -132,9 +154,76 @@ const KEY_ALIASES: Readonly<Record<string, string>> = {
   numlock: 'KEY_NUM_LOCK',
   scrolllock: 'KEY_SCROLL_LOCK',
   pause: 'KEY_PAUSE',
+  help: 'KEY_HELP',
   plus: '+',
   minus: '-',
+  // xdotool / X keysym names (what computer-use models are trained on).
+  prior: 'KEY_PAGE_UP',
+  next: 'KEY_PAGE_DOWN',
+  kpenter: 'KEY_NUMPAD_ENTER',
+  kpadd: 'KEY_NUMPAD_ADD',
+  kpsubtract: 'KEY_NUMPAD_SUBTRACT',
+  kpmultiply: 'KEY_NUMPAD_MULTIPLY',
+  kpdivide: 'KEY_NUMPAD_DIVIDE',
+  kpdecimal: 'KEY_NUMPAD_DECIMAL',
+  kpequal: 'KEY_NUMPAD_EQUAL',
+  controll: 'KEY_CONTROL_LEFT',
+  controlr: 'KEY_CONTROL_RIGHT',
+  ctrll: 'KEY_CONTROL_LEFT',
+  ctrlr: 'KEY_CONTROL_RIGHT',
+  shiftl: 'KEY_SHIFT_LEFT',
+  shiftr: 'KEY_SHIFT_RIGHT',
+  altl: 'KEY_ALT_LEFT',
+  altr: 'KEY_ALT_RIGHT',
+  superl: 'KEY_META_LEFT',
+  superr: 'KEY_META_RIGHT',
+  metal: 'KEY_META_LEFT',
+  metar: 'KEY_META_RIGHT',
+  equal: 'KEY_EQUAL',
+  comma: 'KEY_COMMA',
+  period: 'KEY_PERIOD',
+  slash: 'KEY_SLASH',
+  backslash: 'KEY_BACKSLASH',
+  semicolon: 'KEY_SEMICOLON',
+  apostrophe: 'KEY_QUOTE',
+  quoteright: 'KEY_QUOTE',
+  grave: 'KEY_BACKQUOTE',
+  quoteleft: 'KEY_BACKQUOTE',
+  bracketleft: 'KEY_BRACKET_LEFT',
+  bracketright: 'KEY_BRACKET_RIGHT',
+  xf86audioraisevolume: 'KEY_VOLUME_UP',
+  xf86audiolowervolume: 'KEY_VOLUME_DOWN',
+  xf86audiomute: 'KEY_VOLUME_MUTE',
+  xf86audioplay: 'KEY_MEDIA_PLAY_PAUSE',
+  xf86audiopause: 'KEY_MEDIA_PLAY_PAUSE',
+  xf86audiostop: 'KEY_MEDIA_STOP',
+  xf86audionext: 'KEY_MEDIA_NEXT',
+  xf86audioprev: 'KEY_MEDIA_PREVIOUS',
+  xf86back: 'KEY_BROWSER_BACK',
+  xf86forward: 'KEY_BROWSER_FORWARD',
+  xf86reload: 'KEY_BROWSER_REFRESH',
+  xf86refresh: 'KEY_BROWSER_REFRESH',
+  xf86search: 'KEY_BROWSER_SEARCH',
+  xf86homepage: 'KEY_BROWSER_HOME',
+  xf86mail: 'KEY_LAUNCH_MAIL',
 };
+
+/** cua modifier keys (what `press{modifiers}` and `click{modifiers}` accept). */
+export const MODIFIER_KEYS: ReadonlySet<string> = new Set([
+  'KEY_SHIFT',
+  'KEY_SHIFT_LEFT',
+  'KEY_SHIFT_RIGHT',
+  'KEY_CONTROL',
+  'KEY_CONTROL_LEFT',
+  'KEY_CONTROL_RIGHT',
+  'KEY_ALT',
+  'KEY_ALT_LEFT',
+  'KEY_ALT_RIGHT',
+  'KEY_META',
+  'KEY_META_LEFT',
+  'KEY_META_RIGHT',
+  'KEY_FN',
+]);
 
 /**
  * A key name as cua understands it: a `KEY_*` name, one printable character, or a known alias ("ctrl",
@@ -153,6 +242,8 @@ export function normalizeKeyName(name: string): string | null {
   }
   const f = /^f([1-9]|1[0-9]|2[0-4])$/.exec(flat);
   if (f) return `KEY_F${f[1]}`;
+  const kp = /^kp([0-9])$/.exec(flat);
+  if (kp) return `KEY_NUMPAD_${kp[1]}`;
   return KEY_ALIASES[flat] ?? null;
 }
 
@@ -200,39 +291,105 @@ export function parseInputEvent(raw: unknown): RouterEvent | null {
       return { k: 'release_all' };
     case 'click': {
       const count = e.count === undefined ? 1 : e.count;
-      return isCoord(e.x) &&
-        isCoord(e.y) &&
+      const at = optionalPoint(e);
+      const modifiers = parseModifiers(e.modifiers);
+      return at !== null &&
+        modifiers !== null &&
         isButton(e.button) &&
         typeof count === 'number' &&
         Number.isInteger(count) &&
         count >= 1 &&
         count <= 3
-        ? { k: 'click', x: Math.round(e.x), y: Math.round(e.y), button: e.button, count }
+        ? {
+            k: 'click',
+            ...at,
+            button: e.button,
+            count,
+            ...(modifiers.length > 0 ? { modifiers } : {}),
+          }
         : null;
     }
-    case 'drag':
-      return isCoord(e.x) && isCoord(e.y) && isCoord(e.toX) && isCoord(e.toY)
+    case 'drag': {
+      const modifiers = parseModifiers(e.modifiers);
+      return isCoord(e.x) && isCoord(e.y) && isCoord(e.toX) && isCoord(e.toY) && modifiers !== null
         ? {
             k: 'drag',
             x: Math.round(e.x),
             y: Math.round(e.y),
             toX: Math.round(e.toX),
             toY: Math.round(e.toY),
+            ...(modifiers.length > 0 ? { modifiers } : {}),
           }
         : null;
+    }
     case 'chord': {
-      if (!Array.isArray(e.keys) || e.keys.length === 0 || e.keys.length > 6) return null;
-      const keys: string[] = [];
-      for (const k of e.keys) {
-        const n = typeof k === 'string' ? normalizeKeyName(k) : null;
-        if (!n) return null;
-        keys.push(n);
-      }
-      return { k: 'chord', keys };
+      const keys = parseKeyList(e.keys);
+      return keys ? { k: 'chord', keys } : null;
+    }
+    case 'press': {
+      const key = typeof e.key === 'string' ? normalizeKeyName(e.key) : null;
+      const modifiers = parseModifiers(e.modifiers);
+      const repeat = e.repeat === undefined ? 1 : e.repeat;
+      return key &&
+        keySpec(key) &&
+        modifiers !== null &&
+        typeof repeat === 'number' &&
+        Number.isInteger(repeat) &&
+        repeat >= 1 &&
+        repeat <= MAX_REPEAT
+        ? { k: 'press', key, modifiers, repeat }
+        : null;
+    }
+    case 'hold': {
+      const keys = parseKeyList(e.keys);
+      return keys && typeof e.ms === 'number' && Number.isFinite(e.ms) && e.ms >= 0 && e.ms <= MAX_HOLD_MS
+        ? { k: 'hold', keys, ms: Math.round(e.ms) }
+        : null;
+    }
+    case 'mouse':
+      return isButton(e.button) && typeof e.down === 'boolean'
+        ? { k: 'mouse', button: e.button, down: e.down }
+        : null;
+    case 'wheel': {
+      const at = optionalPoint(e);
+      return at !== null && isDelta(e.dx) && isDelta(e.dy)
+        ? { k: 'wheel', dx: Math.round(e.dx), dy: Math.round(e.dy), ...at }
+        : null;
     }
     default:
       return null;
   }
+}
+
+/** `{x,y}` rounded, `{}` when both are absent, null for anything else. */
+function optionalPoint(e: Record<string, unknown>): { x: number; y: number } | Record<string, never> | null {
+  if (e.x === undefined && e.y === undefined) return {};
+  return isCoord(e.x) && isCoord(e.y) ? { x: Math.round(e.x), y: Math.round(e.y) } : null;
+}
+
+/** 1-6 key names as cua names, or null. */
+function parseKeyList(raw: unknown): string[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 6) return null;
+  const keys: string[] = [];
+  for (const k of raw) {
+    const n = typeof k === 'string' ? normalizeKeyName(k) : null;
+    if (!n || !keySpec(n)) return null;
+    keys.push(n);
+  }
+  return keys;
+}
+
+/** Modifier names as cua modifier keys (`[]` when absent), or null when one is not a modifier. */
+function parseModifiers(raw: unknown): string[] | null {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > 4) return null;
+  const out: string[] = [];
+  for (const m of raw) {
+    const n = typeof m === 'string' ? normalizeKeyName(m) : null;
+    if (!n || !MODIFIER_KEYS.has(n)) return null;
+    if (!out.includes(n)) out.push(n);
+  }
+  return out;
 }
 
 /** Why an awaited {@link InputRouter.perform} failed. */
@@ -258,13 +415,25 @@ interface Batch {
 type Op = (
   | { t: 'move'; x: number; y: number }
   | { t: 'down' | 'up'; button: MouseButtonName }
-  /** At x,y: where the pointer is once the move queued before it ran (not wherever it went later). */
-  | { t: 'scroll'; dx: number; dy: number; x: number; y: number }
+  /**
+   * At x,y: where the pointer is once the move queued before it ran (not wherever it went later); an agent's wheel
+   * without a position scrolls wherever the pointer is.
+   */
+  | { t: 'scroll'; dx: number; dy: number; x?: number | undefined; y?: number | undefined; line?: boolean }
   | { t: 'text'; text: string }
   | { t: 'keydown' | 'keyup'; key: string }
   | { t: 'chord'; keys: string[] }
-  | { t: 'click'; x: number; y: number; button: MouseButtonName; count: number }
-  | { t: 'drag'; x: number; y: number; toX: number; toY: number }
+  | { t: 'press'; key: string; modifiers: string[]; repeat: number }
+  | { t: 'hold'; keys: string[]; ms: number }
+  | {
+      t: 'click';
+      x?: number | undefined;
+      y?: number | undefined;
+      button: MouseButtonName;
+      count: number;
+      modifiers?: string[] | undefined;
+    }
+  | { t: 'drag'; x: number; y: number; toX: number; toY: number; modifiers?: string[] | undefined }
   | { t: 'release' }
 ) & { batch?: Batch };
 
@@ -281,6 +450,8 @@ interface PcQueue {
   /** Where the pointer is (or will be, once the queue ran): a move there again is skipped. */
   lastPos: { x: number; y: number } | null;
   display: { w: number; h: number } | null;
+  /** Ends the running `hold` early (any release: occupant change, kick, removal). */
+  holdAbort: AbortController | null;
   stats: { calls: number; coalesced: number; rejected: number; errors: number; overflows: number };
 }
 
@@ -343,6 +514,7 @@ export class InputRouter {
         downButtons: new Set(),
         lastPos: null,
         display: null,
+        holdAbort: null,
         stats: { calls: 0, coalesced: 0, rejected: 0, errors: 0, overflows: 0 },
       };
       this.#pcs.set(pcId, q);
@@ -499,6 +671,7 @@ export class InputRouter {
   }
 
   #clearAndRelease(q: PcQueue): void {
+    q.holdAbort?.abort();
     const dropped = q.ops.splice(0);
     for (const op of dropped) {
       if (op.batch) this.#fail(op.batch, new InputError('NOT_OCCUPANT', 'the occupant changed'));
@@ -515,7 +688,7 @@ export class InputRouter {
       q.downKeys.size > 0 ||
       q.downButtons.size > 0 ||
       q.running ||
-      q.ops.some((o) => o.t === 'keydown' || o.t === 'down');
+      q.ops.some((o) => o.t === 'keydown' || o.t === 'down' || o.t === 'hold');
     if (mayHold && q.ops.at(-1)?.t !== 'release') q.ops.push({ t: 'release' });
   }
 
@@ -594,9 +767,14 @@ export class InputRouter {
         return true;
       case 'click': {
         if (q.ops.length >= cap) return false;
+        const mods = ev.modifiers?.length ? { modifiers: ev.modifiers } : {};
+        if (ev.x === undefined || ev.y === undefined) {
+          q.ops.push({ t: 'click', button: ev.button, count: ev.count, ...mods, ...b });
+          return true;
+        }
         const p = this.#clamp(q, ev.x, ev.y);
         q.lastPos = p;
-        q.ops.push({ t: 'click', ...p, button: ev.button, count: ev.count, ...b });
+        q.ops.push({ t: 'click', ...p, button: ev.button, count: ev.count, ...mods, ...b });
         return true;
       }
       case 'drag': {
@@ -604,13 +782,43 @@ export class InputRouter {
         const from = this.#clamp(q, ev.x, ev.y);
         const to = this.#clamp(q, ev.toX, ev.toY);
         q.lastPos = to;
-        q.ops.push({ t: 'drag', x: from.x, y: from.y, toX: to.x, toY: to.y, ...b });
+        const mods = ev.modifiers?.length ? { modifiers: ev.modifiers } : {};
+        q.ops.push({ t: 'drag', x: from.x, y: from.y, toX: to.x, toY: to.y, ...mods, ...b });
         return true;
       }
       case 'chord':
         if (full) return false;
         q.ops.push({ t: 'chord', keys: ev.keys, ...b });
         return true;
+      case 'press':
+        if (full) return false;
+        q.ops.push({ t: 'press', key: ev.key, modifiers: ev.modifiers, repeat: ev.repeat, ...b });
+        return true;
+      case 'hold':
+        if (full) return false;
+        q.ops.push({ t: 'hold', keys: ev.keys, ms: ev.ms, ...b });
+        return true;
+      case 'mouse': {
+        if (ev.down) {
+          if (full) return false;
+          q.ops.push({ t: 'down', button: ev.button, ...b });
+          return true;
+        }
+        if (q.ops.length >= cap + RELEASE_SLACK) return this.#overflow(q);
+        q.ops.push({ t: 'up', button: ev.button, ...b });
+        return true;
+      }
+      case 'wheel': {
+        if (full) return false;
+        if (ev.x === undefined || ev.y === undefined) {
+          q.ops.push({ t: 'scroll', dx: ev.dx, dy: ev.dy, line: true, ...b });
+          return true;
+        }
+        const at = this.#clamp(q, ev.x, ev.y);
+        q.lastPos = at;
+        q.ops.push({ t: 'scroll', dx: ev.dx, dy: ev.dy, x: at.x, y: at.y, line: true, ...b });
+        return true;
+      }
     }
   }
 
@@ -690,7 +898,50 @@ export class InputRouter {
     }
   }
 
+  /**
+   * Keys down in order, a wait that any release cuts short, then the keys up in reverse order. A key-up that fails
+   * stays held, so the next release sends it again.
+   */
+  async #hold(pcId: string, q: PcQueue, op: Extract<CallOp, { t: 'hold' }>): Promise<void> {
+    const pressed: string[] = [];
+    const abort = new AbortController();
+    q.holdAbort = abort;
+    try {
+      for (const key of op.keys) {
+        if (abort.signal.aborted) break;
+        await this.#call(pcId, q, { t: 'keydown', key });
+        pressed.push(key);
+      }
+      if (!abort.signal.aborted && op.ms > 0) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, op.ms);
+          abort.signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      }
+    } finally {
+      if (q.holdAbort === abort) q.holdAbort = null;
+      for (const key of pressed.reverse()) {
+        try {
+          await this.#call(pcId, q, { t: 'keyup', key });
+        } catch {
+          // kept as held: the next release sends it again
+        }
+      }
+    }
+  }
+
   async #call(pcId: string, q: PcQueue, op: CallOp): Promise<void> {
+    if (op.t === 'hold') {
+      await this.#hold(pcId, q, op);
+      return;
+    }
     try {
       await this.#send(pcId, op);
     } catch (err) {
@@ -706,13 +957,17 @@ export class InputRouter {
     else if (op.t === 'down') q.downButtons.add(op.button);
     else if (op.t === 'up') q.downButtons.delete(op.button);
     if (this.#onPointer) {
-      if (op.t === 'move' || op.t === 'click') this.#onPointer(pcId, { x: op.x, y: op.y });
+      if ((op.t === 'move' || op.t === 'click') && op.x !== undefined && op.y !== undefined)
+        this.#onPointer(pcId, { x: op.x, y: op.y });
       else if (op.t === 'drag') this.#onPointer(pcId, { x: op.toX, y: op.toY });
     }
   }
 
-  async #send(pcId: string, op: CallOp): Promise<void> {
-    const timeoutMs = op.t === 'drag' || op.t === 'click' ? this.#callTimeoutMs * 2 : this.#callTimeoutMs;
+  async #send(pcId: string, op: Exclude<CallOp, { t: 'hold' }>): Promise<void> {
+    const timeoutMs =
+      op.t === 'drag' || op.t === 'click' || (op.t === 'press' && op.repeat > 10)
+        ? this.#callTimeoutMs * 2
+        : this.#callTimeoutMs;
     await withDeadline(timeoutMs, `pc input ${op.t}`, async (signal) => {
       const c = await this.#getClient(pcId);
       const o = { signal };
@@ -724,21 +979,63 @@ export class InputRouter {
         case 'up':
           await c.pointerJson(JSON.stringify({ [op.t]: { button: BUTTONS[op.button] } }), o);
           return;
-        case 'scroll':
+        case 'scroll': {
+          const at = op.x !== undefined && op.y !== undefined ? { position: { x: op.x, y: op.y } } : {};
           await c.pointerJson(
-            JSON.stringify({ scroll: { position: { x: op.x, y: op.y }, deltaX: op.dx, deltaY: op.dy } }),
+            JSON.stringify({
+              scroll: {
+                ...at,
+                deltaX: op.dx,
+                deltaY: op.dy,
+                ...(op.line ? { unit: 'SCROLL_UNIT_LINE' } : {}),
+              },
+            }),
             o,
           );
           return;
-        case 'click':
+        }
+        case 'click': {
+          const at = op.x !== undefined && op.y !== undefined ? { position: { x: op.x, y: op.y } } : {};
           await c.pointerJson(
             JSON.stringify({
-              click: { position: { x: op.x, y: op.y }, button: BUTTONS[op.button], count: op.count },
+              click: {
+                ...at,
+                button: BUTTONS[op.button],
+                count: op.count,
+                ...(op.modifiers?.length ? { modifiers: op.modifiers } : {}),
+              },
+            }),
+            o,
+          );
+          return;
+        }
+        case 'press':
+          await c.keyboardJson(
+            JSON.stringify({
+              press: {
+                key: keySpec(op.key),
+                ...(op.modifiers.length > 0 ? { modifiers: op.modifiers } : {}),
+                ...(op.repeat > 1 ? { repeat: op.repeat } : {}),
+              },
             }),
             o,
           );
           return;
         case 'drag':
+          if (op.modifiers?.length) {
+            await c.pointerJson(
+              JSON.stringify({
+                drag: {
+                  from: { x: op.x, y: op.y },
+                  to: { x: op.toX, y: op.toY },
+                  button: BUTTONS.left,
+                  modifiers: op.modifiers,
+                },
+              }),
+              o,
+            );
+            return;
+          }
           if (c.drag) {
             await c.drag(op.x, op.y, op.toX, op.toY, o);
             return;
