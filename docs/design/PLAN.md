@@ -574,6 +574,12 @@ Long jobs use `wait_s` and return `running` plus `job_id`.
 
 Portals are supported: `goto` paths into a portal and fake players change dimension the vanilla way. Follow mode follows the player across dimensions.
 
+**World awareness and protection (W1, after a live run where the CEO, sent for oak logs, mined the stripped logs of the player's house).**
+- **Provenance.** The mod records who placed every block (player, agent, or the Base for the starter office), per chunk, saved with the chunk. The Base zone is the office's box plus 2 blocks; more named zones can be added.
+- **Protection.** Block-changing skills refuse player-built and Base blocks with `PROTECTED` and a teaching line ("ask the player before changing it"); agents' own blocks stay theirs. `allow_protected` counts only with a consent token Node attaches after the player explicitly agreed, outside the tool input.
+- **Natural resources.** Tags leave out building variants (stripped logs, wood, planks); logs come from whole natural trees the agent can reach. Nothing natural in reach is `NO_NATURAL_SOURCE`, listing what was seen: the agent asks instead of taking something else.
+- **Perception.** `look_around` is a short scene (zone, hazards, trees with reachability, buildings, people, resources, terrain); `find` labels provenance and reachability; the footer names the zone. Details: protocol §7.4.2, `apps/mod/docs/SKILLS.md`.
+
 ### 7.5 Blocks and items
 - **`pc_desk`:** a two-wide desk with a monitor. `PcBlockEntity{pcId,type}`, and a status LED driven by `pc.state`.
 - **`office_chair`:** spawns a `minevibe:seat` entity (kind `pc` or `meeting`) whose `canAddPassenger` is true only when it's empty, so single occupancy holds by construction. `PcRegistry` is the authoritative double check.

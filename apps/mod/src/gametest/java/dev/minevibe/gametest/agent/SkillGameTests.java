@@ -240,9 +240,15 @@ public final class SkillGameTests {
 
 	@GameTest(structure = ARENA, maxTicks = 1200)
 	public void skillCollectLogs(final GameTestHelper helper) {
+		// Two small natural trees: logs come from trees, which need natural (non-persistent) leaves (W1).
+		BlockState leaf = Blocks.OAK_LEAVES.defaultBlockState()
+			.setValue(net.minecraft.world.level.block.LeavesBlock.DISTANCE, 1)
+			.setValue(net.minecraft.world.level.block.LeavesBlock.PERSISTENT, false);
 		helper.setBlock(new BlockPos(10, 1, 9), Blocks.OAK_LOG);
 		helper.setBlock(new BlockPos(10, 2, 9), Blocks.OAK_LOG);
+		helper.setBlock(new BlockPos(10, 3, 9), leaf);
 		helper.setBlock(new BlockPos(5, 1, 12), Blocks.OAK_LOG);
+		helper.setBlock(new BlockPos(5, 2, 12), leaf);
 		AgentPlayer agent = spawnAgent(helper, "Lumber", AgentRole.MINER, 3, 1, 3);
 		String job = jobId("logs");
 		CompletableFuture<Map<String, Object>> r = run(helper, agent, job, "collect", "{\"item\":\"oak_log\",\"count\":3,\"radius\":16}", 120_000);

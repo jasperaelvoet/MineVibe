@@ -26,6 +26,7 @@ import {
   EntityRef,
   IdleMode,
   type Place,
+  ProtectedDetail,
   SkillArgs,
   type SkillName,
 } from '@minevibe/protocol';
@@ -34,6 +35,7 @@ import type { Actor } from '../../contracts/common.js';
 import { ApiError, isApiError } from '../../contracts/common.js';
 import type { OrgApi, OrgToolResult } from '../../contracts/OrgApi.js';
 import type { SkillApi } from '../../contracts/SkillApi.js';
+import type { ConsentLedger } from '../ConsentLedger.js';
 import { DEFAULT_WAIT_S, MAX_WAIT_S, MCP_TOOL_TIMEOUT_MS } from '../constants.js';
 import { summarizeResult } from '../EventRouter.js';
 import { MC_TOOLS, type McToolName } from './catalog.js';
@@ -75,6 +77,11 @@ export interface McHost {
   standUp(): Promise<string>;
   /** Waits up to `ms`; resolves early when job `jobId` ends. */
   wait(ms: number, jobId?: string): Promise<string>;
+  /**
+   * W1: the player's consents for changing protected blocks. `PROTECTED` failures record the mod's offer; a skill
+   * call with `allow_protected` takes a token the player granted. Without a ledger no consent is ever attached.
+   */
+  readonly consents?: Pick<ConsentLedger, 'offered' | 'take'> | undefined;
   /** A task report was filed (wakes the CEO for failed/blocked). */
   taskReported(report: {
     eventId: string;
@@ -95,10 +102,11 @@ const WaitS = z
 
 /** Skill tools: name → description. Input schemas come from the protocol's `SkillArgs`. */
 const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
-  mine: 'Mine blocks of a kind (block id or #tag) nearby, e.g. {block:"oak_log", count:10}. A job.',
-  collect: 'Collect items of a kind from the world (mine, pick up) until you hold count. A job.',
+  mine: 'Mine natural blocks of a kind (block id or #tag) nearby, e.g. {block:"oak_log", count:10}: logs come from whole trees, never from buildings. Fails NO_NATURAL_SOURCE (none reachable: ask the player, never mine something else instead) or PROTECTED (the player\'s blocks). A job.',
+  collect:
+    'Collect items of a kind from nature (pick up, mine; logs by felling reachable trees, replant:true plants a sapling) until you hold count. Fails NO_NATURAL_SOURCE when none is reachable: then ask the player, never substitute another item. A job.',
   hunt: 'Hunt mobs of a kind (e.g. "minecraft:cow"), count of them. A job.',
-  dig: 'Dig out every block in the box from..to (inclusive). A job.',
+  dig: 'Dig out every block in the box from..to (inclusive). Refused (PROTECTED) if the box holds player-built or Base blocks. A job.',
   place: 'Place one block from your inventory at pos.',
   use_block: 'Use (right-click) the block at pos: doors, levers, beds, chests.',
   use_item: 'Use your held item, or the given item, optionally on a block or entity.',
@@ -128,13 +136,21 @@ const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
 const OBS_TOOLS = {
   status: { desc: 'Your body: health, food, position, held item, current job, mode.', shape: {} },
   look_around: {
-    desc: 'What is around you: blocks of note, mobs, players, items, light.',
-    shape: { radius: z.number().int().min(1).max(64).optional() },
+    desc: "A short scene of where you are: inside or near the player's Base, hazards, natural trees (species, where, reachable or not), what players built (protected), who is around, water, ores, crops, terrain. detail:'full' for more.",
+    shape: {
+      radius: z.number().int().min(1).max(32).optional(),
+      detail: z.enum(['brief', 'full']).optional(),
+    },
   },
   inventory: { desc: 'Your inventory and equipment.', shape: {} },
   find: {
-    desc: 'Find the nearest blocks, entities or items of a kind, e.g. {what:"iron_ore"}.',
-    shape: { what: z.string().min(1).max(128), radius: z.number().int().min(1).max(128).optional() },
+    desc: 'Find the nearest blocks, entities or items of a kind, e.g. {what:"iron_ore"}. Blocks say whether they are natural or built (player-built and base blocks are protected) and whether you can reach them; filter:"natural" keeps natural ones only (logs: real trees).',
+    shape: {
+      what: z.string().min(1).max(128),
+      radius: z.number().int().min(1).max(64).optional(),
+      limit: z.number().int().min(1).max(10).optional(),
+      filter: z.enum(['natural', 'built', 'any']).optional(),
+    },
   },
   recipe: { desc: 'How to craft or smelt an item.', shape: { item: z.string().min(1).max(128) } },
   recent_events: {
@@ -200,14 +216,22 @@ export function mcToolDefinitions(host: McHost): Def[] {
   };
 
   const runJob = async (skill: SkillName, args: Record<string, unknown>, waitS: unknown, label: string) => {
+    // W1: a consent token goes along only when the agent asks (allow_protected) and the player granted one.
+    const consent =
+      args.allow_protected === true ? (host.consents?.take(host.agentId) ?? undefined) : undefined;
     const res = await host.skills.runSkill({
       agentId: host.agentId,
       skill,
       args: args as never,
       waitMs: waitMs(waitS, DEFAULT_WAIT_S, MAX_WAIT_S),
       replace: skill !== 'emote',
+      ...(consent !== undefined ? { consent } : {}),
     });
     const { result, footer } = splitFooter(res.result);
+    if (res.status === 'failed' && res.error?.code === 'PROTECTED') {
+      const offer = ProtectedDetail.safeParse(result?.protected);
+      if (offer.success) host.consents?.offered(host.agentId, offer.data);
+    }
     switch (res.status) {
       case 'running':
         host.trackJob(res.jobId, label);
@@ -247,6 +271,10 @@ export function mcToolDefinitions(host: McHost): Def[] {
             const { result, footer } = splitFooter(
               await host.skills.obsQuery(host.agentId, query, queryArgs),
             );
+            // look_around answers a scene written for reading (W1): the text, not its JSON.
+            if (query === 'look_around' && typeof result?.scene === 'string') {
+              return fromMod(textResult(result.scene), footer);
+            }
             return fromMod(textResult(compactJson(result ?? {})), footer);
           }),
         READ_ONLY,

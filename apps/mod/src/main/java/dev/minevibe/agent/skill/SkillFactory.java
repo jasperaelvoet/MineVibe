@@ -54,7 +54,7 @@ public final class SkillFactory {
 				}
 				case "collect" -> {
 					Args.Collect a = read(args, Args.Collect.class);
-					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), 24, 64));
+					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), 24, 64), Boolean.TRUE.equals(a.replant()));
 				}
 				case "hunt" -> {
 					Args.Hunt a = read(args, Args.Hunt.class);

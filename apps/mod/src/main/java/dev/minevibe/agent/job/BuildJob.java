@@ -284,6 +284,33 @@ public final class BuildJob extends SkillJob {
 				}
 			}
 		}
+		// W1: digging out or building over player-built or Base blocks needs the player's consent.
+		List<BlockPos> prot = new ArrayList<>();
+		dev.minevibe.world.provenance.Protection.Verdict nearest = null;
+		for (Step st : this.steps) {
+			if (this.satisfied(agent.level(), st)) {
+				continue;
+			}
+			BlockState s = agent.level().getBlockState(st.pos());
+			boolean changes = switch (st.kind()) {
+				case CLEAR, WATER -> !s.isAir();
+				case SOLID, TORCH -> !s.isAir() && s.canBeReplaced();
+			};
+			if (!changes) {
+				continue;
+			}
+			dev.minevibe.world.provenance.Protection.Verdict v = dev.minevibe.world.provenance.Protection.check(agent.level(), st.pos(), agent.agentId());
+			if (v != null) {
+				prot.add(st.pos());
+				if (nearest == null || st.pos().distSqr(agent.blockPosition()) < nearest.pos().distSqr(agent.blockPosition())) {
+					nearest = v;
+				}
+			}
+		}
+		if (nearest != null) {
+			this.put("blueprint", this.blueprint);
+			return this.refuseProtected(agent, nearest, prot);
+		}
 		int haveBlocks = Inv.count(agent, BuildJob::isBuildingBlock);
 		int haveTorches = Inv.count(agent, Items.TORCH);
 		this.put("needBlocks", solids);

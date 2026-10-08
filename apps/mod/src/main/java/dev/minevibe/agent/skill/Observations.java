@@ -7,6 +7,11 @@ import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.AgentService;
 import dev.minevibe.agent.job.BlockScan;
+import dev.minevibe.agent.perception.Compass;
+import dev.minevibe.agent.perception.Reach;
+import dev.minevibe.agent.perception.Scene;
+import dev.minevibe.agent.perception.Sources;
+import dev.minevibe.agent.perception.Trees;
 import dev.minevibe.agent.job.Inv;
 import dev.minevibe.agent.job.Job;
 import dev.minevibe.agent.job.MenuView;
@@ -15,12 +20,13 @@ import dev.minevibe.agent.job.SkillJob;
 import dev.minevibe.agent.skill.seat.PcRegistry;
 import dev.minevibe.agent.skill.seat.Seats;
 import dev.minevibe.bridge.msg.Types;
+import dev.minevibe.world.provenance.Owner;
+import dev.minevibe.world.provenance.Protection;
+import dev.minevibe.world.provenance.Provenance;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -40,12 +46,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.RecipeHolder;
-import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -60,9 +61,10 @@ public final class Observations {
 	public static JsonObject query(final SkillService service, final AgentPlayer agent, final String query, final JsonObject args) {
 		JsonObject out = switch (query) {
 			case "status" -> status(service, agent);
-			case "look_around" -> lookAround(agent, intArg(args, "radius", 16, 1, 32));
+			case "look_around" -> Scene.lookAround(agent, intArg(args, "radius", 16, 1, 32), "full".equals(choiceArg(args, "detail", "brief", "brief", "full")));
 			case "inventory" -> inventory(agent);
-			case "find" -> find(agent, stringArg(args, "what"), intArg(args, "radius", 32, 1, 64), intArg(args, "limit", 5, 1, 10));
+			case "find" -> find(agent, stringArg(args, "what"), intArg(args, "radius", 32, 1, 64), intArg(args, "limit", 5, 1, 10),
+				choiceArg(args, "filter", "any", "any", "natural", "built"));
 			case "recipe" -> recipe(agent, stringArg(args, "item"));
 			case "recent_events" -> recentEvents(agent, intArg(args, "limit", 20, 1, 50));
 			case "crew" -> crew(service, agent);
@@ -95,6 +97,10 @@ public final class Observations {
 		level.getBiome(agent.blockPosition()).unwrapKey().ifPresent(k -> o.addProperty("biome", k.identifier().toString()));
 		o.addProperty("time", WorldClock.dayAndTime(level.getOverworldClockTime()));
 		o.addProperty("weather", level.isThundering() ? "thunder" : level.isRaining() ? "rain" : "clear");
+		String zone = StatusFooter.zone(agent);
+		if (!zone.isEmpty()) {
+			o.addProperty("zone", zone);
+		}
 		o.addProperty("light", level.getMaxLocalRawBrightness(agent.blockPosition()));
 		o.addProperty("mode", agent.brain().mode().id());
 		if (agent.brain().anchor() != null) {
@@ -139,38 +145,6 @@ public final class Observations {
 		return o;
 	}
 
-	static JsonObject lookAround(final AgentPlayer agent, final int radius) {
-		ServerLevel level = agent.level();
-		JsonObject o = new JsonObject();
-		List<Entity> entities = level.getEntities(agent, agent.getBoundingBox().inflate(radius), e -> e.isAlive() && !(e instanceof dev.minevibe.world.seat.SeatEntity));
-		entities.sort(Comparator.comparingDouble(e -> e.distanceToSqr(agent)));
-		JsonArray ents = new JsonArray();
-		Map<String, Integer> items = new LinkedHashMap<>();
-		for (Entity e : entities) {
-			if (e instanceof ItemEntity item) {
-				items.merge(Refs.itemId(item.getItem()), item.getItem().getCount(), Integer::sum);
-				continue;
-			}
-			if (ents.size() >= 20) {
-				continue;
-			}
-			ents.add(entityJson(agent, e));
-		}
-		o.add("entities", ents);
-		if (!items.isEmpty()) {
-			o.add("itemsOnGround", SkillJob.toJson(items));
-		}
-		o.add("blocks", notableBlocks(agent, Math.min(radius, 12)));
-		BlockPos feet = agent.blockPosition();
-		o.addProperty("time", WorldClock.dayAndTime(level.getOverworldClockTime()));
-		o.addProperty("dark", level.isDarkOutside());
-		o.addProperty("sky", level.canSeeSky(feet.above()));
-		o.addProperty("blockLight", level.getBrightness(LightLayer.BLOCK, feet));
-		o.addProperty("standingOn", Refs.blockId(level.getBlockState(feet.below()).getBlock()));
-		level.getBiome(feet).unwrapKey().ifPresent(k -> o.addProperty("biome", k.identifier().toString()));
-		return o;
-	}
-
 	static JsonObject entityJson(final AgentPlayer agent, final Entity e) {
 		JsonObject j = new JsonObject();
 		if (e instanceof AgentPlayer other) {
@@ -196,79 +170,6 @@ public final class Observations {
 			j.addProperty("hostile", true);
 		}
 		return j;
-	}
-
-	private record Category(String name, Predicate<BlockState> match) {
-	}
-
-	private static TagKey<Block> blockTag(final String path) {
-		return TagKey.create(Registries.BLOCK, Identifier.withDefaultNamespace(path));
-	}
-
-	private static final List<Category> NOTABLE = List.of(
-		new Category("logs", s -> s.is(BlockTags.LOGS)),
-		new Category("coal_ore", s -> s.is(blockTag("coal_ores"))),
-		new Category("iron_ore", s -> s.is(blockTag("iron_ores"))),
-		new Category("copper_ore", s -> s.is(blockTag("copper_ores"))),
-		new Category("gold_ore", s -> s.is(blockTag("gold_ores"))),
-		new Category("redstone_ore", s -> s.is(blockTag("redstone_ores"))),
-		new Category("lapis_ore", s -> s.is(blockTag("lapis_ores"))),
-		new Category("diamond_ore", s -> s.is(blockTag("diamond_ores"))),
-		new Category("emerald_ore", s -> s.is(blockTag("emerald_ores"))),
-		new Category("crafting_table", s -> s.is(Blocks.CRAFTING_TABLE)),
-		new Category("furnace", s -> s.is(Blocks.FURNACE) || s.is(Blocks.SMOKER) || s.is(Blocks.BLAST_FURNACE)),
-		new Category("chest", s -> s.is(Blocks.CHEST) || s.is(Blocks.BARREL) || s.is(Blocks.TRAPPED_CHEST)),
-		new Category("bed", s -> s.is(BlockTags.BEDS)),
-		new Category("crops", s -> s.getBlock() instanceof CropBlock),
-		new Category("ripe_crops", s -> s.getBlock() instanceof CropBlock crop && crop.isMaxAge(s)),
-		new Category("water", s -> s.is(Blocks.WATER)),
-		new Category("lava", s -> s.is(Blocks.LAVA)),
-		new Category("office_chair", s -> s.getBlock() instanceof dev.minevibe.world.seat.OfficeChairBlock)
-	);
-
-	/** Counts and the nearest position of notable blocks (logs, ores, workstations, beds, water, lava) in a cube. */
-	static JsonObject notableBlocks(final AgentPlayer agent, final int radius) {
-		ServerLevel level = agent.level();
-		BlockPos c = agent.blockPosition();
-		int[] counts = new int[NOTABLE.size()];
-		BlockPos[] nearest = new BlockPos[NOTABLE.size()];
-		double[] nearestD = new double[NOTABLE.size()];
-		java.util.Arrays.fill(nearestD, Double.MAX_VALUE);
-		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-		for (int dx = -radius; dx <= radius; dx++) {
-			for (int dy = -radius; dy <= radius; dy++) {
-				for (int dz = -radius; dz <= radius; dz++) {
-					p.set(c.getX() + dx, c.getY() + dy, c.getZ() + dz);
-					if (!level.isLoaded(p)) {
-						continue;
-					}
-					BlockState s = level.getBlockState(p);
-					if (s.isAir() || s.is(Blocks.STONE) || s.is(Blocks.DIRT) || s.is(Blocks.GRASS_BLOCK) || s.is(Blocks.DEEPSLATE)) {
-						continue;
-					}
-					for (int i = 0; i < NOTABLE.size(); i++) {
-						if (NOTABLE.get(i).match().test(s)) {
-							counts[i]++;
-							double d = dx * dx + dy * dy + dz * dz;
-							if (d < nearestD[i]) {
-								nearestD[i] = d;
-								nearest[i] = p.immutable();
-							}
-						}
-					}
-				}
-			}
-		}
-		JsonObject o = new JsonObject();
-		for (int i = 0; i < NOTABLE.size(); i++) {
-			if (counts[i] > 0) {
-				JsonObject e = new JsonObject();
-				e.addProperty("count", counts[i]);
-				e.add("nearest", SkillJob.pos(nearest[i]));
-				o.add(NOTABLE.get(i).name(), e);
-			}
-		}
-		return o;
 	}
 
 	static JsonObject inventory(final AgentPlayer agent) {
@@ -307,7 +208,13 @@ public final class Observations {
 		return o;
 	}
 
-	static JsonObject find(final AgentPlayer agent, final String what, final int radius, final int limit) {
+	/**
+	 * {@code find{what, radius?, limit?, filter?}}: the nearest blocks, entities or loose items of a kind. Blocks carry
+	 * their provenance ({@code natural}, {@code player-built}, {@code base}, {@code agent-built}, with the owner), the
+	 * natural tree a log belongs to, and for the nearest three whether the agent can walk there. {@code filter}
+	 * {@code natural} keeps natural blocks only (logs: trees only), {@code built} keeps placed or protected ones (W1).
+	 */
+	static JsonObject find(final AgentPlayer agent, final String what, final int radius, final int limit, final String filter) {
 		ServerLevel level = agent.level();
 		JsonObject o = new JsonObject();
 		o.addProperty("what", what);
@@ -315,6 +222,7 @@ public final class Observations {
 		Identifier id = Refs.id(what);
 		EntityType<?> type = what.startsWith("#") ? null : Refs.entityType(what);
 		boolean isBlock = id != null && (what.startsWith("#") ? isBlockTag(id) : net.minecraft.core.registries.BuiltInRegistries.BLOCK.containsKey(id));
+		int built = 0;
 		if (type != null && !isBlock || "player".equals(what)) {
 			o.addProperty("kind", "entity");
 			List<Entity> found = new ArrayList<>(level.getEntities(agent, agent.getBoundingBox().inflate(radius),
@@ -325,14 +233,61 @@ public final class Observations {
 			}
 		} else if (isBlock) {
 			o.addProperty("kind", "block");
+			o.addProperty("filter", filter);
 			Refs.BlockMatcher block = Refs.block(what);
-			for (BlockPos p : BlockScan.nearest(level, agent.blockPosition(), radius, block, q -> true, limit)) {
+			Predicate<BlockState> match = block.tag() != null && "natural".equals(filter) ? Sources.naturalTag(block) : block;
+			java.util.Map<BlockPos, Trees.Tree> treeOf = new java.util.HashMap<>();
+			java.util.Set<BlockPos> notTree = new java.util.HashSet<>();
+			Predicate<BlockPos> keep = p -> switch (filter) {
+				case "natural" -> natural(level, p, treeOf, notTree);
+				case "built" -> !natural(level, p, treeOf, notTree);
+				default -> true;
+			};
+			BlockPos from = agent.blockPosition();
+			int reachChecks = 0;
+			for (BlockPos p : BlockScan.nearest(level, from, radius, match, keep, limit)) {
+				BlockState state = level.getBlockState(p);
 				JsonObject m = new JsonObject();
 				m.add("pos", SkillJob.pos(p));
-				m.addProperty("block", Refs.blockId(level.getBlockState(p).getBlock()));
-				m.addProperty("distance", round(Math.sqrt(p.distSqr(agent.blockPosition()))));
+				m.addProperty("block", Refs.blockId(state.getBlock()));
+				m.addProperty("distance", round(Math.sqrt(p.distSqr(from))));
+				m.addProperty("dir", Compass.dir(from, p));
 				m.addProperty("exposed", BlockScan.exposed(level, p));
+				Owner owner = Provenance.ownerAt(level, p);
+				Protection.Verdict v = Protection.check(level, p, null);
+				if (owner != null && owner.isAgent()) {
+					m.addProperty("provenance", "agent-built");
+					m.addProperty("owner", owner.name());
+				} else if (v != null) {
+					m.addProperty("provenance", v.what().wire);
+					m.addProperty("owner", v.owner());
+					if (v.zone() != null) {
+						m.addProperty("zone", v.zone());
+					}
+					built++;
+				} else {
+					m.addProperty("provenance", "natural");
+				}
+				if (Trees.isNaturalLogBlock(state) && v == null && owner == null) {
+					Trees.Tree t = treeOf.containsKey(p) ? treeOf.get(p) : notTree.contains(p) ? null : Trees.treeAt(level, p);
+					if (t != null) {
+						JsonObject tree = new JsonObject();
+						tree.addProperty("species", t.species());
+						tree.add("trunk", SkillJob.pos(t.base()));
+						tree.addProperty("logs", t.logs().size());
+						m.add("tree", tree);
+					} else {
+						m.addProperty("note", "a log without natural leaves: not a tree");
+					}
+				}
+				if (v == null && reachChecks++ < 3) {
+					m.addProperty("reachable", Reach.walkTo(agent, p).word());
+				}
 				matches.add(m);
+			}
+			if (built > 0) {
+				o.addProperty("protectedNote", "Matches marked player-built or base belong to " + Protection.playerName(level.getServer())
+					+ ": never break or change them without asking.");
 			}
 		} else {
 			o.addProperty("kind", "item");
@@ -351,9 +306,36 @@ public final class Observations {
 		}
 		o.add("matches", matches);
 		if (matches.isEmpty()) {
-			o.addProperty("note", "none within " + radius + " blocks (only loaded chunks are searched)");
+			o.addProperty("note", "none within " + radius + " blocks" + ("natural".equals(filter) ? " that are natural" : "built".equals(filter) ? " that are built" : "")
+				+ " (only loaded chunks are searched)");
 		}
 		return o;
+	}
+
+	/** Not placed by anyone, not protected, and (for logs) part of a natural tree. */
+	private static boolean natural(final ServerLevel level, final BlockPos p, final java.util.Map<BlockPos, Trees.Tree> treeOf, final java.util.Set<BlockPos> notTree) {
+		if (Provenance.ownerAt(level, p) != null || Protection.isProtected(level, p)) {
+			return false;
+		}
+		BlockState s = level.getBlockState(p);
+		if (!s.is(BlockTags.LOGS)) {
+			return true;
+		}
+		if (treeOf.containsKey(p)) {
+			return true;
+		}
+		if (notTree.contains(p) || !Trees.isNaturalLogBlock(s)) {
+			return false;
+		}
+		Trees.Tree t = Trees.treeAt(level, p);
+		if (t == null) {
+			notTree.add(p.immutable());
+			return false;
+		}
+		for (BlockPos log : t.logs()) {
+			treeOf.put(log, t);
+		}
+		return true;
 	}
 
 	private static boolean isBlockTag(final Identifier id) {
@@ -516,6 +498,17 @@ public final class Observations {
 			throw Refs.badArgs(key + " (a string) is required");
 		}
 		return e.getAsString().trim();
+	}
+
+	private static String choiceArg(final JsonObject args, final String key, final String dflt, final String... allowed) {
+		JsonElement e = args.get(key);
+		if (e == null || e.isJsonNull()) {
+			return dflt;
+		}
+		if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString() || !List.of(allowed).contains(e.getAsString())) {
+			throw Refs.badArgs(key + " must be one of " + String.join(", ", allowed));
+		}
+		return e.getAsString();
 	}
 
 	private static int intArg(final JsonObject args, final String key, final int dflt, final int min, final int max) {

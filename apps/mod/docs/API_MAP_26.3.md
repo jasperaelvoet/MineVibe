@@ -751,6 +751,37 @@ Verified by reading the sources and by `spikes/s4-monitor` (a real client with S
 - **Performance mods in `runClient`.** Jars in `<runDir>/mods` load next to the dev classpath (26.3 is unobfuscated,
   nothing is remapped); Entity Culling logs a harmless "Reference map ... could not be read".
 
+### 7.5 Block provenance and protection (track W1)
+Verified by the W1 GameTests (`ProtectionGameTests`) and by reading the 26.3 sources and Fabric API jars.
+- **Data attachments exist** (`fabric-data-attachment-api-v1` 2.2.31 in Fabric API 0.162.0+26.3):
+  `AttachmentRegistry.create(Identifier, builder -> builder.persistent(codec))`; `ChunkAccess` is an
+  `AttachmentTarget` (interface injection, so `chunk.getAttached(type)` / `setAttached` / `removeAttached` compile).
+  `setAttached` on a chunk calls `markUnsaved()`; a value changed in place needs `chunk.markUnsaved()` by hand. Chunk
+  attachments are encoded in `SerializableChunkData#copyOf(ServerLevel, ChunkAccess)` (server thread) and read back in
+  `SerializableChunkData#read(level, poiManager, RegionStorageInfo, ChunkPos)`. A GameTest can round-trip a chunk with
+  `copyOf(level, chunk).write()` -> `parse(level, level.palettedContainerFactory(), tag)` -> `read(...)`.
+- **Placement**: every block item goes through `BlockItem#place(BlockPlaceContext)` (doors and beds set their second
+  half from `setPlacedBy` inside it; no subclass overrides `place`). MixinExtras `@WrapMethod` (0.5.5 ships with
+  Loader 0.19.5) wraps it with try/finally semantics.
+- **Every block change** of a loaded chunk goes through `LevelChunk#setBlockState(BlockPos, BlockState, int)`, which
+  returns the old state (null when nothing changed). `LevelChunk#getLevel()` tells server from client.
+- **Interaction events** (`fabric-events-interaction-v0` 5.3.7): `PlayerBlockBreakEvents.BEFORE` fires in
+  `ServerPlayerGameMode#destroyBlock` (agents break through `handleBlockBreakAction`, so it covers them; returning
+  false cancels and fires `CANCELED`); `UseBlockCallback` fires at the head of `ServerPlayerGameMode#useItemOn`;
+  `UseItemCallback` in `useItem`. `AttackEntityCallback` fires only from the network handler, not from
+  `Player#attack`, so agents' attacks must be checked by the caller.
+- **Tags in JUnit**: `Bootstrap.bootStrap()` does not bind tags (`Holder.Reference#is(TagKey)` throws "Tags not bound")
+  and `new ItemStack(item)` throws "Components not bound yet"; anything using block/item tags or item stacks belongs in
+  a GameTest.
+- **`GameTestHelper#relativePos` turns positions by 180 degrees** in an unrotated test (it inverts the rotation with
+  `getRotated(CLOCKWISE_180)`, which maps NONE to CLOCKWISE_180). Use `absolute.subtract(helper.absolutePos(ZERO))`.
+- `BlockAndLightGetter#canSeeSky(pos)` is "sky light is 15", which lags a tick behind blocks just set; a heightmap
+  (`Level#getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)`) is current.
+- `LeavesBlock.PERSISTENT` is true for leaves a player places (`getStateForPlacement`) and false for generated ones;
+  `LeavesBlock.DISTANCE` 7 (the default state) decays on the next random tick unless a scheduled tick recomputes it.
+- GameTest selection: `-Dfabric-api.gametest.filter=<selector>` takes a vanilla resource selector
+  (`minevibe-gametest:protection_game_tests_*`); `JAVA_TOOL_OPTIONS` passes it through `./gradlew runGameTest`.
+
 ## 8. Not found / open
 - `Minecraft#setScreen` - NOT FOUND (use `Gui#setScreen`).
 - `getRenderBoundingBox` - NOT FOUND in vanilla or Fabric API (see correction 2).

@@ -2,7 +2,9 @@ package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentInventory;
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.perception.Sources;
 import dev.minevibe.agent.skill.Refs;
+import dev.minevibe.world.provenance.Protection;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -33,18 +35,29 @@ public final class GatherJobs {
 	private GatherJobs() {
 	}
 
-	/** {@code mine{block, count, near?, radius?}}: break {@code count} matching blocks and pick up what they drop. */
+	/**
+	 * {@code mine{block, count, near?, radius?}}: break {@code count} matching blocks and pick up what they drop. Natural
+	 * sources only (W1): a tag leaves out building variants, logs come from whole natural trees, and protected blocks
+	 * (player-built, the Base) are never touched. Nothing natural in reach: {@code NO_NATURAL_SOURCE}; only protected
+	 * matches (or {@code near} names a protected block): {@code PROTECTED}.
+	 */
 	public static final class Mine extends SkillJob {
 		private final Refs.BlockMatcher block;
+		private final Predicate<BlockState> match;
 		private final int count;
+		private final int radius;
+		private final @Nullable BlockPos near;
 		private final Miner miner;
 		private Map<String, Integer> before = Map.of();
 
 		public Mine(final Refs.BlockMatcher block, final int count, final @Nullable BlockPos near, final int radius) {
 			super("mine");
 			this.block = block;
+			this.match = block.tag() != null ? Sources.naturalTag(block) : block;
 			this.count = count;
-			this.miner = new Miner(block, near, radius);
+			this.radius = radius;
+			this.near = near;
+			this.miner = new Miner(this.match, near, radius);
 		}
 
 		@Override
@@ -64,31 +77,74 @@ public final class GatherJobs {
 
 		@Override
 		protected Status step(final AgentPlayer agent) {
-			if (this.miner.mined() >= this.count) {
+			if (this.ticks == 1) {
+				Status pre = this.precheck(agent);
+				if (pre != null) {
+					return pre;
+				}
+			}
+			if (this.miner.mined() >= this.count && !this.miner.busy()) {
 				// Let the last drops be picked up (the miner collects right after each break).
-				return this.miner.collecting(agent) ? Status.RUNNING : this.finish(agent, null);
+				return this.miner.collecting(agent) ? Status.RUNNING : this.finish(agent, false);
 			}
 			Miner.Tick t = this.miner.tick(agent);
-			this.progress((double)this.miner.mined() / this.count, this.miner.mined() + "/" + this.count + " " + this.block.ref());
+			this.progress((double)Math.min(this.miner.mined(), this.count) / this.count, this.miner.mined() + "/" + this.count + " " + this.block.ref());
 			return switch (t) {
 				case WORKING -> Status.RUNNING;
-				case NONE_LEFT -> this.finish(agent, "NOT_FOUND");
+				case NONE_LEFT -> this.finish(agent, true);
 				case FAILED -> {
-					this.finish(agent, null);
+					this.finish(agent, false);
 					yield this.fail(this.miner.failureCode(), this.miner.failure());
 				}
 			};
 		}
 
-		private Status finish(final AgentPlayer agent, final @Nullable String shortCode) {
+		/** {@code near} on a protected block of the asked kind, or a tag of building variants only. */
+		private @Nullable Status precheck(final AgentPlayer agent) {
+			if (this.near != null && this.block.test(agent.level().getBlockState(this.near))) {
+				Protection.Verdict v = Protection.check(agent.level(), this.near, agent.agentId());
+				if (v != null) {
+					this.put("mined", 0);
+					return this.refuseProtected(agent, v, List.of(this.near));
+				}
+			}
+			if (Sources.acceptsNothing(this.match)) {
+				this.put("mined", 0);
+				return this.noNaturalSource(agent, this.block.ref() + " (only building variants: craft them, or name the block)", this.radius, List.of());
+			}
+			return null;
+		}
+
+		private Status finish(final AgentPlayer agent, final boolean ranOut) {
 			agent.controls().stopMining();
 			this.put("mined", this.miner.mined());
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
-			if (shortCode != null && this.miner.mined() < this.count) {
-				return this.fail(shortCode, "found only " + this.miner.mined() + " of " + this.count + " " + this.block.ref() + " in range");
+			if (this.miner.treeMode()) {
+				this.put("trees", this.miner.treesFelled());
+				if (this.miner.logsLeftHigh() > 0) {
+					this.put("logsLeftHigh", this.miner.logsLeftHigh());
+				}
+			}
+			if (ranOut && this.miner.mined() < this.count) {
+				return shortOfSources(this, agent, this.miner, this.block.ref(), this.radius);
 			}
 			return this.done();
 		}
+	}
+
+	/** {@code mine} / {@code collect} found too little: {@code PROTECTED} when only protected blocks matched, else {@code NO_NATURAL_SOURCE}. */
+	static Job.Status shortOfSources(final SkillJob job, final AgentPlayer agent, final Miner miner, final String what, final int radius) {
+		List<Sources.Candidate> candidates = miner.candidates(agent);
+		List<Protection.Verdict> prot = miner.protectedSeen();
+		boolean onlyProtected = !prot.isEmpty() && candidates.stream().allMatch(c -> "protected".equals(c.why()));
+		if (!miner.treeMode() && miner.mined() == 0 && onlyProtected) {
+			List<BlockPos> positions = new ArrayList<>();
+			for (Protection.Verdict v : prot) {
+				positions.add(v.pos());
+			}
+			return job.refuseProtected(agent, prot.stream().min(Comparator.comparingDouble(v -> v.pos().distSqr(agent.blockPosition()))).orElseThrow(), positions);
+		}
+		return job.noNaturalSource(agent, what.replace("minecraft:", ""), radius, candidates);
 	}
 
 	/**
@@ -99,6 +155,7 @@ public final class GatherJobs {
 		private final Refs.ItemMatcher item;
 		private final int count;
 		private final int radius;
+		private final boolean replant;
 		private final @Nullable Predicate<BlockState> sources;
 		private final Walk walk = new Walk();
 		private final Set<ItemEntity> ignored = new HashSet<>();
@@ -108,10 +165,16 @@ public final class GatherJobs {
 		private Map<String, Integer> before = Map.of();
 
 		public Collect(final Refs.ItemMatcher item, final int count, final int radius) {
+			this(item, count, radius, false);
+		}
+
+		/** {@code replant}: plant a sapling of the same kind on each stump (when one is in the bag). */
+		public Collect(final Refs.ItemMatcher item, final int count, final int radius, final boolean replant) {
 			super("collect");
 			this.item = item;
 			this.count = count;
 			this.radius = radius;
+			this.replant = replant;
 			this.sources = sourcesOf(item);
 		}
 
@@ -137,8 +200,9 @@ public final class GatherJobs {
 		@Override
 		protected Status step(final AgentPlayer agent) {
 			int got = Inv.count(agent, this.item) - this.startCount;
-			this.progress((double)Math.max(0, got) / this.count, Math.max(0, got) + "/" + this.count + " " + this.item.ref());
-			if (got >= this.count) {
+			this.progress((double)Math.min(this.count, Math.max(0, got)) / this.count, Math.max(0, got) + "/" + this.count + " " + this.item.ref());
+			boolean busy = this.miner != null && this.miner.busy();
+			if (got >= this.count && !busy) {
 				agent.controls().stopMining();
 				this.report(agent, got);
 				return this.done();
@@ -147,8 +211,12 @@ public final class GatherJobs {
 				this.report(agent, got);
 				return this.fail("INVENTORY_FULL", "no room for more " + this.item.ref());
 			}
-			// Loose items first (only while not in the middle of breaking a block).
-			if (this.miner == null || this.miner.target() == null) {
+			if (this.ticks == 1 && this.sources != null && Sources.acceptsNothing(this.sources)) {
+				this.report(agent, got);
+				return this.noNaturalSource(agent, this.item.ref() + " (not found in nature: craft it from what is)", this.radius, List.of());
+			}
+			// Loose items first (only while not in the middle of breaking a block or felling a tree).
+			if (this.miner == null || this.miner.target() == null && !busy) {
 				ItemEntity loose = Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s));
 				if (loose != null && !this.ignored.contains(loose)) {
 					if (agent.position().distanceTo(loose.position()) > 0.6 && this.walk.to(agent, loose.position(), 0.5) == Walk.State.FAILED) {
@@ -162,7 +230,7 @@ public final class GatherJobs {
 				return this.fail("NOT_FOUND", "no loose " + this.item.ref() + " nearby, and it is not dropped by any block MineVibe knows");
 			}
 			if (this.miner == null) {
-				this.miner = new Miner(this.sources, null, this.radius);
+				this.miner = new Miner(this.sources, null, this.radius, null, this.replant);
 			}
 			Miner.Tick t = this.miner.tick(agent);
 			return switch (t) {
@@ -172,7 +240,10 @@ public final class GatherJobs {
 						yield Status.RUNNING;
 					}
 					this.report(agent, got);
-					yield this.fail("NOT_FOUND", "collected " + Math.max(0, got) + " of " + this.count + "; no more " + this.item.ref() + " sources within " + this.radius + " blocks");
+					if (got >= this.count) {
+						yield this.done();
+					}
+					yield shortOfSources(this, agent, this.miner, this.item.ref(), this.radius);
 				}
 				case FAILED -> {
 					this.report(agent, got);
@@ -185,15 +256,31 @@ public final class GatherJobs {
 			this.put("collected", Math.max(0, got));
 			this.put("have", Inv.count(agent, this.item));
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+			if (this.miner != null && this.miner.treeMode()) {
+				this.put("trees", this.miner.treesFelled());
+				if (this.miner.replanted() > 0) {
+					this.put("replanted", this.miner.replanted());
+				}
+				if (this.miner.pillarsBuilt() > 0) {
+					this.put("pillared", this.miner.pillarsBuilt());
+				}
+				if (this.miner.logsLeftHigh() > 0) {
+					this.put("logsLeftHigh", this.miner.logsLeftHigh());
+				}
+			}
 		}
 	}
 
-	/** Blocks that drop {@code item} when mined: the item's own block (or a block tag of the same name), plus common drops. */
+	/**
+	 * Blocks that drop {@code item} when mined: the item's own block (or a block tag of the same name), plus common
+	 * drops. A tag leaves out building variants (stripped logs, wood, planks: W1), so {@code #minecraft:logs} means
+	 * tree trunks.
+	 */
 	static @Nullable Predicate<BlockState> sourcesOf(final Refs.ItemMatcher item) {
 		List<Predicate<BlockState>> out = new ArrayList<>();
 		Refs.BlockMatcher self = item.asBlock();
 		if (self != null) {
-			out.add(self);
+			out.add(item.tag() != null ? Sources.naturalTag(self) : self);
 		}
 		if (item.item() != null) {
 			Set<Block> extra = DROPS.getOrDefault(item.item(), Set.of());
@@ -201,7 +288,7 @@ public final class GatherJobs {
 				out.add(s -> extra.contains(s.getBlock()));
 			}
 		} else if (item.tag() != null && item.tag().location().getPath().equals("logs")) {
-			out.add(s -> s.is(BlockTags.LOGS));
+			out.add(Sources.naturalTag(s -> s.is(BlockTags.LOGS)));
 		}
 		if (out.isEmpty()) {
 			return null;
@@ -294,7 +381,7 @@ public final class GatherJobs {
 					this.target = null;
 					return Status.RUNNING;
 				}
-				Entity e = Refs.nearestOfType(agent, this.type, this.radius, x -> x instanceof LivingEntity && !(x instanceof Player));
+				Entity e = Refs.nearestOfType(agent, this.type, this.radius, x -> x instanceof LivingEntity && !(x instanceof Player) && !Protection.isDecoration(x));
 				if (e == null) {
 					this.finish(agent);
 					return this.fail("NOT_FOUND", "killed " + this.killed + " of " + this.count + "; no " + this.ref + " within " + this.radius + " blocks");
@@ -363,6 +450,25 @@ public final class GatherJobs {
 		@Override
 		protected Status step(final AgentPlayer agent) {
 			ServerLevel level = agent.level();
+			if (this.ticks == 1) {
+				// W1: a box that holds player-built or Base blocks is refused before anything is dug.
+				List<BlockPos> prot = new ArrayList<>();
+				Protection.Verdict nearest = null;
+				for (BlockPos p : BlockPos.betweenClosed(this.min, this.max)) {
+					Protection.Verdict v = Protection.check(level, p, agent.agentId());
+					if (v != null) {
+						prot.add(p.immutable());
+						if (nearest == null || p.distSqr(agent.blockPosition()) < nearest.pos().distSqr(agent.blockPosition())) {
+							nearest = v;
+						}
+					}
+				}
+				if (nearest != null) {
+					this.put("dug", 0);
+					this.put("protectedBlocks", prot.size());
+					return this.refuseProtected(agent, nearest, prot);
+				}
+			}
 			if (this.collectTicks >= 0) {
 				BlockPos mid = BlockPos.containing((this.min.getX() + this.max.getX()) / 2.0, this.min.getY(), (this.min.getZ() + this.max.getZ()) / 2.0);
 				double r = Math.max(4.0, Math.sqrt(this.min.distSqr(this.max)) / 2.0 + 2.0);
@@ -418,7 +524,8 @@ public final class GatherJobs {
 				for (int x = this.min.getX(); x <= this.max.getX(); x++) {
 					for (int z = this.min.getZ(); z <= this.max.getZ(); z++) {
 						BlockPos p = new BlockPos(x, y, z);
-						if (this.skipped.contains(p) || BlockOps.isClear(level, p) || BlockOps.unbreakable(level, p)) {
+						if (this.skipped.contains(p) || BlockOps.isClear(level, p) || BlockOps.unbreakable(level, p)
+							|| Protection.check(level, p, agent.agentId()) != null) {
 							continue;
 						}
 						double d = p.distSqr(agent.blockPosition());

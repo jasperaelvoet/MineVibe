@@ -3,6 +3,7 @@ package dev.minevibe.agent.job;
 import dev.minevibe.agent.AgentInventory;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.skill.Refs;
+import dev.minevibe.world.provenance.Protection;
 import dev.minevibe.world.seat.SeatEntity;
 import java.util.ArrayList;
 import java.util.List;
@@ -72,6 +73,13 @@ public final class WorldJobs {
 			}
 			if (Inv.count(agent, this.item) == 0) {
 				return this.fail("NO_ITEM", "no " + this.item.ref() + " in the inventory");
+			}
+			if (!there.isAir() && there.canBeReplaced()) {
+				// W1: placing over a protected plant, snow layer or the like replaces it.
+				Protection.Verdict v = Protection.check(agent.level(), this.pos, agent.agentId());
+				if (v != null) {
+					return this.refuseProtected(agent, v, List.of(this.pos));
+				}
 			}
 			Walk.State s = this.walk.toBlock(agent, this.pos);
 			if (s == Walk.State.MOVING) {
@@ -196,6 +204,11 @@ public final class WorldJobs {
 				return this.fail("NO_ITEM", "no " + this.item.ref() + " in the inventory");
 			}
 			String held = Refs.itemId(agent.getMainHandItem());
+			Protection.Verdict refusal = this.protectedTarget(agent);
+			if (refusal != null) {
+				this.put("item", held);
+				return this.refuseProtected(agent, refusal, List.of(refusal.pos()));
+			}
 			if (this.pos != null) {
 				Walk.State s = this.walk.toBlock(agent, this.pos);
 				if (s == Walk.State.MOVING) {
@@ -256,6 +269,29 @@ public final class WorldJobs {
 			this.put("result", "used");
 			return this.done();
 		}
+
+		/**
+		 * W1: what this use would change that is protected: the block (a tool that tills, strips or burns it, a bucket
+		 * or fire in front of it), a decoration entity, or the block a bucket or fire charge used in the air points at.
+		 */
+		private Protection.@Nullable Verdict protectedTarget(final AgentPlayer agent) {
+			ServerLevel level = agent.level();
+			ItemStack stack = agent.getMainHandItem();
+			if (this.pos != null) {
+				return Protection.checkUse(level, this.pos, faceToward(agent, this.pos), stack, agent.agentId());
+			}
+			if (this.entityRef != null) {
+				Entity e = this.entity != null ? this.entity : Refs.entity(agent, this.entityRef, 32.0);
+				return e == null ? null : Protection.checkEntity(level, e, agent.agentId());
+			}
+			if (Protection.changesBlocks(stack)) {
+				net.minecraft.world.phys.HitResult hit = agent.pick(agent.blockInteractionRange(), 1.0F, true);
+				if (hit instanceof net.minecraft.world.phys.BlockHitResult b && hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK) {
+					return Protection.checkUse(level, b.getBlockPos(), b.getDirection(), stack, agent.agentId());
+				}
+			}
+			return null;
+		}
 	}
 
 	/** {@code attack{entity}}: fight one entity until it dies. Players and agents are never targets. */
@@ -288,6 +324,11 @@ public final class WorldJobs {
 				}
 				if (e instanceof Player) {
 					return this.fail("BAD_TARGET", "agents never attack players or each other");
+				}
+				Protection.Verdict deco = Protection.checkEntity(agent.level(), e, agent.agentId());
+				if (deco != null) {
+					// W1: item frames, paintings and armor stands are the player's decoration.
+					return this.refuseProtected(agent, deco, List.of(e.blockPosition()));
 				}
 				if (!(e instanceof LivingEntity living)) {
 					return this.fail("BAD_TARGET", this.ref + " cannot be attacked");

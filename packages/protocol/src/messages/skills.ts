@@ -61,6 +61,18 @@ const Count = z.number().int().min(1).max(2304);
 const Radius = z.number().int().min(1).max(64);
 const EquipSlot = z.enum(['mainhand', 'offhand', 'head', 'chest', 'legs', 'feet']);
 
+/**
+ * W1: ask to change protected blocks (player-built, the Base). It counts only when Node also passes the player's
+ * `consent` on the `skill.run` (outside `args`), which Node attaches only after the player explicitly agreed; on its
+ * own the mod refuses with `PROTECTED` as usual. A model can therefore never authorize itself.
+ */
+const AllowProtected = z
+  .boolean()
+  .optional()
+  .describe(
+    'Only after the player explicitly agreed to let you change their blocks (MineVibe passes their consent). Never set it on your own: it does nothing without that consent.',
+  );
+
 function exactlyOne(keys: readonly string[]) {
   return (value: object) =>
     keys.filter((k) => (value as Record<string, unknown>)[k] !== undefined).length === 1;
@@ -81,20 +93,37 @@ export const SkillArgs = {
       range: z.number().min(0).max(64).optional(),
     })
     .refine(exactlyOne(['pos', 'entity']), 'exactly one of pos, entity'),
+  /**
+   * Natural sources only (W1): a `#tag` leaves out building variants (stripped logs, wood, planks), logs come from
+   * whole natural trees, protected blocks are never touched. `NO_NATURAL_SOURCE` / `PROTECTED` otherwise.
+   */
   mine: z.object({
     /** Block id or `#tag`. */
     block: ItemId,
     count: Count,
     near: BlockPos.optional(),
     radius: Radius.optional(),
+    allow_protected: AllowProtected,
   }),
-  collect: z.object({ item: ItemId, count: Count, radius: Radius.optional() }),
+  collect: z.object({
+    item: ItemId,
+    count: Count,
+    radius: Radius.optional(),
+    /** Plant a sapling of the same kind on each stump of a felled tree (when you carry one). */
+    replant: z.boolean().optional(),
+    allow_protected: AllowProtected,
+  }),
   hunt: z.object({ entity: EntityRef, count: z.number().int().min(1).max(64), radius: Radius.optional() }),
-  dig: z.object({ from: BlockPos, to: BlockPos }),
-  place: z.object({ block: ItemId, pos: BlockPos }),
+  dig: z.object({ from: BlockPos, to: BlockPos, allow_protected: AllowProtected }),
+  place: z.object({ block: ItemId, pos: BlockPos, allow_protected: AllowProtected }),
   use_block: z.object({ pos: BlockPos }),
-  use_item: z.object({ item: ItemId.optional(), pos: BlockPos.optional(), entity: EntityRef.optional() }),
-  attack: z.object({ entity: EntityRef }),
+  use_item: z.object({
+    item: ItemId.optional(),
+    pos: BlockPos.optional(),
+    entity: EntityRef.optional(),
+    allow_protected: AllowProtected,
+  }),
+  attack: z.object({ entity: EntityRef, allow_protected: AllowProtected }),
   equip: z.object({ item: ItemId, slot: EquipSlot.optional() }),
   eat: z.object({ item: ItemId.optional() }),
   sleep: z.object({ pos: BlockPos.optional() }),
@@ -109,6 +138,7 @@ export const SkillArgs = {
       action: z.enum(['list', 'put', 'take']),
       item: ItemId.optional(),
       count: Count.optional(),
+      allow_protected: AllowProtected,
     })
     .refine((a) => a.action === 'list' || a.item !== undefined, 'put and take need item'),
   open_menu: z
@@ -125,8 +155,9 @@ export const SkillArgs = {
     blueprint: z.string().min(1).max(80),
     origin: BlockPos,
     rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional(),
+    allow_protected: AllowProtected,
   }),
-  farm: z.object({ from: BlockPos, to: BlockPos, crop: ItemId.optional() }),
+  farm: z.object({ from: BlockPos, to: BlockPos, crop: ItemId.optional(), allow_protected: AllowProtected }),
   ride: z.object({ entity: EntityRef }),
   dismount: z.object({}),
   emote: z.object({ kind: z.enum(['wave', 'nod', 'shake_head', 'point', 'cheer', 'facepalm']) }),
@@ -138,6 +169,111 @@ export type SkillArgsOf<S extends SkillName> = z.infer<(typeof SkillArgs)[S]>;
 /** A job or skill failure: a stable `code` (`UNREACHABLE`, `NO_ITEM`, `INTERRUPTED`, ...) and a message. */
 export const SkillError = z.object({ code: ErrorCode, msg: z.string().max(2000) });
 export type SkillError = z.infer<typeof SkillError>;
+
+// ---------------------------------------------------------------------------------------------
+// W1: world awareness and protection. Additive: these live inside the free-form `result` objects of
+// `skill.run` replies / `skill.result` (failures) and of `obs.query` (look_around), plus `skill.run.consent`.
+// ---------------------------------------------------------------------------------------------
+
+/** A consent token the mod minted with a `PROTECTED` failure: 32 lowercase hex characters. */
+export const ConsentToken = z.string().regex(/^[0-9a-f]{32}$/, 'consent token: 32 lowercase hex');
+
+/** `skill.run.consent`: the player's consent for this job (see {@link SkillRun}). */
+export const SkillConsent = z.object({ token: ConsentToken });
+export type SkillConsent = z.infer<typeof SkillConsent>;
+
+/** Compass words of perception: north is -Z, east +X. */
+export const CompassDir = z.enum(['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'here', 'above', 'below']);
+
+/**
+ * `result.protected` of a job that failed with `PROTECTED`: the nearest protected block it would have changed, whose
+ * it is, how many it met, the consent offer for them, and the teaching line for the agent.
+ */
+export const ProtectedDetail = z.object({
+  pos: BlockPos,
+  what: z.enum(['player-built', 'base']),
+  /** The player's name. */
+  owner: z.string().min(1).max(48),
+  /** Block (or decoration entity) id. */
+  block: z.string().min(1).max(128),
+  /** The protected zone it lies in (`Base`). */
+  zone: z.string().min(1).max(48).optional(),
+  /** Protected blocks this action would change (the consent covers their bounding box). */
+  count: z.number().int().min(1).max(1_000_000),
+  /** Node keeps it; after the player explicitly agrees it may pass it back as `skill.run.consent.token`. */
+  consentId: ConsentToken.optional(),
+  hint: z.string().min(1).max(400),
+});
+export type ProtectedDetail = z.infer<typeof ProtectedDetail>;
+
+/** A source a job saw but could not use. */
+export const SourceCandidate = z.object({
+  pos: BlockPos,
+  /** `oak tree`, `iron_ore`, ... */
+  block: z.string().min(1).max(128),
+  distance: z.number().int().min(0).max(100_000),
+  dir: CompassDir,
+  why: z.enum(['unreachable', 'too_far', 'protected', 'not_natural']),
+  owner: z.string().min(1).max(48).optional(),
+});
+export type SourceCandidate = z.infer<typeof SourceCandidate>;
+
+/** `result.noNaturalSource` of a job that failed with `NO_NATURAL_SOURCE` (it never substitutes another block). */
+export const NoNaturalSourceDetail = z.object({
+  what: z.string().min(1).max(160),
+  radius: z.number().int().min(1).max(64),
+  candidates: z.array(SourceCandidate).max(8),
+  hint: z.string().min(1).max(400),
+});
+export type NoNaturalSourceDetail = z.infer<typeof NoNaturalSourceDetail>;
+
+/** `obs.query look_around` args: `detail` brief (default, scene ≤ 900 chars) or full (≤ 2500). */
+export const LookAroundArgs = z.object({
+  radius: z.number().int().min(1).max(32).optional(),
+  detail: z.enum(['brief', 'full']).optional(),
+});
+
+/** `obs.query find` args: `filter` natural, built or any (default). */
+export const FindArgs = z.object({
+  what: z.string().min(1).max(128),
+  radius: z.number().int().min(1).max(64).optional(),
+  limit: z.number().int().min(1).max(10).optional(),
+  filter: z.enum(['natural', 'built', 'any']).optional(),
+});
+
+/** The `result` of `obs.query look_around` (plus the status `footer`). */
+export const LookAroundResult = z.object({
+  /** What the agent reads: position, zone, hazards, trees, buildings, people, resources, ground. */
+  scene: z.string().min(1).max(2500),
+  detail: z.enum(['brief', 'full']),
+  zone: z
+    .object({
+      name: z.string().min(1).max(48),
+      inside: z.boolean(),
+      distance: z.number().int().min(0),
+      owner: z.string().min(1).max(48),
+    })
+    .optional(),
+  trees: z
+    .array(
+      z.object({
+        species: z.string().min(1).max(64),
+        trunk: BlockPos,
+        distance: z.number().int().min(0).max(100_000),
+        dir: CompassDir,
+        reachable: z.enum(['reachable', 'unreachable', 'far']),
+        logs: z.number().int().min(1).max(1000),
+      }),
+    )
+    .max(8)
+    .optional(),
+  footer: z.string().optional(),
+});
+export type LookAroundResult = z.infer<typeof LookAroundResult>;
+
+/** Job failure codes added by W1 (protocol.md §7.4.1). */
+export const PROTECTED = 'PROTECTED';
+export const NO_NATURAL_SOURCE = 'NO_NATURAL_SOURCE';
 
 /** Final job statuses. */
 export const JobOutcome = z.enum(['done', 'failed', 'cancelled']);
@@ -164,6 +300,12 @@ export const SkillRun = defineMessage('skill.run', {
   waitMs: z.number().int().min(0).max(600_000),
   /** Cancel the agent's current job first (otherwise `err BUSY`). */
   replace: z.boolean(),
+  /**
+   * W1: the player's consent to change protected blocks, set only by Node after the player explicitly agreed, never
+   * from a tool call's input. Counts only with `args.allow_protected`; a token the mod does not know (or offered to
+   * another agent, or expired) is `err BAD_ARGS`.
+   */
+  consent: SkillConsent.optional(),
 }).describe('Starts a job (skill) for an agent.');
 
 export const SkillRunResult = z.object({

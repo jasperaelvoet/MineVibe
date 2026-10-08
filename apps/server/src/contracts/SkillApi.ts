@@ -40,6 +40,12 @@ export interface SkillRunRequest<S extends SkillName = SkillName> {
   readonly replace?: boolean | undefined;
   /** Default: a fresh id. */
   readonly jobId?: string | undefined;
+  /**
+   * W1: the player's consent token for changing protected blocks (from an earlier `PROTECTED` failure's
+   * `result.protected.consentId`). Only Node's consent ledger sets it, after the player explicitly agreed; it is sent
+   * outside `args`, so no tool input can carry it.
+   */
+  readonly consent?: string | undefined;
 }
 
 export interface SeatRequest {
@@ -158,19 +164,17 @@ class BridgeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
     const waitMs = request.waitMs ?? DEFAULT_SKILL_WAIT_MS;
     const jobId = request.jobId ?? newJobId();
     const started = Date.now();
+    const payload: PayloadOf<'skill.run'> = {
+      jobId,
+      agentId: request.agentId,
+      skill: request.skill,
+      args,
+      waitMs,
+      replace: request.replace ?? false,
+    };
+    if (request.consent !== undefined) payload.consent = { token: request.consent };
     const result = await call(
-      this.#bridge.request(
-        'skill.run',
-        {
-          jobId,
-          agentId: request.agentId,
-          skill: request.skill,
-          args,
-          waitMs,
-          replace: request.replace ?? false,
-        },
-        { timeoutMs: waitMs + REPLY_SLACK_MS },
-      ),
+      this.#bridge.request('skill.run', payload, { timeoutMs: waitMs + REPLY_SLACK_MS }),
       SkillRunResult,
     );
     if (result.status !== 'running') {

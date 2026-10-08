@@ -1820,6 +1820,7 @@ export function statusFooter(body: AgentBody | null, clockTime: number | null): 
   if (clockTime !== null) parts.push(ticksToGameTime(clockTime).replace(/^Day/, 'day'));
   const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;
   parts.push(`${Math.floor(body.pos.x)} ${Math.floor(body.pos.y)} ${Math.floor(body.pos.z)} ${dim}`);
+  if (body.zone) parts.push(body.zone);
   let activity: string;
   if (body.reflex) activity = body.job ? `${body.reflex} (${body.job.skill} paused)` : body.reflex;
   else if (body.job)
