@@ -27,6 +27,7 @@ import {
   IdleMode,
   type Place,
   SkillArgs,
+  type SkillConsent,
   type SkillName,
 } from '@minevibe/protocol';
 import { z } from 'zod';
@@ -36,6 +37,9 @@ import type { OrgApi, OrgToolResult } from '../../contracts/OrgApi.js';
 import type { SkillApi } from '../../contracts/SkillApi.js';
 import { DEFAULT_WAIT_S, MAX_WAIT_S, MCP_TOOL_TIMEOUT_MS } from '../constants.js';
 import { summarizeResult } from '../EventRouter.js';
+import { baseConflict, failureText, PROTECTED, type Refusal } from '../world/guard.js';
+import { type PerceptionContext, perceiveFind, perceiveLookAround } from '../world/perception.js';
+import type { TreeSighting } from '../world/scene.js';
 import { MC_TOOLS, type McToolName } from './catalog.js';
 import {
   type CallToolResult,
@@ -81,7 +85,32 @@ export interface McHost {
     status: 'done' | 'failed' | 'blocked';
     note?: string | undefined;
   }): void;
+  /**
+   * What the perception texts need: the agent's position, the Base and its zone (protocol §7.4.3). Absent: the raw
+   * look_around / find results are formatted without them.
+   */
+  world?(): PerceptionContext;
+  /** look_around / find showed natural trees (for the scene line). */
+  noteTrees?(sighting: TreeSighting): void;
+  /**
+   * The player's consent to change protected blocks for this agent, if one is valid (protocol §7.4.3). Only Node mints
+   * it; it is attached to world jobs and never read from tool arguments.
+   */
+  consent?(): SkillConsent | null;
+  /** Node refused a job itself (`PROTECTED`, the Base): the refusal the player may still allow. */
+  noteRefusal?(refusal: Refusal): void;
 }
+
+/** Skills whose jobs may break or replace blocks: they carry the agent's consent, when there is one. */
+export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set([
+  'mine',
+  'collect',
+  'dig',
+  'place',
+  'build',
+  'farm',
+  'use_item',
+]);
 
 // biome-ignore lint/suspicious/noExplicitAny: the server holds tools of many different input shapes
 type Def = SdkMcpToolDefinition<any>;
@@ -95,11 +124,13 @@ const WaitS = z
 
 /** Skill tools: name → description. Input schemas come from the protocol's `SkillArgs`. */
 const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
-  mine: 'Mine blocks of a kind (block id or #tag) nearby, e.g. {block:"oak_log", count:10}. A job.',
-  collect: 'Collect items of a kind from the world (mine, pick up) until you hold count. A job.',
+  mine: 'Break blocks of one kind nearby (24 blocks around you, or around near) and keep the drops. Name the exact natural block you were asked for ("oak_log"): a #tag means any of its kinds, which is a substitution, and building blocks (planks, stripped logs, bricks, glass) are never gathered. Never the Base (the office, the player\'s home) or anything a player built: that fails PROTECTED, a hard stop (never retry). NO_NATURAL_SOURCE: nothing natural in reach; tell the player and ask, never substitute. Examples: {block:"oak_log", count:10}; {block:"oak_log", count:10, near:{x:130,y:64,z:-20}} for the tree find showed. A job.',
+  collect:
+    'Get count of an item: picks up dropped ones, then breaks blocks that drop it (stone → cobblestone, ores → raw metal). For natural things only: never ask it for building blocks (planks, glass, bricks) or furniture (crafting_table, chest); craft those. Same rules as mine: never blocks of the Base or anything a player built (PROTECTED), and NO_NATURAL_SOURCE when nothing natural is in reach (ask the player, don\'t substitute). Example: {item:"oak_log", count:10}. A job.',
   hunt: 'Hunt mobs of a kind (e.g. "minecraft:cow"), count of them. A job.',
-  dig: 'Dig out every block in the box from..to (inclusive). A job.',
-  place: 'Place one block from your inventory at pos.',
+  dig: 'Dig out every block in the box from..to (inclusive): a tunnel, a cellar, a path. A box that holds protected blocks (the Base, anything a player built) fails PROTECTED before anything breaks: pick a box outside them. Example: {from:{x:100,y:60,z:-20}, to:{x:102,y:62,z:-10}}. A job.',
+  place:
+    'Place one block from your inventory at pos (an empty or replaceable spot). Never replaces a protected block (PROTECTED). Example: {block:"torch", pos:{x:12,y:65,z:-28}}.',
   use_block: 'Use (right-click) the block at pos: doors, levers, beds, chests.',
   use_item: 'Use your held item, or the given item, optionally on a block or entity.',
   attack: 'Attack an entity until it dies or flees. A job.',
@@ -117,7 +148,8 @@ const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
     'Open the menu of a block or entity (villager trading, enchanting, anvil, …). Then use menu_state and menu_click.',
   menu_click: 'Click a slot of the open menu: {slot, button, type}.',
   menu_close: 'Close the open menu.',
-  build: 'Build a blueprint (built-in id or a Codex page id) at origin. A job.',
+  build:
+    'Build a built-in blueprint at origin: shelter, wall_ring, torch_ring, bridge, stairs_down or farm_plot. Pick open ground outside the Base: a build that would replace protected blocks fails PROTECTED. Example: {blueprint:"shelter", origin:{x:140,y:64,z:-30}}. A job.',
   farm: 'Till, plant and harvest the farmland in the box from..to. A job.',
   ride: 'Ride an entity (boat, minecart, horse). Not office chairs: use sit_at_pc.',
   dismount: 'Get off what you ride.',
@@ -128,12 +160,12 @@ const SKILL_TOOLS: Readonly<Record<Exclude<SkillName, 'goto'>, string>> = {
 const OBS_TOOLS = {
   status: { desc: 'Your body: health, food, position, held item, current job, mode.', shape: {} },
   look_around: {
-    desc: 'What is around you: blocks of note, mobs, players, items, light.',
+    desc: 'The scene around you: where you are (in the Base, the player\'s home, or outside), natural resources with distance and direction ("logs ×12 nearest 25m NE"), PROTECTED blocks (the Base, anything the player built: never break), things to use, people, mobs and items. Call it before multi-step gathering. Example: {} or {radius:32}.',
     shape: { radius: z.number().int().min(1).max(64).optional() },
   },
   inventory: { desc: 'Your inventory and equipment.', shape: {} },
   find: {
-    desc: 'Find the nearest blocks, entities or items of a kind, e.g. {what:"iron_ore"}.',
+    desc: 'Find the nearest blocks, mobs or items of a kind. Each block says its distance and direction and whether it is natural (fine to gather), PROTECTED (part of the Base or built by the player: never break) or UNREACHABLE. Examples: {what:"oak_log"}; {what:"oak_log", radius:64} to look further; {what:"minecraft:cow"}.',
     shape: { what: z.string().min(1).max(128), radius: z.number().int().min(1).max(128).optional() },
   },
   recipe: { desc: 'How to craft or smelt an item.', shape: { item: z.string().min(1).max(128) } },
@@ -200,12 +232,41 @@ export function mcToolDefinitions(host: McHost): Def[] {
   };
 
   const runJob = async (skill: SkillName, args: Record<string, unknown>, waitS: unknown, label: string) => {
+    // Consent is Node's alone (protocol §7.4.3): whatever the model put in the arguments never reaches the mod.
+    const { consent: _forged, consentId: _forgedId, ...cleanArgs } = args;
+    const consent = BLOCK_CHANGING_SKILLS.has(skill) ? (host.consent?.() ?? null) : null;
+    // Jobs that would reach the Base never get to the mod without the player's consent (world/guard.ts).
+    const world = consent ? null : (host.world?.() ?? null);
+    const conflict = world
+      ? baseConflict(skill, cleanArgs, world.base, {
+          here: world.here,
+          // A mod that reports zones guards provenance itself (protocol §7.4.3); today's mod reports none.
+          modGuards: world.zone !== null && world.zone !== undefined,
+          playerName: host.playerName(),
+        })
+      : null;
+    if (conflict) {
+      host.noteRefusal?.(conflict.refusal);
+      return errorResult(
+        conflict.advice
+          ? `Failed: ${label}. ${PROTECTED}: ${conflict.msg}. ${conflict.advice}`
+          : `Failed: ${label}. ${failureText({
+              label,
+              skill,
+              code: PROTECTED,
+              msg: conflict.msg,
+              result: { zone: conflict.refusal.zone },
+              playerName: host.playerName(),
+            })}`,
+      );
+    }
     const res = await host.skills.runSkill({
       agentId: host.agentId,
       skill,
-      args: args as never,
+      args: cleanArgs as never,
       waitMs: waitMs(waitS, DEFAULT_WAIT_S, MAX_WAIT_S),
       replace: skill !== 'emote',
+      ...(consent ? { consent } : {}),
     });
     const { result, footer } = splitFooter(res.result);
     switch (res.status) {
@@ -223,7 +284,16 @@ export function mcToolDefinitions(host: McHost): Def[] {
         return fromMod(errorResult(`Cancelled: ${label}.`), footer);
       default:
         return fromMod(
-          errorResult(`Failed: ${label}. ${res.error?.code ?? 'FAILED'}: ${res.error?.msg ?? 'failed'}`),
+          errorResult(
+            `Failed: ${label}. ${failureText({
+              label,
+              skill,
+              code: res.error?.code ?? 'FAILED',
+              msg: res.error?.msg ?? 'failed',
+              result,
+              playerName: host.playerName(),
+            })}`,
+          ),
           footer,
         );
     }
@@ -247,6 +317,12 @@ export function mcToolDefinitions(host: McHost): Def[] {
             const { result, footer } = splitFooter(
               await host.skills.obsQuery(host.agentId, query, queryArgs),
             );
+            if ((query === 'look_around' || query === 'find') && result) {
+              const ctx = host.world?.() ?? { here: null, base: null, playerName: host.playerName() };
+              const seen = query === 'find' ? perceiveFind(result, ctx) : perceiveLookAround(result, ctx);
+              if (seen.trees) host.noteTrees?.(seen.trees);
+              return fromMod(textResult(seen.text), footer);
+            }
             return fromMod(textResult(compactJson(result ?? {})), footer);
           }),
         READ_ONLY,

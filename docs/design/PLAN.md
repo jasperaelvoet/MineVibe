@@ -354,6 +354,7 @@ query({ prompt: gatedInbox, options: {
     - Full history lives in AgentScreen and the Crew log.
 - **Layer 1: reflexes** in Java (7.3) act at zero tokens.
 - **Layer 2: Digest.** Info and notable events are prepended to the next turn as one block of about 60 tokens. Every `mc` tool result also ends with a 25-token status footer.
+  - The block opens with a one-line **scene** on every turn (at most about 50 tokens): `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no threats`, built from `agent.state` (with its `zone`), the clock, the office and the trees the agent's own `look_around` / `find` showed (protocol §7.4.3).
 - **Layer 3: wake rules.**
 
   | Priority | Event | Delivery |
@@ -590,6 +591,8 @@ Long jobs use `wait_s` and return `running` plus `job_id`.
 | Calendar | `calendar_list`, `calendar_add`, `calendar_update`, `calendar_cancel` (scheduling for others is CEO only), `report_task` |
 
 Portals are supported: `goto` paths into a portal and fake players change dimension the vanilla way. Follow mode follows the player across dimensions.
+
+**World guard** (protocol §7.4.3). The Base (the starter office) and anything the player placed are protected. `mine` and `collect` take natural blocks only, and a tag never includes building variants. A refused job fails `PROTECTED` or `NO_NATURAL_SOURCE`, and the model reads that as a hard stop: it asks instead of substituting. Only the player can lift the protection, per block and for 5 minutes, through a consent that Node mints from an answered "Allow" option or a clear chat yes; it travels as `skill.run.consent`, never as a tool argument. Node also writes the world-scope Codex page "Base (office)" and refuses jobs whose own coordinates land in the Base; until the mod sends `zone` (its sign that it guards provenance), Node also refuses tag or Base-material searches that reach the Base.
 
 ### 7.5 Blocks and items
 - **`pc_desk`:** a two-wide desk with a monitor. `PcBlockEntity{pcId,type}`, and a status LED driven by `pc.state`.

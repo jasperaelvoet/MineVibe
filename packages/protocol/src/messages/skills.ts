@@ -1,6 +1,18 @@
 import { z } from 'zod';
 import { ErrorCode } from '../envelope.js';
-import { AgentId, BlockPos, EntityRef, Fraction, ItemId, JobId, JsonObject, NonNegInt } from './common.js';
+import {
+  AgentId,
+  BlockPos,
+  ConsentId,
+  EntityRef,
+  EpochMs,
+  Fraction,
+  ItemId,
+  JobId,
+  JsonObject,
+  NonNegInt,
+  ZoneKind,
+} from './common.js';
 import { type CatalogEntry, defineMessage } from './define.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -204,6 +216,33 @@ export const SkillArgs = {
 /** The validated `args` of skill `S`. */
 export type SkillArgsOf<S extends SkillName> = z.infer<(typeof SkillArgs)[S]>;
 
+/**
+ * Job failure codes of the world guard (§7.4.3). `PROTECTED`: the job would break or replace a block of the Base or
+ * one a player placed, and no consent covers it. `NO_NATURAL_SOURCE`: nothing natural of the requested kind is in
+ * reach (only protected blocks of it, or none it can path to).
+ */
+export const WORLD_GUARD_CODES = {
+  PROTECTED: 'PROTECTED',
+  NO_NATURAL_SOURCE: 'NO_NATURAL_SOURCE',
+} as const;
+
+/**
+ * The player's consent to change protected blocks (§7.4.3). Only Node mints it, after the player allowed it on a
+ * question card or in a clear chat reply to that agent; the agent's tools can never carry one. It covers `positions`
+ * (the blocks the refused job reported) or, when the refusal named none, the whole `zone`, for this agent only, until
+ * `expiresAt`.
+ */
+export const SkillConsent = z
+  .object({
+    consentId: ConsentId,
+    agentId: AgentId,
+    positions: z.array(BlockPos).max(512).optional(),
+    zone: ZoneKind.optional(),
+    expiresAt: EpochMs,
+  })
+  .refine((c) => c.positions !== undefined || c.zone !== undefined, 'positions or zone');
+export type SkillConsent = z.infer<typeof SkillConsent>;
+
 /** A job or skill failure: a stable `code` (`UNREACHABLE`, `NO_ITEM`, `INTERRUPTED`, ...) and a message. */
 export const SkillError = z.object({ code: ErrorCode, msg: z.string().max(2000) });
 export type SkillError = z.infer<typeof SkillError>;
@@ -233,6 +272,8 @@ export const SkillRun = defineMessage('skill.run', {
   waitMs: z.number().int().min(0).max(600_000),
   /** Cancel the agent's current job first (otherwise `err BUSY`). */
   replace: z.boolean(),
+  /** The player's consent to change protected blocks (§7.4.3); absent = protected blocks stay untouched. */
+  consent: SkillConsent.optional(),
 }).describe('Starts a job (skill) for an agent.');
 
 export const SkillRunResult = z.object({

@@ -109,6 +109,21 @@ export type Vec3 = z.infer<typeof Vec3>;
 export const Place = z.object({ pos: BlockPos, dim: Dimension });
 export type Place = z.infer<typeof Place>;
 
+/**
+ * What kind of place a body stands in (protocol §7.4.3): `base` is the Base (the starter office and its grounds,
+ * the player's home), `built` is among blocks a player placed outside it, `wild` is nature. Blocks of the Base and
+ * player-placed blocks are protected: skills leave them alone unless Node passes a consent.
+ */
+export const ZoneKind = z.enum(['base', 'built', 'wild']);
+export type ZoneKind = z.infer<typeof ZoneKind>;
+
+/** A zone with an optional display name ("Base (office)"). */
+export const AgentZone = z.object({
+  kind: ZoneKind,
+  name: z.string().min(1).max(48).optional(),
+});
+export type AgentZone = z.infer<typeof AgentZone>;
+
 /** Agent roles (PLAN §7.3). Roles tune reflex weights, barks and skins. */
 export const AgentRole = z.enum(['ceo', 'engineer', 'miner', 'farmer', 'guard', 'builder']);
 export type AgentRole = z.infer<typeof AgentRole>;

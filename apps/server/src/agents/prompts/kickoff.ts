@@ -4,6 +4,7 @@
  */
 
 import type { PcGuestInfo } from '../../contracts/PcApi.js';
+import { type BaseArea, posText } from '../../world/baseArea.js';
 import { control, escapeShared, wrapNote } from '../envelope.js';
 import type { HandoffNote } from '../memory.js';
 
@@ -87,6 +88,14 @@ export interface WelcomeInput {
   readonly codexSurvived?: boolean | undefined;
   /** Promoted after the previous CEO died. */
   readonly promotedFrom?: string | undefined;
+  /** The Base of this world (`world.state.office`), when known: the welcome names it and its Codex page. */
+  readonly base?: BaseArea | null | undefined;
+}
+
+/** The welcome's line about the Base: the player's home, what not to touch, where its Codex page is. */
+export function baseLine(playerName: string, base: BaseArea): string {
+  const door = base.door ? `, door at ${posText(base.door)}` : '';
+  return `The ${base.name} is ${playerName}'s home (Codex page "${base.name}"${door}). Never break or take its blocks or anything ${playerName} builds; its chests, beds and tables are there to use. Gather wood and stone from nature outside it.`;
 }
 
 export function welcomeMessage(input: WelcomeInput): string {
@@ -100,6 +109,7 @@ export function welcomeMessage(input: WelcomeInput): string {
         `${p} approved your hire. You just walked into the office in World #${input.worldGen}. You report to ${escapeShared(input.hiredBy)} (the CEO) via mcp__mc__tell; ${p} is the boss.`,
       ),
     );
+    if (input.base) lines.push(baseLine(p, input.base));
     if (input.firstTask) lines.push(`First task (approved by ${p}): ${escapeShared(input.firstTask)}`);
     lines.push('Say hello in one short sentence, then start.');
     return lines.join('\n');
@@ -111,6 +121,7 @@ export function welcomeMessage(input: WelcomeInput): string {
       `You just arrived in World #${input.worldGen}, a fresh hardcore world. ${p} is nearby; you start in Listen mode and follow ${p}.`,
     ),
   );
+  if (input.base) lines.push(baseLine(p, input.base));
   if (input.codexSurvived)
     lines.push('The previous world ended, but the Codex survived: search it before asking.');
   if (input.chronicle) lines.push(wrapNote({ author: 'MineVibe', kind: 'chronicle', text: input.chronicle }));

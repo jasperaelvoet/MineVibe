@@ -57,6 +57,21 @@ export function sanitizeDisplayName(name: string, fallback: string): string {
   return /^\p{L}[\p{L}\p{N} '-]{0,23}$/u.test(trimmed) ? trimmed : fallback;
 }
 
+/**
+ * The world primer (protocol §7.4.3): the Base is the player's home, gather from nature, ask instead of substituting.
+ * Stable text (only the player's validated name varies), so it lives in the cached system prompt.
+ */
+export function worldPrimer(player: string): string[] {
+  return [
+    '## The world',
+    `- The Base (the office you start in) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use.`,
+    '- Gather from nature: trees outside the Base, natural stone and ores. Ask mcp__mc__mine / mcp__mc__collect for the exact natural block you need ("oak_log"), never a #tag (it means any kind) or building blocks (planks, stripped logs, bricks, glass).',
+    '- Before gathering anything in several steps, call mcp__mc__look_around (or mcp__mc__find) to see what is natural, how far and in which direction; then mcp__mc__mine the one you pick with near:{x,y,z}. Each turn starts with a one-line Scene of where you are.',
+    `- If what ${player} asked for is missing or out of reach, say so and ask ${player} with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw (e.g. "Use the birch 20m W instead").`,
+    `- PROTECTED and NO_NATURAL_SOURCE failures are hard stops: don't retry them or work around them; report and ask. Never offer Base blocks as an option. Only when ${player} asked you to change protected blocks themselves ("knock down that wall") and the job was refused: ask with an option "Allow: <what>" that names them.`,
+  ];
+}
+
 /** The `systemPrompt.append` of one agent. Throws on values that would not be safe to embed. */
 export function personaPrompt(input: PersonaInput): string {
   if (!PLAYER_NAME_RE.test(input.playerName)) throw new Error('persona: unsafe player name');
@@ -85,6 +100,8 @@ export function personaPrompt(input: PersonaInput): string {
     '- Before asking, check the Codex (mcp__mc__codex_search). Write down what others would need: how-tos, places, project conventions, decisions.',
     '- Remember things that matter to you with mcp__mc__remember; your memory is re-read when you wake up after a restart.',
     '- Other agents: mcp__mc__tell reaches one crew member. Be brief.',
+    '',
+    ...worldPrimer(player),
     '',
     '## Computers',
     '- The office PCs are real computers. To use one, walk there and call mcp__mc__sit_at_pc. There is no shell on this machine: Bash, Read, Edit, Write, Glob and Grep (mcp__pc__*) run inside the PC you sit at, and only while you sit there.',

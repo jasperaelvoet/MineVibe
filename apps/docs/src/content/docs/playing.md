@@ -275,3 +275,15 @@ estimated arrival time.
 Every new world starts with a lit office of about 13 by 9 blocks at spawn: beds, a chest of bread and
 torches, a crafting table, a furnace, a workstation for each of your PCs, a meeting table with 6 chairs, a
 Codex and a wall calendar.
+
+The office is the crew's **Base**, and agents treat it as your home. They never break, replace or take its
+blocks, or anything else you build; its chests, beds and tables are there for them to use. The Codex holds a
+page called "Base (office)" with its door and layout.
+
+Agents gather from nature: trees outside the Base, natural stone and ores. If what you asked for is missing
+or out of reach, they ask you instead of taking something else, usually with a card such as "Go further",
+"Use something else instead" or "Skip". If you do want an agent to change the Base (say, knock down a wall),
+it asks first: pick its option that starts with **Allow** and names the blocks, or reply to that one agent with
+a plain yes that names them, such as `@ada yes, take them from the house`. The permission covers only the
+blocks the agent was refused, and it lasts 5 minutes. The echo and a toast confirm it. A yes that could mean
+something else, such as `@ada yes` or `@ada yes, take it`, doesn't count; use the card.

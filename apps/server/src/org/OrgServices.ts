@@ -39,6 +39,7 @@ import {
 import { formatEventsForAgent } from './calendar/format.js';
 import type { CalendarEvent } from './calendar/types.js';
 import { formatGameTime, type OrgClock, systemClock } from './clock.js';
+import { BASE_NAME, BASE_PAGE_TAGS, basePageBody } from './codex/basePage.js';
 import { type CodexIndexEntry, CodexStore } from './codex/CodexStore.js';
 import {
   formatListForAgent,
@@ -209,6 +210,8 @@ export class OrgServices {
   #flushScheduled = false;
   #lastMeetingState: MeetingState | null = null;
   #lastDay: number | null = null;
+  /** The "Base (office)" page write in flight or done, per world (one page per world). */
+  readonly #basePages = new Map<string, Promise<string | null>>();
 
   constructor(options: OrgServicesOptions) {
     const host = options.host;
@@ -582,6 +585,54 @@ export class OrgServices {
   // -------------------------------------------------------------------------------------------
   // Context
   // -------------------------------------------------------------------------------------------
+
+  /**
+   * Writes the world-scope places page "Base (office)" (protocol §7.4.3) for the open world, once: the office's door,
+   * extent and slots, and the crew's rule not to touch it. Resolves with the page id (an existing one is kept), or
+   * null when no world is open or the write failed. Idempotent per world, also while a write is in flight.
+   */
+  ensureBasePage(
+    worldId: string,
+    office: NonNullable<PayloadOf<'world.state'>['office']>,
+    playerName: string,
+  ): Promise<string | null> {
+    if (this.codex.worldId !== worldId) return Promise.resolve(null);
+    const known = this.#basePages.get(worldId);
+    if (known) return known;
+    const run = (async (): Promise<string | null> => {
+      const existing = this.codex
+        .list({ category: 'places', scope: 'world' })
+        .find((p) => p.title.toLowerCase() === BASE_NAME.toLowerCase());
+      if (existing) return existing.id;
+      const body = basePageBody(office, playerName);
+      if (!body) return null;
+      const door = office.slots.find((s) => s.kind === 'door')?.pos ?? office.origin;
+      const res = await this.codex.write(
+        { kind: 'system', id: 'system', name: 'MineVibe' },
+        {
+          mode: 'create',
+          title: BASE_NAME,
+          body,
+          tags: [...BASE_PAGE_TAGS],
+          category: 'places',
+          scope: 'world',
+          here: true,
+          position: { x: door.x, y: door.y, z: door.z, dim: 'minecraft:overworld' },
+        },
+      );
+      if (!res.ok) {
+        this.#log?.warn({ code: res.code, message: res.message }, 'Base page write failed');
+        return null;
+      }
+      return res.page.id;
+    })();
+    this.#basePages.set(worldId, run);
+    // A failed write may be retried by the next office report.
+    void run.then((id) => {
+      if (id === null && this.#basePages.get(worldId) === run) this.#basePages.delete(worldId);
+    });
+    return run;
+  }
 
   codexDigest(): string {
     return this.codex.digest(this.nonce, this.#playerName);
