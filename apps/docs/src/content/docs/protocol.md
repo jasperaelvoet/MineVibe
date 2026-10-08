@@ -84,7 +84,7 @@ fixtures/reply/ok--<request>.json            `ok` replies, checked against their
 The groups are `world`, `bodies`, `skills`, `seats`, `ui`, `pc`, `org`, `debug` and `reply`.
 
 - **vitest** (`npm test -w packages/protocol`) parses every fixture with the zod schemas. It also checks that every
-  registered message type has at least one valid fixture and every group has invalid ones.
+  registered message type has at least one valid fixture and every group except `debug` has invalid ones.
 - **JUnit** (`./gradlew test` in `apps/mod`) parses the same files with Gson into the mod's records. Every JSON key
   must map to a record component, so no field is dropped silently. Messages the mod sends must re-encode to
   identical JSON, and invalid fixtures must be rejected.

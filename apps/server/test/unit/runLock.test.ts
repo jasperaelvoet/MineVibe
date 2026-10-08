@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -153,7 +154,13 @@ describe('run lock: the empty-file window (DEBT N2)', () => {
   it('waits on an empty lock while it is young: its writer fills it in, and it refuses', async () => {
     const path = lockPath();
     writeFileSync(path, ''); // created, not yet written (an older version, or no hard links)
-    const deps: RunLockDeps = { pidExists: (pid) => pid === 4321, startTime: async (pid) => `start-${pid}` };
+    // The lock's clock stands still just after it was written: young however slowly this test runs.
+    const writtenAt = statSync(path).mtimeMs;
+    const deps: RunLockDeps = {
+      pidExists: (pid) => pid === 4321,
+      startTime: async (pid) => `start-${pid}`,
+      now: () => writtenAt + 100,
+    };
     const starting = acquireRunLock(path, 1, deps);
     starting.catch(() => {}); // asserted below
     await sleep(100);
@@ -164,14 +171,20 @@ describe('run lock: the empty-file window (DEBT N2)', () => {
   it('takes over an empty lock once it is old (its writer died before filling it in)', async () => {
     const path = lockPath();
     writeFileSync(path, '');
-    const deps: RunLockDeps = { pidExists: () => true, startTime: async (pid) => `start-${pid}` };
+    const writtenAt = statSync(path).mtimeMs;
+    let now = writtenAt + 100;
+    const deps: RunLockDeps = {
+      pidExists: () => true,
+      startTime: async (pid) => `start-${pid}`,
+      now: () => now,
+    };
     let settled = false;
     const starting = acquireRunLock(path, 77, deps).finally(() => {
       settled = true;
     });
     await sleep(100);
     expect(settled, 'still waiting while the empty lock is young').toBe(false);
-    age(path, YOUNG_LOCK_MS + 1000);
+    now = writtenAt + YOUNG_LOCK_MS + 1000;
     const lock = await starting;
     expect(parseLockOwner(readFileSync(path, 'utf8'))?.pid).toBe(77);
     await lock.release();
@@ -180,10 +193,31 @@ describe('run lock: the empty-file window (DEBT N2)', () => {
   it('treats a young lock whose pid exists as live, even when its start time reads differently', async () => {
     const path = lockPath();
     writeFileSync(path, `${JSON.stringify({ pid: 4242, started: 'some other clock', nonce: 'x' })}\n`);
-    const deps: RunLockDeps = { pidExists: () => true, startTime: async () => 'Thu Oct 8 19:08:12 2026' };
+    const writtenAt = statSync(path).mtimeMs;
+    let now = writtenAt + YOUNG_LOCK_MS - 1;
+    const deps: RunLockDeps = {
+      pidExists: () => true,
+      startTime: async () => 'Thu Oct 8 19:08:12 2026',
+      now: () => now,
+    };
     await expect(acquireRunLock(path, 1, deps)).rejects.toMatchObject({ pid: 4242 });
-    age(path); // later on, the start time decides: a different process now
+    now = writtenAt + YOUNG_LOCK_MS; // later on, the start time decides: a different process now
     const lock = await acquireRunLock(path, 1, deps);
+    await lock.release();
+  });
+
+  it('does not count a lock dated more than the clock slack in the future as young', async () => {
+    const path = lockPath();
+    writeFileSync(path, `${JSON.stringify({ pid: 4242, started: 'some other clock', nonce: 'x' })}\n`);
+    const writtenAt = statSync(path).mtimeMs;
+    // The clock went back since the lock was written: its owner alone decides (here: a different process).
+    const deps: RunLockDeps = {
+      pidExists: () => true,
+      startTime: async () => 'Thu Oct 8 19:08:12 2026',
+      now: () => writtenAt - 5000,
+    };
+    const lock = await acquireRunLock(path, 1, deps);
+    expect(parseLockOwner(readFileSync(path, 'utf8'))?.pid).toBe(1);
     await lock.release();
   });
 

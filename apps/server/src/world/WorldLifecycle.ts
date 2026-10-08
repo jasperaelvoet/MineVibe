@@ -56,7 +56,8 @@ export class WorldLifecycle {
     this.#serverVersion = options.serverVersion;
     this.#playerName = options.playerName;
     this.#onWorldEnded = options.onWorldEnded;
-    this.#recovered = this.#retryUnburied();
+    // Read now, so an unloaded store throws here instead of rejecting `whenRecovered()` unobserved.
+    this.#recovered = this.#retryUnburied(this.#store.unburied);
 
     this.#unsubscribe.push(
       this.#bridge.on('hello', (msg) => this.#onHello(msg)),
@@ -225,8 +226,8 @@ export class WorldLifecycle {
    * Retries the world endings a previous run did not finish (it stopped between the advance and the hook). They
    * are all queued at once, oldest first, so they run before any ending of this run.
    */
-  async #retryUnburied(): Promise<void> {
-    const retries = this.#store.unburied.map((dead) => {
+  async #retryUnburied(unburied: readonly CurrentWorldRecord[]): Promise<void> {
+    const retries = unburied.map((dead) => {
       this.#log.warn(
         { worldId: dead.worldId, next: dead.next?.worldId },
         'finishing the end of a dead world that the last run left unfinished',

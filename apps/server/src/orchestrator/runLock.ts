@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { link, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { type FileHandle, link, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 /** Another MineVibe instance holds `run/lock`. */
@@ -35,6 +35,11 @@ export interface RunLockDeps {
   startTime(pid: number): Promise<string | null>;
   /** Whether a process with this pid exists (`kill(pid, 0)`; EPERM counts as existing). */
   pidExists(pid: number): boolean;
+  /**
+   * The wall clock the lock file's age is measured against (default `Date.now`). Tests pin it so that "young" and
+   * "old" do not depend on how fast a loaded machine runs them.
+   */
+  now?(): number;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -159,11 +164,15 @@ const TEMP_STALE_MS = 60_000;
 /** File times and `Date.now()` come from different clocks: a file written just now can look a little in the future. */
 const MTIME_SLACK_MS = 1000;
 
+function nowOf(deps: RunLockDeps): number {
+  return deps.now ? deps.now() : Date.now();
+}
+
 /**
  * The lock is young: written (by its mtime) within {@link YOUNG_LOCK_MS}. An mtime further in the future than the
  * clocks' slack (the clock went back since) is not young: such a lock is judged by its owner alone.
  */
-function isYoung(mtimeMs: number, now = Date.now()): boolean {
+function isYoung(mtimeMs: number, now: number): boolean {
   const age = now - mtimeMs;
   return age > -MTIME_SLACK_MS && age < YOUNG_LOCK_MS;
 }
@@ -177,7 +186,7 @@ function isYoung(mtimeMs: number, now = Date.now()): boolean {
  */
 async function ownerAlive(owner: LockOwner, lockMtimeMs: number, deps: RunLockDeps): Promise<boolean> {
   if (!deps.pidExists(owner.pid)) return false;
-  if (isYoung(lockMtimeMs)) return true;
+  if (isYoung(lockMtimeMs, nowOf(deps))) return true;
   const started = await deps.startTime(owner.pid);
   if (started === null) return true;
   if (owner.started !== null) return sameStartTime(owner.started, started);
@@ -220,14 +229,23 @@ async function createLock(path: string, body: string, nonce: string): Promise<bo
   }
 }
 
-/** The lock's content and mtime, or null when there is no lock. */
+/**
+ * The lock's content and mtime, both from one open file (a lock replaced in between can never pair one lock's
+ * content with another's age), or null when there is no lock.
+ */
 async function readLock(path: string): Promise<{ raw: string; mtimeMs: number } | null> {
+  let handle: FileHandle;
   try {
-    const [raw, s] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
-    return { raw, mtimeMs: s.mtimeMs };
+    handle = await open(path, 'r');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
+  }
+  try {
+    const s = await handle.stat();
+    return { raw: await handle.readFile('utf8'), mtimeMs: s.mtimeMs };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -285,7 +303,7 @@ export async function acquireRunLock(
     const seen = await readLock(path);
     if (seen === null) continue; // released in between: try again
     const owner = parseLockOwner(seen.raw);
-    if (owner === null && isYoung(seen.mtimeMs)) {
+    if (owner === null && isYoung(seen.mtimeMs, nowOf(deps))) {
       // Being written right now (a starter that fills the file in after creating it): wait for its content.
       await sleep(10 + Math.floor(Math.random() * 20));
       continue;

@@ -186,6 +186,11 @@ describe('WorldLifecycle: durable world endings (DEBT N3)', () => {
     expect(store.unburied).toEqual([]);
   });
 
+  it('refuses an unloaded store at construction, instead of an unobserved rejection later', () => {
+    const store = new CurrentWorldStore(join(tmp(), 'state', 'current-world.json'));
+    expect(() => lifecycle(store)).toThrow(/load\(\) first/);
+  });
+
   it('clears an ending at once when there is no hook', async () => {
     const path = join(tmp(), 'state', 'current-world.json');
     const store = await deadStore(path);

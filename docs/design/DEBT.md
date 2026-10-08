@@ -10,8 +10,9 @@ seed" PLAN wording, the `world.state` office slot kind (`pc` vs `workstation`), 
 - **Agent ids: Node mints ids the mod refuses (blocks spawning; not low severity).** `AgentManager#newRecord`
   (`apps/server/src/agents/AgentManager.ts:548`) mints `${handle}-${6 hex}`: a hyphen, and up to 19 characters. The
   mod names each body's fake player after its id and accepts only `[a-z][a-z0-9_]{0,15}`
-  (`AgentService.ID`, `SkillService.AGENT_ID`), so every `agent.spawn` and `skill.run` Node sends for such an id is
-  answered `BAD_ARGS`. The protocol's `AgentId` allows both. Documented in protocol.md §7.4.2.
+  (`AgentService.ID`, `SkillService.AGENT_ID`), so every `agent.spawn` Node sends for such an id is answered
+  `BAD_ARGS`, and with no body, every `skill.run` and `obs.query` for it `UNKNOWN_AGENT`. The protocol's `AgentId`
+  allows both. Documented in protocol.md §7.4.2.
   - **Fix (pick one):** Node mints ids inside the mod's rule (for example `${handle}${4 hex}`, at most 16), and the
     protocol's `AgentId` narrows to match; or the mod accepts any `AgentId` and derives the fake player's name and
     UUID from it separately.
@@ -23,7 +24,8 @@ seed" PLAN wording, the `world.state` office slot kind (`pc` vs `workstation`), 
   - **Fix:** Node drops the `footer` key before rendering (or the mod stops sending it). protocol.md §7.4 states
     the current behaviour.
 - **GameTest neighbours.** The default batch places test structures 5 blocks apart (columns) and 6 apart (rows),
-  while reflexes reach further: ShareFood 16 blocks, Pickup 6, and block scans 24 (`craft`, `goto` places).
+  while reflexes and jobs reach further: ShareFood 16 blocks, Pickup 6, block scans 24 (`craft`, `smelt`) and 48
+  (`goto` places).
   `skill_craft_places_atable_for3x3` failed once on another test's crafting table 16 blocks away; it now runs in the
   41×41 `wide_yard` structure (agent in the middle). Other tests that rely on "nothing of type X nearby" can still be
   disturbed; give them `wide_yard` or a batch of their own.

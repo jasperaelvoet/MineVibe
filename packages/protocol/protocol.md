@@ -138,7 +138,7 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `AGENT_DEAD` | mod | `agent.spawn`: that agent died in this world (its grave is there); it never comes back |
 | `SPAWN_FAILED` | mod | `agent.spawn`: the body could not be created or placed |
 | `UNKNOWN_SKILL` | mod | `skill.run`: unknown skill |
-| `BAD_ARGS` | mod | `skill.run` / `obs.query` / `agent.spawn`: `args` (or ids) do not fit (section 7.4.2) |
+| `BAD_ARGS` | mod | `skill.run` / `obs.query`: `args` do not fit; `agent.spawn`: an agent id the mod cannot use (section 7.4.2), an unknown role or dimension |
 | `UNKNOWN_BLUEPRINT` | mod | `skill.run` `build`: no such blueprint (section 7.4.2) |
 | `BUSY` | mod | `skill.run`: a job is running and `replace` is false |
 | `UNKNOWN_JOB` | mod | `skill.cancel`: no such job |
@@ -597,7 +597,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 
 - **Places in `goto`.** `entity` may name a place instead of an entity: `office` or `home` (the agent's home: its
   spawn point or the bed it last slept in, else world spawn), `spawn` (world spawn), the nearest `bed`, `chest`,
-  `crafting_table` or `furnace`, or `pc:<pcId>` (that PC's chair). An unknown place fails with `NOT_FOUND`.
+  `crafting_table` or `furnace` within 48 blocks, or `pc:<pcId>` (that PC's chair). An unknown place fails with
+  `NOT_FOUND`.
 - **Menu buttons.** `menu_click.slot` keeps vanilla slot numbers (`-999` = outside the window). A `slot` of `-2` or
   less presses menu button `-slot - 2`: a merchant's trade offer (then take the result from slot 2), an enchanting
   option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
@@ -612,8 +613,9 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 - **`farm`** repeats passes over the box until nothing is left to do: harvest ripe crops, till dirt and grass (with
   a hoe, when there are seeds), plant empty farmland, bone-meal growing crops. `crop` must be a seed item (or a tag);
   anything else is `BAD_ARGS`.
-- **Agent ids in the mod.** The mod names each body's fake player after its `agentId`, so it only accepts ids of the
-  form `[a-z][a-z0-9_]{0,15}` (a subset of `AgentId`); other ids are `BAD_ARGS` on `agent.spawn` and `skill.run`.
+- **Agent ids in the mod.** The mod names each body's fake player after its `agentId`, so `agent.spawn` only accepts
+  ids whose lowercase form matches `[a-z][a-z0-9_]{0,15}` (a subset of `AgentId`) and refuses others with
+  `BAD_ARGS`. No body exists for such an id, so `skill.run` and `obs.query` for it answer `UNKNOWN_AGENT`.
 
 ### 7.5 seats
 
