@@ -1,0 +1,8 @@
+{
+  "t": "chat.send",
+  "v": 1,
+  "id": "m-71",
+  "to": ["bram"],
+  "text": "Add a README to foo when the tests pass.",
+  "mode": "task"
+}

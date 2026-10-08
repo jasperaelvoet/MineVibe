@@ -1,0 +1,8 @@
+{
+  "t": "skill.result",
+  "v": 1,
+  "jobId": "job-1",
+  "agentId": "ada",
+  "status": "running",
+  "durationMs": 0
+}

@@ -1,0 +1,73 @@
+{
+  "t": "agent.pending",
+  "v": 1,
+  "agentId": "ada",
+  "cards": [
+    {
+      "id": "card-7",
+      "agentId": "ada",
+      "createdAt": 1791484801000,
+      "parked": false,
+      "presenting": true,
+      "kind": "question",
+      "questions": [
+        {
+          "question": "Which wood should the cabin use?",
+          "header": "Wood",
+          "options": [
+            {
+              "label": "Oak"
+            },
+            {
+              "label": "Spruce",
+              "description": "Darker, nearer to the camp"
+            },
+            {
+              "label": "Birch"
+            }
+          ],
+          "multiSelect": false
+        },
+        {
+          "question": "Which extras?",
+          "options": [
+            {
+              "label": "Chest"
+            },
+            {
+              "label": "Bed"
+            },
+            {
+              "label": "Furnace"
+            }
+          ],
+          "multiSelect": true
+        }
+      ],
+      "answers": ["Spruce"]
+    },
+    {
+      "id": "card-9",
+      "agentId": "ada",
+      "createdAt": 1791484803000,
+      "parked": true,
+      "presenting": false,
+      "kind": "hire",
+      "role": "miner",
+      "name": "Cleo",
+      "handle": "cleo",
+      "reason": "We need iron for tools.",
+      "firstTask": "Find iron and bring back 20 ingots."
+    },
+    {
+      "id": "card-10",
+      "agentId": "ada",
+      "createdAt": 1791484804000,
+      "parked": false,
+      "presenting": false,
+      "kind": "calendar",
+      "eventId": "ev-3",
+      "summary": "Daily 08:00 standup at the meeting table, everyone"
+    }
+  ]
+}

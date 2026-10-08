@@ -1,0 +1,19 @@
+{
+  "t": "calendar.put",
+  "v": 1,
+  "id": "m-111",
+  "eventId": "ev-3",
+  "title": "Standup",
+  "kind": "meeting",
+  "assignees": "all",
+  "clock": "real",
+  "at": 1791513600000,
+  "tz": "Europe/Brussels",
+  "recurrence": {
+    "kind": "daily"
+  },
+  "durationMin": 10,
+  "location": "meeting_table",
+  "catchUp": "once_late",
+  "runWhileAway": false
+}

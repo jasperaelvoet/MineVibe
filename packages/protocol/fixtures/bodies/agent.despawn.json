@@ -1,0 +1,8 @@
+{
+  "t": "agent.despawn",
+  "v": 1,
+  "id": "n-22",
+  "agentId": "cleo",
+  "reason": "dismissed",
+  "farewell": true
+}

@@ -1,0 +1,14 @@
+{
+  "t": "codex.put",
+  "v": 1,
+  "id": "m-103",
+  "mode": "update",
+  "pageId": "house-rules",
+  "baseRev": "a1b2c3d4",
+  "title": "House rules",
+  "body": "1. No lava near the base.\n2. Ask before mining under the house.",
+  "tags": [],
+  "category": "rules",
+  "scope": "lasting",
+  "pinned": true
+}

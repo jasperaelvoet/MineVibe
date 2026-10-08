@@ -1,0 +1,19 @@
+{
+  "t": "pc.config",
+  "v": 1,
+  "id": "m-90",
+  "pcId": "linux-1",
+  "cpus": 4,
+  "memoryMiB": 8192,
+  "mounts": [
+    {
+      "hostPath": "/Users/jasper/Code/foo",
+      "mode": "rw"
+    },
+    {
+      "hostPath": "/Users/jasper/Notes",
+      "mode": "ro"
+    }
+  ],
+  "wipeOnDeath": false
+}

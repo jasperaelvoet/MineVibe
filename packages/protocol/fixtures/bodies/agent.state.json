@@ -1,0 +1,69 @@
+{
+  "t": "agent.state",
+  "v": 1,
+  "tick": 48213,
+  "agents": [
+    {
+      "agentId": "ada",
+      "pos": {
+        "x": 11.5,
+        "y": 64.0,
+        "z": -36.5
+      },
+      "dim": "minecraft:overworld",
+      "hp": 20,
+      "maxHp": 20,
+      "food": 18,
+      "saturation": 4.5,
+      "mode": "follow",
+      "hasFood": true,
+      "inCombat": false,
+      "playerDistance": 2.6,
+      "held": "minecraft:stone_sword"
+    },
+    {
+      "agentId": "bram",
+      "pos": {
+        "x": 8.5,
+        "y": 64.0,
+        "z": -42.5
+      },
+      "dim": "minecraft:overworld",
+      "hp": 14,
+      "maxHp": 20,
+      "food": 9,
+      "saturation": 0,
+      "mode": "stay",
+      "hasFood": false,
+      "inCombat": false,
+      "seat": {
+        "kind": "pc",
+        "pcId": "linux-1"
+      },
+      "playerDistance": 6.1
+    },
+    {
+      "agentId": "cleo",
+      "pos": {
+        "x": 140.2,
+        "y": 38.0,
+        "z": -80.7
+      },
+      "dim": "minecraft:overworld",
+      "hp": 9,
+      "maxHp": 20,
+      "food": 12,
+      "saturation": 1.25,
+      "mode": "wander",
+      "hasFood": true,
+      "inCombat": true,
+      "reflex": "self_defense",
+      "job": {
+        "jobId": "job-31",
+        "skill": "mine",
+        "progress": 0.4
+      },
+      "held": "minecraft:iron_pickaxe"
+    }
+  ]
+}

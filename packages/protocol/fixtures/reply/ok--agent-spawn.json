@@ -1,0 +1,12 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "n-20",
+  "pos": {
+    "x": 6.5,
+    "y": 64.0,
+    "z": -44.5
+  },
+  "dim": "minecraft:overworld",
+  "restored": false
+}
