@@ -7,6 +7,7 @@ import {
   decideTool,
   type GateContext,
   isPrivateAddress,
+  networkScanIn,
 } from '../../../src/agents/ToolGate.js';
 import { MC_TOOLS, PC_TOOLS } from '../../../src/agents/tools/catalog.js';
 
@@ -357,6 +358,60 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
         behavior: 'deny',
         code: 'web_private',
       });
+    }
+  });
+
+  it('denies network scans of the local network from a PC, in any mode; loopback and public hosts stay allowed', async () => {
+    // PLAN §8.7: a live desk agent port-scanned its PC's network for the player's Mac.
+    for (const command of [
+      'nmap -sn 192.168.65.0/24',
+      'sudo -n nmap -p 1-65535 192.168.64.1',
+      'apt-get install -y nmap && nmap 10.0.0.0/8',
+      'masscan 172.16.0.0/12 -p80',
+      'nmap 192.168.65.1-254',
+      'fping -a -g 192.168.1.0/24',
+      'sudo arp-scan --localnet',
+      'netdiscover -r 192.168.0.0/16',
+      'for i in $(seq 1 254); do ping -c1 -W1 192.168.65.$i; done',
+      'for i in {1..254}; do (echo > /dev/tcp/192.168.64.$i/22) 2>/dev/null && echo up; done',
+      'nc -zv 192.168.64.1 1-1024',
+      'timeout 60 /usr/bin/nmap mac.local',
+    ]) {
+      expect(networkScanIn(command), command).not.toBeNull();
+      expect(await decide('mcp__pc__bash', { command }, ctx({ state: 'seated' })), command).toMatchObject({
+        behavior: 'deny',
+        code: 'net_scan',
+      });
+    }
+    // Plan mode too (read-only commands still may not scan).
+    expect(
+      await decide(
+        'mcp__pc__bash',
+        { command: 'nmap 192.168.65.0/24' },
+        ctx({ state: 'seated', trackedMode: 'plan' }),
+      ),
+    ).toMatchObject({ code: 'net_scan' });
+    const denied = await decide('mcp__pc__bash', { command: 'nmap 192.168.64.1' }, ctx({ state: 'seated' }));
+    expect(denied.reason).toMatch(/off-limits/);
+    expect(denied.reason).toContain('Jordan');
+    for (const command of [
+      'nmap 127.0.0.1',
+      'nmap -p 3000 localhost',
+      'nmap scanme.nmap.org',
+      'nc -z localhost 8080',
+      'nc -zv 192.168.64.1 22',
+      'apt-get install -y nmap',
+      'man nmap',
+      'echo nmap 192.168.65.0/24 >> notes.txt',
+      'ping -c1 android-phone',
+      'android adb shell getprop ro.build.version.release',
+      'curl -fsSL https://example.com/install.sh | bash',
+      'git log --oneline -5',
+    ]) {
+      expect(networkScanIn(command), command).toBeNull();
+      expect((await decide('mcp__pc__bash', { command }, ctx({ state: 'seated' }))).behavior, command).toBe(
+        'allow',
+      );
     }
   });
 

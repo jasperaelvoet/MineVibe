@@ -126,9 +126,12 @@ calendar); walking, mining, crafting and building wait until it stands up.
 A Linux PC can have an **Android phone** next to it: a real Android 15 device (Redroid, 64-bit ARM) that you and
 your agents use from the PC. Turn on **Android** in the PC's config screen and press **Apply**.
 
-- **The first time** MineVibe downloads Android (about 660 MB) and builds its Android kernel (a few minutes).
-  The config screen shows the progress ("Android phone: preparing 42% · building the Android kernel"). After that
-  the phone starts in about 10 seconds whenever the PC starts.
+- **The first time** on your Mac, MineVibe asks before it downloads anything: a **Download needed** window says
+  what (Android 15 and the Linux kernel source), how big (about 0.9 GB) and how much disk is free. **Download**
+  turns Android on; **Not now** leaves it off. It then builds its Android kernel (a few minutes) and the config
+  screen shows the progress ("Android phone: preparing 42% · building the Android kernel"). After that the phone
+  starts in about 10 seconds whenever the PC starts. (A later MineVibe update that needs a new kernel or image
+  fetches it without asking again.)
 - **On the PC**, run `android install game.apk && android open`. The phone appears in a window called
   "Android phone" on the PC's desktop: click to tap, right-click for back. An agent does the same from its shell.
   `android status`, `android apps`, `android launch <package>`, `android screenshot` and `android adb …` do the
@@ -148,8 +151,9 @@ your agents use from the PC. Turn on **Android** in the PC's config screen and p
 
 Turn on **KVM** in a Linux PC's config screen to give it `/dev/kvm`, for QEMU and other virtual machines inside the
 PC. It needs a Mac with an **M3 or newer** chip (the toggle says why when your Mac cannot), uses MineVibe's Android
-kernel (built on first use, as above), and **recreates the PC** when you change it (your home folder and the Vault
-are kept). You don't need it for Android apps.
+kernel (built on first use after a **Download needed** window, as above), and **recreates the PC** when you change it
+(your home folder and the Vault are kept). You don't need it for Android apps, so leave it off unless a PC must run
+its own virtual machines (see [Nested virtualization and the Android phone](#nested-virtualization-and-the-android-phone)).
 
 ## The Vault
 
@@ -181,7 +185,9 @@ and what does not.
   redirected into the PC. No agent tool ever opens a path on your Mac.
 - **A fail-closed tool gate** checks every tool call against the agent's state: no PC tools unless the agent
   is seated at that PC, no web access while wandering, no web fetches to loopback or private network
-  addresses, and no file changes in plan mode.
+  addresses, no network scans from a PC at private addresses (nmap and the like at the PC's network, your Mac or
+  your LAN), and no file changes in plan mode. The scan check is a backstop for agents that mean well; it reads
+  the command line and can be worked around.
 - **PCs are virtual machines.** Apple `container` runs every Linux PC in its own lightweight VM, and macOS
   PCs are full VMs.
 - **Loopback only, with tokens.** The bridge between the game and MineVibe's Node process listens on
@@ -225,6 +231,25 @@ git hooks and `.git/config` entries that your own git will honour. MineVibe's tr
   `chown` inside the PC fails, edits made on the Mac don't raise file-change events inside the PC (watch-mode
   tools in a PC miss them), and creating a write-only (mode 0200) file fails but leaves an empty file behind.
   These are usability limits more than security ones.
+
+### Nested virtualization and the Android phone
+
+Both are off by default and only the player can turn them on (agents can only ask you to).
+
+- **KVM weakens nothing inside the PC, but exercises more of your Mac's hypervisor.** With KVM on, the PC's VM
+  starts at a virtual EL2 so that it can run virtual machines of its own. Apple's hypervisor still separates the PC
+  from your Mac, but nesting runs code paths a plain VM never uses (Apple added nested virtualization in macOS 15),
+  so a hypervisor bug would be easier to reach. Turn it on only for PCs that need it. VMs inside the PC share its
+  CPUs, memory and network, so they can reach nothing the PC itself can't.
+- **`/dev/kvm` is opened to every user in the PC.** The PC has one user, who already has passwordless `sudo`, so
+  this gives an agent nothing it didn't have.
+- **The phone is its own VM** next to the PC, on the PC's private network, with MineVibe's kernel. Android runs
+  with full privileges inside that VM (it needs them), and its `adb` has no authentication, but it publishes no
+  port: only the PC can reach it. Like the PC, it can reach the internet and services on your Mac that listen on
+  all interfaces.
+- **What MineVibe downloads for them** is pinned: the Linux kernel source by sha256 and the Android image by
+  digest. The kernel is built on your Mac in a throwaway container from that source; scrcpy, inside the PC, is
+  built from a sha256-pinned release.
 
 ### Recommendations
 

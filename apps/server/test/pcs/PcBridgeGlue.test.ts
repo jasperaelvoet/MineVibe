@@ -26,7 +26,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-async function setup(opts: { android?: boolean } = {}) {
+async function setup(opts: { android?: boolean; fresh?: { kernel: boolean } } = {}) {
   const driver = opts.android ? new FakeAndroidDriver() : new FakeDriver();
   const manager = new PcManager({
     stateDir: join(dir, 'state'),
@@ -49,6 +49,15 @@ async function setup(opts: { android?: boolean } = {}) {
             ensureKernel: async () => '/kits/vmlinux',
             phoneImageReady: async () => true,
             ensurePhoneImage: async () => 'minevibe/android-phone:test',
+            // `fresh`: the kernel is not on this Mac yet, so turning a switch on asks first (PLAN §8.7).
+            ...(opts.fresh
+              ? {
+                  downloadsNeeded: async (want: { kernel: boolean }) =>
+                    want.kernel && opts.fresh?.kernel
+                      ? [{ key: 'kernel:k1', bytes: 214_000_000, what: 'Linux kernel source' }]
+                      : [],
+                }
+              : {}),
           },
           nestedVirtualization: async () => ({ supported: true }),
         }
@@ -123,6 +132,12 @@ async function setup(opts: { android?: boolean } = {}) {
 }
 
 const states = (b: FakePcBridge, pcId = 'linux-1') => b.pushed('pc.state').filter((s) => s.pcId === pcId);
+/** The `err` code of a request, or null when it succeeded. */
+const errCode = (p: Promise<unknown>) =>
+  p.then(
+    () => null,
+    (e: { code: string }) => e.code,
+  );
 
 describe('pushes', () => {
   it('sends every PC and the budget after hello, schema-valid, and only changes afterwards', async () => {
@@ -456,6 +471,45 @@ describe('requests', () => {
       android: { enabled: true, status: 'running' },
     });
     expect(PcInfo.safeParse(states(t.bridge).at(-1)).success).toBe(true);
+  });
+
+  it('pc.consent: a first-use download waits for the modal; Download applies the switch, a stale id is NOT_READY', async () => {
+    const t = await setup({ android: true, fresh: { kernel: true } });
+    await t.manager.start('linux-1');
+    expect(await t.bridge.call('pc.config', { pcId: 'linux-1', android: true })).toEqual({ recreate: false });
+    const asking = states(t.bridge).at(-1);
+    expect(asking?.status).toBe('running');
+    expect(asking?.consent).toMatchObject({ what: 'Linux kernel source for linux-1', bytes: 214_000_000 });
+    expect(asking?.capabilities?.android.enabled).toBe(false);
+    expect(PcInfo.safeParse(asking).success).toBe(true);
+    const consentId = asking?.consent?.consentId as string;
+    expect(
+      await errCode(
+        t.bridge.call('pc.consent', { pcId: 'linux-1', consentId: 'dl-0000000000000000', accept: true }),
+      ),
+    ).toBe(ERROR_CODES.NOT_READY);
+    expect(await t.bridge.call('pc.consent', { pcId: 'linux-1', consentId, accept: true })).toEqual({});
+    expect(t.manager.get('linux-1')?.android).toBe(true);
+    for (let i = 0; i < 200 && t.manager.phone('linux-1').status !== 'running'; i++) await tick(5);
+    expect(states(t.bridge).at(-1)).toMatchObject({
+      consent: null,
+      capabilities: { android: { enabled: true } },
+    });
+    // Answered: the same id is no longer waiting.
+    expect(await errCode(t.bridge.call('pc.consent', { pcId: 'linux-1', consentId, accept: false }))).toBe(
+      ERROR_CODES.NOT_READY,
+    );
+  });
+
+  it('pc.consent: Not now leaves the switch off and clears the prompt', async () => {
+    const t = await setup({ android: true, fresh: { kernel: true } });
+    await t.manager.start('linux-1');
+    await t.bridge.call('pc.config', { pcId: 'linux-1', virtualization: true });
+    const consentId = states(t.bridge).at(-1)?.consent?.consentId as string;
+    expect(consentId).toBeTruthy();
+    expect(await t.bridge.call('pc.consent', { pcId: 'linux-1', consentId, accept: false })).toEqual({});
+    expect(t.manager.get('linux-1')).not.toHaveProperty('virtualization');
+    expect(states(t.bridge).at(-1)?.consent).toBeNull();
   });
 
   it('pc.config: a capability this engine cannot have is BAD_MESSAGE with the reason', async () => {

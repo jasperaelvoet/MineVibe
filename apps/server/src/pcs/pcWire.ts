@@ -94,7 +94,14 @@ export function toPcInfo(view: PcView, rec: PcRecord, extras: PcInfoExtras): PcI
     screen: extras.screen
       ? { w: clampInt(extras.screen.w, 1, 65_535), h: clampInt(extras.screen.h, 1, 65_535) }
       : { w: clampInt(w, 1, 65_535), h: clampInt(h, 1, 65_535) },
-    consent: null,
+    consent: view.consent
+      ? {
+          consentId: view.consent.consentId,
+          what: clip(view.consent.what, 200) ?? 'a download',
+          bytes: nonNeg(view.consent.bytes),
+          freeBytes: nonNeg(view.consent.freeBytes),
+        }
+      : null,
     ...(view.capabilities ? { capabilities: toWireCapabilities(view.capabilities) } : {}),
   };
 }

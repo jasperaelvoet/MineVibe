@@ -7,7 +7,7 @@ import type { Logger } from 'pino';
 import { writeFileAtomic } from '../util/atomicFile.js';
 import { instanceIdFor, mountSourceProblem, realpathLoose, tccProtectedReason } from '../util/hostPaths.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
-import { ANDROID_KERNEL, type AndroidKitLike, PHONE_INIT_ARGS } from './android/kit.js';
+import { ANDROID_KERNEL, type AndroidKitLike, type KitDownload, PHONE_INIT_ARGS } from './android/kit.js';
 import { LINK_PHONE_SCRIPT, OPEN_KVM_SCRIPT, UNLINK_PHONE_SCRIPT } from './android/phone.js';
 import {
   admit,
@@ -155,6 +155,20 @@ export interface PhoneState {
   ip?: string;
 }
 
+/**
+ * A download that waits for the player's OK (`PcInfo.consent`, PcConsentScreen): turning on a Linux PC's Android
+ * phone or nested virtualization for the first time on this Mac (PLAN §8.7).
+ */
+export interface DownloadConsent {
+  consentId: string;
+  /** What is downloaded, in the player's words. */
+  what: string;
+  /** About how much is downloaded. */
+  bytes: number;
+  /** Free disk where it goes. */
+  freeBytes: number;
+}
+
 /** What a Linux PC can do beyond the stock container, and whether this Mac allows it (null = available). */
 export interface PcCapabilities {
   virtualization: { enabled: boolean; unavailable: string | null };
@@ -213,6 +227,8 @@ export interface PcView {
   display: [number, number];
   /** Linux PCs only. */
   capabilities?: PcCapabilities;
+  /** A download that waits for the player's OK, if any. */
+  consent?: DownloadConsent;
 }
 
 export type DiskLevel = 'ok' | 'low' | 'critical';
@@ -272,6 +288,11 @@ export interface PcManagerOptions {
   nestedVirtualization?: () => Promise<NestedVirtualizationSupport>;
   /** How long a phone may take to finish booting (default 120 s; it takes 6–7 s). */
   phoneBootTimeoutMs?: number;
+  /**
+   * Whether turning on the Android phone or nested virtualization asks the player first when it needs downloads
+   * (default true: `PcInfo.consent`, the switch applies on "Download"). Off for headless runs (the real-runtime test).
+   */
+  askBeforeDownloads?: boolean;
   /** Monitor period for {@link PcManager.startMonitor} (default 10 s). */
   monitorIntervalMs?: number;
   /**
@@ -441,6 +462,13 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #phoneRestarts = new Map<string, number>();
   /** Engine work outside any PC that holds CPU and RAM (the Android kernel build), counted in the budget. */
   readonly #extraAllocations = new Map<string, PcAllocation>();
+  /** Capability switches waiting for the player's OK to download what they need (PLAN §8.7), per PC. */
+  readonly #consents = new Map<
+    string,
+    { prompt: DownloadConsent; keys: string[]; change: { virtualization?: true; android?: true } }
+  >();
+  /** Downloads the player has OK'd in this process (KitDownload keys): not asked again. */
+  readonly #granted = new Set<string>();
   /** Why this Mac cannot have each capability (null = it can), once {@link init} asked. */
   #support: { virtualization: string | null; android: string | null } = {
     virtualization: 'not checked yet',
@@ -745,6 +773,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   views(): PcView[] {
     return this.#file.pcs.map((p) => {
       const s = this.status(p.id);
+      const consent = this.#consents.get(p.id)?.prompt;
       return {
         pcId: p.id,
         slot: p.slot,
@@ -760,8 +789,76 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         pinned: p.pinned,
         display: PC_TYPE_SPECS[p.type].display,
         ...(PC_TYPE_SPECS[p.type].family === 'linux' ? { capabilities: this.capabilitiesOf(p.id) } : {}),
+        ...(consent ? { consent: { ...consent } } : {}),
       };
     });
+  }
+
+  /** The download waiting for the player's OK on a PC, or null. */
+  consentOf(id: string): DownloadConsent | null {
+    const c = this.#consents.get(id);
+    return c ? { ...c.prompt } : null;
+  }
+
+  /**
+   * The player's answer to a download prompt (`pc.consent`). "Download" applies the switch that waited for it (and
+   * remembers the OK for every PC); "Not now" leaves it off. Throws INVALID when no such prompt waits.
+   */
+  async answerConsent(
+    id: string,
+    consentId: string,
+    accept: boolean,
+  ): Promise<{ recreated: boolean; restarted: boolean; warnings: string[] } | null> {
+    const pending = this.#consents.get(id);
+    if (!pending || pending.prompt.consentId !== consentId) {
+      throw new PcError('INVALID', `no download of ${id} is waiting for an answer`);
+    }
+    this.#consents.delete(id);
+    this.#log?.info({ pcId: id, accept, what: pending.prompt.what }, 'download consent answered');
+    this.emit('pc.state', this.views());
+    if (!accept) return null;
+    for (const k of pending.keys) this.#granted.add(k);
+    return this.reconfigure(id, pending.change);
+  }
+
+  /**
+   * What turning on these switches must download first, unless the player already OK'd it (PLAN §8.7); null when
+   * nothing needs asking.
+   */
+  async #downloadsToAsk(on: {
+    virtualization: boolean;
+    android: boolean;
+  }): Promise<{ items: KitDownload[]; change: { virtualization?: true; android?: true } } | null> {
+    const kit = this.#o.android;
+    if (this.#o.askBeforeDownloads === false || !kit?.downloadsNeeded) return null;
+    if (!on.virtualization && !on.android) return null;
+    const all = await kit.downloadsNeeded({ kernel: true, phone: on.android });
+    const items = all.filter((d) => !this.#granted.has(d.key));
+    if (items.length === 0) return null;
+    return {
+      items,
+      change: {
+        ...(on.virtualization ? { virtualization: true as const } : {}),
+        ...(on.android ? { android: true as const } : {}),
+      },
+    };
+  }
+
+  async #askDownload(
+    p: PcRecord,
+    ask: { items: KitDownload[]; change: { virtualization?: true; android?: true } },
+  ): Promise<void> {
+    // One short line: PcConsentScreen centres it in a narrow panel ("Linux kernel source + Android 15 for linux-1").
+    const what = `${ask.items.map((d) => d.what).join(' + ')} for ${p.name ?? p.id}`;
+    const prompt: DownloadConsent = {
+      consentId: `dl-${randomBytes(8).toString('hex')}`,
+      what: what.length > 200 ? `${what.slice(0, 199)}…` : what,
+      bytes: ask.items.reduce((n, d) => n + d.bytes, 0),
+      freeBytes: Math.max(0, Math.floor(await this.#freeDisk())),
+    };
+    this.#consents.set(p.id, { prompt, keys: ask.items.map((d) => d.key), change: ask.change });
+    this.#log?.info({ pcId: p.id, what: prompt.what, bytes: prompt.bytes }, 'download waits for consent');
+    this.emit('pc.state', this.views());
   }
 
   /** A Linux PC's capabilities (PLAN §8.7): what is on, what this Mac allows, and how its phone is doing. */
@@ -955,7 +1052,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   #alloc(p: PcRecord, active?: boolean): PcAllocation {
     const family = PC_TYPE_SPECS[p.type].family;
     const linux = family === 'linux';
-    const phone = linux && p.android === true;
+    // Only what this Mac really runs: a record that has a switch on where it cannot (a `pcs.json` from another Mac,
+    // Docker) boots without it, so it holds nothing for it.
+    const phone = linux && p.android === true && !!this.#o.android && this.#support.android === null;
     const overhead = linux ? this.driver.cpuOverhead : 0;
     return {
       id: p.id,
@@ -963,7 +1062,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       cpus: p.cpus + (phone ? PHONE_RESOURCES.cpus : 0),
       memMiB:
         p.memMiB +
-        (linux && p.virtualization ? VIRTUALIZATION_OVERHEAD_MIB : 0) +
+        (this.#virtualizes(p) ? VIRTUALIZATION_OVERHEAD_MIB : 0) +
         (phone ? PHONE_RESOURCES.memMiB + this.#budget.vmMemOverheadMiB : 0),
       cpuOverhead: phone ? 2 * overhead : overhead,
       active: active ?? (this.#isActive(p.id) || this.#liveActive(p.id)),
@@ -2200,6 +2299,13 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const android = change.android ?? cur.android === true;
       const virtChanged = virtualization !== (cur.virtualization === true);
       const androidChanged = android !== (cur.android === true);
+      // A new choice about these switches replaces a download prompt still waiting.
+      if (
+        (change.virtualization !== undefined || change.android !== undefined) &&
+        this.#consents.delete(id)
+      ) {
+        this.emit('pc.state', this.views());
+      }
       if ((virtualization || android) && PC_TYPE_SPECS[type].family !== 'linux') {
         throw new PcError('UNAVAILABLE', 'only Linux PCs have nested virtualization and an Android phone');
       }
@@ -2212,34 +2318,51 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const warnings = [...(validated?.warnings ?? [])];
       if (!typeChanged && !resChanged && !mountsChanged && !virtChanged && !androidChanged)
         return { recreated: false, restarted: false, warnings };
-      const flags = (r: PcRecord) => {
-        if (virtualization) r.virtualization = true;
+      // The first time on this Mac, a switch turned on waits for the player's OK to download what it needs
+      // (PcInfo.consent); everything else in this edit applies now.
+      const ask = await this.#downloadsToAsk({
+        virtualization: virtChanged && virtualization,
+        android: androidChanged && android,
+      });
+      const virtNow = ask?.change.virtualization ? cur.virtualization === true : virtualization;
+      const androidNow = ask?.change.android ? cur.android === true : android;
+      const virtApplied = virtNow !== (cur.virtualization === true);
+      const androidApplied = androidNow !== (cur.android === true);
+      const flags = (r: PcRecord, v: boolean, a: boolean) => {
+        if (v) r.virtualization = true;
         else delete r.virtualization;
-        if (android) r.android = true;
+        if (a) r.android = true;
         else delete r.android;
         return r;
       };
-      const next = flags({ ...cur, type, ...res, mounts });
+      // Admitted as asked (switches included), so a prompt is only shown for a change that fits.
+      const next = flags({ ...cur, type, ...res, mounts }, virtualization, android);
       const active = ACTIVE.has(this.status(id).status);
       // An Android phone alone starts or goes without touching the PC; everything else recreates it.
-      const recreate = typeChanged || resChanged || mountsChanged || virtChanged;
+      const recreate = typeChanged || resChanged || mountsChanged || virtApplied;
       const adm = await this.#admit('edit', next, {
         active,
         apply: () => {
           Object.assign(cur, { type, ...res, mounts });
-          flags(cur);
+          flags(cur, virtNow, androidNow);
           if (cur.image && !isAllowedImage(type, cur.image)) delete cur.image;
         },
       });
       try {
         await this.#save();
+        if (ask) {
+          await this.#askDownload(cur, ask);
+          warnings.push(
+            `${ask.change.android ? 'The Android phone' : 'KVM'} needs a download first: it turns on after "Download" in the prompt`,
+          );
+        }
         if (recreate) {
           await this.#recreateLocked(
             cur,
-            typeChanged || resChanged || virtChanged ? 'booting' : 'remounting',
+            typeChanged || resChanged || virtApplied ? 'booting' : 'remounting',
           );
         }
-        if (androidChanged) await this.#phoneToggled(cur, active && !recreate);
+        if (androidApplied) await this.#phoneToggled(cur, active && !recreate);
       } finally {
         adm.release();
       }
@@ -2615,6 +2738,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#live.delete(id);
       this.#phones.delete(id);
       this.#phoneRestarts.delete(id);
+      this.#consents.delete(id);
       this.#bumpPhone(id);
       await this.#save();
       this.emit('pc.state', this.views());

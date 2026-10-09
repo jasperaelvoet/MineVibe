@@ -21,7 +21,9 @@ import {
   ANDROID_KERNEL,
   AndroidKit,
   KERNEL_BUILD_SCRIPT,
+  KERNEL_BUILD_TOOLS_BYTES,
   KERNEL_FRAGMENT,
+  PHONE_IMAGE,
 } from '../../src/pcs/android/kit.js';
 import { addRelativeEtcLayer, listTar, sha256, tarOf } from '../../src/pcs/android/oci.js';
 import { LINK_PHONE_SCRIPT } from '../../src/pcs/android/phone.js';
@@ -409,6 +411,8 @@ describe('AndroidKit', () => {
       ensureBuildImage: async () => {
         holds.push('image');
       },
+      // Hermetic: never the test machine's own free space.
+      freeDiskBytes: async () => 100 * 1024 ** 3,
       ...over,
     });
     return { kit, holds };
@@ -519,6 +523,45 @@ describe('AndroidKit', () => {
     expect(kit.kernelPath).toBe(k);
     expect(await kit.ensureKernel()).toBe(k);
     expect(driver.oneShots).toHaveLength(0);
+  });
+
+  it('refuses to prepare the phone image without 3 GiB of free disk, before pulling anything', async () => {
+    const driver = new FakeAndroidDriver();
+    driver.imagePresent = false;
+    const { kit } = kitWith(driver, { freeDiskBytes: async () => 2 * 1024 ** 3 });
+    await expect(kit.ensurePhoneImage()).rejects.toThrow(
+      /needs 3 GiB of free disk to prepare; 2\.0 GiB free/,
+    );
+    expect(driver.log).toEqual([]);
+  });
+
+  it('says what a first use downloads (for the consent prompt), and nothing once it is here', async () => {
+    const driver = new FakeAndroidDriver();
+    driver.imagePresent = false;
+    const { kit } = kitWith(driver);
+    expect(await kit.downloadsNeeded({ kernel: true, phone: true })).toEqual([
+      {
+        key: `kernel:${ANDROID_KERNEL.id}`,
+        bytes: ANDROID_KERNEL.source.size + KERNEL_BUILD_TOOLS_BYTES,
+        what: 'Linux kernel source',
+      },
+      { key: `phone:${PHONE_IMAGE.patchedIndex}`, bytes: PHONE_IMAGE.downloadBytes, what: 'Android 15' },
+    ]);
+    expect(await kit.downloadsNeeded({ kernel: true, phone: false })).toHaveLength(1);
+    // A cached source leaves the build tools; a pulled Redroid is only patched here.
+    mkdirSync(join(dir, 'cache'), { recursive: true });
+    writeFileSync(join(dir, 'cache', ANDROID_KERNEL.source.file), '');
+    truncateSync(join(dir, 'cache', ANDROID_KERNEL.source.file), ANDROID_KERNEL.source.size);
+    driver.imagePresent = true;
+    expect(await kit.downloadsNeeded({ kernel: true, phone: true })).toEqual([
+      expect.objectContaining({ bytes: KERNEL_BUILD_TOOLS_BYTES }),
+    ]);
+    // Built and loaded: nothing.
+    const k = join(dir, 'vmlinux-elsewhere');
+    writeFileSync(k, 'x');
+    driver.images.set(PHONE_IMAGE.ref, PHONE_IMAGE.patchedIndex);
+    const { kit: ready } = kitWith(driver, { kernelOverride: k });
+    expect(await ready.downloadsNeeded({ kernel: true, phone: true })).toEqual([]);
   });
 
   it('prepares the phone image: pull by digest, save, patch, load, verify the pinned digest; temp files go', async () => {

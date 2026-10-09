@@ -600,10 +600,20 @@ export class PcBridgeGlue {
     return { pcId };
   }
 
+  /**
+   * The player's answer to a download prompt (`PcInfo.consent`): today the first use of a Linux PC's Android phone or
+   * nested virtualization (PLAN §8.7); macOS images arrive with M9. "Download" applies the switch that waited for it,
+   * which may recreate the PC: like `pc.config`, the reply comes once that has run for a while.
+   */
   async #onConsent(m: MessageOf<'pc.consent'>): Promise<HandlerResult> {
-    this.#known(m.pcId);
-    // Nothing asks for consent yet (macOS PCs arrive with M9).
-    throw new BridgeError(ERROR_CODES.NOT_READY, `no download of ${m.pcId} is waiting for consent`);
+    const { manager } = this.#o;
+    const pcId = this.#known(m.pcId);
+    if (manager.consentOf(pcId)?.consentId !== m.consentId) {
+      throw new BridgeError(ERROR_CODES.NOT_READY, `no download of ${pcId} is waiting for consent`);
+    }
+    await this.#settle(manager.answerConsent(pcId, m.consentId, m.accept), 'config', `consent ${pcId}`);
+    this.pushStates();
+    return {};
   }
 
   async #onPickFolder(m: MessageOf<'host.pick_folder'>): Promise<HandlerResult> {

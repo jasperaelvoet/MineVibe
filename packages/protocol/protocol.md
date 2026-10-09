@@ -870,7 +870,10 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   `no_capacity`, `macos_slots_full`, `engine_down`, `error`, `decommissioned`. `capabilities` (Linux PCs, PLAN §8.7):
   `{ virtualization: { enabled, unavailable|null }, android: { enabled, unavailable|null, status:
   off|preparing|starting|running|error, progress|null, detail|null } }`; `unavailable` says why this Mac cannot have
-  it ("needs an M3 or newer Mac"), null when it can.
+  it ("needs an M3 or newer Mac"), null when it can. `consent` is a download that waits for the player's OK
+  (PcConfigScreen shows it as a modal; the answer is `pc.consent`): a macOS image while `status` is
+  `awaiting_consent`, or, on a Linux PC that keeps its status, what turning on its Android phone or nested
+  virtualization must download the first time on this Mac. Node applies that switch only after `accept: true`.
 - `budget.state`: `{ cpu: { total, used, free, maxOvercommit }, memoryMiB: { pool, used, free }, diskFreeGiB,
   macos: { running, max }, crewCap }`.
 - `pc.view`: `{ pcId, tier: focus|visible|none }`, sent on change.
@@ -887,7 +890,9 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   no `pcId`; every other action (`start`, `stop`, `restart`, `reimage`, `decommission`, `reissue`, `unplug`,
   `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,
   `PC_UNKNOWN`, `ENGINE_DOWN`.
-- `pc.consent` (request): `{ pcId, consentId, accept }`.
+- `pc.consent` (request): `{ pcId, consentId, accept }`. `err NOT_READY` when that prompt is no longer waiting. An
+  accepted capability download applies its switch like `pc.config` (it may recreate the PC); the reply comes once that
+  has run for a while, and its progress shows in `pc.state`.
 - `host.pick_folder` (request, `PickFolderResult { path|null }`): `{ purpose: "vault", pcId?, prompt? }`. PLAN §5
   calls it `host.pickFolder`; type names are dotted lowercase (section 4), so the wire name is `host.pick_folder`.
 

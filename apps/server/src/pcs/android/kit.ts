@@ -137,6 +137,24 @@ export interface PhoneImagePin {
   source: string;
   arm64Manifest: string;
   patchedIndex: string;
+  /** Compressed size of the source download (default {@link PHONE_IMAGE}'s). */
+  downloadBytes?: number;
+}
+
+/**
+ * Apt packages the kernel build installs in its container on top of the Linux PC image (flex, bison, bc, libelf-dev,
+ * libssl-dev, cpio, kmod; build-essential is in the image already): an estimate for the download consent.
+ */
+export const KERNEL_BUILD_TOOLS_BYTES = 60_000_000;
+
+/** One thing a capability must fetch before it can be used (PLAN §8.7): what the player is asked to OK first. */
+export interface KitDownload {
+  /** Stable for what is fetched (`kernel:<id>`, `phone:<digest>`): an OK given once covers it. */
+  key: string;
+  /** About how much is downloaded. */
+  bytes: number;
+  /** In the player's words, a few words long ("Android 15"): the consent modal shows it on one line. */
+  what: string;
 }
 
 export interface AndroidKitOptions {
@@ -169,13 +187,16 @@ export interface AndroidKitOptions {
   readonly buildTimeoutMs?: number;
   /** The phone image to prepare (default {@link PHONE_IMAGE}). */
   readonly phoneImage?: PhoneImagePin;
+  /** Free bytes on the disk of a folder (default `statfs`; tests pass their own). */
+  readonly freeDiskBytes?: (path: string) => Promise<number>;
 }
 
 /** What PcManager uses of the kit (tests pass a fake). */
 export type AndroidKitLike = Pick<
   AndroidKit,
   'supported' | 'kernelPath' | 'kernelReady' | 'ensureKernel' | 'phoneImageReady' | 'ensurePhoneImage'
->;
+> &
+  Partial<Pick<AndroidKit, 'downloadsNeeded'>>;
 
 interface KernelMarker {
   id: string;
@@ -396,6 +417,40 @@ export class AndroidKit {
     return this.kernelPath;
   }
 
+  /**
+   * What is not on this Mac yet of what the kernel and/or the phone need (PLAN §8.7): the downloads a first use makes,
+   * which PcManager asks the player to OK (`PcInfo.consent`) before it turns a capability on. Empty when ready.
+   */
+  async downloadsNeeded(want: { kernel: boolean; phone: boolean }): Promise<KitDownload[]> {
+    const out: KitDownload[] = [];
+    if (want.kernel && !(await this.kernelReady())) {
+      const src = ANDROID_KERNEL.source;
+      const cached = await stat(join(this.#o.dir, 'cache', src.file)).then(
+        (s) => s.size === src.size,
+        () => false,
+      );
+      out.push({
+        key: `kernel:${ANDROID_KERNEL.id}`,
+        bytes: (cached ? 0 : src.size) + KERNEL_BUILD_TOOLS_BYTES,
+        what: 'Linux kernel source',
+      });
+    }
+    // A source image already pulled is only patched and loaded here: nothing to download.
+    const pin = this.#pin;
+    if (
+      want.phone &&
+      !(await this.phoneImageReady()) &&
+      !(await this.#o.driver.imageExists(pin.source).catch(() => false))
+    ) {
+      out.push({
+        key: `phone:${pin.patchedIndex}`,
+        bytes: pin.downloadBytes ?? PHONE_IMAGE.downloadBytes,
+        what: 'Android 15',
+      });
+    }
+    return out;
+  }
+
   get #pin(): PhoneImagePin {
     return this.#o.phoneImage ?? PHONE_IMAGE;
   }
@@ -430,7 +485,7 @@ export class AndroidKit {
     };
     const ociDir = join(o.dir, 'oci');
     await mkdir(ociDir, { recursive: true });
-    const free = await freeDiskBytes(ociDir);
+    const free = await (o.freeDiskBytes ?? freeDiskBytes)(ociDir);
     if (free < IMAGE_PREP_FREE_BYTES) {
       throw new Error(
         `the Android phone image needs ${(IMAGE_PREP_FREE_BYTES / GiB).toFixed(0)} GiB of free disk to prepare; ${(free / GiB).toFixed(1)} GiB free`,

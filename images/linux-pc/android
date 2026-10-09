@@ -37,7 +37,7 @@ say() { echo "android: $*"; }
 die() { echo "android: $*" >&2; exit "${2:-1}"; }
 
 no_phone() {
-  die "no Android phone is attached to this PC. Ask the player to turn on \"Android\" in this PC's settings (the config screen of its workstation). It starts in about 10 seconds; the very first time MineVibe also downloads Android (~660 MB) and builds a kernel, which takes a few minutes. There is no Android SDK emulator for this CPU (arm64), so don't install one." 3
+  die "no Android phone is attached to this PC. Ask the player to turn on \"Android\" in this PC's settings (the config screen of its workstation). It starts in about 10 seconds; the very first time the player also OKs a download (about 0.9 GB) and MineVibe builds a kernel, which takes a few minutes. There is no Android SDK emulator for this CPU (arm64), so don't install one." 3
 }
 
 phone_address() {

@@ -224,9 +224,12 @@ describe('nested virtualization', () => {
       enabled: true,
       unavailable: 'needs an M3 or newer Mac (this one has an M1)',
     });
+    // It holds no virtualization overhead it does not get.
+    const withRecord = await m.budget();
     // It can still be turned off.
     await m.reconfigure('linux-1', { virtualization: false });
     expect(m.get('linux-1')).not.toHaveProperty('virtualization');
+    expect((await m.budget()).allocated.memBytes).toBe(withRecord.allocated.memBytes);
   });
 
   it('shows downloading with progress while the kernel is prepared, then boots', async () => {
@@ -434,6 +437,172 @@ describe('the Android phone', () => {
     await m.init();
     const { pc } = await m.create({ type: 'macos' });
     await expect(m.reconfigure(pc.id, { android: true })).rejects.toThrow(/only Linux PCs/);
+  });
+});
+
+/** A kit that has nothing yet: its downloads wait for the player's OK (PLAN §8.7). */
+function freshKit() {
+  const state = { kernelReady: false, imageReady: false, kernelBuilds: 0, imagePreps: 0, asked: 0 };
+  const kit: AndroidKitLike = {
+    supported: true,
+    kernelPath: KERNEL,
+    kernelReady: async () => state.kernelReady,
+    ensureKernel: async () => {
+      if (!state.kernelReady) state.kernelBuilds++;
+      state.kernelReady = true;
+      return KERNEL;
+    },
+    phoneImageReady: async () => state.imageReady,
+    ensurePhoneImage: async () => {
+      if (!state.imageReady) state.imagePreps++;
+      state.imageReady = true;
+      return 'minevibe/android-phone:test';
+    },
+    downloadsNeeded: async (want) => {
+      state.asked++;
+      return [
+        ...(want.kernel && !state.kernelReady
+          ? [{ key: 'kernel:k1', bytes: 214_000_000, what: 'Linux kernel source' }]
+          : []),
+        ...(want.phone && !state.imageReady
+          ? [{ key: 'phone:p1', bytes: 694_000_000, what: 'Android 15' }]
+          : []),
+      ];
+    },
+  };
+  return { kit, state };
+}
+
+describe('download consent (first use on this Mac)', () => {
+  it('turning on the phone asks first: nothing downloads or changes until "Download"', async () => {
+    const { kit, state } = freshKit();
+    const { m, driver } = await runningPc({ kit });
+    const res = await m.reconfigure('linux-1', { android: true });
+    expect(res.recreated).toBe(false);
+    expect(res.warnings.join(' ')).toMatch(/needs a download first/);
+    expect(m.get('linux-1')).not.toHaveProperty('android');
+    const prompt = m.consentOf('linux-1');
+    expect(prompt).toMatchObject({
+      what: 'Linux kernel source + Android 15 for linux-1',
+      bytes: 908_000_000,
+      freeBytes: 199 * GiB,
+    });
+    expect(prompt?.consentId).toMatch(/^dl-[0-9a-f]{16}$/);
+    // pc.state shows it (PcConfigScreen opens the modal), and it fits the protocol.
+    const view = m.views()[0];
+    const rec = m.get('linux-1');
+    if (!view || !rec) throw new Error('no linux-1');
+    const info = toPcInfo(view, rec, { seat: { occupant: null, reservation: null }, diskGiB: 64 });
+    expect(info?.consent).toEqual({
+      consentId: prompt?.consentId,
+      what: prompt?.what,
+      bytes: 908_000_000,
+      freeBytes: 199 * GiB,
+    });
+    expect(info?.status).toBe('running');
+    expect(PcInfo.parse(info)).toEqual(info);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.kernelBuilds + state.imagePreps).toBe(0);
+    expect(driver.phones.size).toBe(0);
+
+    await m.answerConsent('linux-1', prompt?.consentId as string, true);
+    expect(m.consentOf('linux-1')).toBeNull();
+    expect(m.get('linux-1')?.android).toBe(true);
+    await until(() => m.phone('linux-1').status === 'running', 'the phone');
+    expect(state).toMatchObject({ kernelBuilds: 1, imagePreps: 1 });
+    expect(m.views()[0]).not.toHaveProperty('consent');
+  });
+
+  it('"Not now" leaves it off; an OK covers later switches of any PC', async () => {
+    const { kit, state } = freshKit();
+    const { m } = await runningPc({ kit });
+    await m.reconfigure('linux-1', { android: true });
+    const first = m.consentOf('linux-1')?.consentId as string;
+    const wrong = await m.answerConsent('linux-1', 'dl-0000000000000000', true).catch((e: unknown) => e);
+    expect((wrong as PcError).code).toBe('INVALID');
+    expect(await m.answerConsent('linux-1', first, false)).toBeNull();
+    expect(m.consentOf('linux-1')).toBeNull();
+    expect(m.get('linux-1')).not.toHaveProperty('android');
+    expect(m.phone('linux-1').status).toBe('off');
+    expect(state.kernelBuilds + state.imagePreps).toBe(0);
+
+    // Asked again on the next try; this time OK'd.
+    await m.reconfigure('linux-1', { android: true });
+    const second = m.consentOf('linux-1')?.consentId as string;
+    expect(second).not.toBe(first);
+    await m.answerConsent('linux-1', second, true);
+    await until(() => m.phone('linux-1').status === 'running', 'the phone');
+    // Off and on again: nothing left to download, nothing asked.
+    await m.reconfigure('linux-1', { android: false });
+    await m.reconfigure('linux-1', { android: true });
+    expect(m.consentOf('linux-1')).toBeNull();
+    expect(m.get('linux-1')?.android).toBe(true);
+  });
+
+  it('KVM the first time: the rest of the edit applies now, KVM after "Download" (then the kernel is built)', async () => {
+    const { kit, state } = freshKit();
+    const { m, driver } = await runningPc({ kit });
+    const res = await m.reconfigure('linux-1', { virtualization: true, cpus: 3 });
+    expect(res).toMatchObject({ recreated: true, restarted: true });
+    expect(m.get('linux-1')).toMatchObject({ cpus: 3 });
+    expect(m.get('linux-1')).not.toHaveProperty('virtualization');
+    expect(driver.containers.get(PC)?.spec.virtualization).toBeUndefined();
+    const prompt = m.consentOf('linux-1');
+    expect(prompt).toMatchObject({ what: 'Linux kernel source for linux-1', bytes: 214_000_000 });
+    expect(state.kernelBuilds).toBe(0);
+    const applied = await m.answerConsent('linux-1', prompt?.consentId as string, true);
+    expect(applied).toMatchObject({ recreated: true });
+    expect(state.kernelBuilds).toBe(1);
+    expect(driver.containers.get(PC)?.spec).toMatchObject({ virtualization: true, kernel: KERNEL });
+    expect(m.status('linux-1').status).toBe('running');
+  });
+
+  it('a change that does not fit is refused before anything is asked', async () => {
+    host = { cpus: 18, memBytes: 30 * GiB, diskFreeBytes: 199 * GiB };
+    const { kit } = freshKit();
+    const { m } = await runningPc({ kit });
+    const err = await m.reconfigure('linux-1', { android: true }).catch((e: unknown) => e);
+    expect((err as PcError).code).toBe('OVER_BUDGET');
+    expect(m.consentOf('linux-1')).toBeNull();
+  });
+
+  it('a new choice replaces a waiting prompt; decommission drops it', async () => {
+    const { kit } = freshKit();
+    const { m } = await runningPc({ kit });
+    await m.reconfigure('linux-1', { android: true });
+    expect(m.consentOf('linux-1')).not.toBeNull();
+    await m.reconfigure('linux-1', { android: false });
+    expect(m.consentOf('linux-1')).toBeNull();
+    await m.reconfigure('linux-1', { virtualization: true });
+    expect(m.consentOf('linux-1')?.what).toBe('Linux kernel source for linux-1');
+    await m.decommission('linux-1');
+    expect(m.views()).toEqual([]);
+  });
+
+  it('askBeforeDownloads: false (headless runs) downloads without asking', async () => {
+    const { kit, state } = freshKit();
+    const driver = new FakeAndroidDriver();
+    const m = new PcManager({
+      stateDir: join(dir, 'state'),
+      driver,
+      pool: fakePool(join(dir, 'caches')),
+      labelValue: 'pc-test',
+      instanceId: INST,
+      hostFacts: async () => host,
+      home: join(dir, 'home'),
+      bootTimeoutMs: 2000,
+      imageBuild: { contextDir: dir, file: join(dir, 'Containerfile') },
+      portProbe: { attempts: 2, intervalMs: 10 },
+      android: kit,
+      nestedVirtualization: async () => ({ supported: true }),
+      askBeforeDownloads: false,
+    });
+    await m.init();
+    await m.start('linux-1');
+    await m.reconfigure('linux-1', { android: true });
+    expect(m.consentOf('linux-1')).toBeNull();
+    await until(() => m.phone('linux-1').status === 'running', 'the phone');
+    expect(state.asked).toBe(0);
   });
 });
 

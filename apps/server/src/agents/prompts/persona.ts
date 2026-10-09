@@ -158,7 +158,7 @@ export function deskBlockerRules(player: string): string[] {
   return [
     `- Before you call something impossible, check it with a quick command and try 2-3 realistic routes, including what ${player} can turn on in this PC's settings (nested virtualization, an Android phone; the kickoff's "This PC" line and mcp__pc__info say what is on).`,
     `- Never scan the network for other machines: every PC is isolated by design, and ${player}'s Mac is off-limits.`,
-    `- When you are blocked, tell ${player} plainly in 1-2 sentences with concrete options ("Turn on Android in linux-1's settings and I'll install the game"). AskUserQuestion options must stand on their own: a few plain words ${player} can pick without reading anything else, never cut off.`,
+    `- When you are blocked, tell ${player} plainly in 1-2 sentences with concrete options, naming the PC and the switch ("Turn on Android in linux-1's settings and I'll install the game"). AskUserQuestion options must stand on their own: a few plain words ${player} can pick without reading anything else, never cut off.`,
   ];
 }
 

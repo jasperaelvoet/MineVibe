@@ -51,7 +51,7 @@ function phoneText(c: PcGuestCapabilities, pc: Pick<PcGuestInfo, 'pcId'>, player
   }
 }
 
-/** The KICKOFF's capability line (≈60 tokens). */
+/** The KICKOFF's capability line (≈60 tokens): one mention of the settings for whatever the player can turn on. */
 export function capabilityLine(pc: PcGuestInfo, player: string): string | null {
   const c = pc.capabilities;
   if (!c) return null;
@@ -63,7 +63,16 @@ export function capabilityLine(pc: PcGuestInfo, player: string): string | null {
   ]
     .filter(Boolean)
     .join(', ');
-  return `This PC: ${hw}; internet yes, the Mac and the LAN off-limits (isolated); ${kvmText(c, pc, player)}; ${phoneText(c, pc, player)}.`;
+  const kvmOff = !c.virtualization.enabled && !c.virtualization.unavailable;
+  const phoneOff = !c.android.enabled && !c.android.unavailable;
+  const settings = `${player} can turn ${kvmOff && phoneOff ? 'either' : 'it'} on in ${pc.pcId}'s settings`;
+  const apks = `APKs then run with \`${ANDROID_USAGE}\``;
+  let switches: string;
+  if (kvmOff && phoneOff) switches = `no KVM and no Android phone: ${settings} (${apks})`;
+  else if (kvmOff) switches = `no KVM (${settings}); ${phoneText(c, pc, player)}`;
+  else if (phoneOff) switches = `${kvmText(c, pc, player)}; no Android phone (${settings}; ${apks})`;
+  else switches = `${kvmText(c, pc, player)}; ${phoneText(c, pc, player)}`;
+  return `This PC: ${hw}; internet yes, the Mac, other PCs and the LAN off-limits; ${switches}.`;
 }
 
 /** `pc__info`'s capability section: one fact per line. */
@@ -80,7 +89,7 @@ export function capabilityDetails(pc: PcGuestInfo, player: string): string[] {
   return [
     'Capabilities:',
     `- ${hw.join(', ')}`,
-    "- Network: internet yes. The Mac, other PCs and the local network are off-limits: every PC has its own isolated network by design, so there are no other machines to find. Don't scan for them.",
+    "- Network: internet yes. The Mac, other PCs and the local network are off-limits by design: this PC's own network holds only it (and its Android phone), and other PCs cannot be reached. Don't scan for machines (scans are refused).",
     `- ${kvmText(c, pc, player)}.`,
     `- ${phoneText(c, pc, player)}. There is no Android SDK emulator for arm64 Linux; the Android phone is the way to run APKs (64-bit arm64 apps, no Google Play services).`,
     `- Toolchains: ${c.toolchains.length > 0 ? c.toolchains.join(', ') : 'unknown (the PC is not running)'}`,

@@ -53,7 +53,7 @@ describe('the KICKOFF capability line', () => {
   it('says what the PC is, that it is isolated, and what Jordan can turn on', () => {
     const line = capabilityLine(pc(caps()), 'Jordan');
     expect(line).toBe(
-      "This PC: arm64 Linux, 2 vCPUs, 3.8 GiB RAM, 25 GiB free; internet yes, the Mac and the LAN off-limits (isolated); no KVM (nested virtualization is off; Jordan can turn it on in linux-1's settings (the config screen of its workstation)); Android phone: off (Jordan can turn it on in linux-1's settings (the config screen of its workstation); then `android install <file.apk> && android open`).",
+      "This PC: arm64 Linux, 2 vCPUs, 3.8 GiB RAM, 25 GiB free; internet yes, the Mac, other PCs and the LAN off-limits; no KVM and no Android phone: Jordan can turn either on in linux-1's settings (APKs then run with `android install <file.apk> && android open`).",
     );
   });
 
@@ -79,6 +79,22 @@ describe('the KICKOFF capability line', () => {
     expect(line).toContain(
       'Android phone: running as android-phone (`android install <file.apk> && android open`)',
     );
+  });
+
+  it('names the settings once for what Jordan can turn on, and says why a Mac cannot have the rest', () => {
+    const line = capabilityLine(
+      pc(
+        caps({
+          virtualization: { enabled: false, unavailable: 'needs an M3 or newer Mac (this one has an M1)' },
+        }),
+      ),
+      'Jordan',
+    );
+    expect(line).toContain('no KVM (nested virtualization: not on this Mac, needs an M3 or newer Mac');
+    expect(line).toContain(
+      "no Android phone (Jordan can turn it on in linux-1's settings; APKs then run with `android install <file.apk> && android open`)",
+    );
+    expect(line?.match(/settings/g)).toHaveLength(1);
   });
 
   it('is absent for a PC without capabilities (macOS)', () => {
@@ -121,7 +137,7 @@ describe('pc__info', () => {
       'CPU aarch64 (Apple silicon: arm64 binaries only), kernel 6.18.35-197-debug',
     );
     expect(lines.join('\n')).toContain(
-      "every PC has its own isolated network by design, so there are no other machines to find. Don't scan for them.",
+      "this PC's own network holds only it (and its Android phone), and other PCs cannot be reached. Don't scan for machines",
     );
     expect(lines.join('\n')).toContain('Android phone: preparing (downloading the Android image (40%))');
     expect(lines.join('\n')).toContain('There is no Android SDK emulator for arm64 Linux');

@@ -41,7 +41,11 @@ the PC can do, and the desk persona says to verify, try alternatives, never scan
 fixed the packaged Linux PC build context missing `sudoers-minevibe` (`packaging/build-app.ts` `LINUX_PC_CONTEXT`;
 the Containerfile copies it, so a bundled image build would have failed) and made `AppleContainerDriver.stop` try
 twice (errno 95 on `cgroup.kill` after Docker ran in a PC). The Reimage confirmation no longer says the home folder is
-kept (PcManager deletes it, as the troubleshooting page says; with the phone's data too).
+kept (PcManager deletes it, as the troubleshooting page says; with the phone's data too). Its review added the
+download consent (the first Android/KVM switch on a Mac waits for the Download / Not now modal, `PcInfo.consent`,
+`pc.consent`, which until then had no server side), a ToolGate `net_scan` backstop for the scan rule, the isolation
+notes for KVM and the phone (docs and PLAN §8.7), the runtime downloads in THIRD_PARTY_NOTICES.md, and a budget fix
+(a `pcs.json` switch this Mac cannot run no longer holds the phone's share or KVM's overhead).
 
 ## Found by PC capabilities (2026-10-09)
 - **The Android kernel is built on each Mac** (3.3 min at 4 vCPUs, once per engine app root, from the pinned
@@ -60,6 +64,13 @@ kept (PcManager deletes it, as the troubleshooting page says; with the phone's d
   already in the budget's `used`).
 - **Measured only on an M5 Pro** (macOS 27.0.1, `container` 1.5.0). The phone needs no nested virtualization, so it
   should run on M1/M2 too; nested virtualization is refused there by the chip check.
+- **The download consent covers the first opt-in only.** A MineVibe update that bumps the kernel id or the image pin,
+  or an engine that lost the image, rebuilds or re-downloads at the next boot of a PC that has the switch on, without
+  asking (the player opted in). A kernel id bump also recreates a KVM PC at its next start (its container no longer
+  matches), losing changes outside `/home/cua` like an image update does, with only a log line. An OK lives in
+  memory: after a restart, turning the switch on for another PC asks again if that download never finished.
+- **The `net_scan` gate reads the command line.** A scan from a script file, a language runtime (`python -c`) or a
+  renamed binary passes. The PC's network is the isolation; the gate only stops the honest mistake.
 - **Phone restarts have no backoff:** the monitor starts a stopped phone again at once, at most 3 times per PC boot,
   then shows the error.
 

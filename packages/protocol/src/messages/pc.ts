@@ -36,7 +36,7 @@ export const VaultMount = z.object({
 });
 export type VaultMount = z.infer<typeof VaultMount>;
 
-/** A download the player must approve (macOS image, ~24 GB). */
+/** A download the player must approve (macOS image, ~24 GB; a Linux PC's Android phone or KVM the first time). */
 export const PcConsentPrompt = z.object({
   consentId: ConsentId,
   /** What will be downloaded ("macOS 26 image"). */
@@ -106,7 +106,10 @@ export const PcInfo = z.object({
   screen: z
     .object({ w: z.number().int().min(1).max(65_535), h: z.number().int().min(1).max(65_535) })
     .nullable(),
-  /** Set while `status` is `awaiting_consent`. */
+  /**
+   * A download that waits for the player's OK: a macOS image while `status` is `awaiting_consent`, or what turning on
+   * a Linux PC's Android phone or nested virtualization needs the first time (the PC keeps its status; PLAN §8.7).
+   */
   consent: PcConsentPrompt.nullable(),
   /** Linux PCs only (absent for macOS). */
   capabilities: PcCapabilities.optional(),

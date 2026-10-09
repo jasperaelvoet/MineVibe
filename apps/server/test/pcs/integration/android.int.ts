@@ -142,6 +142,8 @@ describe.skipIf(!ENABLED)('PC capabilities on Apple container (MINEVIBE_TEST_AND
       }),
       androidHelper: readAndroidHelper(context),
       phoneBootTimeoutMs: 180_000,
+      // MINEVIBE_TEST_ANDROID=1 is the go-ahead for the downloads: no consent prompt.
+      askBeforeDownloads: false,
     });
     await manager.init({ createDefault: false });
     note('instance', manager.instanceId);
