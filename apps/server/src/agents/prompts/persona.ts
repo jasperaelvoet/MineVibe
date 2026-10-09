@@ -19,7 +19,10 @@ export interface PersonaInput {
   readonly ceo: boolean;
   readonly playerName: string;
   readonly nonce: string;
-  /** The `mc` tool set the texts name (default v1; docs/design/tools-v2-mc.md N9). */
+  /**
+   * The `mc` tool set the texts name (docs/design/tools-v2-mc.md N9). Sessions pass their own (the process default is
+   * v2, `MINEVIBE_MC_TOOLS`); absent, v1 (DEBT "The persona and the gate still fall back to v1").
+   */
   readonly mcTools?: McToolsVersion | undefined;
 }
 
