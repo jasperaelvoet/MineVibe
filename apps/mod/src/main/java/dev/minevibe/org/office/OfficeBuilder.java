@@ -20,6 +20,7 @@ import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.DyeColor;
@@ -53,7 +54,8 @@ import org.jspecify.annotations.Nullable;
  *   <li><b>Deterministic.</b> The same origin and terrain always give the same blocks; the orientation is fixed.</li>
  *   <li><b>Safe.</b> It only touches its own footprint (and the porch in front of the door): a solid foundation is
  *       filled down to the ground (at most {@value OfficePlan#MAX_FOUNDATION_DEPTH} blocks) under every cell, and
- *       only the room inside the walls is cleared. Blocks are set without neighbour updates, so nothing outside reacts
+ *       only the room inside the walls is cleared. The one exception: when the ground in front of the porch stands
+ *       higher than a step, stairs are cut up through it (natural blocks only), so the office always has a way out. Blocks are set without neighbour updates, so nothing outside reacts
  *       (no redstone, no falling sand), but shapes still connect (panes, doors, beds).</li>
  *   <li><b>Workstations.</b> Both slots are marked with polished andesite on the floor and reported as
  *       {@code workstation} slots. The PC blocks install a {@link WorkstationPlacer} ({@code PcModInit}) that puts
@@ -204,6 +206,8 @@ public final class OfficeBuilder {
 				}
 			}
 		}
+		// 2b. A way out when the ground in front of the porch stands higher than a step.
+		cutExit(level, origin);
 		// 3. Furniture, then what hangs on walls and the roof.
 		List<OfficeLayout.Slot> slots = new ArrayList<>();
 		for (Kind pass : List.of(Kind.DOOR, Kind.WINDOW, Kind.MEETING_TABLE, Kind.MEETING_CHAIR, Kind.BED, Kind.FURNACE, Kind.CRAFTING_TABLE,
@@ -344,6 +348,81 @@ public final class OfficeBuilder {
 			}
 			set(level, at.immutable(), FOUNDATION);
 		}
+	}
+
+	/** At most this many steps of exit stairs are cut in front of the porch. */
+	static final int MAX_EXIT_STEPS = 12;
+
+	/**
+	 * Cuts stairs from the porch up to the ground in front of it when the office stands lower than its surroundings: the
+	 * floor sits at the median of the terrain samples, so a lake or a slope on one side can sink it under a hillside
+	 * (seeds 42 and minevibe-e2e: 3 to 7 blocks), and the porch then opened into the hill with no way out for the player
+	 * or the crew (who may not dig in the Base). One step up per block outward, 3 wide and 3 high, a cobblestone tread
+	 * where the ground has a hole. Only natural ground, stone, plants and trees nobody placed are cut; anything else ends
+	 * the stairs.
+	 */
+	private static void cutExit(final ServerLevel level, final BlockPos origin) {
+		int feet = origin.getY() + 1;
+		for (int i = 1; i <= MAX_EXIT_STEPS; i++) {
+			int z = OfficePlan.PORCH_Z + i;
+			int ground = Integer.MIN_VALUE;
+			for (int dx = -1; dx <= 1; dx++) {
+				ground = Math.max(ground, standingHeight(level, at(origin, OfficePlan.DOOR_X + dx, 0, z), feet));
+			}
+			if (ground <= feet + 1) {
+				// At most a step up from here: the way out is open.
+				return;
+			}
+			feet++;
+			for (int dx = -1; dx <= 1; dx++) {
+				BlockPos column = new BlockPos(origin.getX() + OfficePlan.DOOR_X + dx, feet, origin.getZ() + z);
+				for (int y = 0; y < 3; y++) {
+					BlockPos p = column.above(y);
+					BlockState s = level.getBlockState(p);
+					if (s.isAir()) {
+						continue;
+					}
+					if (!cuttable(level, p, s)) {
+						return;
+					}
+					set(level, p, Blocks.AIR.defaultBlockState());
+				}
+				BlockPos tread = column.below();
+				BlockState t = level.getBlockState(tread);
+				if (t.getCollisionShape(level, tread).isEmpty()) {
+					if (!t.isAir() && !cuttable(level, tread, t)) {
+						return;
+					}
+					set(level, tread, FOUNDATION);
+				}
+			}
+		}
+	}
+
+	/** The lowest height from {@code from} up where a body fits in the column of {@code at}: two free cells. */
+	private static int standingHeight(final ServerLevel level, final BlockPos at, final int from) {
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		for (int y = from; y < from + 32; y++) {
+			if (free(level, p.set(at.getX(), y, at.getZ())) && free(level, p.set(at.getX(), y + 1, at.getZ()))) {
+				return y;
+			}
+		}
+		return from + 32;
+	}
+
+	private static boolean free(final ServerLevel level, final BlockPos p) {
+		BlockState s = level.getBlockState(p);
+		return s.getCollisionShape(level, p).isEmpty() && s.getFluidState().isEmpty();
+	}
+
+	/** Natural blocks nobody placed: ground, stone, sand and gravel, plants, and the trees that grow on them. */
+	private static boolean cuttable(final ServerLevel level, final BlockPos p, final BlockState s) {
+		if (s.hasBlockEntity() || !s.getFluidState().isEmpty() || Provenance.ownerAt(level, p) != null) {
+			return false;
+		}
+		return s.canBeReplaced() || s.is(BlockTags.SUBSTRATE_OVERWORLD) || s.is(BlockTags.BASE_STONE_OVERWORLD) || s.is(BlockTags.SAND)
+			|| s.is(Blocks.GRAVEL) || s.is(Blocks.CLAY) || s.is(BlockTags.LEAVES) || s.is(BlockTags.LOGS) || s.is(BlockTags.SNOW)
+			|| BuiltInRegistries.BLOCK.getKey(s.getBlock()).getPath().endsWith("_ore");
 	}
 
 	private static void set(final ServerLevel level, final BlockPos pos, final BlockState state) {

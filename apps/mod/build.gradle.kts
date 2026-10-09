@@ -105,6 +105,14 @@ gameTestTasks.forEach { name ->
 	}
 }
 
+// `./gradlew runGameTest -Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'` runs only the matching server
+// GameTests (vanilla's test selector, `*` wildcards).
+providers.gradleProperty("minevibe.gametestFilter").orNull?.let { filter ->
+	tasks.named<JavaExec>("runGameTest") {
+		systemProperty("fabric-api.gametest.filter", filter)
+	}
+}
+
 tasks.withType<ProcessResources>().configureEach {
 	val modVersion = project.version.toString()
 	inputs.property("version", modVersion)

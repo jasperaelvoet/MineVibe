@@ -2,17 +2,9 @@ package dev.minevibe.agent.nav;
 
 import dev.minevibe.agent.AgentControls;
 import dev.minevibe.agent.AgentPlayer;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.block.DoorBlock;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
@@ -28,10 +20,7 @@ public final class PathExecutor {
 	private @Nullable Path path;
 	private int index;
 	private boolean blocked;
-	private final List<OpenedDoor> openedDoors = new ArrayList<>();
-
-	private record OpenedDoor(BlockPos pos, int tick) {
-	}
+	private final NavDoors doors = new NavDoors();
 
 	public void setPath(final @Nullable Path path, final AgentPlayer agent) {
 		this.path = path;
@@ -91,7 +80,7 @@ public final class PathExecutor {
 
 	/** Closes doors this executor opened once the agent is clear of them. Called every tick, moving or not. */
 	public void maintainDoors(final AgentPlayer agent) {
-		this.closeDoorsBehind(agent);
+		this.doors.closeBehind(agent, this::pathGoesThrough);
 	}
 
 	/** One tick of path following. Sets movement intentions on the agent's controls. */
@@ -119,7 +108,7 @@ public final class PathExecutor {
 		// Doors in the next two nodes: open them (wooden only; the evaluator already avoids iron doors).
 		for (int i = this.index; i < Math.min(this.index + 2, this.path.getNodeCount()); i++) {
 			Node n = this.path.getNode(i);
-			this.openDoorIfClosed(agent, new BlockPos(n.x, n.y, n.z));
+			this.doors.openIfClosed(agent, new BlockPos(n.x, n.y, n.z));
 		}
 
 		controls.look(controls.yawTo(target), agent.isInWater() ? -10.0F : 10.0F);
@@ -188,56 +177,6 @@ public final class PathExecutor {
 			}
 		}
 		return true;
-	}
-
-	private void openDoorIfClosed(final AgentPlayer agent, final BlockPos feet) {
-		ServerLevel level = agent.level();
-		for (BlockPos pos : new BlockPos[] {feet, feet.above()}) {
-			BlockState state = level.getBlockState(pos);
-			if (state.getBlock() instanceof DoorBlock door && door.type().canOpenByHand() && !state.getValue(DoorBlock.OPEN)) {
-				Vec3 center = Vec3.atCenterOf(pos);
-				if (agent.getEyePosition().distanceTo(center) > 3.5) {
-					return;
-				}
-				Direction face = Direction.getApproximateNearest(agent.getX() - center.x, 0.0, agent.getZ() - center.z);
-				agent.controls().lookAt(center);
-				agent.controls().useBlock(pos, face);
-				if (level.getBlockState(pos).getValue(DoorBlock.OPEN)) {
-					BlockPos lower = state.getValue(DoorBlock.HALF) == net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER ? pos : pos.below();
-					this.openedDoors.add(new OpenedDoor(lower, agent.tickCount));
-				}
-				return;
-			}
-		}
-	}
-
-	private void closeDoorsBehind(final AgentPlayer agent) {
-		if (this.openedDoors.isEmpty()) {
-			return;
-		}
-		ServerLevel level = agent.level();
-		Iterator<OpenedDoor> it = this.openedDoors.iterator();
-		while (it.hasNext()) {
-			OpenedDoor door = it.next();
-			BlockState state = level.getBlockState(door.pos());
-			if (!(state.getBlock() instanceof DoorBlock) || !state.getValue(DoorBlock.OPEN)) {
-				it.remove();
-				continue;
-			}
-			double dist = agent.position().distanceTo(Vec3.atBottomCenterOf(door.pos()));
-			if (dist > 6.0) {
-				it.remove();
-				continue;
-			}
-			AABB doorBox = new AABB(door.pos()).expandTowards(0.0, 1.0, 0.0).inflate(0.35, 0.0, 0.35);
-			if (dist > 1.6 && !agent.getBoundingBox().intersects(doorBox) && agent.tickCount - door.tick() > 5 && !this.pathGoesThrough(door.pos())) {
-				Direction face = Direction.getApproximateNearest(agent.getX() - (door.pos().getX() + 0.5), 0.0, agent.getZ() - (door.pos().getZ() + 0.5));
-				agent.controls().useBlock(door.pos(), face);
-				if (!level.getBlockState(door.pos()).getValue(DoorBlock.OPEN)) {
-					it.remove();
-				}
-			}
-		}
 	}
 
 	private boolean pathGoesThrough(final BlockPos doorLower) {

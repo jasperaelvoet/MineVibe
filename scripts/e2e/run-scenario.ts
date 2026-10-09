@@ -15,7 +15,8 @@
  * Usage (repo root, after `npm install` and `cd apps/mod && ./gradlew build`):
  *   node --conditions=source --import tsx scripts/e2e/run-scenario.ts [options]
  *     --crew agents|scripted   agents (default) spends subscription quota; scripted is zero-token (steps 1, 8, 9
- *                              plus a chat/UI smoke test and a tree check for --seed)
+ *                              plus a chat/UI smoke test and a tree check for --seed, and step 3 done by the
+ *                              mod's own jobs: collect 10 oak logs and craft a table, with reach numbers)
  *     --steps 1,2,3            run only these steps (9 always runs last)
  *     --seed <seed>            MINEVIBE_WORLD_SEED for repeatable terrain
  *     --max-turns <n>          stop prompting the crew after n agent turns (default 40)
@@ -586,6 +587,48 @@ function needTurns(r: StepResult, n: number): boolean {
 }
 
 let firstWorld: string | null = null;
+/** The temporary MINEVIBE_HOME (the game's own log is `game/logs/latest.log` under it). */
+let gameHome: string | null = null;
+
+/** The game's `latest.log` as lines (empty before the game wrote one). */
+function gameLogLines(): string[] {
+  const f = gameHome ? join(gameHome, 'game', 'logs', 'latest.log') : null;
+  if (!f || !existsSync(f)) return [];
+  return readFileSync(f, 'utf8').split('\n');
+}
+
+/**
+ * Runs one skill on the mod and waits for its end: the `skill.run` reply, or the `skill.result` that follows a
+ * `running` reply (the mod answers `running` after 2 minutes at most). A job past `timeoutMs` is cancelled.
+ */
+async function runJob(
+  agentId: string,
+  skill: 'collect' | 'craft' | 'goto' | 'mine',
+  args: Json,
+  timeoutMs: number,
+): Promise<Json> {
+  const jobId = `e2e-${skill}-${Date.now()}`;
+  const waitMs = Math.min(120_000, timeoutMs);
+  const reply = (await runtime()
+    .bridge.request(
+      'skill.run',
+      { jobId, agentId, skill, args, waitMs, replace: true },
+      { timeoutMs: waitMs + 15_000 },
+    )
+    .catch((e: Error) => ({ status: 'error', error: { code: 'BRIDGE', msg: e.message } }))) as Json;
+  if (reply.status !== 'running') return reply;
+  const end = await waitFor(
+    `${skill} job ${jobId}`,
+    timeoutMs,
+    () => events.find((e) => e.dir === 'in' && e.t === 'skill.result' && e.p.jobId === jobId),
+    1_000,
+  ).catch(() => null);
+  if (end) return end.p;
+  await runtime()
+    .bridge.request('skill.cancel', { agentId, jobId, reason: 'e2e timeout' })
+    .catch(() => {});
+  return { status: 'timeout', jobId };
+}
 
 async function step1(r: StepResult): Promise<void> {
   let lastWindowLog = 0;
@@ -738,6 +781,7 @@ async function step2(r: StepResult): Promise<void> {
 }
 
 async function step3(r: StepResult): Promise<void> {
+  if (crewMode === 'scripted') return step3Scripted(r);
   if (!needTurns(r, 6)) return;
   const boss = ceo();
   if (!boss) throw new Error('no CEO');
@@ -817,6 +861,83 @@ async function step3(r: StepResult): Promise<void> {
       myTools.every((t) => t.effort === null || String(t.effort) === 'xhigh'),
     'tools ran at effort xhigh',
   );
+}
+
+/**
+ * Step 3 at zero tokens (`--crew scripted`): the mod's own jobs do what the CEO's tools would, from where the body
+ * stands (in the office, by the player): `collect oak_log` x10, then planks and a crafting table. Seeds compare on the
+ * same moves: logs gathered, time, the targets the job gave up on as unreachable (`result.unreachable`), and the
+ * navigator's failures and dig plans from the game log.
+ */
+async function step3Scripted(r: StepResult): Promise<void> {
+  const boss = await waitFor(
+    'the scripted CEO',
+    60_000,
+    () => {
+      const c = ceo();
+      return c && agentOnClient(c.agentId) ? c : null;
+    },
+    500,
+  );
+  // Oak if there is any within 48 blocks (the radius the harness's `find` uses), else the nearest other log, so every
+  // seed measures reach on some tree.
+  type Match = { distance?: number; block?: string };
+  const oak = (await find(boss.agentId, 'minecraft:oak_log', 48).catch(() => ({}))) as Json;
+  let matches = (oak.matches as Match[] | undefined) ?? [];
+  let log = 'oak_log';
+  if (matches.length === 0) {
+    const any = (await find(boss.agentId, '#minecraft:logs', 48).catch(() => ({}))) as Json;
+    matches = (any.matches as Match[] | undefined) ?? [];
+    log = matches[0]?.block?.replace(/^minecraft:/, '') ?? 'oak_log';
+  }
+  r.numbers.log = log;
+  r.numbers.logNearest = matches.map((m) => (typeof m.distance === 'number' ? round(m.distance) : '?'));
+  const logFrom = gameLogLines().length;
+  const at = Date.now();
+  const job = await runJob(boss.agentId, 'collect', { item: log, count: 10, radius: 48 }, 8 * 60_000);
+  const result = (job.result ?? {}) as Json;
+  const error = (job.error ?? null) as { code?: string; msg?: string } | null;
+  r.numbers.collect = `${String(job.status)}${error ? ` ${error.code}: ${String(error.msg).slice(0, 120)}` : ''}`;
+  r.numbers.collectS = round((Date.now() - at) / 1000);
+  const jobLog = gameLogLines().slice(logFrom);
+  const logs = countItem(await inventory(boss.agentId).catch(() => []), log);
+  r.numbers.logs = logs;
+  let table = 0;
+  if (logs >= 1) {
+    const plank = log.replace(/_(log|stem)$/, '_planks');
+    const planks = await runJob(boss.agentId, 'craft', { item: plank, count: 4 }, 90_000);
+    const made = await runJob(boss.agentId, 'craft', { item: 'crafting_table', count: 1 }, 90_000);
+    r.numbers.craft = `${String(planks.status)}/${String(made.status)}`;
+    table = countItem(await inventory(boss.agentId).catch(() => []), 'crafting_table');
+  }
+  r.numbers.craftingTable = table;
+  // Reach: blocks mined against mining targets given up on. Since navigation v2 the job reports both numbers itself
+  // (`mined`, `unreachable`) and a failed walk says what it was after (`kind=block` for a target, `kind=pickup` for a
+  // drop). Before, the game log is all there is: a walk to a target heads for the block's bottom centre (x.5 y z.5),
+  // any other failed walk was after a drop, which stays behind.
+  const failed = jobLog.filter((l) => / nav\.failed /.test(l));
+  const reasons: Record<string, number> = {};
+  let targetWalks = 0;
+  for (const l of failed) {
+    const k = /reason=([a-z_]+)/.exec(l)?.[1] ?? '?';
+    reasons[k] = (reasons[k] ?? 0) + 1;
+    const kind = /kind=([a-z]+)/.exec(l)?.[1];
+    const g = /goal=\((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/.exec(l);
+    const centre = (v: string | undefined) => v !== undefined && /\.5$/.test(v);
+    const atCentre = g !== null && centre(g[1]) && /^-?\d+\.0$/.test(g[2] ?? '') && centre(g[3]);
+    if (kind ? kind === 'block' : atCentre) targetWalks++;
+  }
+  r.numbers.navFailed = failed.length;
+  r.numbers.navFailedReasons = reasons;
+  r.numbers.dropsLeft = failed.length - targetWalks;
+  r.numbers.digPlans = jobLog.filter((l) => / nav\.dig /.test(l)).length;
+  const gaveUp = typeof result.unreachable === 'number' ? result.unreachable : targetWalks;
+  r.numbers.unreachableTargets = gaveUp;
+  const reached = typeof result.mined === 'number' ? result.mined : Math.min(10, logs);
+  r.numbers.mined = reached;
+  r.numbers.reachRate = reached + gaveUp > 0 ? round(reached / (reached + gaveUp), 2) : null;
+  check(r, logs >= 9, `about 10 logs collected (${logs} ${log})`);
+  check(r, table >= 1, `a crafting table crafted (${table})`);
 }
 
 async function step4(r: StepResult): Promise<void> {
@@ -1664,6 +1785,7 @@ async function main(): Promise<void> {
 }
 
 async function session(home: string): Promise<void> {
+  gameHome = home;
   await seedHome(home);
   const env: Record<string, string | undefined> = {
     ...process.env,

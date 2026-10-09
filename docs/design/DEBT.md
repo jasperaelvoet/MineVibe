@@ -12,7 +12,27 @@ missing `/mnt/codex` in PCs, the mod's `ok` replies dropping nested nulls, plan 
 leaking PC instances (`npm run doctor -- --clean-orphans`, and the E2E harness removes its own instance on exit), the
 lint no-op inside worktrees, the monitor stopping strays while `bootAll` runs, and a `devServer` contract test that
 booted a real linux-1 from `npm test`; the doubled status footer had already been fixed (Node splits the mod's
-`footer` off, `mcServer.ts` `splitFooter`).
+`footer` off, `mcServer.ts` `splitFooter`). Navigation v2 (2026-10-09, Tier 2 in PLAN §7.2) fixed
+"visible oak is unreachable on most seeds": on seeds 42 and minevibe-e2e the starter office was sunk into a hillside
+with its porch opening into the ground (`OfficeBuilder` now cuts stairs up from the porch), and canopy logs, ledges,
+gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bridges its way there; ACCEPTANCE.md,
+"Navigation v2").
+
+## Found by navigation v2 (2026-10-09)
+- **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
+  pillar (3 blocks, 2 at low health, so the agent can always get down without digging under itself) nor its own
+  (2 blocks) reaches: 30 of 117 targets in the zero-token runs on `b7c347f`, 14 of 94 on `5f7e72d`, most in the
+  spruce of seed `217793310` (ACCEPTANCE.md, "Navigation v2"). Each costs a Tier-2 search that runs out (20 000
+  nodes, 70-110 ticks at 1.5 ms).
+  - **Fix:** a dedicated "log straight above, beside its trunk" plan (pillar beside the trunk up to the log, clear it
+    on the way down), and skip the search for logs above the pillar limit outright.
+- **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars
+  Tier 2 built; any other walk leaves its scaffold (noted, so agents may break it again later).
+- **The office's floor still follows the median of 9 terrain samples.** Its exit stairs fix the buried porch, but a
+  porch high above the ground in front (a cliff side) gets no stairs down; a drop over 3 blocks there hurts the player.
+- **`mine` and `collect` search 24 blocks by default, `find` 32.** An agent that `find`s oak at 28 blocks and then
+  `collect`s without `radius` gets `NOT_FOUND` (seed `mv-forest-1`, nearest oak 27.9 from the office). The scripted
+  step 3 passes `radius: 48`. Fix: one default for both (W1 owns tree targeting).
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
 - **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
@@ -53,18 +73,6 @@ booted a real linux-1 from `npm test`; the doubled status footer had already bee
   (`persistSession: true`), probably a small background model call per turn that no usage number counts.
 - **`runLock.test.ts` "never shows a reader an empty or partial lock" times out (5 s) under a full `npm test`** on a
   busy machine (4 of 6 full runs here); it passes alone.
-
-## Found in the live acceptance run (2026-10-09)
-- **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to
-  18 blocks away on seeds `minevibe-e2e` and `42`, from inside the office and again from the porch outside the door;
-  seed `mv-forest-1` works. In live run 1 the CEO then mined other logs (and, before the office fix, the office's
-  corner posts). A plain `mine oak_log` without `radius` answered `NOT_FOUND` ("found only 0 of 10") while `find`
-  (radius 64) listed oak at 10.7 blocks. Zero-token repro: `node --conditions=source --import tsx
-  scripts/e2e/run-scenario.ts --crew scripted --steps 1,0 --seed 42` (`oakMineJob`, `oakFromPorch` in the result).
-  - **Suspects:** `Miner` picks the nearest *exposed* log, which can be high in the canopy; `AgentNavigator` counts
-    segments that do not get closer as fruitless and gives up after 4 (`MAX_FRUITLESS_SEGMENTS`), so a detour fails.
-  - **Fix:** prefer trunk logs reachable from the ground (or rank targets by path cost), and let `mine`'s default
-    radius match what `find` reports. (Owned by the world-awareness track: natural tree targeting.)
 
 ## Found in the D2 sweep (2026-10-09)
 - **PC instances from before the registry stay in the dev engine.** `doctor --clean-orphans` knows an instance's home

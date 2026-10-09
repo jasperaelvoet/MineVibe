@@ -58,7 +58,7 @@ public final class GotoSkillJob extends SkillJob {
 		BlockPos target = this.pos != null ? this.pos : this.place;
 		if (target != null) {
 			Vec3 goal = Vec3.atBottomCenterOf(target);
-			Walk.State s = this.walk.to(agent, goal, this.range);
+			Walk.State s = this.walk.toDig(agent, goal, this.range);
 			this.progress(null, String.format(Locale.ROOT, "%.0f blocks to go", agent.position().distanceTo(goal)));
 			return switch (s) {
 				case ARRIVED -> this.arrived(agent, goal);

@@ -138,7 +138,7 @@ exits.
 | `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation, the Codex at `/mnt/codex`, orphaned instances | Local only |
 | `npm run test:live` | A small live smoke test of the Claude Agent SDK. **Uses a little of your subscription quota.** | Local only |
 | `node spikes/s7-boot/run.mjs` | The end-to-end scenario (E2E mode): boot, death, Begin, a Node restart, a kill on Game Over | Local only |
-| `node --conditions=source --import tsx scripts/e2e/run-scenario.ts` | The live acceptance run through `npm run play`: boot, the CEO, a task, a question, the PC flow and model swaps, a kick, the Codex and the calendar, death, quit with no orphans ([ACCEPTANCE.md](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/ACCEPTANCE.md)). **Uses your subscription quota**; `--crew scripted` runs the zero-token part. | Local only |
+| `node --conditions=source --import tsx scripts/e2e/run-scenario.ts` | The live acceptance run through `npm run play`: boot, the CEO, a task, a question, the PC flow and model swaps, a kick, the Codex and the calendar, death, quit with no orphans ([ACCEPTANCE.md](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/ACCEPTANCE.md)). **Uses your subscription quota**; `--crew scripted` runs the zero-token part (step 3 then has the mod's own jobs collect 10 logs and craft a table, and reports how many targets the body reached; `MINEVIBE_NAV_DEBUG=1` adds terrain maps of failed walks to the game log). | Local only |
 
 The last four need this Mac, real VMs or a Claude subscription, so they never run in CI.
 
@@ -164,6 +164,9 @@ minevibe.acceptMinecraftEula=true
 The file belongs to one checkout: a fresh clone or a new git worktree has none, so its GameTests are skipped until
 you add (or copy) one. The maintainer accepted the EULA for this repository's CI, which passes the flag in the
 `mod` job; forks don't inherit that.
+
+To run only some server GameTests, pass vanilla's test selector: `./gradlew runGameTest
+-Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'` (the navigation tests).
 
 ### Linting inside a git worktree
 
