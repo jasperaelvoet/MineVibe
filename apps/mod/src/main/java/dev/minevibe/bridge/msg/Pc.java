@@ -212,7 +212,15 @@ public final class Pc {
 	public record PcConfigResult(boolean recreate) {}
 
 	/** M→N request. {@code create} takes {@code type} and no {@code pcId}; other actions take {@code pcId}. */
-	public record PcAction(String action, @Nullable String pcId, @Nullable String type, @Nullable BlockPos pos) {}
+	/**
+	 * {@code placed} ({@code create} only): the PCs with a desk in this world as far as the mod knows; Node plugs one of
+	 * the others of the same family before it creates a new PC (PLAN 7.5).
+	 */
+	public record PcAction(String action, @Nullable String pcId, @Nullable String type, @Nullable BlockPos pos, @Nullable List<String> placed) {
+		public PcAction(String action, @Nullable String pcId, @Nullable String type, @Nullable BlockPos pos) {
+			this(action, pcId, type, pos, null);
+		}
+	}
 
 	public record PcActionResult(String pcId) {}
 
@@ -342,6 +350,7 @@ public final class Pc {
 			.opt("pcId", PC_ID)
 			.opt("type", PC_TYPE)
 			.opt("pos", BLOCK_POS)
+			.opt("placed", array(PC_ID, 0, 64))
 			.refine(o -> "create".equals(Ui.str(o.get("action"))) ? o.has("type") && !o.has("pcId") : o.has("pcId"),
 					"create needs type and no pcId; other actions need pcId"));
 

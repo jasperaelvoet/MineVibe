@@ -1,0 +1,24 @@
+{
+  "parent": "minevibe:guide/alive",
+  "criteria": {
+    "placed": {
+      "trigger": "minevibe:placed_workstation"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:linux_workstation"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.desk.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.desk.description"
+    }
+  },
+  "requirements": [
+    [
+      "placed"
+    ]
+  ]
+}

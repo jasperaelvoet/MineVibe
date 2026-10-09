@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isApiError } from '../../../src/contracts/common.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { isErrorResult, resultText, settle } from '../../helpers/fakeSdk.js';
 
 let h: Harness | null = null;
@@ -23,9 +23,11 @@ const QUESTION = {
 };
 
 /** Fresh world with the CEO's welcome turn finished. */
-async function freshWorld(): Promise<Harness & { ceoId: string }> {
-  h = await createHarness();
-  await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+async function freshWorld(
+  options: Parameters<typeof createHarness>[0] = {},
+): Promise<Harness & { ceoId: string }> {
+  h = await createHarness(options);
+  await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
   const ceoId = h.manager.listAgents()[0]?.agentId ?? '';
   const q = h.query(0);
   await h.until(() => h?.texts(q).some((t) => t.includes('WELCOME')) ?? false, 'welcome');
@@ -37,11 +39,29 @@ async function freshWorld(): Promise<Harness & { ceoId: string }> {
 }
 
 describe('AgentManager: world lifecycle', () => {
-  it('spawns the CEO on a fresh world and starts its session with the exact options', async () => {
+  it('a fresh world starts with nobody: no CEO, no session, until the awakening ritual', async () => {
     h = await createHarness();
     await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    expect(h.skills.spawned).toEqual([]);
+    expect(h.manager.listAgents()).toEqual([]);
+    expect(h.factory.queries).toHaveLength(0);
+    expect(h.events.filter((e) => e.type === 'crew').at(-1)?.payload).toEqual({ crew: [] });
+    // Even a new game day brings nobody (no newcomer at dawn any more).
+    h.manager.onWorldState({ worldId: 'w1', phase: 'ready', clockTime: 23_000 });
+    h.manager.onWorldState({ worldId: 'w1', phase: 'ready', clockTime: 24_500 });
+    await settle();
+    expect(h.skills.spawned).toEqual([]);
+  });
+
+  it('the awakening ritual hires the CEO at the copper stack and starts its session with the exact options', async () => {
+    h = await createHarness();
+    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    const place = { pos: { x: 12, y: 64, z: -35 }, dim: 'minecraft:overworld' };
+    const woke = await h.manager.awaken(place);
+    expect(woke).toEqual({ agentId: h.manager.listAgents()[0]?.agentId, name: 'Ada' });
     expect(h.skills.spawned).toHaveLength(1);
     expect(h.skills.spawned[0]).toMatchObject({
+      at: place,
       role: 'ceo',
       ceo: true,
       restore: false,
@@ -81,7 +101,7 @@ describe('AgentManager: world lifecycle', () => {
     expect(h.events.some((e) => e.type === 'say' && (e.payload as { bark?: string }).bark === 'wake')).toBe(
       true,
     );
-    expect(h.events.find((e) => e.type === 'crew')?.payload).toMatchObject({
+    expect(h.events.filter((e) => e.type === 'crew').at(-1)?.payload).toMatchObject({
       crew: [{ handle: 'ada', ceo: true }],
     });
     // The claude cwd exists before the process is spawned (a missing cwd fails to launch).
@@ -91,9 +111,37 @@ describe('AgentManager: world lifecycle', () => {
     expect(crewFile.records[0]).toMatchObject({ handle: 'ada', ceo: true, sessionStarted: false });
   });
 
+  it('refuses a second awakening while a CEO lives (the core is for hires), and one without a world', async () => {
+    h = await createHarness();
+    await expect(
+      h.manager.awaken({ pos: { x: 0, y: 64, z: 0 }, dim: 'minecraft:overworld' }),
+    ).rejects.toSatisfy((e) => isApiError(e, 'NOT_READY'));
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
+    await expect(
+      h.manager.awaken({ pos: { x: 0, y: 64, z: 0 }, dim: 'minecraft:overworld' }),
+    ).rejects.toSatisfy(
+      (e) =>
+        isApiError(e, 'CEO_EXISTS') && /Ada is your CEO.*approve a hire card to use a core/.test(e.message),
+    );
+    expect(h.skills.spawned).toHaveLength(1);
+  });
+
+  it('refuses the awakening while no claude can run the brain, so the core is not spent', async () => {
+    h = await createHarness({
+      claude: () => {
+        throw new Error('run `claude update`');
+      },
+    });
+    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await expect(
+      h.manager.awaken({ pos: { x: 0, y: 64, z: 0 }, dim: 'minecraft:overworld' }),
+    ).rejects.toSatisfy((e) => isApiError(e, 'NOT_READY') && e.message.includes('claude update'));
+    expect(h.skills.spawned).toEqual([]);
+  });
+
   it('re-sends the brain after the crew list, so a new CEO shows its head icon during its first turn', async () => {
     h = await createHarness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const ceoId = h.manager.listAgents()[0]?.agentId ?? '';
     const events = h.events.map((e) => ({
       type: e.type,
@@ -113,7 +161,7 @@ describe('AgentManager: world lifecycle', () => {
 
   it('runs the startup assertions: a third-party provider puts the brain to sleep with a toast', async () => {
     h = await createHarness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const q = h.query(0);
     q.account = { apiProvider: 'bedrock' };
     q.init();
@@ -468,7 +516,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
     );
   });
 
-  it('an empty crew gets a newcomer CEO at the next dawn', async () => {
+  it('an empty crew gets no newcomer at dawn: the player awakens the next CEO with a core', async () => {
     const w = await freshWorld();
     w.manager.onWorldState({ worldId: 'w1', phase: 'ready', clockTime: 10_000 });
     await w.manager.onAgentDied({
@@ -480,15 +528,161 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
       dim: 'minecraft:overworld',
     });
     expect(w.manager.listAgents().filter((a) => a.status === 'alive')).toHaveLength(0);
+    expect(
+      w.events.some((e) => e.type === 'toast' && (e.payload as { text: string }).text.includes('Agent Core')),
+    ).toBe(true);
     w.manager.onWorldState({ worldId: 'w1', phase: 'ready', clockTime: 20_000 });
-    await settle();
-    expect(w.skills.spawned).toHaveLength(1);
     w.manager.onWorldState({ worldId: 'w1', phase: 'ready', clockTime: 24_100 });
-    await w.until(() => w.skills.spawned.length === 2, 'newcomer');
+    await settle(5);
+    expect(w.skills.spawned).toHaveLength(1);
+    const place = { pos: { x: -4, y: 70, z: 9 }, dim: 'minecraft:overworld' };
+    await w.manager.awaken(place);
+    expect(w.skills.spawned[1]).toMatchObject({ at: place, ceo: true, name: 'Bram' });
     expect(w.manager.listAgents().find((a) => a.status === 'alive')).toMatchObject({
       ceo: true,
       name: 'Bram',
     });
+  });
+
+  it('approving a hire costs an Agent Core: refused without one (the card stays up), declining costs nothing', async () => {
+    const paid: { pendingId: string; name: string; refund: boolean }[] = [];
+    let cores = 0;
+    const w = await freshWorld({
+      payHire: async (req) => {
+        if (!req.refund && cores === 0) {
+          throw Object.assign(new Error('no core'), { code: 'NO_CORE' });
+        }
+        cores += req.refund ? 1 : -1;
+        paid.push(req);
+      },
+    });
+    const id = await hire(w);
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy(
+      (e) => isApiError(e, 'NO_CORE') && /costs 1 Agent Core/.test(e.message),
+    );
+    expect(w.manager.pendingCards().find((c) => c.id === id)).toBeDefined();
+    expect(w.skills.spawned).toHaveLength(1);
+    // Chat approvals pay the same way.
+    await expect(w.manager.deliverChat({ to: 'all', text: '@ada yes' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'NO_CORE'),
+    );
+    cores = 1;
+    const res = await w.manager.answerCard(id, { kind: 'approve' });
+    expect(res.echo).toMatch(/hire approved: Bram \(miner\), 1 Agent Core spent/);
+    expect(paid).toEqual([{ pendingId: id, name: 'Bram', refund: false }]);
+    expect(cores).toBe(0);
+    expect(w.skills.spawned).toHaveLength(2);
+  });
+
+  it('a declined hire never asks for a core', async () => {
+    const paid: unknown[] = [];
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push(req);
+      },
+    });
+    const id = await hire(w);
+    await w.manager.answerCard(id, { kind: 'decline' });
+    expect(paid).toEqual([]);
+    expect(w.skills.spawned).toHaveLength(1);
+  });
+
+  it('two approvals at once (the card, G and chat) charge one core and hire once', async () => {
+    const paid: { pendingId: string; refund: boolean }[] = [];
+    let release: () => void = () => {};
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ pendingId: req.pendingId, refund: req.refund });
+        if (!req.refund) await new Promise<void>((r) => (release = r));
+      },
+    });
+    const id = await hire(w);
+    const first = w.manager.answerCard(id, { kind: 'approve' });
+    await w.until(() => paid.length === 1, 'hire.pay in flight');
+    // While the core is being taken, a second approval (or a decline) is turned away instead of paying again.
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'NOT_READY'),
+    );
+    await expect(w.manager.answerCard(id, { kind: 'decline' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'NOT_READY'),
+    );
+    release();
+    expect((await first).echo).toMatch(/hire approved: Bram/);
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'CARD_GONE'),
+    );
+    expect(paid).toEqual([{ pendingId: id, refund: false }]);
+    expect(w.skills.spawned).toHaveLength(2);
+  });
+
+  it('a hire.pay that fails (a timeout) asks for a refund, keeps the card up and spawns nobody', async () => {
+    const paid: { refund: boolean }[] = [];
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ refund: req.refund });
+        if (!req.refund) throw Object.assign(new Error('hire.pay timed out'), { code: 'TIMEOUT' });
+      },
+    });
+    const id = await hire(w);
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy(
+      (e) => isApiError(e, 'NOT_READY') && /nothing was spent/.test(e.message),
+    );
+    await settle();
+    // The mod gives back only a core it really took for this card (hire.pay refunds are idempotent).
+    expect(paid).toEqual([{ refund: false }, { refund: true }]);
+    expect(w.manager.pendingCards().find((c) => c.id === id)).toBeDefined();
+    expect(w.skills.spawned).toHaveLength(1);
+  });
+
+  it('a card that goes while its core is being taken gets the core back and hires nobody', async () => {
+    const paid: { refund: boolean }[] = [];
+    let release: () => void = () => {};
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ refund: req.refund });
+        if (!req.refund) await new Promise<void>((r) => (release = r));
+      },
+    });
+    const id = await hire(w);
+    const approving = w.manager.answerCard(id, { kind: 'approve' });
+    await w.until(() => paid.length === 1, 'hire.pay in flight');
+    // The CEO dies meanwhile: nobody is left, so the hire card ends.
+    await w.manager.onAgentDied({
+      agentId: w.ceoId,
+      worldId: 'w1',
+      cause: 'lava',
+      day: 1,
+      pos: { x: 0, y: 60, z: 0 },
+      dim: 'minecraft:overworld',
+    });
+    release();
+    await expect(approving).rejects.toSatisfy((e) => isApiError(e, 'CARD_GONE'));
+    await settle();
+    expect(paid).toEqual([{ refund: false }, { refund: true }]);
+    expect(w.skills.spawned).toHaveLength(1);
+  });
+
+  it("no second CEO wakes while the dead CEO's successor is being promoted", async () => {
+    const w = await freshWorld();
+    const id = await hire(w);
+    await w.manager.answerCard(id, { kind: 'approve' });
+    expect(w.manager.listAgents().filter((a) => a.status === 'alive')).toHaveLength(2);
+    // The CEO dies, and the player performs the ritual before the successor is promoted.
+    const died = w.manager.onAgentDied({
+      agentId: w.ceoId,
+      worldId: 'w1',
+      cause: 'lava',
+      day: 1,
+      pos: { x: 0, y: 60, z: 0 },
+      dim: 'minecraft:overworld',
+    });
+    const woke = w.manager.awaken({ pos: { x: 3, y: 64, z: 3 }, dim: 'minecraft:overworld' });
+    await expect(woke).rejects.toSatisfy((e) => isApiError(e, 'CEO_EXISTS') && /Bram/.test(e.message));
+    await died;
+    const alive = w.manager.listAgents().filter((a) => a.status === 'alive');
+    expect(alive).toHaveLength(1);
+    expect(alive[0]).toMatchObject({ name: 'Bram', ceo: true });
+    expect(w.skills.spawned).toHaveLength(2);
   });
 });
 
@@ -544,7 +738,7 @@ describe('AgentManager: commands and usage', () => {
 
   it('a session that never started is restarted fresh, and a failed resume starts a new session', async () => {
     h = await createHarness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const q = h.query(0);
     const first = q.options.sessionId;
     q.crash('Claude Code native binary exists but failed to launch');
@@ -563,7 +757,7 @@ describe('AgentManager: commands and usage', () => {
 
   it('after too many crashes the brain goes offline with a toast; Retry restarts it', async () => {
     h = await createHarness({ supervisor: { maxRestarts: 1, backoff: { base: 1, max: 1 } } });
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
     h.query(0).crash('boom');
     await h.until(() => h?.factory.queries.length === 2, 'restart');

@@ -6,7 +6,7 @@
 
 import type { AgentBody, PayloadOf } from '@minevibe/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
 
 // These sessions call the v1 mc tools, the fallback behind MINEVIBE_MC_TOOLS=v1 (v2: toolsV2Runtime.test.ts).
@@ -56,7 +56,7 @@ async function officeWorld() {
   h = await createHarness();
   const w = h;
   w.manager.onWorldState({ worldId: 'w1', phase: 'ready', office: OFFICE, clockTime: CLOCK });
-  await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+  await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
   const id = w.manager.listAgents()[0]?.agentId ?? '';
   const q = w.query(0);
   await w.until(() => w.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -119,7 +119,7 @@ describe('world context on the agent runtime', () => {
     // The persona carries the world primer.
     const append = (q.options.systemPrompt as { append?: string }).append ?? '';
     expect(append).toContain('## The world');
-    expect(append).toContain("The Base (the office you start in) is Jordan's home.");
+    expect(append).toContain("The Base (the office, once there is one) is Jordan's home.");
   });
 
   it('a refused job, then an "Allow" option on the card: consent for exactly those blocks on the next job', async () => {

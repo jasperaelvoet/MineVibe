@@ -775,20 +775,23 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
 - **`office_chair`:** spawns a `minevibe:seat` entity (kind `pc` or `meeting`) whose `canAddPassenger` is true only when it's empty, so single occupancy holds by construction. `PcRegistry` is the authoritative double check.
 - **Opening a PC's config:** sneak-right-click the desk or monitor opens PcConfigScreen.
 - **Workstation items:** `linux_workstation` and `mac_workstation` place desk, monitor and chair in one action. The data component `pc_id` carries the PC's identity.
-  - Placing an item **without** a `pc_id` creates a new PC of that type: a `pc.action{create}` with budget admission. If it doesn't fit, the monitor shows `no_capacity` or "Apple allows 2 macOS VMs".
+  - Placing an item **without** a `pc_id` sends `pc.action{create, placed}`. Node first plugs an existing PC of the same family that has no desk in this world (`PcRecord.placedIn`, set by `plug`/`create`, cleared by `unplug`, plus the mod's `placed` list), so the first Linux workstation of every world shows `linux-1`; only when every PC of the family has a desk here does it create a new one, with budget admission. If it doesn't fit, the monitor shows `no_capacity` or "Apple allows 2 macOS VMs".
   - Breaking one **unplugs** the PC: it stops, and `plugged=false` is stored so `bootAll` skips it. Re-placing binds the same sandbox.
   - A lost item (lava, a grave) can be re-issued from PcConfigScreen or the PCs & Resources menu.
   - `linux` vs `linux-slim` is a type switch in PcConfigScreen (a recreate).
-- **First PC.** On first run, Node creates `linux-1` (linux, 2 vCPU / 4 GiB, admitted against the budget). OfficeBuilder places its workstation in the first world. The Vault is optional: the PcConfigScreen nudges you to add a folder.
+- **First PC.** On first run, Node creates `linux-1` (linux, 2 vCPU / 4 GiB, admitted against the budget). The player's first crafted Linux workstation in a world shows it (above). The Vault is optional: the PcConfigScreen nudges you to add a folder.
 - **Other blocks and items:** `grave`, `diary`.
 - **`codex`:** a 2-wide, 3-high library multiblock with an animated open book. Several can be placed; they all reach the same shared Codex. Recipe: bookshelves, a book and quill, and an amethyst shard.
 - **`wall_calendar`** (block) and **`calendar`** (handheld item) both open the same CalendarScreen. Recipe: paper and a clock.
 - **`meeting_table`:** a table with up to 8 linked `office_chair`s. Chairs that aren't linked to a PC are plain seats.
-- **Recipes:**
+- **Recipes:** every placeable is craftable in survival (the grave is not), each with a recipe-unlock advancement under `data/minevibe/advancement/recipes/misc/`.
   - Linux workstation: iron, redstone, glass pane, copper.
   - Mac workstation: iron, gold, glass pane, redstone.
-  - Chair: planks, sticks, wool.
-- **`OfficeBuilder`.** On every fresh world it builds a lit starter office (about 13×9) at spawn: beds, a chest of bread and torches, a crafting table, a furnace, one workstation per existing PC, a **meeting table with 6 chairs**, a **Codex**, and a **wall calendar**.
+  - Chair: wool and iron (`W  / WWW / I I`).
+  - Agent Core: amethyst shards in the corners, redstone on the sides, a diamond in the middle, an ender pearl bottom-middle.
+- **`agent_core` (survival start, 2026-10-09).** A new world starts with nothing: no office, no crew. The awakening ritual: two stacked copper blocks (`#minecraft:copper`; never cut copper) and the core used on the top one. The mod takes both blocks and the core aside and sends `agent.awaken{pos, dim, by}`; Node hires the CEO at `pos` (the fresh WELCOME for the world's first agent) or refuses (`CEO_EXISTS` while a CEO lives, `NOT_READY` without a world or a usable claude). On `ok` the core stays spent and a visual-only lightning bolt strikes; on any refusal, a timeout (30 s) or a server stop while waiting, the blocks and the core come back with the reason. After that, **every approved hire costs a core**: Node sends `hire.pay` before the hire spawns, and `err NO_CORE` refuses the approval (the card stays up); `refund` gives it back if the hire could not arrive (both idempotent per card: one charge per card however it was approved, and a refund only of a core really taken).
+- **Guide.** An advancement tab `minevibe:guide/root` ("MineVibe", "Start with nothing") chains Spark (amethyst shard) → Heart of an agent (Agent Core) → It's alive! (`minevibe:awakened_agent`) → A desk job (`minevibe:placed_workstation`) → Shared memory (Codex) → Mark the date (calendar) → All hands (meeting table) → Growing the team (`minevibe:approved_hire`); each description says how. Every MineVibe item has a tooltip line plus a Shift detail, and a fresh world's first join shows "You start with nothing. Press [L] …" once.
+- **`OfficeBuilder`** (opt-in since the survival start: `-Dminevibe.office=true`, or `/mv office build`). It builds a lit starter office (about 13×9) at spawn: beds, a chest of bread and torches, a crafting table, a furnace, one workstation per existing PC, a **meeting table with 6 chairs**, a **Codex**, and a **wall calendar**.
 
 ### 7.6 Monitor rendering (Blaze3D only, no raw GL)
 - **Texture.** One `DynamicTexture` per PC: `NativeImage` RGBA, clamped and linear, registered as `minevibe:pc/<id>`.
@@ -876,10 +879,10 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
   3. `DeathScreen` is replaced by **GameOverScreen**, showing the world number, day, cause of death, crew fates and Vault commit counts.
   4. **Last words.** The CEO gets one async turn, hard-capped at 8 s, run off the scheduler, and skipped when usage is Tired or Asleep. The other agents get scripted barks. Then every session is closed and archived.
   5. **[Begin World #N+1]**: disconnect (the integrated server saves and stops), then `world.state{closed}` is re-sent until Node acknowledges it. Node durably moves to the next world (listing the dead one as `unburied` in the same write), moves the old save to `saves/_graveyard/` (last 5 kept; a burial a crash interrupted is retried at the next start) and sends `world.open`; BootScreen then runs `createFreshLevel`, with the optional `world.open.seed` when there is one (Node sends none today, so every world gets a random seed). **The mod never creates the next world on its own**, so a lost message can never leave Node on the dead world while the game plays a new one; Node also treats the mod showing up in the allocated next world (`hello{in_world}`, `world.state`, `player.died`) as the missing `closed`.
-  6. `OfficeBuilder` runs, and a new CEO arrives with the Chronicle greeting. The lasting Codex and real-clock calendar events carry over.
+  6. The new world starts with nothing; the first CEO the player awakens there gets the Chronicle greeting. The lasting Codex and real-clock calendar events carry over.
 - **Crash recovery.** If the app quits or crashes on the Game Over screen, the next launch sees the dead marker and goes straight to GameOver, then the new world.
 - **Timings:** death → GameOver in under 3 s; [Begin] click → standing in the new world in under 20 s. The button enables after `world.next`, or after 10 s with a locally built summary.
-- **Agent death and succession.** If the CEO dies, the most senior agent is promoted to CEO and gains hiring and calendar rights. If the crew is empty, a new CEO arrives at the next dawn.
+- **Agent death and succession.** If the CEO dies, the most senior agent is promoted to CEO and gains hiring and calendar rights. If the crew is empty, nobody arrives on their own (no dawn newcomer since the survival start): the player awakens a new CEO with another Agent Core.
 
 ## 8. PC manager (`apps/server/src/pcs`)
 
@@ -1158,7 +1161,7 @@ The stub shows a small progress window, only on first run or after an update. Th
    - As built (I5): the GHCR image is not published yet, so the first run always takes the fallback, building `minevibe/linux-pc:dev` from the bundled `Resources/linux-pc`. Engine and image setup run alongside step 2; the game launches once they are done (the window shows the kernel download and the build, with Quit), and the PCs boot in the background. Without that first-run work the game waits at most 30 s for the setup (a hung `system start` or `status` shows no window), the setup then finishes in the background and the PCs boot after it; a quit stops the wait at once and boots nothing. `linux-1` is created only on the first run (no `pcs.json` yet). A PC failure never blocks the game (`engine_down` / `error`).
    - Measured from `~/Library/Caches/MineVibe-dev/app-test` (2026-10-08, k8s-less bundle): first engine start 19–195 s (kernel download), image build 131 s (builder deleted afterwards), `linux-1` create → SERVING about 3 s, then the world. A warm launch starts the engine in 0.7 s and reuses `linux-1`. Quit (SIGTERM to the stub): world saved, PC and engine stopped, nothing left running, in about 4 s. After `kill -9` of the stub and Node, the JVM saved and quit within 2 s; the next launch took over `run/lock`, removed the stale `run/bridge.json`, adopted our engine and the still-running `linux-1`, and its quit left nothing behind. With another `container` install's apiserver running (a `test:pcs` run on the dev roots), the app showed `engine_down`, reached the world, and never touched it.
 4. Seed `options.txt` and the mod configs.
-5. Hand off to the game.
+5. Hand off to the game. The player starts the hardcore world with nothing (no office, no crew); a first-join chat line points at the MineVibe guide tab (7.5 "Guide").
 
 macOS PCs download later, from inside the game, after a consent modal that shows the size (about 24 GB) and the free disk space.
 

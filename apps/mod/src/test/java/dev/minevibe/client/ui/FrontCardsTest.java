@@ -52,7 +52,7 @@ class FrontCardsTest {
 	void summaries() {
 		assertEquals("Q1/2 Wood?", FrontCards.summary(q));
 		assertEquals("Plan ready for approval", FrontCards.summary(p));
-		assertEquals("Hire Dana (miner)?", FrontCards.summary(h));
+		assertEquals("Hire Dana (miner)? Costs 1 Agent Core", FrontCards.summary(h));
 		assertEquals("Daily standup", FrontCards.summary(c));
 	}
 }

@@ -267,6 +267,11 @@ export const PcAction = defineMessage('pc.action', {
   pcId: PcId.optional(),
   type: PcType.optional(),
   pos: BlockPos.optional(),
+  /**
+   * `create` only: the PCs that already have a desk in this world, as far as the mod knows. Node plugs an existing PC of
+   * the same family that has no desk here instead of creating one (PLAN §7.5 "Workstation items").
+   */
+  placed: z.array(PcId).max(64).optional(),
 })
   .refine(
     (m) => (m.action === 'create' ? m.type !== undefined && m.pcId === undefined : m.pcId !== undefined),

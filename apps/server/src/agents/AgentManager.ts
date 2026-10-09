@@ -1,12 +1,14 @@
 /**
  * AgentManager (PLAN §6): the crew of the current world, behind the CrewApi the UI uses.
  *
- * - **World lifecycle.** A fresh world gets a CEO (`agent.spawn` at the office door); a reopened world restores its
+ * - **World lifecycle.** A fresh world starts with nobody (PLAN §7.5 "Agent Core"): the player crafts an Agent Core and
+ *   awakens the first CEO on two stacked copper blocks ({@link AgentManager.awaken}); a reopened world restores its
  *   living agents (resumed sessions, everyone unseated with a restart notice, stale cards re-asked). Player death
  *   gives the CEO an 8 s last-words turn off the scheduler, barks for the others, then every session is closed and a
  *   Chronicle entry is written.
- * - **Crew changes.** Hire cards (CEO `request_hire` → player decision → spawn + new session + CEO wake), dismissal,
- *   death (grave and diary are the mod's) and succession (most senior agent; an empty crew gets a newcomer at dawn).
+ * - **Crew changes.** Hire cards (CEO `request_hire` → player decision, which costs an Agent Core (`hire.pay`) → spawn
+ *   + new session + CEO wake), dismissal, death (grave and diary are the mod's) and succession (most senior agent; an
+ *   empty crew waits for the player to awaken a new CEO with a core).
  * - **Chat.** `chat.send` lines are routed by the ChatRouter (mentions, broadcasts, meetings, card answers),
  *   debounced per agent and delivered as P0 wakes or context.
  * - **Events.** Body events, job ends, tells, task reports, calendar tasks and autonomy nudges become digest lines,
@@ -150,10 +152,16 @@ export interface AgentManagerOptions {
   /** Restart policy overrides (tests). */
   readonly supervisor?: Omit<SupervisorOptions, 'now'>;
   /**
-   * Where new agents (the first CEO, hires, the dawn newcomer) appear: the office door slot of `world.state.office`
-   * (PLAN §6.4 "spawn at the office door"). Null, or no option, lets the mod place the body near the player.
+   * Where hires appear: the office door slot of `world.state.office` (PLAN §6.4 "spawn at the office door"). Null, or
+   * no option, lets the mod place the body near the player. An awakened CEO appears at its copper stack instead.
    */
   readonly spawnPlace?: () => Promise<Place | null>;
+  /**
+   * Takes the Agent Core an approved hire costs from the player (`hire.pay`, PLAN §7.5), or gives it back (`refund`)
+   * when the hire could not arrive. Rejects (`NO_CORE`, a bridge failure) to refuse the approval. Without it hires are
+   * free (tests and runs without the mod).
+   */
+  readonly payHire?: (req: { pendingId: string; name: string; refund: boolean }) => Promise<void>;
   /**
    * Whether `calendarFired` events become task wakes and reminder bubbles here (default true). The composed runtime
    * turns it off: the org module delivers calendar tasks through CrewHooks.deliver (orchestrator/modules.ts).
@@ -216,10 +224,6 @@ interface CrewFile {
   readonly ended?: { readonly day: number; readonly cause: string; readonly at: number } | undefined;
 }
 
-function clockDay(ticks: number): number {
-  return Math.floor(ticks / 24_000) + 1;
-}
-
 /**
  * USER DECISION 2026-10-08 (no automatic plan mode): Plan-first is only on when the player turned it on. Records saved
  * before the decision carry the old role default (on for CEO and Engineer) without `planFirstByPlayer`; they load off.
@@ -256,7 +260,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #clockTime: number | null = null;
   /** The starter office of the world it came with (`world.state.office`): the Base. */
   #office: { readonly worldId: string; readonly layout: OfficeLayout } | null = null;
-  #dawnNewcomer = false;
+  /** Set while an awakening ritual is being answered (one at a time). */
+  #awakening = false;
+  /** Hire cards whose decision is being applied (`hire.pay` in flight): a second approve or decline waits its turn. */
+  #deciding = new Set<string>();
+  /** The crew file load of the world being opened (settled once its records are in). */
+  #loading: Promise<void> = Promise.resolve();
   #autonomyTimer: NodeJS.Timeout | null = null;
   #rulesRevs = new Map<string, string>();
   #persistChain: Promise<void> = Promise.resolve();
@@ -543,8 +552,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   // ---------------------------------------------------------------------------------------------------------------
 
   /**
-   * The world is ready (`world.state{ready}`): restore its crew, or hire the first CEO in a fresh world. Calling it
-   * again for the same world (a reconnect) only re-announces the crew.
+   * The world is ready (`world.state{ready}`): restore its living crew. A fresh world (or one whose crew all died)
+   * stays empty until the player awakens a CEO ({@link awaken}). Calling it again for the same world (a reconnect) only
+   * re-announces the crew.
    */
   async openWorld(world: WorldInfo, options: { respawn?: boolean } = {}): Promise<void> {
     if (this.#closed) return;
@@ -571,15 +581,14 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.#ending = false;
     this.#ended = undefined;
     this.#memory = new MemoryStore((agentId) => join(this.#agentDir(agentId), 'memory.md'));
-    await mkdir(this.#worldDir(), { recursive: true });
-    this.#records = await this.#loadCrew();
-    const alive = this.#records.filter((r) => r.status === 'alive');
-    if (alive.length === 0) {
-      if (this.#records.length === 0) await this.#hireCeo({ fresh: true });
-      else this.#dawnNewcomer = true;
-    } else {
-      for (const r of alive) await this.#restore(r);
-    }
+    const loading = (async () => {
+      await mkdir(this.#worldDir(), { recursive: true });
+      this.#records = await this.#loadCrew();
+    })();
+    // An awakening that arrives meanwhile waits for the crew file (it must not be overwritten by it).
+    this.#loading = loading.catch(() => {});
+    await loading;
+    for (const r of this.#records.filter((x) => x.status === 'alive')) await this.#restore(r);
     this.#emitCrew();
     this.#emitBrains();
   }
@@ -749,14 +758,64 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     };
   }
 
-  /** Spawns a new CEO (fresh world, or a newcomer at dawn when the crew is empty). */
-  async #hireCeo(options: { fresh: boolean }): Promise<AgentRecord | null> {
+  /**
+   * The awakening ritual (`agent.awaken`, PLAN §7.5 "Agent Core"): the player used an Agent Core on two stacked copper
+   * blocks at `place`. Without a living CEO, a CEO arrives there (the first agent of the world gets the fresh welcome;
+   * after the crew died, the Chronicle tells the newcomer what happened). Rejects with an {@link ApiError} whose
+   * message is the player-facing reason, and the mod then gives the core back: `CEO_EXISTS` (the CEO hires the crew,
+   * and approving a hire costs the core instead), `NOT_READY` (no world, a ritual already running, no usable claude).
+   */
+  async awaken(place: Place): Promise<{ agentId: string; name: string }> {
+    await this.#loading;
+    if (!this.#world || this.#ending || this.#closed)
+      throw new ApiError(ERROR_CODES.NOT_READY, 'No world is open for an agent to wake in.');
+    const ceo = this.#ceoRecord();
+    if (ceo) {
+      throw new ApiError(
+        ERROR_CODES.CEO_EXISTS,
+        `${ceo.name} is your CEO and hires the crew: approve a hire card to use a core.`,
+      );
+    }
+    // A living agent without a CEO is the successor of a CEO who just died (onAgentDied promotes them once the dead
+    // CEO's session has closed): a second CEO must not wake beside them.
+    const successor = this.#records.find((r) => r.status === 'alive');
+    if (successor) {
+      throw new ApiError(
+        ERROR_CODES.CEO_EXISTS,
+        `${successor.name} is about to become your CEO and hires the crew: approve a hire card to use a core.`,
+      );
+    }
+    if (this.#awakening) throw new ApiError(ERROR_CODES.NOT_READY, 'An agent is already waking up.');
+    const problem = this.#claudeProblem();
+    if (problem) throw new ApiError(ERROR_CODES.NOT_READY, `The crew cannot think: ${problem}`);
+    this.#awakening = true;
+    try {
+      const record = await this.#hireCeo({ fresh: this.#records.length === 0, at: place });
+      if (!record) throw new ApiError('SPAWN_FAILED', 'The CEO could not wake up here; try again.');
+      return { agentId: record.agentId, name: record.name };
+    } finally {
+      this.#awakening = false;
+    }
+  }
+
+  /** Why no session could start (the player-facing instruction), or null when claude is usable. */
+  #claudeProblem(): string | null {
+    if (typeof this.#o.claude !== 'function') return null;
+    try {
+      this.#o.claude();
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** Spawns a new CEO at `at` (the awakening ritual's copper stack). */
+  async #hireCeo(options: { fresh: boolean; at: Place }): Promise<AgentRecord | null> {
     if (!this.#world || this.#closed) return null;
     const { name, handle } = this.#pickName();
     const record = this.#newRecord({ name, handle, role: 'ceo', ceo: true });
     const world = this.#world;
-    const at = await this.#spawnAt();
-    if (this.#world !== world || this.#ending || this.#closed) return null;
+    const at = { at: options.at };
     try {
       await this.#o.skills.spawn({
         agentId: record.agentId,
@@ -771,12 +830,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       });
     } catch (err) {
       this.#log.error({ err }, 'CEO spawn failed');
-      this.emit('toast', {
-        text: `The CEO could not arrive: ${err instanceof Error ? err.message : String(err)}`,
-        kind: 'error',
-      });
       return null;
     }
+    if (this.#world !== world || this.#ending || this.#closed) return null;
     this.#records.push(record);
     await this.#persist();
     const brain = await this.#createBrain(record);
@@ -878,7 +934,6 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.consents.clear();
     this.#records = [];
     this.#world = null;
-    this.#dawnNewcomer = false;
     this.#emitCrew();
   }
 
@@ -911,14 +966,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   onWorldState(msg: PayloadOf<'world.state'>): void {
     if (msg.office) this.#office = { worldId: msg.worldId, layout: msg.office };
     if (msg.clockTime === undefined) return;
-    const prev = this.#clockTime;
     this.#clockTime = msg.clockTime;
-    if (this.#dawnNewcomer && prev !== null && clockDay(msg.clockTime) > clockDay(prev) && this.#world) {
-      this.#dawnNewcomer = false;
-      void this.#hireCeo({ fresh: false }).catch((err: unknown) =>
-        this.#log.error({ err }, 'the dawn newcomer could not arrive'),
-      );
-    }
   }
 
   /**
@@ -1066,14 +1114,23 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   }
 
   #succession(previous: AgentRecord): void {
+    const sitting = this.#ceoRecord();
+    if (sitting) {
+      // A CEO already lives (one woke meanwhile): the dead CEO's hire cards are theirs now.
+      for (const c of this.pending.list(previous.agentId).filter((x) => x.kind === 'hire'))
+        this.pending.move(c.id, sitting.agentId);
+      return;
+    }
     const next = this.#records
       .filter((r) => r.status === 'alive')
       .sort((a, b) => a.seniority - b.seniority)[0];
     const hireCards = this.pending.list(previous.agentId).filter((c) => c.kind === 'hire');
     if (!next) {
       for (const c of hireCards) this.pending.resolve(c.id, { kind: 'denied', reason: 'The CEO died.' });
-      this.#dawnNewcomer = true;
-      this.emit('toast', { text: 'The crew is gone. A newcomer arrives at dawn.', kind: 'warn' });
+      this.emit('toast', {
+        text: 'The crew is gone. Use an Agent Core on two stacked copper blocks to awaken a new CEO.',
+        kind: 'warn',
+      });
       return;
     }
     next.ceo = true;
@@ -1355,12 +1412,39 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     approve: boolean,
     note: string | null,
   ): Promise<string> {
-    const ceo = this.#records.find((r) => r.agentId === card.agentId);
+    // One decision per card at a time: approving charges a core (`hire.pay`) before the card resolves, so a second
+    // approval (the card, G and chat at once) or a decline must not slip in while that is in flight.
+    if (this.#deciding.has(card.id))
+      throw new ApiError(ERROR_CODES.NOT_READY, `The decision on hiring ${card.name} is already being made.`);
+    this.#deciding.add(card.id);
+    try {
+      return await this.#applyHireDecision(card, approve, note);
+    } finally {
+      this.#deciding.delete(card.id);
+    }
+  }
+
+  async #applyHireDecision(
+    card: Extract<Card, { kind: 'hire' }>,
+    approve: boolean,
+    note: string | null,
+  ): Promise<string> {
     const cap = this.#o.crewCap ?? CREW_CAP;
     if (approve && this.#records.filter((r) => r.status === 'alive').length >= cap) {
       // The card stays up (the player can still decline it) instead of vanishing with nobody told.
       throw new ApiError('CREW_CAP', 'The crew is already full.');
     }
+    // A hire costs an Agent Core (PLAN §7.5): taken before the card resolves, so a refusal leaves the card up.
+    if (approve) {
+      await this.#payForHire(card);
+      if (!this.pending.get(card.id)) {
+        // The card went while the core was taken (the CEO died, the world ended): the core goes back.
+        this.#refundHire(card);
+        throw new ApiError(ERROR_CODES.CARD_GONE, 'That card is no longer pending.');
+      }
+    }
+    // The card's CEO now (a dead CEO's card moves to the successor, also while the core was being taken).
+    const ceo = this.#records.find((r) => r.agentId === (this.pending.get(card.id)?.agentId ?? card.agentId));
     this.pending.resolve(card.id, approve ? { kind: 'approved' } : { kind: 'declined', note });
     const ceoBrain = ceo ? this.#brains.get(ceo.agentId) : undefined;
     if (!approve) {
@@ -1390,6 +1474,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         ...(await this.#spawnAt()),
       });
     } catch (err) {
+      this.#refundHire(card);
       ceoBrain?.enqueue({
         mode: 'wake',
         priority: 3,
@@ -1439,7 +1524,38 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       ),
     });
     this.#emitCrew();
-    return `hire approved: ${record.name} (${record.role})`;
+    return `hire approved: ${record.name} (${record.role}), 1 Agent Core spent`;
+  }
+
+  /** Gives back the Agent Core taken for `card`, if one was (`hire.pay{refund}` is idempotent on the mod's side). */
+  #refundHire(card: Extract<Card, { kind: 'hire' }>): void {
+    void this.#o
+      .payHire?.({ pendingId: card.id, name: card.name, refund: true })
+      .catch((e: unknown) => this.#log.warn({ err: e }, 'the Agent Core could not be given back'));
+  }
+
+  /** Takes the Agent Core a hire costs, or refuses the approval with what to do (`NO_CORE`). */
+  async #payForHire(card: Extract<Card, { kind: 'hire' }>): Promise<void> {
+    const pay = this.#o.payHire;
+    if (!pay) return;
+    try {
+      await pay({ pendingId: card.id, name: card.name, refund: false });
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      if (code === ERROR_CODES.NO_CORE) {
+        throw new ApiError(
+          ERROR_CODES.NO_CORE,
+          `Hiring ${card.name} costs 1 Agent Core: craft one (amethyst, redstone, a diamond, an ender pearl), then approve again.`,
+        );
+      }
+      this.#log.warn({ err }, 'hire.pay failed');
+      // The take may have happened after all (a timeout): the mod gives back only a core it took for this card.
+      this.#refundHire(card);
+      throw new ApiError(
+        ERROR_CODES.NOT_READY,
+        `The game could not take the Agent Core for ${card.name}; nothing was spent, try again.`,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------------------------------------------

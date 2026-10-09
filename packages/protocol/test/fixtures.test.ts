@@ -128,6 +128,7 @@ describe('reply fixtures', () => {
     'ok--skill-run-replaced': 'skill.run',
     'ok--obs-look-around': 'obs.query',
     'ok--agent-spawn': 'agent.spawn',
+    'ok--agent-awaken': 'agent.awaken',
     'ok--codex-search': 'codex.search',
     'ok--meeting-start': 'meeting.start',
     'ok--pick-folder': 'host.pick_folder',

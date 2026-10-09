@@ -299,7 +299,7 @@ public final class AgentScreen extends Screen {
 			}
 			case Ui.PendingCard.HIRE -> {
 				int bw = (pw - 2) / 2;
-				button(px, y, bw, "Hire " + card.name(), b -> decideHire(card, true));
+				button(px, y, bw, "Hire " + card.name() + " (1 core)", b -> decideHire(card, true));
 				button(px + bw + 2, y, bw, "Decline", b -> decideHire(card, false));
 				y -= ROW + 2;
 				cardText = textBox(px, y, pw, "Note (optional)…", UiActions.NOTE_MAX_LENGTH);
@@ -621,7 +621,8 @@ public final class AgentScreen extends Screen {
 			}
 			case Ui.PendingCard.PLAN -> card.plan() == null ? "" : card.plan();
 			case Ui.PendingCard.HIRE -> card.name() + " (" + card.role() + ", @" + card.handle() + ")\n\nWhy: " + card.reason()
-					+ "\n\nFirst task: " + card.firstTask();
+					+ "\n\nFirst task: " + card.firstTask()
+					+ "\n\nCosts 1 Agent Core: approving takes one from your inventory.";
 			case Ui.PendingCard.CALENDAR -> card.summary() == null ? "" : card.summary();
 			default -> "";
 		};

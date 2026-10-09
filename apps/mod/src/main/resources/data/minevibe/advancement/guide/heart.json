@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/spark",
+  "criteria": {
+    "agent_core": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:agent_core"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:agent_core"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.heart.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.heart.description"
+    }
+  },
+  "requirements": [
+    [
+      "agent_core"
+    ]
+  ]
+}

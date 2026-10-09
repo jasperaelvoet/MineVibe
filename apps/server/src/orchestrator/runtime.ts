@@ -12,8 +12,9 @@
  *   work). `none`: M1's chat handler against an empty roster (contract tests).
  * - **Modules** (orchestrator/modules.ts): a PcModule and an OrgModule from injected factories (factories.ts by
  *   default). The org module gets the crew and the {@link CrewHooks}; both get the world events in order.
- * - **Worlds.** The first `ready` of the current world in a game session opens it: the crew is restored (or a fresh
- *   world's CEO is hired at the office door, `world.state.office`), then the modules hear `onWorldOpen`. Player death
+ * - **Worlds.** The first `ready` of the current world in a game session opens it: the crew is restored (a fresh world
+ *   starts empty until the player's `agent.awaken` ritual wakes its CEO; hires appear at the office door,
+ *   `world.state.office`, when there is one), then the modules hear `onWorldOpen`. Player death
  *   gives the CEO's last words and closes the crew's sessions (archiving the world's crew file), then the modules
  *   hear `onWorldEnded`.
  */

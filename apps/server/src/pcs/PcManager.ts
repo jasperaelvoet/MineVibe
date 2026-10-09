@@ -78,6 +78,7 @@ import {
   PC_ID_RE,
   PC_TYPE_SPECS,
   type PcDiskCaps,
+  type PcFamily,
   type PcStatus,
   type PcType,
   PHONE_RESOURCES,
@@ -139,6 +140,12 @@ export interface PcRecord {
   pinned: boolean;
   /** Placed in the world (a workstation exists). Unplugged PCs keep their disks but don't boot. */
   plugged: boolean;
+  /**
+   * The world whose desk last plugged this PC in (`pc.action plug`, or a `create` from a desk); cleared by `unplug`. A
+   * workstation item without a PC plugs a PC that has no desk in the current world before it creates one (PLAN 7.5).
+   * Absent on records from before it existed, and on `linux-1` until a desk takes it.
+   */
+  placedIn?: string;
   /** Last loopback port used for spacesd. */
   hostPort?: number;
   /** Image override (defaults to the type's image; must pass the allowlist). */
@@ -454,6 +461,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #locks = new Map<string, Promise<unknown>>();
   /** Ids handed out by `create` but not yet in `#file` (M9). */
   readonly #reservedIds = new Set<string>();
+  /** PCs being decommissioned (their record goes at the end). */
+  readonly #decommissioning = new Set<string>();
   #engineDown: string | null = null;
   /** Set when `shutdown` begins: nothing starts any more (a `bootAll` still going stops planning starts). */
   #closing = false;
@@ -643,6 +652,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           if (name) rec.name = name;
           else delete rec.name;
           if (typeof p.wipeOnDeath !== 'boolean') delete rec.wipeOnDeath;
+          if (typeof p.placedIn !== 'string') delete rec.placedIn;
           // Capabilities are Linux-only and stored only when on.
           const linux = PC_TYPE_SPECS[p.type].family === 'linux';
           if (p.virtualization !== true || !linux) delete rec.virtualization;
@@ -3383,13 +3393,38 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   /**
-   * Plugged = placed in the world. Unplugging stops the PC (disks persist). The flag changes at once, so
+   * A PC of `family` that a new desk in `worldId` can take instead of a new PC (PLAN 7.5): none of its desks stands in
+   * that world (`placedIn`) and the mod does not list it in `exclude` (desks it knows of there). Unplugged PCs first, then
+   * by slot; null when every PC of the family already has a desk in this world.
+   */
+  unplacedPc(
+    family: PcFamily,
+    worldId: string | null,
+    exclude: ReadonlySet<string> = new Set(),
+  ): PcRecord | null {
+    const candidates = this.#file.pcs
+      .filter(
+        (p) =>
+          PC_TYPE_SPECS[p.type].family === family &&
+          !exclude.has(p.id) &&
+          !this.#decommissioning.has(p.id) &&
+          (worldId === null || p.placedIn !== worldId),
+      )
+      .sort((a, b) => Number(a.plugged) - Number(b.plugged) || a.slot - b.slot);
+    const pick = candidates[0];
+    return pick ? structuredClone(pick) : null;
+  }
+
+  /**
+   * Plugged = placed in the world (`worldId`: which one, when a desk says so). Unplugging stops the PC (disks persist). The flag changes at once, so
    * a start still queued (bootAll) sees it under the PC's lock and skips; the stop decision is made under
    * that lock too, after a start already in flight.
    */
-  async setPlugged(id: string, plugged: boolean): Promise<void> {
+  async setPlugged(id: string, plugged: boolean, worldId?: string | null): Promise<void> {
     const p = this.#rec(id);
     p.plugged = plugged;
+    if (!plugged) delete p.placedIn;
+    else if (worldId) p.placedIn = worldId;
     await this.#save();
     if (plugged) return;
     await this.#serialize(id, async () => {
@@ -3437,7 +3472,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   /** Removes the PC entirely: container, volumes, network, token and record. Vault folders are untouched. */
   decommission(id: string): Promise<void> {
     this.#imageWaits.get(id)?.abort();
-    return this.#serialize(id, async () => {
+    // A new desk must not take a PC on its way out (unplacedPc).
+    this.#decommissioning.add(id);
+    const done = this.#serialize(id, async () => {
       const p = this.#rec(id);
       try {
         this.#setStatus(id, { status: 'stopping' });
@@ -3469,6 +3506,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.#save();
       this.emit('pc.state', this.views());
     });
+    return done.finally(() => this.#decommissioning.delete(id));
   }
 
   async #destroyContainerAndVolumes(p: PcRecord): Promise<void> {

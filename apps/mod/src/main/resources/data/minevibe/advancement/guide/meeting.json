@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/calendar",
+  "criteria": {
+    "meeting_table": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:meeting_table"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:meeting_table"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.meeting.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.meeting.description"
+    }
+  },
+  "requirements": [
+    [
+      "meeting_table"
+    ]
+  ]
+}

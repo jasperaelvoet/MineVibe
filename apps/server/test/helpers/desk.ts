@@ -3,13 +3,13 @@
  * that hands the agent over to its desk session (a second fake query, started in its own cwd).
  */
 
-import { createHarness, type Harness } from './agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from './agentHarness.js';
 import type { FakeQuery } from './fakeSdk.js';
 
 /** A fresh world whose CEO is idle after its welcome turn; `q` is its body session. */
 export async function freshWorld(options: Parameters<typeof createHarness>[0] = {}) {
   const w = await createHarness(options);
-  await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+  await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
   const id = w.manager.listAgents()[0]?.agentId ?? '';
   const q = w.query(0);
   await w.until(() => w.texts(q).some((t) => t.includes('WELCOME')), 'welcome');

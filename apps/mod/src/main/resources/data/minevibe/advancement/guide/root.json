@@ -1,0 +1,26 @@
+{
+  "criteria": {
+    "start": {
+      "trigger": "minecraft:tick"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:agent_core"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.root.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.root.description"
+    },
+    "background": "minecraft:block/copper_block",
+    "show_toast": false,
+    "announce_to_chat": false
+  },
+  "requirements": [
+    [
+      "start"
+    ]
+  ]
+}

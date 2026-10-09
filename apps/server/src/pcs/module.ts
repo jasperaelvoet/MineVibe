@@ -344,6 +344,7 @@ export class PcModuleImpl implements PcModule {
       mirror: this.mirror,
       pickFolder: this.#parts.pickFolder,
       logger: this.#log,
+      world: () => this.#ctx.world()?.worldId ?? null,
       ...(this.#tuning.settleMs !== undefined ? { settleMs: this.#tuning.settleMs } : {}),
       ...(this.#tuning.helloRepushMs !== undefined ? { helloRepushMs: this.#tuning.helloRepushMs } : {}),
       ...(this.#tuning.budgetDebounceMs !== undefined

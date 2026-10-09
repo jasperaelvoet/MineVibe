@@ -2,8 +2,9 @@
  * bridgeSim (PLAN §4 `test/sim/bridgeSim.ts`, §13.4): a fake mod for brainless integration tests. It connects to a
  * real BridgeServer like BridgeClient does, follows the world loop when asked (hello → world.open → world.state), and
  * answers Node's body requests the way the mod does (`agent.spawn`, `skill.run`, `obs.query`, `agent.mode`,
- * `agent.seat` / `agent.unseat`, `skill.cancel`, `agent.despawn`), with every result ending in the mod's status
- * `footer`. Everything Node sends is checked against the protocol and recorded.
+ * `agent.seat` / `agent.unseat`, `skill.cancel`, `agent.despawn`, `hire.pay`), with every result ending in the mod's
+ * status `footer`. It performs the awakening ritual on request ({@link BridgeSim.awaken}). Everything Node sends is
+ * checked against the protocol and recorded.
  */
 
 import { type BlockPos, parseMessage } from '@minevibe/protocol';
@@ -36,6 +37,8 @@ export class BridgeSim {
   readonly observations = new Map<string, Record<string, unknown>>();
   /** `agent.seat` answers: null = `running` (end it with {@link endJob}), or an error code. */
   seatError: string | null = null;
+  /** The Agent Cores the player carries: `hire.pay` takes one (`err NO_CORE` at 0) or gives one back. */
+  cores = 0;
   #replyWaiters: Array<{ id: string; resolve: (m: Received) => void }> = [];
 
   private constructor(mod: ModClient) {
@@ -126,6 +129,11 @@ export class BridgeSim {
     }
   }
 
+  /** The awakening ritual (PLAN §7.5): the player used an Agent Core on two copper blocks at `pos`. */
+  awaken(pos: BlockPos = { x: 3, y: 64, z: -7 }, timeoutMs = 3000): Promise<Received> {
+    return this.request('agent.awaken', { pos, dim: 'minecraft:overworld', by: 'Jordan' }, timeoutMs);
+  }
+
   clock(worldId: string, clockTime: number): void {
     this.send({ t: 'world.state', worldId, phase: 'ready', clockTime });
   }
@@ -168,6 +176,15 @@ export class BridgeSim {
       case 'agent.despawn':
       case 'agent.mode':
       case 'agent.unseat':
+        this.#ok(id);
+        return;
+      case 'hire.pay':
+        if (msg.refund === true) this.cores++;
+        else if (this.cores > 0) this.cores--;
+        else {
+          this.#err(id, 'NO_CORE', 'You carry no Agent Core.');
+          return;
+        }
         this.#ok(id);
         return;
       case 'skill.cancel':

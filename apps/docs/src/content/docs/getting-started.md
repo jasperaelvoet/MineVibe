@@ -9,8 +9,7 @@ run it yourself from the repository (see [Development](/MineVibe/development/)).
 planned first-run experience of `MineVibe.app`.
 
 **What works from source today:** `npm run play` already does steps 2, 3 and 6 below (Minecraft, Fabric and the
-mods, checked by sha1 and sha512, plus the seeded configs) and drops you into a fresh hardcore world with its
-starter office. `npm run build:app` assembles a local `MineVibe.app` bundle. The first-run window's prerequisite
+mods, checked by sha1 and sha512, plus the seeded configs) and drops you into a fresh hardcore world. `npm run build:app` assembles a local `MineVibe.app` bundle. The first-run window's prerequisite
 check (step 1), starting the `container` system and pulling the PC image (steps 4 and 5) are being built.
 :::
 
@@ -54,8 +53,9 @@ Minecraft has a window, apart from the native folder picker you use to add Vault
 5. **Pulls the Linux PC image** (`ghcr.io/jasperaelvoet/minevibe-linux-pc`, pinned by digest, about 1.2 GB)
    and creates your first PC, `linux-1` (2 vCPU, 4 GiB).
 6. **Seeds `options.txt`** and the mod configs. Existing settings are merged, never overwritten.
-7. **Hands off to the game.** You wake up in a fresh hardcore world, next to a small office with your first
-   PC and your CEO.
+7. **Hands off to the game.** You wake up in a fresh hardcore world with nothing: no crew, no office, no tools.
+   A chat line tells you which key opens the MineVibe guide (the advancements screen, **L** by default), and the
+   guide shows how to craft an Agent Core and awaken your CEO. See [Starting out](/MineVibe/playing/#starting-out).
 
 macOS PCs are not downloaded during the first run. You add one later from inside the game, after a consent
 screen that shows the download size (about 24 GB) and your free disk space.

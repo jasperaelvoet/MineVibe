@@ -160,6 +160,12 @@ public final class Ui {
 	/** M→N request. {@code decision}: approve, decline. */
 	public record HireDecision(String pendingId, String decision, @Nullable String note) {}
 
+	/**
+	 * N→M request (PLAN 7.5 "Agent Core"): take the Agent Core an approved hire costs from the player ({@code ok}, or
+	 * {@code err NO_CORE}), or give it back ({@code refund}) when the hire could not arrive.
+	 */
+	public record HirePay(String pendingId, String name, boolean refund) {}
+
 	/** M→N request. {@code on} for plan_first / ping_instead, {@code level} for autonomy. */
 	public record AgentCmd(String agentId, String cmd, @Nullable Boolean on, @Nullable String level) {
 		public static AgentCmd of(String agentId, String cmd) {
@@ -265,6 +271,11 @@ public final class Ui {
 			.req("decision", oneOf("approve", "decline"))
 			.opt("note", string(1, 500)));
 
+	public static final MessageType<HirePay> HIRE_PAY = type("hire.pay", Direction.NODE_TO_MOD, HirePay.class, object()
+			.req("pendingId", PENDING_ID)
+			.req("name", DISPLAY_NAME)
+			.req("refund", bool()));
+
 	public static final MessageType<AgentCmd> AGENT_CMD = type("agent.cmd", Direction.MOD_TO_NODE, AgentCmd.class, object()
 			.req("agentId", AGENT_ID)
 			.req("cmd", oneOf(COMMANDS.toArray(String[]::new)))
@@ -282,8 +293,8 @@ public final class Ui {
 	public static final Schema.Obj CHAT_HISTORY_RESULT = object().req("entries", array(CHAT_ENTRY, 0, 200)).req("more", bool());
 
 	public static final List<MessageType<?>> TYPES = List.of(
-			AGENT_BRAIN, AGENT_PENDING, AGENT_APPROACH, CHAT_APPEND, CHAT_HISTORY, PENDING_ANSWER, PLAN_DECISION, HIRE_DECISION,
-			AGENT_CMD, BRAINS_STATE);
+			AGENT_BRAIN, AGENT_PENDING, AGENT_APPROACH, CHAT_APPEND, CHAT_HISTORY, PENDING_ANSWER, PLAN_DECISION, HIRE_PAY,
+			HIRE_DECISION, AGENT_CMD, BRAINS_STATE);
 
 	static @Nullable String str(@Nullable JsonElement e) {
 		return e instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;

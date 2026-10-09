@@ -1,0 +1,25 @@
+{
+  "parent": "minevibe:guide/meeting",
+  "criteria": {
+    "hired": {
+      "trigger": "minevibe:approved_hire"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:office_chair"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.team.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.team.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "hired"
+    ]
+  ]
+}

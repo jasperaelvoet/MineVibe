@@ -137,7 +137,7 @@ describe('persona (stable system prompt)', () => {
     const p = personaPrompt({ ...base, role: 'miner', ceo: false });
     expect(p).toContain('## The world');
     expect(p).toContain(
-      "The Base (the office you start in) is Jordan's home. Never break, replace or take blocks",
+      "The Base (the office, once there is one) is Jordan's home. Never break, replace or take blocks",
     );
     // Truthful with today's mod too, which takes the nearest match of a #tag (the incident's office pillars).
     expect(p).toContain(

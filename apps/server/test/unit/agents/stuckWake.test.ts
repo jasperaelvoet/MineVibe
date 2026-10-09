@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EventRouter, type RouterAgent, STUCK_WAKE_KEY, stuckBark } from '../../../src/agents/EventRouter.js';
 import { BARKS } from '../../../src/agents/prompts/barks.js';
 import { hintFor } from '../../../src/agents/tools/format.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 
 let h: Harness | null = null;
 afterEach(async () => {
@@ -74,7 +74,7 @@ describe('stuck events', () => {
 
   it('the body barks at once and its idle brain wakes with the event; no "one sec" bark over it', async () => {
     h = await createHarness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
     const q = h.query(0);
     await h.until(() => h?.texts(q).some((t) => t.includes('WELCOME')) ?? false, 'welcome');

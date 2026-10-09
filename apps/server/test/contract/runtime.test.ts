@@ -1,7 +1,8 @@
 /**
  * The composed runtime (orchestrator/runtime.ts) against the bridgeSim fake mod, a scripted brain (fake SDK, zero
- * tokens) and recording PC and org modules: composition order, world events, the CEO at the office door, CrewHooks
- * over the real bridge, the world-end flow, and a brainless end-to-end chat → turn → skill.run → result → bubble.
+ * tokens) and recording PC and org modules: composition order, world events, the awakened CEO and the Agent Core a
+ * hire costs, CrewHooks over the real bridge, the world-end flow, and a brainless end-to-end chat → turn → skill.run →
+ * result → bubble.
  */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -161,13 +162,26 @@ async function until(pred: () => boolean, what: string, timeoutMs = 4000): Promi
   }
 }
 
-/** Boots into a fresh World #1 with an office; resolves with the CEO's agent id once its first turn ended. */
+/** Where the sim performs the awakening ritual (PLAN §7.5). */
+const RITUAL = { x: 3, y: 64, z: -7 };
+
+/** Waits until the runtime opened `worldId` (its `ready` arrived) and the open has run. */
+async function opened(runtime: Runtime, worldId: string): Promise<void> {
+  await until(() => runtime.ctx.world()?.worldId === worldId, `${worldId} open`);
+  await runtime.settled();
+}
+
+/**
+ * Boots into a fresh World #1 with an office and awakens its CEO with an Agent Core; resolves with the CEO's agent id
+ * once its first turn ended.
+ */
 async function bootWorld1(sim: BridgeSim, runtime: Runtime, brain: ScriptedBrain): Promise<string> {
   const { open } = await sim.boot();
   expect(open).toMatchObject({ worldId: 'world-1', fresh: true });
   sim.ready('world-1', { fresh: true, office: OFFICE, clockTime: 100 });
+  await opened(runtime, 'world-1');
+  expect(await sim.awaken(RITUAL)).toMatchObject({ t: 'ok', name: 'Ada' });
   const spawn = await sim.next('agent.spawn');
-  await runtime.settled();
   const id = spawn.agentId as string;
   await until(() => brain.turns.length > 0 && brain.busy() === 0, 'the welcome turn');
   await until(() => runtime.agents?.manager.brain(id)?.status === 'idle', 'the CEO idle');
@@ -193,10 +207,17 @@ describe('startRuntime composition', () => {
     expect(mods.calls.slice(-2)).toEqual(['org.stop', 'pc.stop']);
   });
 
-  it('hires the CEO at the office door on a fresh world, then opens the modules (fresh) and feeds the clock', async () => {
-    const { runtime, sim, mods, brain } = await start();
-    const id = await bootWorld1(sim, runtime, brain);
-    const spawn = sim.requests.find((m) => m.t === 'agent.spawn');
+  it('a fresh world starts empty: the awakening ritual hires the CEO at its copper stack; the modules open (fresh) and get the clock', async () => {
+    const { runtime, sim, mods } = await start();
+    await sim.boot();
+    sim.ready('world-1', { fresh: true, office: OFFICE, clockTime: 100 });
+    await opened(runtime, 'world-1');
+    // Nobody arrives on their own (PLAN §7.5): no CEO at the office door.
+    expect(sim.sent('agent.spawn')).toHaveLength(0);
+    expect(await sim.awaken(RITUAL)).toMatchObject({ t: 'ok', name: 'Ada' });
+    const spawn = await sim.next('agent.spawn');
+    const id = spawn.agentId as string;
+    await until(() => runtime.agents?.manager.brain(id)?.status === 'idle', 'the CEO idle');
     expect(spawn).toMatchObject({
       agentId: id,
       handle: 'ada',
@@ -204,8 +225,10 @@ describe('startRuntime composition', () => {
       ceo: true,
       restore: false,
       bark: 'reporting_for_duty',
-      at: { pos: { x: 12, y: 64, z: -35 }, dim: 'minecraft:overworld' },
+      at: { pos: RITUAL, dim: 'minecraft:overworld' },
     });
+    // A second core is refused while the CEO lives: it hires the crew, and a hire card costs the core.
+    expect(await sim.awaken(RITUAL)).toMatchObject({ t: 'err', code: 'CEO_EXISTS' });
     const opens = mods.calls.filter((c) => c.includes('.open:'));
     expect(opens).toEqual([
       `pc.open:world-1:true:${JSON.stringify({ worldId: 'world-1', gen: 1 })}`,
@@ -283,11 +306,14 @@ describe('startRuntime composition', () => {
     await runtime.settled();
     expect(mods.calls.filter((c) => c.startsWith('org.ended:'))).toHaveLength(1);
 
-    // Begin World #2: a fresh CEO arrives there.
+    // Begin World #2: it starts empty too, and the next core awakens a fresh CEO there.
     const closed = await sim.request('world.state', { worldId: 'world-1', phase: 'closed' });
     expect(closed.t).toBe('ok');
     expect(await sim.next('world.open')).toMatchObject({ worldId: 'world-2', fresh: true });
     sim.ready('world-2', { fresh: true, office: OFFICE });
+    await opened(runtime, 'world-2');
+    expect(sim.sent('agent.spawn').filter((m) => m.agentId !== id)).toHaveLength(0);
+    expect((await sim.awaken()).t).toBe('ok');
     const spawn = await sim.next('agent.spawn', (m) => m.agentId !== id);
     expect(spawn).toMatchObject({ role: 'ceo', restore: false });
     await runtime.settled();
@@ -332,7 +358,7 @@ describe('startRuntime composition', () => {
     expect(next.summary).toMatchObject({ crewFates: [{ agentId: id, fate: 'lost_with_world' }] });
   });
 
-  it('starts without a usable claude: the CEO body arrives and its brain sleeps with a toast', async () => {
+  it('starts without a usable claude: the toast says why, and the ritual is refused so the core is kept', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-runtime-'));
     dirs.push(dir);
     const mods = recordingModules();
@@ -358,20 +384,16 @@ describe('startRuntime composition', () => {
     await sim.boot();
     expect((await sim.next('ui.toast', (m) => /cannot think/.test(String(m.text)))).kind).toBe('error');
     sim.ready('world-1', { fresh: true });
-    const spawn = await sim.next('agent.spawn');
-    expect(spawn.at).toBeUndefined();
-    await runtime.settled();
-    const brainMsg = await sim.next(
-      'agent.brain',
-      (m) => m.agentId === spawn.agentId && m.status === 'asleep',
-    );
-    expect(brainMsg.status).toBe('asleep');
+    await opened(runtime, 'world-1');
+    const refused = await sim.awaken();
+    expect(refused).toMatchObject({ t: 'err', code: 'NOT_READY' });
+    expect(String(refused.msg)).toMatch(/cannot think/);
+    expect(sim.sent('agent.spawn')).toHaveLength(0);
   });
 
-  it('stops at once while a world opens: no claude starts and the modules never hear the open (review fix)', async () => {
+  it('stops at once after a world opened: no claude starts and the modules stop in order (review fix)', async () => {
     const { runtime, sim, mods, brain } = await start({ officeDoorWaitMs: 30_000 });
     await sim.boot();
-    // No office reported: the first CEO waits for the door.
     sim.ready('world-1', { fresh: true });
     await until(() => runtime.ctx.world() !== null, 'world ready');
     await new Promise((r) => setTimeout(r, 50));
@@ -381,8 +403,39 @@ describe('startRuntime composition', () => {
     await runtime.settled();
     expect(brain.factory.queries).toHaveLength(0);
     expect(sim.sent('agent.spawn')).toHaveLength(0);
-    expect(mods.calls.filter((c) => c.includes('.open:'))).toEqual([]);
     expect(mods.calls.slice(-2)).toEqual(['org.stop', 'pc.stop']);
+  });
+
+  it('hires cost an Agent Core over the bridge: hire.pay refuses without one, then takes it', async () => {
+    const hireScript: TurnScript = (text) =>
+      /we need iron/.test(text)
+        ? [
+            {
+              tool: {
+                name: 'mcp__mc__request_hire',
+                input: { role: 'miner', reason: 'iron', first_task: 'mine iron' },
+              },
+            },
+            { say: 'Asked.' },
+          ]
+        : [{ say: 'Hello Jordan.' }];
+    const { runtime, sim, brain } = await start({ script: hireScript });
+    await bootWorld1(sim, runtime, brain);
+    await sim.request('chat.send', { to: 'all', text: '@ada we need iron' });
+    const card = await sim.next('agent.pending', (m) => Array.isArray(m.cards) && m.cards.length > 0);
+    const pendingId = (card.cards as { id: string }[])[0]?.id ?? '';
+    const refused = await sim.request('hire.decision', { pendingId, decision: 'approve' });
+    expect(refused).toMatchObject({ t: 'err', code: 'NO_CORE' });
+    expect(String(refused.msg)).toMatch(/costs 1 Agent Core/);
+    expect(sim.sent('agent.spawn')).toHaveLength(1);
+    sim.cores = 1;
+    const approved = await sim.request('hire.decision', { pendingId, decision: 'approve' });
+    expect(approved).toMatchObject({ t: 'ok' });
+    expect(String(approved.echo)).toMatch(/1 Agent Core spent/);
+    expect(sim.cores).toBe(0);
+    // Hires (not the CEO) still arrive at the office door.
+    const hired = await sim.next('agent.spawn', (m) => m.role === 'miner');
+    expect(hired.at).toMatchObject({ pos: { x: 12, y: 64, z: -35 } });
   });
 
   it('a quit right after the player died ends the world for the modules before they stop (review fix)', async () => {

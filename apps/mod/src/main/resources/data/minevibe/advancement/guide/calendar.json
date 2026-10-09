@@ -1,0 +1,42 @@
+{
+  "parent": "minevibe:guide/codex",
+  "criteria": {
+    "calendar": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:calendar"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    },
+    "wall_calendar": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:wall_calendar"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:calendar"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.calendar.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.calendar.description"
+    }
+  },
+  "requirements": [
+    [
+      "calendar",
+      "wall_calendar"
+    ]
+  ]
+}

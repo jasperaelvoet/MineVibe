@@ -118,6 +118,12 @@ export const ERROR_CODES = {
   /** The actor may not do this (rights: CEO only, player-created event, rules page, ...). */
   FORBIDDEN: 'FORBIDDEN',
 
+  // Progression (PLAN §7.5 "Agent Core")
+  /** `agent.awaken`: the world already has a living CEO (it hires the crew; a hire card costs a core). */
+  CEO_EXISTS: 'CEO_EXISTS',
+  /** `hire.pay`: the player carries no Agent Core. */
+  NO_CORE: 'NO_CORE',
+
   // PCs (PLAN §8)
   PC_UNKNOWN: 'PC_UNKNOWN',
   /** The change does not fit the host budget. */

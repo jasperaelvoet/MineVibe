@@ -43,7 +43,7 @@ import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../src/contracts/FakeSkillApi.js';
 import type { SeatRequest } from '../../src/contracts/SkillApi.js';
 import { SERVER_VERSION } from '../../src/version.js';
-import { MountedPcApi } from '../helpers/agentHarness.js';
+import { MountedPcApi, openWorldWithCeo } from '../helpers/agentHarness.js';
 
 const OUT = join(import.meta.dirname, 'out');
 
@@ -175,7 +175,7 @@ describe('live brain smoke (subscription)', () => {
     };
 
     try {
-      await manager.openWorld({ worldId: 'live-1', gen: 1 });
+      await openWorldWithCeo(manager, { worldId: 'live-1', gen: 1 });
       agentId = manager.listAgents()[0]?.agentId ?? '';
       // 1. The welcome turn: session start and startup assertions.
       await waitFor(() => results.length >= 1, 'welcome result');

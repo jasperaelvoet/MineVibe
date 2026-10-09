@@ -112,7 +112,10 @@ public final class PcBlockEntity extends BlockEntity {
 	// Create / plug / unplug (server thread)
 	// -----------------------------------------------------------------------------------------
 
-	/** Sends {@code pc.action{create}} for this unbound desk and binds the reply. */
+	/**
+	 * Sends {@code pc.action{create}} for this unbound desk and binds the reply: an existing PC that has no desk in this
+	 * world yet (PLAN 7.5), or a new one.
+	 */
 	public void requestCreate(final ServerLevel level) {
 		if (this.pcId != null || this.creating) {
 			return;
@@ -123,7 +126,9 @@ public final class PcBlockEntity extends BlockEntity {
 		BlockPos pos = this.worldPosition;
 		ResourceKey<Level> dim = level.dimension();
 		MinecraftServer server = level.getServer();
-		CompletableFuture<JsonObject> reply = PcBridge.action("create", null, this.type, new Messages.BlockPos(pos.getX(), pos.getY(), pos.getZ()));
+		// Node plugs a PC of this family that has no desk here yet (linux-1 for the first Linux desk), and creates one only
+		// when every one has: tell it which desks this world has, as far as this session has seen them.
+		CompletableFuture<JsonObject> reply = PcBridge.create(this.type, new Messages.BlockPos(pos.getX(), pos.getY(), pos.getZ()), PcRegistry.placedPcIds(server));
 		reply.whenComplete((ok, err) -> {
 			String created = err == null && ok != null && ok.has("pcId") ? ok.get("pcId").getAsString() : null;
 			String code = err != null ? PcBridge.codeOf(err) : created == null ? Messages.Codes.INTERNAL : null;

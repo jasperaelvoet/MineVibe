@@ -10,7 +10,7 @@ import { toolsUpdatedNote } from '../../../src/agents/tools/toolRefs.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
 import { DEFAULT_MC_TOOLS, mcRefs, mcToolsVersion } from '../../../src/contracts/mcRefs.js';
 import { SequenceFallbackSkillApi } from '../../../src/contracts/SequenceFallback.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { resultText } from '../../helpers/fakeSdk.js';
 
 const harnesses: Harness[] = [];
@@ -23,7 +23,7 @@ afterEach(async () => {
 async function v2World(dir?: string, mcTools: 'v1' | 'v2' = 'v2') {
   const h = await createHarness({ mcTools, ...(dir ? { dir } : {}) });
   harnesses.push(h);
-  await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+  await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
   const ceoId = h.manager.listAgents()[0]?.agentId ?? '';
   const q = h.query(0);
   await h.until(() => h.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -200,7 +200,7 @@ describe('v2 tools in the agent runtime', () => {
     a.h.manager.dispose();
     const b = await createHarness({ dir, mcTools: 'v2' });
     harnesses.push(b);
-    await b.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(b.manager, { worldId: 'w1', gen: 1 });
     const q2 = b.query(0);
     expect(q2.options.resume).toBe(a.q.options.sessionId);
     await b.until(() => b.texts(q2).some((t) => t.includes('TOOLS UPDATED')), 'tools note');

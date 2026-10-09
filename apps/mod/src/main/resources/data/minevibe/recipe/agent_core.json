@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "A": "minecraft:amethyst_shard",
+    "R": "minecraft:redstone",
+    "D": "minecraft:diamond",
+    "E": "minecraft:ender_pearl"
+  },
+  "pattern": [
+    "ARA",
+    "RDR",
+    "AEA"
+  ],
+  "result": {
+    "id": "minevibe:agent_core"
+  }
+}

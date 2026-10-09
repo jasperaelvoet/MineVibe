@@ -76,7 +76,7 @@ public final class FrontCards {
 				yield card.questions() != null && card.questions().size() > 1 ? progress(card) + " " + text : text;
 			}
 			case Ui.PendingCard.PLAN -> "Plan ready for approval";
-			case Ui.PendingCard.HIRE -> "Hire " + card.name() + " (" + card.role() + ")?";
+			case Ui.PendingCard.HIRE -> "Hire " + card.name() + " (" + card.role() + ")? Costs 1 Agent Core";
 			case Ui.PendingCard.CALENDAR -> card.summary() == null ? "Calendar approval" : card.summary();
 			default -> card.kind();
 		};

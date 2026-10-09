@@ -22,7 +22,7 @@ import { agentActor } from '../../../src/contracts/common.js';
 import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakePcApi } from '../../../src/contracts/FakePcApi.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo, RITUAL_PLACE } from '../../helpers/agentHarness.js';
 import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
 import { FAKE_MODELS, type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
 
@@ -67,7 +67,7 @@ async function call(reg: Registered, name: string, args: Record<string, unknown>
 /** A fresh world whose CEO is idle (plan-first off). */
 async function world(options: Parameters<typeof createHarness>[0] = {}) {
   h = await createHarness(options);
-  await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+  await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
   const id = h.manager.listAgents()[0]?.agentId ?? '';
   const q = h.query(0);
   await h.until(() => h?.texts(q).some((t) => t.includes('WELCOME')) ?? false, 'welcome');
@@ -269,24 +269,37 @@ describe('CrewHooks on the agent runtime', () => {
 });
 
 describe('spawning and world events', () => {
-  it('spawns the first CEO at the spawn place, and respawns bodies when the same world reopens', async () => {
+  /** The CEO asks to hire a miner and the player approves; resolves with the hire's spawn. */
+  async function approvedHire(w: Harness, q: FakeQuery) {
+    await wake(w, q, 'we need iron');
+    await q.callTool('mcp__mc__request_hire', { role: 'miner', reason: 'iron', first_task: 'mine iron' });
+    q.result();
+    const card = w.manager.pendingCards().find((c) => c.kind === 'hire');
+    await w.manager.answerCard(card?.id ?? '', { kind: 'approve' });
+    return w.skills.spawned.at(-1);
+  }
+
+  it('awakens the first CEO at its copper stack, hires at the spawn place, and respawns bodies when the same world reopens', async () => {
     const at = { pos: { x: 12, y: 64, z: -35 }, dim: 'minecraft:overworld' };
-    const { w, id } = await world({ spawnPlace: async () => at });
-    expect(w.skills.spawned[0]).toMatchObject({ agentId: id, restore: false, at });
-    await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    const { w, id, q } = await world({ spawnPlace: async () => at });
+    expect(w.skills.spawned[0]).toMatchObject({ agentId: id, restore: false, at: RITUAL_PLACE });
+    await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
     expect(w.skills.spawned).toHaveLength(1);
-    await w.manager.openWorld({ worldId: 'w1', gen: 1 }, { respawn: true });
-    expect(w.skills.spawned[1]).toMatchObject({ agentId: id, restore: true });
-    expect(w.skills.spawned[1]?.at).toBeUndefined();
+    expect(await approvedHire(w, q)).toMatchObject({ role: 'miner', restore: false, at });
+    await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 }, { respawn: true });
+    expect(w.skills.spawned[2]).toMatchObject({ agentId: id, restore: true });
+    expect(w.skills.spawned[2]?.at).toBeUndefined();
   });
 
-  it('a failing spawn place never stops the CEO from arriving', async () => {
-    const { w } = await world({
+  it('a failing spawn place never stops a hire from arriving', async () => {
+    const { w, q } = await world({
       spawnPlace: async () => {
         throw new Error('office lookup broke');
       },
     });
-    expect(w.skills.spawned[0]?.at).toBeUndefined();
+    const hired = await approvedHire(w, q);
+    expect(hired).toMatchObject({ role: 'miner' });
+    expect(hired?.at).toBeUndefined();
   });
 
   it('with calendarWakes off, calendarFired is left to the org module', async () => {
@@ -336,7 +349,7 @@ describe('the game restarts into the same world while Node runs (review fix)', (
     expect(brain?.fsm.hasPcAccess).toBe(true);
     expect(brain?.model).toBe('opus');
     const oldEpoch = brain?.fsm.epoch ?? 0;
-    await w.manager.openWorld({ worldId: 'w1', gen: 1 }, { respawn: true });
+    await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 }, { respawn: true });
     expect(w.skills.spawned.at(-1)).toMatchObject({ agentId: id, restore: true });
     await w.until(() => brain?.fsm.state === 'wandering', 'seat reset');
     expect(brain?.fsm.hasPcAccess).toBe(false);
@@ -403,23 +416,25 @@ describe('a seated agent whose claude crashes (review fix)', () => {
 describe('shutdown while a world is opening (review fix)', () => {
   it('no brain is created or started after shutdown', async () => {
     let release: (() => void) | null = null;
-    h = await createHarness({
-      spawnPlace: () =>
-        new Promise((resolve) => {
-          release = () => resolve(null);
-        }),
-    });
+    const skills = new FakeSkillApi();
+    const spawn = skills.spawn.bind(skills);
+    skills.spawn = (req) =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }).then(() => spawn(req));
+    h = await createHarness({ skills });
     const w = h;
-    const opening = w.manager.openWorld({ worldId: 'w1', gen: 1 });
-    await w.until(() => release !== null, 'the CEO waits for the office door');
+    await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    const awakening = w.manager.awaken({ ...RITUAL_PLACE, pos: { ...RITUAL_PLACE.pos } });
+    await w.until(() => release !== null, 'the CEO is spawning');
     await w.manager.shutdown();
     (release as unknown as () => void)();
-    await opening;
+    await expect(awakening).rejects.toThrow();
     expect(w.manager.listAgents()).toEqual([]);
-    expect(w.skills.spawned).toHaveLength(0);
     expect(w.factory.queries).toHaveLength(0);
-    // A later open (a late world.state{ready}) does nothing either.
+    // A later open (a late world.state{ready}) or ritual does nothing either.
     await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await expect(w.manager.awaken({ ...RITUAL_PLACE, pos: { ...RITUAL_PLACE.pos } })).rejects.toThrow();
     expect(w.factory.queries).toHaveLength(0);
   });
 });
@@ -501,17 +516,26 @@ describe('startup assertions', () => {
   });
 
   it('a brain without a usable claude sleeps with a toast and keeps its wakes', async () => {
+    // The crew was awakened while claude worked; the next launch finds it too old.
+    const first = await createHarness();
+    await openWorldWithCeo(first.manager, { worldId: 'w1', gen: 1 });
+    await first.manager.shutdown();
+    first.manager.dispose();
     h = await createHarness({
+      dir: first.dir,
       claude: () => {
         throw new Error('claude 2.1.284 is too old (need 2.1.293): run `claude update`');
       },
     });
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    dirs.push(first.dir);
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
     const brain = h.manager.brain(id);
     expect(h.skills.spawned).toHaveLength(1);
+    expect(h.skills.spawned[0]).toMatchObject({ agentId: id, restore: true });
     expect(brain?.status).toBe('asleep');
-    expect(brain?.queuedWakes.some((w) => w.kind === 'WELCOME')).toBe(true);
+    await h.manager.deliverChat({ to: 'all', text: '@ada are you there?' });
+    expect(brain?.queuedWakes.some((w) => w.text.includes('are you there?'))).toBe(true);
     expect(h.factory.queries).toHaveLength(0);
     expect(
       h.events.some((e) => e.type === 'toast' && /claude update/.test((e.payload as { text: string }).text)),

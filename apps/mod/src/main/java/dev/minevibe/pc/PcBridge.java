@@ -97,6 +97,14 @@ public final class PcBridge {
 		return request(Pc.PC_ACTION, new Pc.PcAction(action, pcId, type, pos), ACTION_TIMEOUT);
 	}
 
+	/**
+	 * {@code pc.action{create}} for a new desk: Node answers with an existing PC of the type's family that has no desk in
+	 * this world (none of {@code placed}, at most 64 as the schema allows), or a new one.
+	 */
+	public static CompletableFuture<JsonObject> create(final String type, final Messages.BlockPos pos, final java.util.Collection<String> placed) {
+		return request(Pc.PC_ACTION, new Pc.PcAction("create", null, type, pos, placed.stream().sorted().limit(64).toList()), ACTION_TIMEOUT);
+	}
+
 	/** The error code of a failed request ({@code err} code, {@code TIMEOUT}, ...), or {@code INTERNAL}. */
 	public static String codeOf(final Throwable error) {
 		BridgeException be = BridgeClient.unwrap(error);

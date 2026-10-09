@@ -1,0 +1,25 @@
+{
+  "parent": "minevibe:guide/heart",
+  "criteria": {
+    "awakened": {
+      "trigger": "minevibe:awakened_agent"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:lightning_rod"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.alive.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.alive.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "awakened"
+    ]
+  ]
+}

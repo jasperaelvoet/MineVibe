@@ -145,10 +145,11 @@ async function resolveModJar(
 
 /**
  * JVM arguments for E2E mode: the game's `debug.*` handlers are on only with `-Dminevibe.e2e=true` (the mod reads the
- * system property, never the environment), so `MINEVIBE_E2E=1 npm run play` passes it on.
+ * system property, never the environment), so `MINEVIBE_E2E=1 npm run play` passes it on. The acceptance scenario
+ * also opts back into the starter office (`-Dminevibe.office=true`; new worlds start with nothing otherwise, PLAN §7.5).
  */
 export function e2eJvmArgs(e2e: boolean): string[] {
-  return e2e ? ['-Dminevibe.e2e=true'] : [];
+  return e2e ? ['-Dminevibe.e2e=true', '-Dminevibe.office=true'] : [];
 }
 
 /** Sends SIGTERM (the JVM's shutdown hook saves the world), then SIGKILL if it is still running after `graceMs`. */

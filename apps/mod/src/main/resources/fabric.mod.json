@@ -21,14 +21,16 @@
 			"dev.minevibe.agent.AgentModInit",
 			"dev.minevibe.org.OrgModInit",
 			"dev.minevibe.agent.skill.SkillsModInit",
-			"dev.minevibe.pc.PcModInit"
+			"dev.minevibe.pc.PcModInit",
+			"dev.minevibe.progression.ProgressionModInit"
 		],
 		"client": [
 			"dev.minevibe.client.MineVibeClient",
 			"dev.minevibe.client.agent.AgentClientInit",
 			"dev.minevibe.client.ui.UiClientInit",
 			"dev.minevibe.client.org.OrgClientInit",
-			"dev.minevibe.client.pc.PcClientInit"
+			"dev.minevibe.client.pc.PcClientInit",
+			"dev.minevibe.client.progression.ProgressionClientInit"
 		],
 		"frex_flawless_frames": [
 			"dev.minevibe.client.pc.compat.PcFlawlessFrames"

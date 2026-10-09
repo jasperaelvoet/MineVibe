@@ -287,7 +287,7 @@ export function welcomeMessage(input: WelcomeInput): string {
       control(
         input.nonce,
         'WELCOME',
-        `${p} approved your hire. You just walked into the office in World #${input.worldGen}. You report to ${escapeShared(input.hiredBy)} (the CEO) via mcp__mc__tell; ${p} is the boss.`,
+        `${p} approved your hire. You just arrived in World #${input.worldGen}. You report to ${escapeShared(input.hiredBy)} (the CEO) via mcp__mc__tell; ${p} is the boss.`,
       ),
     );
     if (input.base) lines.push(baseLine(p, input.base));
@@ -303,6 +303,10 @@ export function welcomeMessage(input: WelcomeInput): string {
     ),
   );
   if (input.base) lines.push(baseLine(p, input.base));
+  else
+    lines.push(
+      `${p} woke you with an Agent Core. The world starts with nothing: no office, no PCs and no tools until ${p} and the crew build and craft them.`,
+    );
   if (input.codexSurvived)
     lines.push('The previous world ended, but the Codex survived: search it before asking.');
   if (input.chronicle) lines.push(wrapNote({ author: 'MineVibe', kind: 'chronicle', text: input.chronicle }));

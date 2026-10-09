@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { agentActor, PLAYER } from '../../../src/contracts/common.js';
-import { createHarness } from '../../helpers/agentHarness.js';
+import { createHarness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 
 describe('calendar approval cards (PLAN §6.6 "Rights and limits")', () => {
   it('approve and decline go to OrgApi.calendar.decide and clear the card', async () => {
     const h = await createHarness();
     try {
-      await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+      await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
       const id = h.manager.listAgents()[0]?.agentId ?? '';
       const event = {
         kind: 'task' as const,
@@ -58,7 +58,7 @@ describe('meeting chat scope (PLAN §6.5 "During a meeting")', () => {
   it('a meeting that is still gathering takes no unmentioned chat (they route as usual)', async () => {
     const h = await createHarness();
     try {
-      await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+      await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
       const id = h.manager.listAgents()[0]?.agentId ?? '';
       // The fake starts a player-chaired meeting in the gathering phase (the wire `chair` is already "player").
       const started = await h.org.meeting.start(PLAYER, { attendees: [id], preview: false });
