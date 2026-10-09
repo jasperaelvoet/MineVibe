@@ -257,7 +257,23 @@ describe('kickoff and welcome messages', () => {
     expect(done).toContain(
       'Last commands: `npm test` exit 1; `npm test -- --fix` exit 0; `git status` exit 0.',
     );
-    expect(done).toContain("don't repeat it");
+    // The desk's last words were spoken aloud (a bubble and the chat log): the body is told so, not left to guess.
+    expect(done.split('\n').at(-1)).toBe(
+      "You said that aloud at the PC, so Jasper has heard it: don't repeat it. Carry on with what is next, or reply (silent).",
+    );
+    const quiet = deskReportMessage({
+      nonce: 'abc123',
+      playerName: 'Jasper',
+      pcId: 'linux-1',
+      outcome: 'done',
+      summary: null,
+      changedFiles: [],
+      commands: [],
+    });
+    expect(quiet.split('\n').slice(1)).toEqual([
+      'Your PC session said nothing at the end.',
+      'Tell Jasper the result in 1-2 sentences if they asked for one, then carry on.',
+    ]);
     const kicked = deskReportMessage({
       nonce: 'abc123',
       playerName: 'Jasper',

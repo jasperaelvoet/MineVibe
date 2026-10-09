@@ -186,9 +186,13 @@ export function deskReportMessage(input: DeskReportInput): string {
       .map((c) => `\`${escapeShared(c.command.split('\n')[0] ?? '').slice(0, 80)}\` exit ${c.exitCode}`);
     lines.push(`Last commands: ${cmds.join('; ')}.`);
   }
+  // The summary is the desk's final text, which was spoken aloud (a bubble and the chat log) when it was said.
+  const spoken = Boolean(input.summary && input.summary.trim().length > 0);
   lines.push(
     input.outcome === 'done'
-      ? `If ${input.playerName} already heard the result, don't repeat it: carry on with what is next, or reply (silent).`
+      ? spoken
+        ? `You said that aloud at the PC, so ${input.playerName} has heard it: don't repeat it. Carry on with what is next, or reply (silent).`
+        : `Tell ${input.playerName} the result in 1-2 sentences if they asked for one, then carry on.`
       : input.outcome === 'kicked'
         ? `Ask ${input.playerName} what they want, or do something else.`
         : 'Deal with that first; sit down again later to continue (your PC session picks up where it left off).',
