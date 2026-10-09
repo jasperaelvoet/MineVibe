@@ -504,8 +504,8 @@ public final class GatherJobs {
 
 	/**
 	 * Blocks that drop {@code item} when mined: the item's own block (or a block tag of the same name), plus common
-	 * drops. A tag leaves out building variants (stripped logs, wood, planks: W1), so {@code #minecraft:logs} means
-	 * tree trunks.
+	 * drops; for an item tag without a block tag, its members' sources. A tag leaves out building variants (stripped
+	 * logs, wood, planks: W1), so {@code #minecraft:logs} means tree trunks.
 	 */
 	static @Nullable Predicate<BlockState> sourcesOf(final Refs.ItemMatcher item) {
 		List<Predicate<BlockState>> out = new ArrayList<>();
@@ -521,6 +521,15 @@ public final class GatherJobs {
 			}
 		} else if (item.tag() != null && item.tag().location().getPath().equals("logs")) {
 			out.add(Sources.naturalTag(s -> s.is(BlockTags.LOGS)));
+		} else if (item.tag() != null && self == null) {
+			// An item tag with no block tag of its name (a material family such as stone_tool_materials, or coals): the
+			// sources of its members, so the nearest of any kind is found (stone, deepslate or blackstone).
+			for (net.minecraft.core.Holder<Item> h : net.minecraft.core.registries.BuiltInRegistries.ITEM.getTagOrEmpty(item.tag())) {
+				Predicate<BlockState> member = sourcesOf(new Refs.ItemMatcher(Refs.itemId(h.value()), h.value(), null));
+				if (member != null) {
+					out.add(member);
+				}
+			}
 		}
 		if (out.isEmpty()) {
 			return null;

@@ -159,12 +159,52 @@ describe('v2 job results (§5.4, §6.1)', () => {
         'failed: gather oak_log 0/10 | NO_NATURAL_SOURCE: no reachable natural oak_log within 48m',
         ' seen: oak trunk at 9 67 -12, 8m NE, unreachable (no path: wall)',
         ' seen: oak trunk at 6 66 60, 65m S, beyond radius',
-        'next: ask Jordan (AskUserQuestion: go further / use something else / skip). Never take oak_log from buildings.',
+        // Oak is one kind of the logs: a hard stop when Jordan named it; an ingredient takes any kind, no question.
+        'next: if Jordan named oak_log: ask; else gather{"item":"#logs","count":10} (an ingredient: any kind, no question)',
         '· HP 20/20',
       ].join('\n'),
     );
     expect(r.isError).toBe(true);
     expect(HARD_STOP_CODES.has('NO_NATURAL_SOURCE')).toBe(true);
+    // No family (raw iron), or the family itself came up empty (#logs): ask.
+    const failed = (item: string) =>
+      hintFor('NO_NATURAL_SOURCE', { ...gatherMeta, what: `gather ${item}`, want: { item, count: 3 } }, ctx);
+    expect(failed('raw_iron')).toBe(
+      'ask Jordan (AskUserQuestion: go further / use something else / skip). Never take raw_iron from buildings.',
+    );
+    expect(failed('#logs')).toMatch(/^ask Jordan \(AskUserQuestion/);
+    // The longest family call still fits the 160 characters of a next: line.
+    expect(failed('cobbled_deepslate')).toBe(
+      'if Jordan named cobbled_deepslate: ask; else gather{"item":"#stone_tool_materials","count":3} (an ingredient: any kind, no question)',
+    );
+    // A craft already took any kind the recipe allows: what it still lacks is a question for the player.
+    expect(
+      hintFor(
+        'NO_NATURAL_SOURCE',
+        { tool: 'craft', skill: 'craft', what: 'craft oak_door', want: { item: 'oak_door', count: 3 } },
+        ctx,
+      ),
+    ).toMatch(/^ask Jordan \(AskUserQuestion/);
+  });
+
+  it("MISSING_INGREDIENTS names the family any kind of which would do (the mod's missing[].any)", () => {
+    const r = renderFailed(
+      {
+        tool: 'craft',
+        skill: 'craft',
+        what: 'craft wooden_pickaxe',
+        want: { item: 'wooden_pickaxe', count: 1 },
+      },
+      {
+        status: 'failed',
+        error: { code: 'MISSING_INGREDIENTS', msg: 'raw materials missing: oak_log 2 (any #minecraft:logs)' },
+        result: {
+          missing: [{ item: 'oak_log', need: 2, have: 0, for: 'oak_planks', any: '#minecraft:logs' }],
+        },
+      },
+      ctx,
+    );
+    expect(r.details).toContain('need: oak_log 2 (have 0; or any #logs), for oak_planks');
   });
 
   it('MISSING_INGREDIENTS lists what is missing (M4 tree and v1 ingredients) and suggests gather_missing', () => {
@@ -391,10 +431,10 @@ describe('v2 job results (§5.4, §6.1)', () => {
       'failed: do step 1/2 gather | NO_NATURAL_SOURCE: no reachable natural oak_log within 48m',
     );
     expect(failed.details).toEqual(['1 gather oak_log 0/10 failed', '2 craft crafting_table skipped']);
-    expect(failed.next).toContain('AskUserQuestion');
+    expect(failed.next).toContain('if Jordan named oak_log: ask;');
     const wake = wakeText('j2-9', failed);
     expect(wake.startsWith('j2-9 do step 1/2 gather | NO_NATURAL_SOURCE')).toBe(true);
-    expect(wake).toContain('| next: ask Jordan');
+    expect(wake).toContain('| next: if Jordan named oak_log: ask; else gather{"item":"#logs","count":10}');
     expect(wake.length).toBeLessThanOrEqual(400);
   });
 

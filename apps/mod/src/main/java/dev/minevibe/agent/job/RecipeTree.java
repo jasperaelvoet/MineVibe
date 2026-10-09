@@ -26,7 +26,10 @@ import org.jspecify.annotations.Nullable;
  *       block), and an ingredient that is only a compressed or uncompressed form of the item itself (a block of 9
  *       ingots, log ↔ wood) is used only when the inventory holds it.</li>
  *   <li>What cannot be made is a raw leaf ({@link Missing}): gathered when asked ({@code gather_missing}), else the
- *       job fails {@code MISSING_INGREDIENTS} with the list.</li>
+ *       job fails {@code MISSING_INGREDIENTS} with the list. A leaf any member of its material family would replace
+ *       (oak logs for planks, with nothing carried) is gathered as the family ({@link #gatherRef}): the nearest kind.</li>
+ *   <li>Carried items come first in a slot, then what they make in one step (spruce planks from carried spruce logs),
+ *       then the most basic kinds.</li>
  *   <li>A 3x3 recipe needs a crafting table and smelting a furnace: when none is near and none is carried, making one is
  *       planned first (a furnace needs a table too). Smelting needs fuel: carried fuel the plan does not use, else
  *       logs to gather.</li>
@@ -155,6 +158,52 @@ public final class RecipeTree {
 		}
 		return new Plan(target, count, smeltsLate(t.steps), List.copyOf(t.missing.values()), t.needsTable, t.needsFurnace,
 			makeTable, makeFurnace, t.smelts, Map.copyOf(t.fuelUse));
+	}
+
+	/**
+	 * What to gather for a missing raw material: its material family ({@code #minecraft:logs}) when any member would do
+	 * as well, else the item itself. With nothing carried the plan names one kind (oak logs for planks); it is only the
+	 * planner's pick when the same plan, given that much of every other natural member of a family instead, lacks
+	 * neither. A kind the recipe pins (oak planks for an oak door, white wool for a white bed) keeps the plan short with
+	 * any other member, so it stays. {@code families}: tag → natural members ({@link Families#members()} in game).
+	 */
+	public static String gatherRef(final Book book, final Plan plan, final Missing m, final Map<Item, Integer> inventory, final Stations stations,
+		final Map<String, List<Item>> families) {
+		if (m.item() == null) {
+			return m.ref();
+		}
+		int lacking = 0;
+		for (Missing x : plan.missing()) {
+			lacking += x.need();
+		}
+		for (Map.Entry<String, List<Item>> f : families.entrySet()) {
+			if (!f.getValue().contains(m.item())) {
+				continue;
+			}
+			boolean all = true;
+			for (Item other : f.getValue()) {
+				if (other == m.item()) {
+					continue;
+				}
+				Map<Item, Integer> inv = new LinkedHashMap<>(inventory);
+				inv.merge(other, m.need(), Integer::sum);
+				Plan p = plan(book, plan.item(), plan.count(), inv, stations);
+				int left = 0;
+				boolean stillShort = false;
+				for (Missing x : p.missing()) {
+					left += x.need();
+					stillShort |= x.ref().equals(m.ref()) || x.item() == other;
+				}
+				if (stillShort || left > lacking - m.need()) {
+					all = false;
+					break;
+				}
+			}
+			if (all) {
+				return f.getKey();
+			}
+		}
+		return m.ref();
 	}
 
 	/**
@@ -334,10 +383,35 @@ public final class RecipeTree {
 			}
 		}
 		held.sort(Comparator.comparingInt((Item o) -> -this.have(o)));
-		usable.sort(Comparator.comparingInt(RecipeTree::preference).thenComparing(RecipeTree::id));
+		// What the inventory makes in one step comes first (spruce planks with spruce logs carried): a family with more
+		// kinds than candidates (planks) must still reach the carried one.
+		usable.sort(Comparator.comparingInt((Item o) -> this.madeFromHeld(o) ? 0 : 1).thenComparingInt(RecipeTree::preference)
+			.thenComparing(RecipeTree::id));
 		List<Item> out = new ArrayList<>(held);
 		out.addAll(usable);
 		return out.size() > MAX_CANDIDATES ? out.subList(0, MAX_CANDIDATES) : out;
+	}
+
+	/** Whether one recipe makes {@code item} from what the inventory holds (every slot has a carried item). */
+	private boolean madeFromHeld(final Item item) {
+		for (CraftOption o : this.book.crafting(item)) {
+			boolean all = !o.slots().isEmpty();
+			for (List<Item> slot : o.slots()) {
+				if (slot.stream().noneMatch(i -> this.have(i) > 0)) {
+					all = false;
+					break;
+				}
+			}
+			if (all) {
+				return true;
+			}
+		}
+		for (SmeltOption o : this.book.smelting(item)) {
+			if (o.inputs().stream().anyMatch(i -> this.have(i) > 0)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Whether {@code form} is only a storage form of {@code of}: a recipe makes it from {@code of} alone. */

@@ -151,7 +151,13 @@ describe('persona (stable system prompt)', () => {
       'ask Jordan with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw',
     );
     expect(p).not.toMatch(/planks instead/);
-    expect(p).toContain('PROTECTED and NO_NATURAL_SOURCE failures are hard stops');
+    // What the player named is kept or asked about; an ingredient they did not name is any kind, without a question
+    // (a live run asked "Use birch (Recommended)?" for a wooden pickaxe).
+    expect(p).toContain('If what Jordan named (an item, or a kind: "oak logs") is missing or out of reach');
+    expect(p).toContain(
+      'Ingredients Jordan did not name can be any kind (any wood for planks, sticks and wooden tools; any stone for stone tools): take the nearest you can reach, no question.',
+    );
+    expect(p).toContain('PROTECTED, and NO_NATURAL_SOURCE for what Jordan named, are hard stops');
     // "Allow" is for what the player asked to change, never offered as a substitute.
     expect(p).toContain('Never offer Base blocks as an option.');
     expect(p).toContain('ask with an option "Allow: <what>" that names them');
@@ -160,7 +166,8 @@ describe('persona (stable system prompt)', () => {
     expect(p).toContain(
       'Call Jordan safe only once mcp__mc__look_around shows "Jordan (player) … under cover"',
     );
-    expect(worldPrimer('Jordan').join('\n').length).toBeLessThan(1_900);
+    // 1,900 before the ingredient rule (2026-10-09): one sentence, still short.
+    expect(worldPrimer('Jordan').join('\n').length).toBeLessThan(2_050);
     // Stable: the primer has no per-world or per-turn values (the prompt cache stays warm).
     expect(personaPrompt({ ...base, role: 'miner', ceo: false })).toBe(p);
   });

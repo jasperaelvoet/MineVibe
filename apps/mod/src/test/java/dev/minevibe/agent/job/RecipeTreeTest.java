@@ -213,6 +213,88 @@ class RecipeTreeTest {
 		assertTrue(withPlanks.complete(), "two planks burn 600 ticks: " + withPlanks.missing());
 	}
 
+	/**
+	 * Six kinds of wood, more than the planner tries per slot: planks, sticks, a table and wooden tools take any planks,
+	 * an oak door only oak planks; stone tools take any of the three stones.
+	 */
+	static TestBook woodBook() {
+		TestBook b = new TestBook();
+		Item[][] woods = {
+			{Items.OAK_PLANKS, Items.OAK_LOG}, {Items.ACACIA_PLANKS, Items.ACACIA_LOG}, {Items.BIRCH_PLANKS, Items.BIRCH_LOG},
+			{Items.CHERRY_PLANKS, Items.CHERRY_LOG}, {Items.JUNGLE_PLANKS, Items.JUNGLE_LOG}, {Items.SPRUCE_PLANKS, Items.SPRUCE_LOG},
+		};
+		List<Item> planks = new ArrayList<>();
+		for (Item[] w : woods) {
+			b.craft(w[0], 4, true, n(1, w[1]));
+			planks.add(w[0]);
+		}
+		Item[] any = planks.toArray(Item[]::new);
+		b.craft(Items.STICK, 4, true, n(2, any));
+		b.craft(Items.CRAFTING_TABLE, 1, true, n(4, any));
+		b.craft(Items.WOODEN_PICKAXE, 1, false, concat(n(3, any), n(2, Items.STICK)));
+		b.craft(Items.OAK_DOOR, 3, false, n(6, Items.OAK_PLANKS));
+		b.craft(Items.STONE_PICKAXE, 1, false, concat(n(3, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE, Items.COBBLESTONE), n(2, Items.STICK)));
+		return b;
+	}
+
+	/** The families as the server's tags hold them (natural members only). */
+	static Map<String, List<Item>> families() {
+		return Map.of(
+			"#minecraft:logs", List.of(Items.OAK_LOG, Items.ACACIA_LOG, Items.BIRCH_LOG, Items.CHERRY_LOG, Items.JUNGLE_LOG, Items.SPRUCE_LOG),
+			"#minecraft:stone_tool_materials", List.of(Items.COBBLESTONE, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE));
+	}
+
+	/** The gather ref of the plan's one missing material, the plan made with {@code stations}. */
+	static String gatherRef(final TestBook book, final RecipeTree.Plan p, final Map<Item, Integer> inv, final RecipeTree.Stations stations) {
+		assertEquals(1, p.missing().size(), p.missing().toString());
+		return RecipeTree.gatherRef(book, p, p.missing().getFirst(), inv, stations, families());
+	}
+
+	@Test
+	void aCarriedKindIsUsedEvenWhenTheFamilyHasMoreKindsThanTheCandidates() {
+		// Spruce sorts last: before, only oak, acacia, birch and cherry planks were tried, and spruce logs went unused.
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(Items.SPRUCE_LOG, 3), NONE);
+		assertTrue(p.complete(), p.missing().toString());
+		assertTrue(texts(p).contains("spruce_log 1 → spruce_planks 4"), texts(p).toString());
+		assertFalse(texts(p).toString().contains("oak"), texts(p).toString());
+	}
+
+	@Test
+	void anIngredientAnyWoodMakesIsGatheredAsTheFamily() {
+		// Nothing carried: the plan names oak logs, but any log makes the planks, sticks and table of a wooden pickaxe.
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(), NONE);
+		assertEquals(Items.OAK_LOG, p.missing().getFirst().item());
+		assertEquals("#minecraft:logs", gatherRef(woodBook(), p, inv(), NONE));
+		// What the family gathered (birch, the nearest tree) completes the plan.
+		RecipeTree.Plan birch = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(Items.BIRCH_LOG, 3), NONE);
+		assertTrue(birch.complete(), birch.missing().toString());
+		assertTrue(texts(birch).contains("birch_log 1 → birch_planks 4"), texts(birch).toString());
+	}
+
+	@Test
+	void aKindTheRecipePinsStaysThatKind() {
+		// An oak door takes oak planks only: birch logs would not do, so oak logs are gathered (or the player asked).
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.OAK_DOOR, 3, inv(), BOTH);
+		assertEquals("oak_log", gatherRef(woodBook(), p, inv(), BOTH));
+	}
+
+	@Test
+	void stoneToolsTakeAnyOfTheThreeStones() {
+		Map<Item, Integer> sticks = inv(Items.STICK, 2);
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.STONE_PICKAXE, 1, sticks, BOTH);
+		assertEquals(Items.COBBLESTONE, p.missing().getFirst().item(), "cobblestone, the everyday stone: " + p.missing());
+		assertEquals("#minecraft:stone_tool_materials", gatherRef(woodBook(), p, sticks, BOTH));
+		RecipeTree.Plan blackstone = RecipeTree.plan(woodBook(), Items.STONE_PICKAXE, 1, inv(Items.STICK, 2, Items.BLACKSTONE, 3), BOTH);
+		assertTrue(blackstone.complete(), blackstone.missing().toString());
+		assertEquals(List.of("blackstone 3 + stick 2 → stone_pickaxe 1"), texts(blackstone));
+	}
+
+	@Test
+	void fuelIsAlreadyAnyLog() {
+		RecipeTree.Plan p = RecipeTree.plan(book(), Items.IRON_INGOT, 3, inv(Items.RAW_IRON, 3), BOTH);
+		assertEquals(RecipeTree.FUEL_REF, gatherRef(book(), p, inv(Items.RAW_IRON, 3), BOTH));
+	}
+
 	@Test
 	void theTargetIsMadeFreshAndSurplusIsKept() {
 		RecipeTree.Plan p = RecipeTree.plan(book(), Items.STICK, 2, inv(Items.STICK, 5, Items.OAK_PLANKS, 2), NONE);

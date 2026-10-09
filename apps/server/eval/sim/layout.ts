@@ -14,6 +14,9 @@
  *   player-built, so the scene names both ("Base 3m SE", "Jordan's build (… blocks) 4m SE").
  *
  * The house logs are the nearest logs to spawn: `mine #minecraft:logs` (or `collect` of the logs tag) takes them first.
+ *
+ * Variants (question quality): `unreachableWoods: ['oak']` moats the oaks and leaves the birch; `rock: 'blackstone'`
+ * makes the outcrop blackstone over deepslate and the pillar deepslate, so no plain stone (cobblestone) exists.
  */
 
 import type { IdleMode } from '@minevibe/protocol';
@@ -116,10 +119,16 @@ export function treeBox(t: TreeSpec): Box {
   };
 }
 
-function buildOutcrop(w: SimWorld): void {
+/** The outcrop's rock: plain stone, or (`blackstone`) blackstone over deepslate, which drops cobbled deepslate. */
+function rockAt(y: number, rock: 'stone' | 'blackstone'): string {
+  if (rock === 'stone') return `${NS}stone`;
+  return y >= 66 ? `${NS}blackstone` : `${NS}deepslate`;
+}
+
+function buildOutcrop(w: SimWorld, rock: 'stone' | 'blackstone'): void {
   for (let x = 16; x <= 18; x++)
     for (let z = -3; z <= 3; z++)
-      for (let y = 64; y <= 67; y++) w.set({ x, y, z }, `${NS}stone`, 'natural', 'outcrop');
+      for (let y = 64; y <= 67; y++) w.set({ x, y, z }, rockAt(y, rock), 'natural', 'outcrop');
   const ores: [number, number, number, string][] = [
     [16, 64, -1, 'iron_ore'],
     [16, 65, 1, 'iron_ore'],
@@ -140,6 +149,13 @@ export interface WorldOptions {
   readonly mode?: IdleMode;
   /** Every tree is out of reach (a water moat around each one). */
   readonly allTreesUnreachable?: boolean;
+  /** Only the trees of these woods are out of reach (a moat around each): `['oak']` leaves the birch. */
+  readonly unreachableWoods?: readonly TreeSpec['wood'][];
+  /**
+   * The natural rock (the outcrop and the pillar): plain stone (default), or `blackstone` (blackstone over deepslate,
+   * no plain stone anywhere: stone tools from cobblestone's family).
+   */
+  readonly rock?: 'stone' | 'blackstone';
   /** A zombie spawns at this tick at (-10, 64, -14) and walks to the player. */
   readonly zombieAt?: number | null;
 }
@@ -159,14 +175,22 @@ export function buildWorld(options: WorldOptions = {}): SimWorld {
   buildHouse(w);
   for (const t of TREES) buildTree(w, t);
   // The pillar under oak E.
+  const rock = options.rock ?? 'stone';
   const e = TREES.find((t) => t.name === PILLAR_TREE) as TreeSpec;
   for (let y = 64; y < e.base.y; y++)
-    w.set({ x: e.base.x, y, z: e.base.z }, `${NS}stone`, 'natural', 'pillar');
+    w.set(
+      { x: e.base.x, y, z: e.base.z },
+      rock === 'stone' ? `${NS}stone` : `${NS}deepslate`,
+      'natural',
+      'pillar',
+    );
   w.unreachable.push(treeBox(e));
-  buildOutcrop(w);
-  if (options.allTreesUnreachable) {
+  buildOutcrop(w, rock);
+  const moated = options.unreachableWoods ?? [];
+  if (options.allTreesUnreachable || moated.length > 0) {
     for (const t of TREES) {
       if (t.name === PILLAR_TREE) continue;
+      if (!options.allTreesUnreachable && !moated.includes(t.wood)) continue;
       w.unreachable.push(treeBox(t));
       // A water moat two blocks out (cosmetic: look_around reports water).
       for (let dx = -3; dx <= 3; dx++)

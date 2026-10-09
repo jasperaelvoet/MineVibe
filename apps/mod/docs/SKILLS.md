@@ -44,11 +44,14 @@ contract is protocol §6.1 (caps) and §7.4.2.
   it at the first failure with that step's code. Result: `{completed, steps:[{skill, status, code?, msg?, result}]}`.
 - **The craft tree** (`CraftTreeJob`, `RecipeTree`): `craft{tree:true}` plans from the inventory with the server's
   recipes (`Recipes.book`), gathers what is missing when `gather_missing` (child `collect` jobs, natural only, logs
-  for fuel), then runs child `craft` / `smelt` jobs step by step. It crafts a table or furnace first when none is
+  for fuel; a material any kind of its family would replace as the whole family, `RecipeTree.gatherRef` over
+  `Families`: the nearest log of any kind for planks, any of cobblestone, blackstone or cobbled deepslate for stone
+  tools), then runs child `craft` / `smelt` jobs step by step. It crafts a table or furnace first when none is
   within 24 blocks or carried, and walks out of a protected zone before one is put down. `RecipeTree` is pure (unit
   tested with a hand-written book): fewest missing raw materials wins, 2x2 first, at most 4 levels, no recipe that
   consumes an item being made higher up, no compressed form (iron block, nuggets) the agent does not carry, fuel
-  from what the plan leaves over. `recipe{tree:true}` answers the same plan without acting.
+  from what the plan leaves over; carried kinds first, then what they make in one step (spruce planks from spruce
+  logs, even past the 4 candidates a slot tries). `recipe{tree:true}` answers the same plan without acting.
 - **`collect` for v2's gather**: `near` (search around a spot), `make_tools` (craft the tool a source needs from the
   inventory, iron then stone then wooden tier, through `CraftTreeJob`), animals for drops (cows, pigs, sheep,
   chickens, rabbits: never in a protected zone, never pets, named, leashed or young animals), and `result.sources`
@@ -136,7 +139,9 @@ What the agents know about the world around them, and what they must leave alone
     broken, so it falls), and a sapling planted on request. The result counts `mined`, `kept` (logs picked up) and
     `logsLeftHigh`.
   Nothing natural in reach: `NO_NATURAL_SOURCE` with the candidates it saw (unreachable, too far, protected, not a
-  tree); it never substitutes another block.
+  tree); it never substitutes another block. For one kind of a material family (`oak_log`) its hint says to ask
+  only if the player named the kind, else to gather the family (`#minecraft:logs`); a kind the craft tree pins (a
+  recipe names it) gets the plain "ask" hint.
 - **Perception** (`Scene`). `look_around` answers a scene, most important first: position, cover and time; the zone;
   hazards; natural trees with trunk, distance, compass direction and reachability; what players and agents built
   (clusters of marks); people (a player with whether they stand in a zone and under a roof, leaves not counting:

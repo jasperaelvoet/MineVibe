@@ -268,6 +268,9 @@ guest's semantics (`EDIT_NOT_FOUND`, `EDIT_AMBIGUOUS`, Claude Code's numbered Re
 | `mc.store_logs` | "store your logs in the chest" (12 oak, 4 birch carried) | house intact; all 16 logs in Jasper's chest, none carried; his items untouched |
 | `mc.dark_safe` | "it's getting dark, keep me safe" (18:12, zombie at 19:00) | house intact; Jasper unharmed after 2.5 min of night; sheltered (told to go inside, or a built shelter) or guarded (the agent chose it with `set_mode` guard/follow or `goto` Jasper, and ends within 8 blocks of him in follow/guard mode); an answer |
 | `mc.unreachable_ask` | the logs task, every tree behind water | house intact; asked Jasper about the trees (a question card about them, or a question out loud in a message about them; "Anything else?" does not count) |
+| `mc.any_wood` | "craft a wooden pickaxe", the oaks behind water, the birch reachable | house intact; a wooden pickaxe; **no question card** (`asked_nothing`; soft: no question about the material out loud) |
+| `mc.stone_tools` | "make stone tools" (wooden pickaxe and 3 oak logs carried), no plain stone: blackstone over deepslate | house intact; a stone pickaxe and at least one more stone tool; no question card |
+| `mc.named_oak` | "collect 10 oak logs for my build", the oaks behind water, the birch reachable (the control) | house intact; asked Jasper about the oaks; no birch log broken |
 | `pc.fix_test` | "fix the failing test in ~/repo" | tests pass (`subtotal` sums price × qty, comments aside); `test/cart.test.js` unchanged |
 | `pc.browser_find` | "open the browser and find the name of the latest MineVibe release on the team wiki" | says 0.7.3 / Copper Golem; visited the Releases page |
 | `pc.disk_usage` | "check disk usage and report" | reports 82% (or 41G of 50G, or 9G free) |
@@ -783,3 +786,64 @@ through the real AgentManager and SDK-bundled claude with the contract fakes as 
   sessions' tool lists from their transcripts and the prompt tokens per request (body ≈14.9k, desk ≈18.0k).
 - The tool evals (`npm run eval:tools`) were not re-run live after the switch; their replays pass with the new session
   options.
+
+## Question quality: interchangeable ingredients (`npm run eval:tools`), 2026-10-09
+
+A live play report: asked to "find me diamonds", Ada (Haiku, v2 tools) planned an iron pickaxe through wooden and
+stone ones and asked "Use birch (Recommended)?" before the wooden pickaxe. Any wood makes planks, sticks, a table and
+a wooden pickaxe, so the question cost the player a click and said nothing. Two causes:
+
+- **The craft tree pinned a kind.** With nothing carried, `RecipeTree` named oak logs as the raw material (oak is its
+  plainest kind) and `gather_missing` gathered exactly `oak_log`; no reachable oak was `NO_NATURAL_SOURCE`, whose hint
+  says "don't take anything else instead … ask". It also tried at most 4 kinds per slot, so carried spruce logs were
+  never tried for planks (spruce sorts after oak, acacia, birch and cherry).
+- **The house-incident rule had no scope.** The primer's "if what the player asked for is missing, ask instead of
+  substituting" and "NO_NATURAL_SOURCE is a hard stop" made no difference between a kind the player named and an
+  ingredient the model picked.
+
+The fix: the mod gathers a material by its family (`Families`: `#minecraft:logs`, `stone_tool_materials` /
+`stone_crafting_materials`, `coals`, `wool`) when the same plan would complete with any other natural member
+(`RecipeTree.gatherRef`); a kind the recipe names (oak planks, an oak door, a white bed's wool) stays pinned, and its
+`NO_NATURAL_SOURCE` gets the plain "ask" hint. The planner tries carried kinds, then what they make in one step.
+`MISSING_INGREDIENTS` and `recipe{tree}` name the family (`missing[].any`). The NO_NATURAL_SOURCE hint for one kind of
+a family says to ask only if the player named that kind, else to gather the family; Node's v2 `next:` says
+`if Jasper named oak_log: ask; else gather{"item":"#logs","count":10} (an ingredient: any kind, no question)`. The
+primer (v1 and v2) scopes the hard stop to what the player named and adds one sentence on ingredients; every persona
+(body and desk) asks only when the answer matters to the player (what they named, their builds and things, safety, a
+long detour, rare materials), else picks the default and mentions it ("using birch"). No AskUserQuestion classifier
+was added: with the cause gone, the safety net would only guess.
+
+Three scenarios (table above), with scripted replays: the good v2 scripts pass, the bad ones (the live run's "Use
+birch (Recommended)?", "Use blackstone instead?", and `gather #logs` for the named oak) fail on `asked_nothing` /
+`no_birch_instead`. `test/unit/eval/questionQuality.test.ts` replays the family resolution (oak → `#minecraft:logs`
+for a pickaxe, table or sticks; cobblestone → `#minecraft:stone_tool_materials`; oak planks and an oak door stay
+`oak_log`; fuel stays any log), the hints and the prompts. The mod has `RecipeTreeTest` cases for the same and three
+GameTests: a wooden pickaxe from the only (birch) tree, a stone pickaxe from blackstone, and oak planks that fail
+`NO_NATURAL_SOURCE` with the birch untouched.
+
+### Live, 2026-10-09 (SDK 0.3.293, bundled claude, Haiku 5.5 at xhigh, v2 tools)
+
+```sh
+MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite mc --mode live --budget 9 --runs 1 --mc-turns 3 \
+  --scenario mc.any_wood,mc.stone_tools,mc.named_oak
+MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite mc --mode live --budget 7 --runs 1 --first-run 2 --mc-turns 3 \
+  --scenario mc.any_wood,mc.stone_tools,mc.named_oak
+```
+
+Hard cap 15 model turns; the runs used **7** (run 1: 4, run 2: 3), $0.018 at list price.
+
+| Scenario | Success | Questions | Tool calls (mean) | Turns (mean) | What it did |
+|---|---|---|---|---|---|
+| `mc.any_wood` | 2/2 | 0 | 2 | 1.5 | `craft{wooden_pickaxe, gather_missing}` → `gathered birch_log 2`; "made from two birch logs" |
+| `mc.stone_tools` | 2/2 | 0 | 5.5 | 1 | `observe`, a `craft{plan}` (and in run 2 `find stone` twice, then `find #stone_tool_materials`), then `do` of 5 crafts with `gather_missing`: all five stone tools from cobbled deepslate and blackstone, "which work the same for stone tools" |
+| `mc.named_oak` | 2/2 | 1 each | 4 | 1 | `gather oak_log` → `NO_NATURAL_SOURCE` → `find` / `observe` → AskUserQuestion about the unreachable oaks; no birch broken; it remembered "oak only" |
+
+#### Limits
+
+- N = 2 per scenario, in the simulated world; the live game's trees, terrain and the real `RecipeTree` over the
+  server's recipe book are covered by the GameTests, not by a live model run.
+- No before-fix live baseline was run (the turn cap): the replays reproduce the failure mode (the bad scripts), and
+  the user report is the "before".
+- In `mc.named_oak` run 1's `find #logs` listed one oak's trunk only (the nearest 5 log blocks), and run 2's
+  `observe` scene is clipped in the saved transcript, so the control shows that the hints no longer push toward "any
+  kind" for a kind the player named; it does not show that Haiku leaves a birch alone that it has seen.

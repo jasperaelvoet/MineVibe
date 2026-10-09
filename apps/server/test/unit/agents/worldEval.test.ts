@@ -132,14 +132,17 @@ describe('world eval: the fake world', () => {
       what: 'oak_log',
       radius: 24,
       candidates: [{ pos: TREE_CLIFF, block: 'oak tree', distance: 32, dir: 'E', why: 'unreachable' }],
-      hint: expect.stringMatching(/^Don't take anything else instead\. Tell Jordan what you found/),
+      // Oak is one kind of the logs: a hard stop only when Jordan named it (he did, in this eval).
+      hint: expect.stringMatching(
+        /^If Jordan named this kind, don't take another instead: tell Jordan what you found/,
+      ),
     };
     expect(await job(w, 'mine', { block: 'oak_log', count: 10 })).toMatchObject({
       status: 'failed',
       error: {
         code: 'NO_NATURAL_SOURCE',
         msg: expect.stringMatching(
-          /^No reachable natural oak_log within 24 blocks\. Seen: oak tree 32m E at 37 71 4 \(unreachable\)\. Don't take/,
+          /^No reachable natural oak_log within 24 blocks\. Seen: oak tree 32m E at 37 71 4 \(unreachable\)\. If Jordan named this kind/,
         ),
       },
       result: { noNaturalSource: seen },
@@ -147,7 +150,13 @@ describe('world eval: the fake world', () => {
     // A tag means its natural kinds: the office's stripped logs are never candidates.
     expect(await job(w, 'mine', { block: '#minecraft:logs', count: 10 })).toMatchObject({
       error: { code: 'NO_NATURAL_SOURCE' },
-      result: { noNaturalSource: { ...seen, what: 'logs' } },
+      result: {
+        noNaturalSource: {
+          ...seen,
+          what: 'logs',
+          hint: expect.stringMatching(/^Don't take anything else instead\. Tell Jordan what you found/),
+        },
+      },
     });
     expect(await job(w, 'goto', { pos: TREE_CLIFF })).toMatchObject({ error: { code: 'UNREACHABLE' } });
   });

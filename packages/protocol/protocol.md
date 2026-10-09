@@ -633,7 +633,7 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `PC_DOWN`, `NO_SEAT` | The end of an `agent.seat` job (section 7.5) |
 | `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
 | `PROTECTED` | The job would change a player-built block or one in a protected zone (the Base), a natural block that holds one up or lies under its roof, light fire or pour lava within 5 blocks of one, build inside a zone, knock down a decoration, take from or retune a player's block (flower pot, lectern, repeater...), or take from a chest the player placed. Nothing was changed. `result.protected` is a `ProtectedDetail` (`pos`, `what`: `player-built` or `base`, `owner`, `block`, `zone?`, `count`, `consentId?`, `hint`); `msg` starts with the teaching line ("That's part of Steve's base — ask Steve before changing it.") |
-| `NO_NATURAL_SOURCE` | `mine` / `collect` found nothing natural and reachable within the radius. It never substitutes another block. `result.noNaturalSource` is a `NoNaturalSourceDetail` (`what`, `radius`, `candidates`: up to 8 `{ pos, block, distance, dir, why: unreachable\|too_far\|protected\|not_natural, owner? }`, `hint`); partial counts stay in `result` |
+| `NO_NATURAL_SOURCE` | `mine` / `collect` found nothing natural and reachable within the radius. It never substitutes another block. `result.noNaturalSource` is a `NoNaturalSourceDetail` (`what`, `radius`, `candidates`: up to 8 `{ pos, block, distance, dir, why: unreachable\|too_far\|protected\|not_natural, owner? }`, `hint`); partial counts stay in `result`. For one kind of a material family (`oak_log`) the `hint` says to ask only if the player named that kind, else to gather the family (`#minecraft:logs`) |
 | `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
 
 #### 7.4.2 Skill conventions beyond the schemas
@@ -661,13 +661,19 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   M4; `allow_protected` with the consent token covers its child jobs, like a sequence's steps) makes `count`
   new items end to end: it plans from the inventory (intermediates such as logs → planks → sticks, smelting in a
   furnace, recipes picked by what the inventory fits, at most 4 levels deep, never a recipe that consumes an item
-  being made higher up, never a compressed form such as a block of iron unless it is carried), gathers missing raw
-  materials from nature with child `collect{make_tools:true}` jobs when `gather_missing` (fuel: logs; felled trees
-  replanted), plans again, then crafts and
+  being made higher up, never a compressed form such as a block of iron unless it is carried; a carried kind first,
+  then what the inventory makes in one step), gathers missing raw materials from nature with child
+  `collect{make_tools:true}` jobs when `gather_missing` (fuel: logs; felled trees replanted), plans again, then crafts and
   smelts step by step. A table or furnace within 24 blocks (the Base's are fine to use) or the given `table` is used;
   else the agent's own is put down, crafted first if needed; never inside a protected zone (the agent walks out, at
-  most 16 blocks, else `NO_ROOM`). Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
-  `result.missing: [{ item, need, have, for }]`, before anything is crafted. `result: { item, crafted, have, steps:
+  most 16 blocks, else `NO_ROOM`). **Material families**: a raw material the plan names only because nothing was
+  carried (oak logs for the planks of a wooden pickaxe) is gathered as its family, the nearest natural kind
+  (`#minecraft:logs`; `#minecraft:stone_tool_materials` / `stone_crafting_materials`: cobblestone, blackstone or
+  cobbled deepslate; `#minecraft:coals`; `#minecraft:wool`), when the same plan would complete with any other member
+  instead; a kind the recipe names (the oak logs of oak planks or an oak door) stays that kind, and its
+  `NO_NATURAL_SOURCE` offers no family. Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
+  `result.missing: [{ item, need, have, for, any? }]` (`any`: the family that would do as well), before anything is
+  crafted. `result: { item, crafted, have, steps:
   ["oak_log 1 → oak_planks 4", …], station?: { kind, pos, placed }, gathered?: { item: n } }`. Without `tree`,
   `craft` is the one-level craft.
 - **Natural sources (W1).** `mine`, `collect` and `find{filter:natural}` resolve a block or tag to natural sources:
