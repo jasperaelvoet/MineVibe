@@ -142,6 +142,11 @@ function sessionDecision(ctx: GateContext): GateDecision | null {
       `You are no longer seated at ${ctx.deskPc ?? 'the PC'}: this PC session is over. End your turn now (say the result in 1-2 sentences if you haven't).`,
     );
   }
+  // The body's sit turn: every call is refused, AskUserQuestion too (a card would hold the turn open, and with it the
+  // handoff to the desk, until the player answered).
+  if (ctx.session === 'body' && ctx.seat.kind === 'pc' && ctx.seat.state === 'seated_pending_handoff') {
+    return deny('pending_handoff', pendingHandoffText(ctx.seat));
+  }
   if (
     ctx.session === 'body' &&
     ctx.seat.kind === 'pc' &&

@@ -106,7 +106,8 @@ at the user's `claude` binary. Exactly one of them is active at a time.
 - **Account privacy.** Claude Code shows every session the e-mail address of the account it runs on, and there is no
   setting to turn that off. Agents are told never to repeat account identifiers, and MineVibe replaces the account's
   e-mail address and organisation with `[redacted]` in everything an agent writes that leaves its session: speech
-  bubbles, the transcript, messages to other agents, Codex pages, calendar events, meeting minutes and handoff notes.
+  bubbles, the transcript, messages to other agents, Codex pages, calendar events, meeting minutes, handoff notes and
+  the question and plan cards you answer.
   The identifiers are only held in memory.
 - **Session titles.** Every session has a fixed title (`MineVibe · Ada · desk:linux-1 · World #2`), so Claude Code
   never spends a model call on naming it.

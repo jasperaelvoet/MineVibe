@@ -70,6 +70,25 @@ describe('SeatFSM (PLAN §6.3)', () => {
     // Why the PC seat ended is kept for the DESK REPORT.
     expect(fsm.snapshot.lastEnd).toBe('meeting');
     expect(fsm.deskPc).toBeNull();
+    // A later seat that fails changes lastEnd, never lastPcEnd (the desk's own end).
+    fsm.sitFailed();
+    expect(fsm.snapshot).toMatchObject({ lastEnd: 'sit_failed', lastPcEnd: 'meeting' });
+  });
+
+  it('lastPcEnd: only the end of a PC seat a desk owned sets it (stand, reset), not a walk or a meeting seat', () => {
+    const fsm = new SeatFSM();
+    expect(fsm.snapshot.lastPcEnd).toBeUndefined();
+    fsm.beginSit({ kind: 'pc', pcId: 'linux-1' });
+    fsm.stand('stand');
+    expect(fsm.snapshot.lastPcEnd).toBeUndefined();
+    fsm.beginSit({ kind: 'meeting', meetingId: 'm1' });
+    fsm.arrived();
+    fsm.stand('stand');
+    expect(fsm.snapshot.lastPcEnd).toBeUndefined();
+    fsm.beginSit({ kind: 'pc', pcId: 'linux-1' });
+    fsm.arrived();
+    fsm.reset('death');
+    expect(fsm.snapshot).toMatchObject({ lastEnd: 'death', lastPcEnd: 'death' });
   });
 
   it('seated ⇄ away_from_seat keeps the epoch and the desk; losing the chair while away bumps it', () => {

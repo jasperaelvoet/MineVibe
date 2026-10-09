@@ -536,9 +536,24 @@ describe('ToolGate: the session rules (PLAN §6.1 dual sessions, a backstop to t
       expect(d, state).toMatchObject({ behavior: 'deny', code: 'desk_active' });
       expect(d.reason).toMatch(/Your PC session is working at linux-1 right now; end your turn\./);
     }
-    // In its own sit turn (pending handoff) the old rule holds: end the turn.
+    // In its own sit turn (pending handoff) the old rule holds: end the turn. AskUserQuestion too: a card would hold
+    // the turn open, and with it the handoff, until the player answered (review fix).
     expect(await decide('mcp__mc__inventory', {}, ctx({ state: 'pending', session: 'body' }))).toMatchObject({
       code: 'pending_handoff',
+    });
+    expect(
+      await decide('AskUserQuestion', { questions: [] }, ctx({ state: 'pending', session: 'body' })),
+    ).toMatchObject({
+      behavior: 'deny',
+      code: 'pending_handoff',
+      reason: expect.stringMatching(/End your turn now/),
+    });
+    // Before the sit (walking to the chair) the body may still ask.
+    expect(
+      await decide('AskUserQuestion', { questions: [] }, ctx({ state: 'walking', session: 'body' })),
+    ).toEqual({
+      behavior: 'defer',
+      reason: 'broker',
     });
     // Wandering and at the meeting table the body works as before.
     expect(

@@ -187,6 +187,52 @@ export function deskReportMessage(input: DeskReportInput): string {
   return lines.join('\n');
 }
 
+/**
+ * The KICKOFF when the PC's details could not be read at the sit (PcApi `info` failed): the handoff still carries the
+ * task, the player's lines, the memory, the Codex digest and the notes, so nothing the body knew is lost; the desk
+ * finds out about the PC itself (`pc__info`).
+ */
+export function kickoffWithoutPcMessage(
+  input: Omit<KickoffInput, 'pc' | 'claudeMd'> & { readonly pcId: string },
+): string {
+  const lines = [
+    control(
+      input.nonce,
+      'KICKOFF',
+      `${input.resumed ? `You sat down at ${input.pcId} again; your earlier work at this PC is above.` : `You are seated at ${input.pcId}. This is your PC session.`} Its details could not be read just now (check with mcp__pc__info); here is the handoff from your body.`,
+    ),
+  ];
+  if (input.task) lines.push(`Your task: ${escapeShared(input.task)}`);
+  const said = (input.playerLines ?? []).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (said.length > 0) {
+    lines.push(`What ${input.playerName} said to you lately (oldest first, word for word):`);
+    for (const l of said) lines.push(`- ${input.playerName}: ${escapeShared(l).replace(/\s*\n\s*/g, ' / ')}`);
+  }
+  if (input.memory && input.memory.trim().length > 0) {
+    lines.push(wrapNote({ author: 'your own memory', kind: 'memory', text: input.memory }));
+  }
+  if (input.codexDigest) lines.push(input.codexDigest);
+  for (const note of input.handoffs) {
+    lines.push(
+      wrapNote({
+        author: note.author,
+        kind: 'handoff',
+        attrs: { at: new Date(note.at).toISOString() },
+        text: note.text,
+      }),
+    );
+  }
+  if (input.planFirst) {
+    lines.push(
+      `Plan first: you are in plan mode. Look around read-only, write your plan to ~/.claude/plans/<name>.md, then call ExitPlanMode so ${input.playerName} can approve it.`,
+    );
+  }
+  lines.push(
+    `When you are done, tell ${input.playerName} the result in 1-2 sentences, then call mcp__mc__stand_up.`,
+  );
+  return lines.join('\n');
+}
+
 export interface WelcomeInput {
   readonly nonce: string;
   readonly playerName: string;

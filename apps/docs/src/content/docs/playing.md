@@ -74,7 +74,7 @@ hunger, an inventory and a skin for its role (CEO, Engineer, Miner, Farmer, Guar
   only talk, take notes and plan.
 - **Your account stays private.** Claude Code tells every agent session the e-mail address of the Claude
   account it runs on. Agents are told never to repeat it, and MineVibe blanks it out (`[redacted]`) in their
-  bubbles, transcripts, messages, Codex pages, calendar events, meeting minutes and notes.
+  bubbles, transcripts, messages, Codex pages, calendar events, meeting minutes, notes and cards.
 - **Reflexes, not tokens.** Survival is handled by in-game reflexes at zero cost: escaping lava and
   drowning, backing off from creepers, eating, fighting, protecting you, feeding you when you are hungry,
   and sheltering at dusk. The language model only hands out long-running jobs, so it is never on a

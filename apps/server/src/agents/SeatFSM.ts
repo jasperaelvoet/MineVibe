@@ -53,6 +53,12 @@ export interface SeatSnapshot {
   readonly awayExpiresAt: number | null;
   /** Why the last seat ended. */
   readonly lastEnd: SeatEndReason | null;
+  /**
+   * Why the last PC seat a desk session owned ended (pending handoff, seated or away). Unlike {@link lastEnd} a later
+   * seat leaves it alone (a meeting chair refused right after a meeting pull), so the desk's DESK REPORT names its
+   * own end. Absent until a PC seat ended.
+   */
+  readonly lastPcEnd?: SeatEndReason | null | undefined;
 }
 
 export interface SeatTransition {
@@ -185,7 +191,13 @@ export class SeatFSM {
     if (s.kind === 'pc' && s.state !== 'walking_to_seat') {
       return this.#go(
         reason,
-        { state: 'standing_pending_handoff', lastPcId: s.pcId, awayExpiresAt: null, lastEnd: reason },
+        {
+          state: 'standing_pending_handoff',
+          lastPcId: s.pcId,
+          awayExpiresAt: null,
+          lastEnd: reason,
+          lastPcEnd: reason,
+        },
         true,
       );
     }
@@ -217,7 +229,16 @@ export class SeatFSM {
    * `wandering`, epoch +1.
    */
   reset(reason: SeatEndReason): SeatTransition {
-    return this.#go(reason, { ...this.#cleared(reason), lastPcId: this.#s.pcId ?? this.#s.lastPcId }, true);
+    const desk = this.deskPc !== null;
+    return this.#go(
+      reason,
+      {
+        ...this.#cleared(reason),
+        lastPcId: this.#s.pcId ?? this.#s.lastPcId,
+        ...(desk ? { lastPcEnd: reason } : {}),
+      },
+      true,
+    );
   }
 
   /**

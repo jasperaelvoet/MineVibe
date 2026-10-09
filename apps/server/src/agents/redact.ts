@@ -8,7 +8,8 @@
  * model can read the e-mail address, and the persona tells it never to repeat account identifiers.
  *
  * This is the backstop: every piece of agent-authored text that leaves a session (speech bubbles, the chat transcript,
- * tells, Codex writes, calendar events and task reports, meeting minutes, Vault handoff notes, hire requests) passes
+ * tells, Codex writes, calendar events and task reports, meeting minutes, Vault handoff notes, hire requests,
+ * question and plan cards; always before a cut to length) passes
  * {@link AccountRedactor.redact}, which replaces the account's e-mail address and organisation (from `accountInfo()`,
  * kept only in memory, never logged or stored) with `[redacted]`. Typing and the clipboard inside a PC are out of
  * scope. Until a session reports its account the redactor knows nothing and passes text through.

@@ -61,7 +61,13 @@ import { type BrainMode, modeForSeat, sessionMcTools } from './modes.js';
 import type { Card, PendingStore } from './PendingStore.js';
 import { PlanCapture } from './PlanCapture.js';
 import { BARKS, type BarkKey } from './prompts/barks.js';
-import { type DeskCommand, type DeskOutcome, deskReportMessage, kickoffMessage } from './prompts/kickoff.js';
+import {
+  type DeskCommand,
+  type DeskOutcome,
+  deskReportMessage,
+  kickoffMessage,
+  kickoffWithoutPcMessage,
+} from './prompts/kickoff.js';
 import { modeBanner, stoodUpText } from './prompts/modes.js';
 import { personaPrompt } from './prompts/persona.js';
 import { Mutex, type SeatEndReason, SeatFSM, type SeatSnapshot } from './SeatFSM.js';
@@ -485,6 +491,8 @@ export class AgentBrain {
   #status: BrainStatus = 'idle';
   #offline = false;
   #assertionsFailed: readonly string[] | null = null;
+  /** Which session's startup failed (the body's halt is lifted only by a new body, {@link start}). */
+  #haltedBy: SessionKind | null = null;
   /**
    * Per session: settles once its `system/init` arrived and its startup assertions ran. The gate waits for it, so no
    * tool runs before the assertions passed (a hook can reach Node before the init message).
@@ -628,9 +636,28 @@ export class AgentBrain {
     return this.#lastAutonomousAt;
   }
 
-  /** The session tag of a transcript line said by the active session now. */
+  /**
+   * The session tag of a transcript line for this agent now: the session that reads it. That is the active one, except
+   * during a handoff: in the body's sit turn the desk takes over next, and a desk whose seat ended hands back to the
+   * body (chat waits for the session that takes over, {@link enqueue}).
+   */
   transcriptTag(): Pick<TranscriptInput, 'session' | 'pcId'> {
+    const s = this.fsm.snapshot;
+    if (this.#active === 'body' && this.#handingOver() && s.pcId !== null)
+      return { session: 'desk', pcId: s.pcId };
+    if (this.#active === 'desk' && this.#handingOver()) return { session: 'body' };
     return this.#tag(this.#active);
+  }
+
+  /**
+   * Whether the active session is about to hand over (PLAN §6.3): the body in its sit turn (`seated_pending_handoff`,
+   * every call refused, its desk takes over when it ends), or a desk whose seat ended (its last turn, then the body).
+   * Nothing new folds into such a turn: it waits for the session that takes over.
+   */
+  #handingOver(): boolean {
+    if (this.#active === 'desk') return this.#desk !== null && this.fsm.deskPc !== this.#desk.pcId;
+    const s = this.fsm.snapshot;
+    return s.kind === 'pc' && s.state === 'seated_pending_handoff';
   }
 
   #tag(kind: SessionKind): Pick<TranscriptInput, 'session' | 'pcId'> {
@@ -640,6 +667,15 @@ export class AgentBrain {
 
   #redact(text: string): string {
     return this.#env.redact?.(text) ?? text;
+  }
+
+  /** A tool input with its top-level strings redacted (what {@link describeTool} shows of it). */
+  #redactInput(input: unknown): unknown {
+    if (!this.#env.redact || !input || typeof input !== 'object' || Array.isArray(input)) return input;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>))
+      out[k] = typeof v === 'string' ? this.#redact(v) : v;
+    return out;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -657,6 +693,7 @@ export class AgentBrain {
     this.#offline = false;
     // A (re)start re-runs the startup assertions (e.g. Retry after logging in again).
     this.#assertionsFailed = null;
+    this.#haltedBy = null;
     let claude: ResolvedClaude;
     try {
       claude = this.#env.claude();
@@ -665,6 +702,7 @@ export class AgentBrain {
       // Contexts and wakes wait in the queue, so a later Retry (after `claude update` and a restart) loses nothing.
       const problem = err instanceof Error ? err.message : String(err);
       this.#assertionsFailed = [problem];
+      this.#haltedBy = 'body';
       this.#log.error({ problem }, 'no usable claude: the brain stays asleep');
       this.#env.assertionsFailed(this, [problem]);
       for (const text of options.contexts ?? []) this.#pendingContexts.push({ target: 'body', text });
@@ -714,11 +752,11 @@ export class AgentBrain {
     },
   ): AgentSession {
     const env = this.#env;
+    let session: AgentSession | null = null;
     const gateHook = createToolGateHook(
-      () => this.gateContext(kind),
+      () => this.gateContext(kind, session ?? undefined),
       (o) => this.#observeGate(kind, o),
     );
-    let session: AgentSession | null = null;
     // Fail closed: no tool runs before the startup assertions of this session have passed.
     const gate: HookCallback = async (hookInput, toolUseId, opts) => {
       const pending = session ? this.#startupChecks.get(session)?.promise : undefined;
@@ -786,6 +824,8 @@ export class AgentBrain {
           seatEpoch: () => this.fsm.epoch,
           playerName: () => env.playerName(),
           now: () => env.now(),
+          // Cards show agent-authored text to the player: account identifiers are redacted (agents/redact.ts).
+          redact: (text) => this.#redact(text),
           hooks: {
             onWaitStart: (card) => this.#onCardWait(kind, card),
             onWaitEnd: (card) => this.#onCardAnswered(created, card),
@@ -880,10 +920,17 @@ export class AgentBrain {
     await session?.close();
   }
 
+  /**
+   * The brain shows "offline" and starts nothing new until Retry. A turn still running in the other session (the desk
+   * while the body crashed) keeps its slot until its `result`: releasing it here would let the scheduler hand the slot
+   * out twice.
+   */
   markOffline(): void {
     this.#offline = true;
-    this.#grant?.release();
-    this.#grant = null;
+    if (!this.session?.inTurn) {
+      this.#grant?.release();
+      this.#grant = null;
+    }
     this.#setStatus();
   }
 
@@ -917,7 +964,9 @@ export class AgentBrain {
     if (item.now && forActive && active?.inTurn) {
       void active.interrupt();
     }
-    // A player message during a running turn folds into it at the next tool boundary (`next`).
+    // A player message during a running turn folds into it at the next tool boundary (`next`). Not into a turn that is
+    // handing over (the body's sit turn, a desk whose seat ended): that session can act on nothing more, and a desk
+    // closes with it, so the message waits in the queue for the session that takes over (PLAN §6.3).
     if (
       item.priority === 0 &&
       forActive &&
@@ -925,7 +974,8 @@ export class AgentBrain {
       active.inTurn &&
       this.#grant &&
       !item.now &&
-      this.#boundaryHold === 0
+      this.#boundaryHold === 0 &&
+      !this.#handingOver()
     ) {
       active.send(item.text, { priority: 'next' });
       if (collector) this.#activate(collector);
@@ -1113,8 +1163,11 @@ export class AgentBrain {
   // Gate
   // ---------------------------------------------------------------------------------------------------------------
 
-  /** What the gate knows when a call of `session` (default: the active one) arrives. */
-  gateContext(session: SessionKind = this.#active): GateContext {
+  /**
+   * What the gate knows when a call of `session` (default: the active one) arrives. `from`: the session object that
+   * makes the call; a desk session that is no longer the open one (closed, or replaced by a restart) works no PC.
+   */
+  gateContext(session: SessionKind = this.#active, from?: AgentSession): GateContext {
     const t = this.#turn;
     const now = this.#env.now();
     const paused = t.pausedAt > 0 ? now - t.pausedAt : 0;
@@ -1134,7 +1187,8 @@ export class AgentBrain {
       playerName: this.#env.playerName(),
       halted: this.#assertionsFailed ? (this.#assertionsFailed[0] ?? 'startup check failed') : null,
       session,
-      deskPc: session === 'desk' ? (desk?.pcId ?? null) : null,
+      deskPc:
+        session === 'desk' && (from === undefined || desk?.session === from) ? (desk?.pcId ?? null) : null,
     };
   }
 
@@ -1491,6 +1545,7 @@ export class AgentBrain {
    */
   #halt(session: AgentSession, kind: SessionKind, problems: readonly string[]): void {
     this.#assertionsFailed = problems;
+    this.#haltedBy = kind;
     this.#log.error({ problems, session: kind }, 'startup assertions failed');
     this.#env.assertionsFailed(this, problems);
     this.#setStatus();
@@ -1513,7 +1568,8 @@ export class AgentBrain {
     if (kind === 'desk' && desk?.session === session) desk.turnTexts.push(trimmed);
     this.turnText.text(trimmed);
     for (const c of this.#collectors) c.texts.push(trimmed);
-    const bubble = bubbleText(trimmed);
+    // Redacted before the bubble is cut to length: a cut must never leave part of an account identifier behind.
+    const bubble = bubbleText(this.#redact(trimmed));
     if (bubble.length === 0) return;
     this.#env.say({
       agentId: this.agentId,
@@ -1525,7 +1581,8 @@ export class AgentBrain {
 
   #onToolUse(kind: SessionKind, name: string, input: unknown): void {
     this.turnText.toolUse(name);
-    const line = describeTool(name, input);
+    // The activity line is cut to length: its input is redacted first, so no cut leaves part of an identifier.
+    const line = describeTool(name, this.#redactInput(input));
     this.#activity = line;
     this.#env.transcripts.append(this.agentId, { kind: 'activity', text: line, ...this.#tag(kind) });
     this.#env.brainChanged(this);
@@ -1558,16 +1615,34 @@ export class AgentBrain {
       this.#waitingCards.delete(id);
       this.#cardSessions.delete(id);
     }
+    const desk = this.#desk;
+    if (kind === 'desk' && desk && this.fsm.deskPc !== desk.pcId && !this.#stopped) {
+      // The desk died in its last turn (its seat had ended): nothing to restart, the body takes back now instead of
+      // after the supervisor's backoff.
+      if (error) this.#log.warn({ err: error.message, pcId: desk.pcId }, 'desk ended after its seat');
+      this.#setStatus();
+      void this.#runBoundary();
+      return;
+    }
     if (error && !this.#stopped) {
       this.#log.warn({ err: error.message, session: kind }, 'session ended unexpectedly');
       const notFound = /No conversation found/i.test(error.message);
+      // A new session whose id already has a transcript (an earlier launch wrote it, then died before Node saw its
+      // init): Claude Code refuses the id ("Session ID … is already in use"), so the restart resumes it instead.
+      const inUse = /Session ID \S+ is already in use/i.test(error.message);
       if (kind === 'body') {
         if (notFound) {
           // The session to resume never got written (e.g. the first launch failed): start a new one.
           this.record.sessionStarted = false;
           this.record.sessionId = randomUUID();
+        } else if (inUse && !this.record.sessionStarted) {
+          this.record.sessionStarted = true;
+          this.#env.recordChanged?.(this);
         }
         this.#body = null;
+      } else if (this.#desk && inUse && !this.#desk.record.sessionStarted) {
+        this.#desk.record.sessionStarted = true;
+        this.#env.recordChanged?.(this);
       } else if (this.#desk && notFound) {
         // The desk to resume is gone: the restart starts a fresh desk session at this PC.
         const pcId = this.#desk.pcId;
@@ -1766,16 +1841,27 @@ export class AgentBrain {
     this.#queue = this.#queue.filter((q) => q.target !== 'desk');
     this.#finishCollectors(dropped);
     this.#pendingContexts = this.#pendingContexts.filter((c) => c.target !== 'desk');
+    // A card the desk raised ends with it (an interrupt aborts it too; this covers a close without one, e.g. a game
+    // restart while the desk waited on the player): no orphaned question for a session that is gone.
+    env.pending.cleanup(
+      this.agentId,
+      `Not seated at ${desk.pcId} any more.`,
+      (c) => (c.kind === 'question' || c.kind === 'plan') && this.#cardSessions.get(c.id) === 'desk',
+    );
     if (this.#grant && !this.#body?.inTurn) {
       this.#grant.release();
       this.#grant = null;
     }
     await desk.session.close().catch((err: unknown) => this.#log.warn({ err }, 'closing the desk failed'));
     this.#log.info({ pcId: desk.pcId }, 'desk session handed back to the body');
-    const reason = this.fsm.snapshot.lastEnd;
+    // How the desk's own seat ended (a later seat, e.g. a meeting chair refused right after a meeting pull, does not
+    // change it); the brain stops anyway after a terminal end of either.
+    const latest = this.fsm.snapshot.lastEnd;
+    const reason = this.fsm.snapshot.lastPcEnd ?? latest;
     const backlog = this.#bodyBacklog.splice(0);
     for (const text of backlog) this.#sendContext('body', text);
-    if (reason !== null && TERMINAL_ENDS.has(reason)) return;
+    if ((reason !== null && TERMINAL_ENDS.has(reason)) || (latest !== null && TERMINAL_ENDS.has(latest)))
+      return;
     const report = deskReportMessage({
       nonce: this.record.nonce,
       playerName: env.playerName(),
@@ -1810,14 +1896,14 @@ export class AgentBrain {
     if (seat.pcId === null) return;
     const pcId = seat.pcId;
     const env = this.#env;
-    let info: Awaited<ReturnType<PcApi['info']>>;
+    let info: Awaited<ReturnType<PcApi['info']>> | null = null;
     try {
       info = await env.pcs.info(pcId);
     } catch (err) {
+      // The handoff still goes out (the task and the player's lines must not be lost), without the PC's details.
       this.#log.warn({ err, pcId }, 'kickoff: PC info failed');
-      return;
     }
-    const primary = info.mounts.find((m) => m.mode === 'rw') ?? info.mounts[0];
+    const primary = info ? (info.mounts.find((m) => m.mode === 'rw') ?? info.mounts[0]) : undefined;
     let claudeMd: { path: string; text: string } | null = null;
     if (primary) {
       const path = `${primary.hostPath.replace(/\/+$/, '')}/CLAUDE.md`;
@@ -1844,25 +1930,26 @@ export class AgentBrain {
     } catch {
       codexDigest = null;
     }
+    const handoff = {
+      nonce: this.record.nonce,
+      playerName: env.playerName(),
+      task: seat.purpose,
+      planFirst: this.record.planFirst,
+      handoffs,
+      resumed,
+      playerLines,
+      memory,
+      codexDigest,
+    };
     this.enqueue(
       {
         mode: 'wake',
         priority: 1,
         kind: 'KICKOFF',
         key: 'kickoff',
-        text: kickoffMessage({
-          nonce: this.record.nonce,
-          playerName: env.playerName(),
-          pc: info,
-          task: seat.purpose,
-          planFirst: this.record.planFirst,
-          claudeMd,
-          handoffs,
-          resumed,
-          playerLines,
-          memory,
-          codexDigest,
-        }),
+        text: info
+          ? kickoffMessage({ ...handoff, pc: info, claudeMd })
+          : kickoffWithoutPcMessage({ ...handoff, pcId }),
       },
       undefined,
       'desk',
@@ -2015,12 +2102,17 @@ export class AgentBrain {
             .catch((err: unknown) => this.#log.warn({ err }, 'unseat (app restart) failed'));
           return;
         }
-        // Worker restart: the mod still has the agent in the chair; its desk session takes over again.
+        // Worker restart: the mod still has the agent in the chair; its desk session takes over again. The note is
+        // the desk's own (the body would hear it only after the seat ended, where it is no longer true).
         this.fsm.restoreSeated(pcId, epoch);
         if (!this.session?.inTurn) await this.#boundary();
-        this.context(
-          control(this.record.nonce, 'RESTARTED', `MineVibe restarted; you are still seated at ${pcId}.`),
+        const note = control(
+          this.record.nonce,
+          'RESTARTED',
+          `MineVibe restarted; you are still seated at ${pcId}.`,
         );
+        if (this.#desk?.pcId === pcId) this.#sendContext('desk', note);
+        else this.context(note);
       }
     });
     this.#pump();
@@ -2135,6 +2227,23 @@ export class AgentBrain {
       return;
     }
     await this.#seatMutex.run(() => this.#boundary());
+    this.#pump();
+  }
+
+  /**
+   * The player's Retry (`agent.cmd{retry_brain}`) while the body session runs: what stopped the brain came from a desk
+   * session (its startup assertions failed, or its crash was an auth error), since a body that fails closes itself.
+   * The brain is no longer offline or halted, and a desk that is down while its seat holds restarts (its new session
+   * runs the startup assertions again). Without this, a halt raised by a desk outlived the desk, even after a stand.
+   */
+  async retryDesk(): Promise<void> {
+    // A body that failed its own startup is still closing: only a new body lifts that halt.
+    if (this.#stopped || !this.#body?.started || this.#haltedBy === 'body') return;
+    this.#offline = false;
+    this.#assertionsFailed = null;
+    this.#haltedBy = null;
+    if (this.#desk && !this.#desk.session.started) await this.restartDesk();
+    this.#setStatus();
     this.#pump();
   }
 
@@ -2415,7 +2524,9 @@ export class AgentBrain {
       trackJob: (jobId, label) => {
         this.#jobs.set(jobId, label);
       },
-      say: (text) => {
+      say: (said) => {
+        // Redacted before the bubble is cut to length (a cut must never leave part of an account identifier).
+        const text = this.#redact(said);
         const bubble = bubbleText(text);
         env.say({
           agentId: this.agentId,

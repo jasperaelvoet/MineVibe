@@ -239,8 +239,9 @@ query({ prompt: gatedInbox, options: {
      leaves a session has them replaced by `[redacted]` (case-insensitive): speech bubbles (`agent.say`), the chat
      transcript (every line but the player's own and answers), `tell`s (the copy the other agent reads too), Codex
      writes, calendar adds/updates and task reports (a redacting OrgApi for the `mc` tools), meeting-turn text (the
-     minutes), Vault handoff notes, hire requests and `agent.brain`'s activity line. Typing and the clipboard inside a
-     PC are out of scope.
+     minutes), Vault handoff notes, hire requests, question and plan cards (the model still gets its answers under its
+     own question texts) and `agent.brain`'s activity line. Text is redacted before it is cut to length (a bubble, an
+     activity line), so no cut keeps part of an identifier. Typing and the clipboard inside a PC are out of scope.
 - **Session titles.** A persisted session without a title makes one background model call for an AI title at its first
   message, and then re-appends that `ai-title` entry to the transcript tail after every turn (per the CLI source, a
   re-stamp of the one title, not a call per turn: the entries S3b counted). Every session gets a fixed `title`, which
@@ -352,7 +353,8 @@ query({ prompt: gatedInbox, options: {
   1. Pre-checks: PC status `running`, `maxSeated`, no reservation. Failures are typed: `PC_DOWN | SEAT_CAP | RESERVED | OCCUPIED_BY_PLAYER | UNREACHABLE`.
   2. Reserves the chair (shown as "Bram is coming"), walks, then runs a non-forced `startRiding(seat)`.
   3. Returns: "Seated at linux-1. End your turn now; your PC session takes over from here." Further calls of that turn
-     are refused (`pending_handoff`), and 2 strikes interrupt it.
+     are refused (`pending_handoff`, AskUserQuestion too: a card would hold the handoff open), and 2 strikes interrupt
+     it.
 - **Handoff to the desk (sit).** When the body's sit turn ended (or at once when it was not in a turn):
   1. The desk session of that PC is resumed or created (6.1), in plan mode when the player's Plan-first toggle is on
      (off by default for every role; USER DECISION 2026-10-08), and the seat becomes `seated`.
@@ -360,8 +362,12 @@ query({ prompt: gatedInbox, options: {
      home, Vault folders, Codex path), the task (`purpose`), the player's last 6 lines to this agent **verbatim**,
      `memory.md`, the Codex digest, the Vault handoff notes of the PC and its primary mount, an excerpt of the mount's
      `CLAUDE.md`, the plan-first line and how to work the PC. A resumed desk hears "You sat down at linux-1 again. Your
-     earlier work at this PC is above".
-  3. A wake that arrives during the handoff waits for it and runs in that first desk turn, after the KICKOFF.
+     earlier work at this PC is above". When the PC's details cannot be read, the KICKOFF still carries the task, the
+     lines, the memory, the digest and the notes, and says so.
+  3. A wake that arrives during the handoff waits for it and runs in that first desk turn, after the KICKOFF. That
+     includes the player's chat during the body's sit turn: it never folds into a turn that is handing over (nor into
+     a desk's last turn after its seat ended, below); it waits for the session that takes over, and the transcript
+     tags it with that session.
 - **Handoff back (stand).** On every edge out of a desk's seat (voluntary `stand_up`, kick, damage, survival, PC down,
   the player taking the chair, an expired reservation, a meeting pull):
   1. A running desk turn is interrupted, except after its own `stand_up`: that turn ends by itself (it says the result
@@ -373,7 +379,9 @@ query({ prompt: gatedInbox, options: {
      the chair, `interrupted` otherwise, with the reason), the desk's last words (enveloped as information), the files
      it wrote or edited at this sit, the exit codes of its last 3 foreground commands, and what to do next. It is a P3
      wake after `done`, P2 otherwise, and only context after a meeting pull or a game restart (the body has the meeting
-     or the restart notice to deal with). Death, world end and dismissal close both sessions with no report.
+     or the restart notice to deal with). The outcome is that of the desk's own seat (`SeatFSM.lastPcEnd`), whatever
+     seat came after it. Player lines that came during the desk's last turn reach the body with the report. Death,
+     world end and dismissal close both sessions with no report.
   4. A seat that ends before any desk took over (kicked during the body's sit turn) wakes the body with the critical
      notice instead (`[KICKED]`, `[CRITICAL]`, `[PC DOWN]`).
 - **Modes and the MODE banner.** The body persona is Minecraft mode and the desk persona PC mode, so a sit or a stand
@@ -509,7 +517,7 @@ query({ prompt: gatedInbox, options: {
   - Utilization comes from `rate_limit_event.unifiedWindows.*.utilization` (a 0–1 fraction). The optional `usage_EXPERIMENTAL` poll reports percent, so it's normalized (S2).
   - **Tired** (warning or utilization ≥ 0.75): work lane 1, interactive lane kept, no autonomous wakes, no hires, short meetings.
   - **Asleep** (rejected): everyone pauses until `resetsAt`, with a "Zz" icon. Reflexes keep the crew alive.
-- **Brain supervisor.** Restarts a crashed `claude` with backoff (at most N per 10 min), each session on its own budget: the body resumes with its start contexts; a desk resumes while its seat holds. A body over its budget shows a "brain offline" icon and a Retry button (which restarts whichever session is down); a desk over its budget stands the agent up and hands back with a DESK REPORT. Auth errors or 401s are retryable and put the agent in the Zz state.
+- **Brain supervisor.** Restarts a crashed `claude` with backoff (at most N per 10 min), each session on its own budget: the body resumes with its start contexts; a desk resumes while its seat holds. A body over its budget shows a "brain offline" icon and a Retry button (which restarts whichever session is down; with the body running, Retry also lifts a halt or an offline state a desk caused, e.g. its failed startup assertions); a desk over its budget stands the agent up and hands back with a DESK REPORT. The body going offline never takes the slot of a desk turn still running. A session id Claude Code calls "already in use" (an earlier launch wrote it, then died before Node saw its init) is resumed by the restart. Auth errors or 401s are retryable and put the agent in the Zz state.
 - **Memory.**
   - `mc__remember` appends to `memory.md` (8 KB cap), which is re-injected when the body starts or resumes and handed to every desk in its KICKOFF.
   - The Chronicle (≤1.5k tokens, carried across worlds) goes to the next CEO.

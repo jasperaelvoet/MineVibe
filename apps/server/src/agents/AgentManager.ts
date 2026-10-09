@@ -1926,7 +1926,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
           await brain.closeSession();
           brain.start({ contexts: await this.#startContexts(record) });
         }
-        if (brain && brain.deskPc !== null && !brain.deskSession?.started) await brain.restartDesk();
+        // With the body running, what stopped the brain was a desk session: clear it, restart a desk that is down.
+        await brain?.retryDesk();
         return { echo: `${record.name}: brain restarting` };
     }
     await this.#persist();

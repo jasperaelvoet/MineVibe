@@ -49,8 +49,8 @@ agent prompts (outbound redactor and persona rule; what is left is below).
   leaves it out; checked in the CLI source). Mitigated, not removed: the personas forbid repeating account identifiers
   and `agents/redact.ts` redacts the e-mail and organisation name from everything agent-authored that leaves a session
   (PLAN §6.1). Gaps: (1) the match is literal, so an obfuscated form ("jasper dot …", spaces) passes; (2) typing and
-  the clipboard inside a PC are out of scope; (3) question and plan cards are not redacted (only the player sees them,
-  and an answer is keyed by the question's exact text); (4) in API-key mode `accountInfo()` reports no e-mail, while a
+  the clipboard inside a PC are out of scope; (3) the redactor learns the account from the first session's startup
+  check (`accountInfo()`, milliseconds after its init), so text streamed before that is not redacted; (4) in API-key mode `accountInfo()` reports no e-mail, while a
   stored OAuth login may still put one into `session_context`: the redactor then knows nothing; (5) the organisation
   *id* (`credential_org`) never reaches the model's prompt (it renders to nothing) but sits in the on-disk transcripts
   under `~/.claude/projects/`, and Node never learns it. Fix when Claude Code offers a switch; otherwise consider a
@@ -69,6 +69,11 @@ agent prompts (outbound redactor and persona rule; what is left is below).
 - **Two claude processes per seated agent.** The body session stays open (idle) while its desk works: with the crew cap
   of 4 and `maxSeated=2` up to 6 `claude` processes. Closing an idle body while seated (and resuming it at the
   handoff back) would save memory at the cost of ~1 s per stand.
+- **Context during the body's sit turn reaches only the body.** A broadcast, consent or house-rule notice that arrives
+  while the body's sit turn ends (`seated_pending_handoff`) is sent to the body (as before), not kept for the desk;
+  the player's lines reach the desk anyway (the KICKOFF quotes them, and wakes wait for the desk since the review).
+- **A PC recreated under the same id resumes the old desk session** within the TTL: the desk record is keyed by the
+  PC id only, so the desk "remembers" work on a disk that no longer exists until it looks.
 - **Only one live sample of the handoffs** (EVALS.md "Dual sessions": 4 turns); the tool evals were not re-run live
   after the switch (their replays pass). `test/live/brain.live.ts` was rewritten for dual sessions but not re-run.
 
