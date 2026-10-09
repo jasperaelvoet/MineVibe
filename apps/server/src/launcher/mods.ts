@@ -50,6 +50,21 @@ export const FabricLibraryPin = z.object({
 });
 export type FabricLibraryPin = z.infer<typeof FabricLibraryPin>;
 
+/** The default Iris shaderpack: one commit's GitHub archive, pinned by size and sha512 (see `shaderpack.ts`). */
+export const ShaderpackPin = z.object({
+  $comment: z.string().optional(),
+  name: z.string().min(1),
+  commit: z.string().regex(/^[0-9a-f]{40}$/),
+  filename: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]*\.zip$/),
+  size: z.number().int().positive(),
+  sha512: z.string().regex(SHA512_RE),
+  url: z
+    .string()
+    .url()
+    .refine((u) => new URL(u).protocol === 'https:', 'url must be https'),
+});
+export type ShaderpackPin = z.infer<typeof ShaderpackPin>;
+
 /** `packaging/mods.lock.json` (PLAN §10). */
 export const ModsLock = z
   .object({
@@ -64,6 +79,7 @@ export const ModsLock = z
       libraries: z.array(FabricLibraryPin).min(1),
     }),
     mods: z.array(ModLockEntry).min(1),
+    shaderpack: ShaderpackPin.optional(),
   })
   .superRefine((lock, ctx) => {
     if (!lock.fabric.libraries.some((l) => l.name === `net.fabricmc:fabric-loader:${lock.loader}`)) {

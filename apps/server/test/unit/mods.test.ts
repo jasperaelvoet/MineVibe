@@ -141,16 +141,22 @@ describe('packaging/mods.lock.json', () => {
       'dynamic-fps': 'Jwq069rR',
       badoptimizations: 'Sp0ctspw',
       'sodium-extra': 'te2y9qZn',
+      iris: 'vTN4NRGW',
     });
     expect(defaults.every((m) => m.versionType === 'release')).toBe(true);
     expect(lock.mods.filter((m) => m.optional).map((m) => m.modId)).toEqual([
-      'iris',
       'c2me',
       'chunky',
       'spark',
       'modmenu',
     ]);
     for (const m of lock.mods) expect(new URL(m.url).host).toBe('cdn.modrinth.com');
+  });
+
+  it('pins the Bliss shaderpack to one commit of its GitHub archive', async () => {
+    const pin = (await loadModsLock(LOCK_PATH)).shaderpack;
+    expect(pin?.name).toBe('Bliss');
+    expect(pin?.url).toBe(`https://codeload.github.com/X0nk/Bliss-Shader/zip/${pin?.commit}`);
   });
 
   it('rejects duplicate mod ids and malformed hashes', () => {

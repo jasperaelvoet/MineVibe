@@ -76,6 +76,7 @@ describe('downloadLabel', () => {
     expect(downloadLabel('https://libraries.minecraft.net/org/lwjgl/x.jar')).toBe('Minecraft');
     expect(downloadLabel('https://maven.fabricmc.net/net/fabricmc/x.jar')).toBe('Fabric');
     expect(downloadLabel('https://cdn.modrinth.com/data/x.jar')).toBe('mods');
+    expect(downloadLabel('https://codeload.github.com/X0nk/Bliss-Shader/zip/abc')).toBe('shaders');
     expect(downloadLabel('https://elsewhere.test/x')).toBe('game files');
     expect(downloadLabel('not a url')).toBe('game files');
   });

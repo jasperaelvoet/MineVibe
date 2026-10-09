@@ -227,8 +227,8 @@
       "sha512": "d8d3312f77fc52a48e4a6cd836fda33669bdebcb4de0b8c0d30adc808b287330a533e0baef355cc1ce6336a26851d9775369a802a4666b7b7a6266af20088f42",
       "url": "https://cdn.modrinth.com/data/YL57xq9U/versions/vTN4NRGW/iris-fabric-1.11.7%2Bmc26.3.jar",
       "side": "client",
-      "optional": true,
-      "note": "Opt-in. OpenGL only (the launcher always forces OpenGL)."
+      "optional": false,
+      "note": "On by default with the Bliss shaderpack (see shaderpack). OpenGL only (the launcher always forces OpenGL)."
     },
     {
       "slug": "c2me-fabric",
@@ -294,5 +294,14 @@
       "optional": true,
       "note": "Dev only. Its Modrinth dependency eXts2L7r (Text Placeholder API) ships inside the jar (jar-in-jar)."
     }
-  ]
+  ],
+  "shaderpack": {
+    "$comment": "Bliss, from X0nk/Bliss-Shader's default branch (Stable; there is no main), pinned to one commit by size and sha512 of GitHub's archive. Downloaded from GitHub at install time, never rehosted (© Chocapic13, all rights reserved).",
+    "name": "Bliss",
+    "commit": "81e403ed308141039a09d792a36f8eb328898a60",
+    "filename": "Bliss-Shader-81e403e.zip",
+    "size": 1840573,
+    "sha512": "5f7949b7b00150fb7fb36b856bb8879048c80b05bede08b5aaee06eb764291c9d99a23d034124b770fd463fd6fdd46a7b019f99a60b55daa52672df3431555f1",
+    "url": "https://codeload.github.com/X0nk/Bliss-Shader/zip/81e403ed308141039a09d792a36f8eb328898a60"
+  }
 }

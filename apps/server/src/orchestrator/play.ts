@@ -17,6 +17,7 @@ import { extraJarFor, findDevModJar, installMods, loadModsLock } from '../launch
 import { readDataVersion, seedOptionsTxt } from '../launcher/optionsTxt.js';
 import { seedConfigs } from '../launcher/seedConfigs.js';
 import { loadLauncherSettings } from '../launcher/settings.js';
+import { installShaderpack, seedIrisProperties } from '../launcher/shaderpack.js';
 import { E2E_ENV, SCRIPTED_CREW_ENV } from './devServer.js';
 import { acquireRunLock } from './runLock.js';
 import { envFlag, type Runtime, type RuntimeOptions, startRuntime } from './runtime.js';
@@ -174,8 +175,8 @@ export function stopGame(child: ChildProcess, graceMs: number = GAME_STOP_GRACE_
  *    keeps its own home (`<repo>/.minevibe-dev`), so they never share `run/bridge.json` or the world record.
  * 2. The composed runtime ({@link startRuntime}: world loop, crew, PCs, org services) on a random loopback port with a
  *    fresh token; `run/bridge.json` for the mod.
- * 3. Java 25, Minecraft, Fabric and the locked mods, installed or verified in parallel (fast when present).
- * 4. options.txt and mod configs merged, the dev mod jar copied into `game/mods`.
+ * 3. Java 25, Minecraft, Fabric, the locked mods and the shaderpack, installed or verified in parallel (fast when present).
+ * 4. options.txt and mod configs merged (Iris set to the shaderpack), the dev mod jar copied into `game/mods`.
  * 5. The game runs with cwd = game dir; when the JVM exits everything is torn down and the exit code returned.
  * A stop request (SIGINT/SIGTERM) aborts installs, or asks the JVM to quit (SIGTERM, then SIGKILL after a grace).
  */
@@ -303,7 +304,8 @@ export async function play(options: PlayOptions): Promise<number> {
         signal,
         ...fetchOption,
       });
-    const [java, game, mods] = await Promise.all([
+    const shaderpack = lock.shaderpack;
+    const [java, game, mods, shaderBytes] = await Promise.all([
       step('java', () => javaFor(JAVA_FOR_26_3)),
       step('minecraft+fabric', async () => {
         const mc = await installMinecraft({ gameDir, version: lock.minecraft, log, signal, ...fetchOption });
@@ -330,6 +332,9 @@ export async function play(options: PlayOptions): Promise<number> {
           ...fetchOption,
         }),
       ),
+      step('shaderpack', async () =>
+        shaderpack ? installShaderpack({ pin: shaderpack, gameDir, log, signal, ...fetchOption }) : 0,
+      ),
     ]);
     signal.throwIfAborted();
     let javaResolved = java;
@@ -349,6 +354,11 @@ export async function play(options: PlayOptions): Promise<number> {
     const clientJar = MinecraftFolder.from(gameDir).getVersionJar(lock.minecraft);
     const optionsResult = await seedOptionsTxt(gameDir, { dataVersion: () => readDataVersion(clientJar) });
     const configs = await seedConfigs(gameDir, join(resources, 'seed-configs'));
+    // Only with Iris in mods/: without it nothing reads iris.properties.
+    const iris =
+      shaderpack && mods.mods.some((m) => m.modId === 'iris')
+        ? await seedIrisProperties(gameDir, shaderpack.filename)
+        : null;
     mark('seed', t);
 
     log.info(
@@ -372,6 +382,9 @@ export async function play(options: PlayOptions): Promise<number> {
         },
         options: optionsResult.changed,
         configs: configs.map((c) => `${c.file}:${c.action}`),
+        ...(shaderpack
+          ? { shaderpack: { name: shaderpack.name, downloaded: formatBytes(shaderBytes), iris } }
+          : {}),
         timingsMs: timings,
       },
       'game ready',

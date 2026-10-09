@@ -50,6 +50,7 @@ export function downloadLabel(url: string): string {
   if (host === 'resources.download.minecraft.net') return 'Minecraft assets';
   if (host.endsWith('fabricmc.net')) return 'Fabric';
   if (host.endsWith('modrinth.com')) return 'mods';
+  if (host === 'codeload.github.com') return 'shaders';
   if (host.endsWith('mojang.com') || host.endsWith('minecraft.net')) return 'Minecraft';
   return 'game files';
 }
