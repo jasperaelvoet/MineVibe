@@ -46,8 +46,12 @@ final class BodyEmitter {
 	static final String STUCK_BARK = "stuck";
 	/** Ticks between two urgency-2 {@code stuck} events of one agent for a walk loop (each wakes the brain). */
 	private static final int STUCK_LOOP_COOLDOWN = 2400;
-	/** The same for water the agent cannot get out of. */
-	private static final int STUCK_WATER_COOLDOWN = 600;
+	/**
+	 * The same for water the agent cannot get out of: only a guard against bursts, since the WaterEscape reflex spaces its
+	 * own speak-ups (5, 10, 20 minutes about one stranding; a new stranding at once). A longer one dropped a second
+	 * stranding soon after the first, and the reflex then kept quiet about it for 5 minutes.
+	 */
+	private static final int STUCK_WATER_COOLDOWN = 200;
 
 	private final SkillService service;
 	private final Map<String, Track> tracks = new HashMap<>();

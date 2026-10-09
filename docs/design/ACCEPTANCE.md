@@ -417,7 +417,7 @@ no brain running (PLAN §7.2 "Water", §7.3 WaterEscape; DEBT "An agent in a wat
 Vanilla lifts a swimmer only onto a bank level with the water line, so every walk toward the player on the ledge
 failed, the follow reflex issued it again, and nothing ever said so.
 
-**GameTests** (`WaterNavGameTests`, 13, a batch of their own on the 33x33 `nav_field`; numbers from the last full run;
+**GameTests** (`WaterNavGameTests`, 13, 19 after the review below, a batch of their own on the 33x33 `nav_field`; numbers from the last full run;
 every test also checks that the agent never mined while swimming, never lost health, and, but the flooded tunnel,
 never had less than 200 of its 300 air):
 
@@ -464,3 +464,32 @@ no escape. No regression against the gathering polish runs above (the same reach
 its 29-log oak). No walk led into water it could not leave, so no escape was needed and nothing was said. The worktree
 reused the main checkout's game downloads through a link to `.minevibe-dev/play` (the harness seeds its home from
 there). Every run removed its own PC instance; no game, node or VM process is left.
+
+**Review (same day).** An adversarial review found the WaterEscape reflex at 98 holding the body through critical
+heal, flee and self-defence for an escape that can take a minute (a step dug into stone by hand is 7.5 s), a job's own
+Tier-2 step dug from the bottom of a pool taken over as "no progress" after 3 s (each takeover counts toward
+`STUCK_IN_WATER`), a stranded agent treading water above the pickup reflex (a block the player tossed into the water
+floated by), the step block taken from the first slot that fits (wool before planks), and a second stranding within 5
+minutes of the first said nowhere (the speak-up wait was never reset once the agent got out; the skill layer's 30 s
+cooldown on the event could drop it too). WaterEscape is now 58 (below the survival reflexes, above the job and every
+walk for others), stranded treading water 24 (below pickup), breaking a block for the walk counts as progress, the
+plainest step block goes first (`NavBlocks.stepRank`), a stranded agent looks again at once when the bag gains a block
+to step on, and speaking up waits 5, 10, then 20 minutes about one stranding or one loop but is immediate for a new
+stranding (`RepeatBackoff`; the event's skill-layer cooldown is 10 s). Making that look immediate exposed a reflex
+re-chosen in the tick after it let go running without its start (its walk dropped half way, on the step it had just
+put in the water); fixed. The walk loop (`nav.loop`) now waits 2, 4, 8, then 16 minutes between reports while the
+agent gets nowhere, instead of every 2 minutes. Each new GameTest but the last fails on `fd0fc4a` and passes now:
+
+| GameTest | What it shows | Numbers |
+| --- | --- | --- |
+| `water_escape_lets_critical_heal_eat` | the live report's pool; hurt to 5 HP while the escape digs its step, bread in the bag | critical heal eats at once (before: the escape kept the body), then the escape gets it out |
+| `water_job_digs_step_without_false_escape` | `goto` out of the same pool: Tier 2 digs the step itself | 268 ticks, 1 block broken, no WaterEscape takeover (before: 1) |
+| `water_stranded_picks_up_tossed_blocks` | stranded in the well; dirt tossed two blocks off | swims over, picks it up, looks again at once, out within 400 ticks of the toss |
+| `water_step_spares_precious_blocks` | the high-bank pond, white wool in slot 0 and planks in slot 1 | the planks become the step, the wool is kept |
+| `water_stranded_again_speaks_up_again` | stranded in the well, helped out, then back in it | speaks up about the second stranding at once (before: silent for 5 minutes) |
+| `water_step_items_are_plain_blocks` | `NavBlocks.isStepItem` and `stepRank` | no ores, metal or gem blocks, containers, falling blocks, slabs, leaves or glazed terracotta; scaffold, dirt, stone, planks, logs, stone bricks, terracotta, wool in that order |
+
+All 181 server GameTests passed in five full runs after the fixes but one, where `nav_perf_four_agents_planning`
+measured 2.005 ms at the 90th percentile (budget 1.7) while VMs outside the test kept the machine at a load of 17; the
+other runs measured 1.48 to 1.50 ms. The unit tests pass (`RepeatBackoffTest`: 2), and so do `stuckWake.test.ts` and
+lint.

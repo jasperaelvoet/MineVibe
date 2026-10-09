@@ -2,6 +2,7 @@ package dev.minevibe.agent.nav;
 
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.RepeatBackoff;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.util.List;
@@ -45,7 +46,9 @@ import org.jspecify.annotations.Nullable;
  * <p><b>Loops.</b> {@value #LOOP_FAILS} failed walks in a row toward about the same goal from about the same spot (a
  * reflex re-issuing a walk that cannot work, such as following the player up a cliff) send one {@code nav.loop} event,
  * which the skill layer turns into an urgency-2 {@code stuck} event (a wake for the brain, and a bark): an agent never
- * sits silently stuck. In water the WaterEscape reflex speaks up instead.
+ * sits silently stuck. In water the WaterEscape reflex speaks up instead. Loops reported again before the agent got
+ * anywhere wait ever longer ({@value #LOOP_REPORT_TICKS} ticks, then twice that, up to {@value #LOOP_REPORT_MAX_TICKS}):
+ * following a player who stands where no walk leads costs a few brain turns, not one every 2 minutes.
  */
 public final class AgentNavigator {
 	public enum Status {
@@ -127,6 +130,10 @@ public final class AgentNavigator {
 	// failure loops
 	/** Failed walks in a row toward about the same goal from about the same spot that make a {@code nav.loop}. */
 	public static final int LOOP_FAILS = 5;
+	/** The least ticks between two {@code nav.loop}s without an arrival in between; doubled each time, up to the max. */
+	public static final int LOOP_REPORT_TICKS = 2400;
+	public static final int LOOP_REPORT_MAX_TICKS = 19200;
+	private final RepeatBackoff loopReports = new RepeatBackoff(LOOP_REPORT_TICKS, LOOP_REPORT_MAX_TICKS);
 	private int loopFails;
 	private @Nullable Vec3 loopGoal;
 	private @Nullable Vec3 loopFrom;
@@ -673,6 +680,7 @@ public final class AgentNavigator {
 		this.loopFails = 0;
 		this.loopGoal = null;
 		this.loopReported = false;
+		this.loopReports.reset();
 		this.status = Status.ARRIVED;
 		this.executor.clear(this.agent);
 		this.endTier2();
@@ -701,7 +709,8 @@ public final class AgentNavigator {
 
 	/**
 	 * Counts failed walks toward about the same goal (within 4 blocks) from about the same spot (within 3); the
-	 * {@value #LOOP_FAILS}th sends one {@code nav.loop} (on land: in water the WaterEscape reflex speaks up).
+	 * {@value #LOOP_FAILS}th sends one {@code nav.loop} (on land: in water the WaterEscape reflex speaks up), unless the
+	 * last one, with no arrival since, was too recent ({@link #loopReports}): then the first failure after the wait does.
 	 */
 	private void noteFailure(final String reason) {
 		Vec3 here = this.agent.position();
@@ -714,8 +723,9 @@ public final class AgentNavigator {
 			this.loopFrom = here;
 			this.loopReported = false;
 		}
-		if (this.loopFails >= LOOP_FAILS && !this.loopReported && !this.agent.isInWater()) {
+		if (this.loopFails >= LOOP_FAILS && !this.loopReported && !this.agent.isInWater() && this.loopReports.due(this.agent.tickCount)) {
 			this.loopReported = true;
+			this.loopReports.said(this.agent.tickCount);
 			AgentEvents.emit(this.agent, "nav.loop", Map.of("reason", reason, "fails", Integer.toString(this.loopFails),
 				"goal", g == null ? "" : BlockPos.containing(g).toShortString(), "pos", this.agent.blockPosition().toShortString()));
 		}

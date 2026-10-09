@@ -2,9 +2,11 @@ package dev.minevibe.agent.brain;
 
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.RepeatBackoff;
 import dev.minevibe.agent.job.Job;
 import dev.minevibe.agent.nav.AgentNavigator;
 import dev.minevibe.agent.nav.DigGoal;
+import dev.minevibe.agent.nav.NavBlocks;
 import dev.minevibe.agent.nav.WaterMoves;
 import it.unimi.dsi.fastutil.ints.IntArrayFIFOQueue;
 import java.util.LinkedHashMap;
@@ -15,14 +17,22 @@ import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Priority 98, just below Hazard (PLAN 7.3): out of water the agent's walk cannot get it out of. A pool whose banks
+ * Priority {@value #PRIORITY} (PLAN 7.3): out of water the agent's walk cannot get it out of. A pool whose banks
  * stand a block over the water line, an enclosed pocket in a cave: vanilla lifts a swimmer onto no bank higher than the
  * water line, so a walk (or a reflex following the player) that leads there fails over and over while the body treads
  * water, silently (the CEO of the live report sat in such a pool with no brain running).
  *
+ * <p><b>Where it ranks.</b> Above the job and every reflex that walks the agent somewhere for others (feeding the
+ * player, sharing food, approaching, attending), so none of them leads it back in mid-escape; below the ones that keep
+ * it alive (Hazard, creeper backoff, critical heal, flee, protect, self-defence, eating). An escape takes up to a minute
+ * (a step dug into stone by hand is 7.5 s); the agent still eats at 5 HP and fights back meanwhile, and the escape goes
+ * on when they let go (review 2026-10-09: at 98 it held the body through all of them).
+ *
  * <p><b>When.</b> In water for {@value #STUCK_TICKS} ticks (3 s) without getting {@value #PROGRESS_BLOCKS} blocks from
  * where it was, while the navigator means to move (walking, or its last walk failed; a search that spans ticks does not
- * count, nor a job working in place, nor an agent idling in the water beside the player it follows).
+ * count, nor a job working in place, nor an agent idling in the water beside the player it follows). Breaking a block
+ * for the walk (a Tier-2 step dug into the bank from the bottom of shallow water) is progress too: a job's own way out is
+ * never taken over halfway.
  *
  * <p><b>What.</b> Head above the water first (at most {@value #SURFACE_TICKS} ticks), then a Tier-2 walk to the
  * nearest dry land that leads somewhere ({@link DigGoal#ashore}): onto a bank level with the water line, onto a block
@@ -30,18 +40,20 @@ import org.jspecify.annotations.Nullable;
  * swimming), with the protection rules of every Tier-2 walk.
  *
  * <p><b>Stranded.</b> If that finds no way, the reflex lets go and the agent is stranded: it treads water at the surface
- * (breathing; {@link TreadWaterReflex#stranded}, below the job, so it still eats, fights and flees), speaks up (an
- * urgency-2 {@code stuck} event, which wakes its brain, and the "stuck in water" bark), and the escape looks again every
- * {@value #RETRY_TICKS} ticks (the player may have helped, the bag may hold blocks by now). A stranded agent speaks up
- * again only after {@value #SPEAK_AGAIN_TICKS} ticks.
+ * (breathing; {@link TreadWaterReflex#stranded}, below the job and the pickup reflex, so it still eats, fights, flees and
+ * fetches a block tossed to it), speaks up (an urgency-2 {@code stuck} event, which wakes its brain, and the "stuck in
+ * water" bark), and the escape looks again every {@value #RETRY_TICKS} ticks (the player may have helped), and at once
+ * when the bag gains a block to step on. A stranded agent speaks up again only after {@value #SPEAK_AGAIN_TICKS} ticks,
+ * then after twice that, up to {@value #SPEAK_AGAIN_MAX_TICKS} (each time is a brain turn); once it is out of the water,
+ * the next stranding is said at once again (review 2026-10-09: a second pool within 5 minutes of the first was silent).
  *
  * <p><b>Jobs.</b> The job resumes after an escape. A job that leads the agent into water it cannot leave a third time,
  * or whose escapes failed twice, fails with {@code STUCK_IN_WATER} (and the agent speaks up): no job resumes into the
  * same water forever. Without a job, {@value #LOOP_ESCAPES} escapes within {@value #LOOP_WINDOW} ticks (a reflex that
- * keeps leading back in) are said out loud too.
+ * keeps leading back in) are said out loud too, with the same growing gaps while the loop goes on.
  */
 final class WaterEscapeReflex implements Reflex {
-	static final int PRIORITY = 98;
+	static final int PRIORITY = 58;
 	/** Ticks in water without progress (while meaning to move) before the escape takes over (3 s). */
 	static final int STUCK_TICKS = 60;
 	/** Getting this far from where the count started is progress. */
@@ -54,8 +66,10 @@ final class WaterEscapeReflex implements Reflex {
 	static final int RETRY_TICKS = 300;
 	/** Stranded with a job that gets one more try: ticks before the escape looks again. */
 	static final int JOB_RETRY_TICKS = 100;
-	/** Stranded: ticks before the agent speaks up again (5 minutes). */
+	/** Stranded: ticks before the agent speaks up again (5 minutes); doubled each time it does, up to the max. */
 	static final int SPEAK_AGAIN_TICKS = 6000;
+	/** The longest wait between two speak-ups about one stranding, or one loop (20 minutes). */
+	static final int SPEAK_AGAIN_MAX_TICKS = 24000;
 	/** Escapes a job may need: the next one fails it ({@code STUCK_IN_WATER}), as do this many escapes that failed. */
 	static final int MAX_ESCAPES_PER_JOB = 2;
 	/** Escapes without a job within {@link #LOOP_WINDOW} ticks that are said out loud. */
@@ -87,7 +101,13 @@ final class WaterEscapeReflex implements Reflex {
 	// Stranded: no way out found.
 	private boolean stranded;
 	private int retryAt;
-	private int lastSpoke = Integer.MIN_VALUE / 2;
+	/** Blocks to step on in the bag when the agent was stranded: more (a block tossed to it) is a reason to look again. */
+	private int strandedSteps;
+	/** Speaking up about the water the agent is stuck in: once at once, repeats ever further apart; reset once out. */
+	private final RepeatBackoff strandSpeak = new RepeatBackoff(SPEAK_AGAIN_TICKS, SPEAK_AGAIN_MAX_TICKS);
+	/** Speaking up about escapes that keep happening without a job; reset after a quiet {@code 2 * LOOP_WINDOW}. */
+	private final RepeatBackoff loopSpeak = new RepeatBackoff(SPEAK_AGAIN_TICKS, SPEAK_AGAIN_MAX_TICKS);
+	private int lastEscapeAt = Integer.MIN_VALUE / 2;
 
 	/** Per job: escapes started for it, and escapes that found no way out. */
 	private final Map<Job, int[]> perJob = new WeakHashMap<>();
@@ -121,13 +141,16 @@ final class WaterEscapeReflex implements Reflex {
 			if (this.stranded && !swimming) {
 				// Out after all (the player built a step, a current carried the body to a bank, a job's walk got there).
 				this.stranded = false;
+				this.strandSpeak.reset();
 				AgentEvents.emit(agent, "water.escaped", Map.of("out", "true", "at", agent.blockPosition().toShortString(), "how", "stranded"));
 			}
 			return false;
 		}
 		if (this.stranded) {
-			// Look again now and then; a job working in the water keeps the body while it does not mean to move.
-			return agent.tickCount >= this.retryAt && (!agent.jobs().hasJob() || meansToMove(agent));
+			// Look again now and then, or as soon as the bag holds more to step on; a job working in the water keeps the body
+			// while it does not mean to move.
+			boolean look = agent.tickCount >= this.retryAt || NavBlocks.stepCount(agent.getInventory()) > this.strandedSteps;
+			return look && (!agent.jobs().hasJob() || meansToMove(agent));
 		}
 		Vec3 pos = agent.position();
 		if (this.anchor == null || pos.distanceTo(this.anchor) > PROGRESS_BLOCKS) {
@@ -136,6 +159,11 @@ final class WaterEscapeReflex implements Reflex {
 			return false;
 		}
 		if (agent.tickCount < this.quietUntil || !meansToMove(agent)) {
+			return false;
+		}
+		if (agent.controls().isMining()) {
+			// Breaking a block for the walk (a step dug from the bottom of shallow water: 7.5 s for stone by hand) is progress.
+			this.stuckTicks = 0;
 			return false;
 		}
 		return ++this.stuckTicks >= STUCK_TICKS;
@@ -161,7 +189,7 @@ final class WaterEscapeReflex implements Reflex {
 		this.phase = Phase.SURFACE;
 		this.phaseTicks = 0;
 		if (this.active) {
-			// Back after a higher reflex (drowning: Hazard) had the body: the same escape goes on.
+			// Back after a higher reflex (Hazard, eating, a fight) had the body: the same escape goes on.
 			return;
 		}
 		boolean retry = this.stranded;
@@ -191,12 +219,18 @@ final class WaterEscapeReflex implements Reflex {
 		}
 		AgentEvents.emit(agent, "water.escape", log);
 		int now = agent.tickCount;
+		if (now - this.lastEscapeAt > 2 * LOOP_WINDOW) {
+			// The last loop (if any) is over.
+			this.loopSpeak.reset();
+		}
+		this.lastEscapeAt = now;
 		while (!this.recent.isEmpty() && now - this.recent.firstInt() > LOOP_WINDOW) {
 			this.recent.dequeueInt();
 		}
 		this.recent.enqueue(now);
-		if (this.recent.size() >= LOOP_ESCAPES) {
+		if (this.recent.size() >= LOOP_ESCAPES && this.loopSpeak.due(now)) {
 			this.recent.clear();
+			this.loopSpeak.said(now);
 			BlockPos at = agent.blockPosition();
 			this.speakUp(agent, "loop", "I keep ending up in water I can't walk out of (" + LOOP_ESCAPES + " times in "
 				+ LOOP_WINDOW / 1200 + " minutes, now at " + at.getX() + " " + at.getY() + " " + at.getZ()
@@ -206,6 +240,12 @@ final class WaterEscapeReflex implements Reflex {
 
 	@Override
 	public void tick(final AgentPlayer agent, final ReflexBrain brain) {
+		if (!this.active) {
+			// Chosen again in the tick after it let go (stranded, and the bag just gained a block to step on): the brain only
+			// starts a reflex it switches to, so the new look starts here. Without this the walk ran with the escape not
+			// engaged, and was dropped half way (on the step it had just put in the water: no longer swimming).
+			this.start(agent, brain);
+		}
 		this.phaseTicks++;
 		AgentNavigator nav = agent.navigator();
 		switch (this.phase) {
@@ -264,13 +304,14 @@ final class WaterEscapeReflex implements Reflex {
 	 * No way out found: let go, tread water at the surface ({@link TreadWaterReflex}) and look again later. With the job
 	 * it found the agent in: the second such failure fails the job (and speaks up); after the first, the job gets the body
 	 * back once (its own walk may know better: its goal may lie in the water). Without a job the agent speaks up at once,
-	 * and again only after {@value #SPEAK_AGAIN_TICKS} ticks.
+	 * and again only after {@value #SPEAK_AGAIN_TICKS} ticks, then ever further apart ({@link #strandSpeak}).
 	 */
 	private void strand(final AgentPlayer agent, final String why) {
 		agent.navigator().stop();
 		agent.controls().stopMovement();
 		this.active = false;
 		this.stranded = true;
+		this.strandedSteps = NavBlocks.stepCount(agent.getInventory());
 		this.anchor = null;
 		this.stuckTicks = 0;
 		AgentEvents.emit(agent, "water.escaped", Map.of("out", "false", "why", why, "at", agent.blockPosition().toShortString(),
@@ -288,7 +329,8 @@ final class WaterEscapeReflex implements Reflex {
 			return;
 		}
 		this.retryAt = agent.tickCount + RETRY_TICKS;
-		if (agent.tickCount - this.lastSpoke >= SPEAK_AGAIN_TICKS) {
+		if (this.strandSpeak.due(agent.tickCount)) {
+			this.strandSpeak.said(agent.tickCount);
 			BlockPos at = agent.blockPosition();
 			this.speakUp(agent, why, "I'm stuck in water at " + at.getX() + " " + at.getY() + " " + at.getZ()
 				+ " and found no way out (no bank low enough, nothing to step on, nowhere to stand and dig). Ask the player to help, or say if I should dig out.");
@@ -301,13 +343,14 @@ final class WaterEscapeReflex implements Reflex {
 			+ ". Ask for help (a block to step on, or a way out), or have me dig out from somewhere I can stand.");
 		this.perJob.remove(job);
 		this.job = null;
+		// Said out loud here; a stranding right after it (no way out found) is not said again.
+		this.strandSpeak.said(agent.tickCount);
 		this.speakUp(agent, "job_failed", "My " + job.name() + " job kept leading me into water I can't get out of on my own (at " + at.getX() + " " + at.getY()
 			+ " " + at.getZ() + "), so I stopped it (STUCK_IN_WATER). Ask the player to help, or say if I should dig out or go another way.");
 	}
 
 	/** An urgency-2 {@code stuck} event (the skill layer sends it; Node wakes the brain and says the bark). */
 	private void speakUp(final AgentPlayer agent, final String why, final String text) {
-		this.lastSpoke = agent.tickCount;
 		BlockPos at = agent.blockPosition();
 		Map<String, String> data = new LinkedHashMap<>();
 		data.put("why", "water");
@@ -322,6 +365,7 @@ final class WaterEscapeReflex implements Reflex {
 	private void end(final AgentPlayer agent) {
 		this.active = false;
 		this.stranded = false;
+		this.strandSpeak.reset();
 		this.phase = Phase.SURFACE;
 		this.anchor = null;
 		this.stuckTicks = 0;
@@ -351,8 +395,14 @@ final class WaterEscapeReflex implements Reflex {
 	}
 
 	@Override
+	public boolean reported() {
+		// Below the reflexes the brain hears about by priority, but an escape is worth a Digest line.
+		return true;
+	}
+
+	@Override
 	public void stop(final AgentPlayer agent, final ReflexBrain brain) {
-		// Preempted (Hazard) or done: the walk stops; an escape under way goes on when control comes back.
+		// Preempted (Hazard, eating, a fight) or done: the walk stops; an escape under way goes on when control comes back.
 		agent.navigator().stop();
 		agent.controls().stopMovement();
 	}

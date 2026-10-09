@@ -9,15 +9,17 @@ import java.util.function.BiPredicate;
  * and an agent beside its player in a lake, or stranded in a pool, would hold its breath until the Hazard reflex pulled
  * it up, over and over. Two of them:
  * <ul>
- *   <li>{@link #stranded}, priority {@value #STRANDED_PRIORITY} (just below the job): the WaterEscape reflex found no
- *       way out. The agent treads water and waits for the escape's next look, for help, or for a job from its brain;
- *       eating, fighting and fleeing (all higher) still run, and idle walks that cannot work stay off.</li>
+ *   <li>{@link #stranded}, priority {@value #STRANDED_PRIORITY} (below the job and the pickup reflex): the WaterEscape
+ *       reflex found no way out. The agent treads water and waits for the escape's next look, for help, or for a job
+ *       from its brain; eating, fighting and fleeing (all higher) still run, and so does picking up a block the player
+ *       tossed into the water two blocks off (help it would otherwise watch float), while idle walks that cannot work
+ *       stay off.</li>
  *   <li>{@link #afloat}, priority {@value #AFLOAT_PRIORITY} (below the idle modes): nothing else wants the body and it
  *       swims (not standing on the bottom of shallow water with its head out).</li>
  * </ul>
  */
 final class TreadWaterReflex implements Reflex {
-	static final int STRANDED_PRIORITY = 33;
+	static final int STRANDED_PRIORITY = 24;
 	static final int AFLOAT_PRIORITY = 5;
 
 	private final int priority;

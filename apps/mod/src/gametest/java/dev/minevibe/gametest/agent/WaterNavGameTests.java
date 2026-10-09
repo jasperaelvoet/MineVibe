@@ -18,6 +18,7 @@ import dev.minevibe.agent.nav.DigGoal;
 import dev.minevibe.agent.nav.DigPath;
 import dev.minevibe.agent.nav.DigPathPlanner;
 import dev.minevibe.agent.nav.DigStep;
+import dev.minevibe.agent.nav.NavBlocks;
 import dev.minevibe.agent.nav.WaterMoves;
 import dev.minevibe.bridge.msg.Bodies;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -33,6 +34,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.DyeColor;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -591,6 +594,188 @@ public final class WaterNavGameTests {
 			}
 		}
 		helper.assertTrue(dig.path().steps().stream().anyMatch(st -> st.kind() == DigStep.Kind.EXIT_WATER), "climbed out: " + dig.path().steps());
+		helper.succeed();
+	}
+
+	// ------------------------------------------------------------------ review: survival, false escapes, help, rare blocks
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 1600)
+	public void waterEscapeLetsCriticalHealEat(final GameTestHelper helper) {
+		// The live report's pool: the escape digs a step into the stone ledge by hand (7.5 s). Hurt to 5 HP while it digs,
+		// with bread in the bag, the agent eats at once (critical heal, priority 90, outranks the escape), then the escape
+		// goes on and gets it out.
+		fill(helper, 2, 1, 2, 30, 8, 30, Blocks.STONE);
+		fill(helper, 6, 4, 10, 26, 5, 22, Blocks.AIR);
+		fill(helper, 8, 3, 12, 13, 3, 20, Blocks.AIR);
+		fill(helper, 8, 2, 12, 13, 2, 20, Blocks.WATER);
+		ServerPlayer human = spawnHumanStandIn(helper, 22, 4, 16);
+		AgentPlayer agent = spawnAgent(helper, "Hungry", AgentRole.CEO, 10, 2, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.BREAD, 4));
+		agent.brain().setFollowTarget(human.getUUID());
+		AtomicBoolean ate = new AtomicBoolean();
+		int ledge = helper.absolutePos(new BlockPos(0, 4, 0)).getY();
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue("water_escape".equals(agent.brain().activeName()) && agent.controls().isMining(),
+				"digging its way out (" + agent.brain().activeName() + ")"))
+			.thenExecute(() -> {
+				agent.setHealth(5.0F);
+				agent.getFoodData().setFoodLevel(10);
+			})
+			.thenExecuteFor(40, () -> ate.compareAndSet(false, "critical_heal".equals(agent.brain().activeName())))
+			.thenExecute(() -> helper.assertTrue(ate.get(), "ate at 5 HP within 2 s (the active reflex stayed " + agent.brain().activeName() + ")"))
+			.thenWaitUntil(() -> {
+				helper.assertFalse(agent.isInWater(), "still in the pool at " + agent.blockPosition().toShortString());
+				helper.assertTrue(agent.onGround() && agent.getY() >= ledge - 0.01, "not up on the ledge: " + agent.blockPosition().toShortString());
+			})
+			.thenSucceed();
+	}
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 1200)
+	public void waterJobDigsStepWithoutFalseEscape(final GameTestHelper helper) {
+		// goto out of the live report's pool onto the cave floor: Tier 2 digs a step into the stone ledge by hand from the
+		// pool's bottom (7.5 s standing still in the water). The body breaking a block for its walk is progress: no
+		// WaterEscape takeover (each counts toward STUCK_IN_WATER for the job).
+		fill(helper, 2, 1, 2, 30, 8, 30, Blocks.STONE);
+		fill(helper, 6, 4, 10, 26, 5, 22, Blocks.AIR);
+		fill(helper, 8, 3, 12, 13, 3, 20, Blocks.AIR);
+		fill(helper, 8, 2, 12, 13, 2, 20, Blocks.WATER);
+		AgentPlayer agent = spawnAgent(helper, "Digger", AgentRole.MINER, 10, 2, 16);
+		Watch watch = Watch.start(helper, agent, 1200);
+		long start = helper.getTick();
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("ledge"), "goto", "{\"pos\":" + SkillTestSupport.rel(helper, 22, 4, 16) + "}", 60_000);
+		AtomicInteger reported = new AtomicInteger();
+		helper.succeedWhen(() -> {
+			String s = status(r);
+			if ("failed".equals(s)) {
+				helper.fail("goto failed: " + error(r));
+			}
+			helper.assertTrue("done".equals(s), "still on the way (" + s + ") at " + agent.blockPosition().toShortString());
+			if (reported.getAndIncrement() == 0) {
+				watch.report("water_job_digs_step", helper.getTick() - start);
+			}
+			helper.assertTrue(agent.navigator().digBroken() >= 1, "dug a step (broke " + agent.navigator().digBroken() + ")");
+			helper.assertValueEqual(watch.escapes(), 0, "WaterEscape takeovers while the job dug its step");
+			watch.assertSafe(helper);
+		});
+	}
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 1600)
+	public void waterStrandedPicksUpTossedBlocks(final GameTestHelper helper) {
+		// The well of the stranded test. Once stranded, the player's help lands two blocks off (dirt tossed into the water):
+		// the agent swims over and picks it up (the pickup reflex is not held off by treading water), looks again at once,
+		// and climbs out on it.
+		fill(helper, 8, 1, 8, 24, 5, 24, Blocks.STONE);
+		fill(helper, 14, 1, 14, 18, 3, 18, Blocks.WATER);
+		fill(helper, 14, 4, 14, 18, 5, 18, Blocks.AIR);
+		ServerPlayer human = spawnHumanStandIn(helper, 3, 1, 16);
+		AgentPlayer agent = spawnAgent(helper, "Helped", AgentRole.CEO, 16, 3, 16);
+		agent.brain().setFollowTarget(human.getUUID());
+		long[] tossed = {0};
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue("stranded_in_water".equals(agent.brain().activeName()), "stranded (" + agent.brain().activeName() + ")"))
+			.thenExecute(() -> {
+				Vec3 at = helper.absoluteVec(new Vec3(14.5, 3.2, 14.5));
+				net.minecraft.world.entity.item.ItemEntity dirt = new net.minecraft.world.entity.item.ItemEntity(helper.getLevel(), at.x, at.y, at.z,
+					new ItemStack(Items.DIRT, 2), 0, 0, 0);
+				dirt.setPickUpDelay(10);
+				helper.getLevel().addFreshEntity(dirt);
+				tossed[0] = helper.getTick();
+			})
+			.thenWaitUntil(() -> helper.assertTrue(agent.getInventory().countItem(Items.DIRT) > 0 || agent.navigator().digPlaced() > 0,
+				"picked up the dirt tossed two blocks off"))
+			.thenWaitUntil(() -> {
+				helper.assertFalse(agent.isInWater(), "still in the well at " + agent.blockPosition().toShortString());
+				helper.assertTrue(agent.onGround() && agent.getBlockY() >= helper.absolutePos(new BlockPos(0, 6, 0)).getY(), "not up on the stone at "
+					+ agent.blockPosition().toShortString());
+			})
+			.thenExecute(() -> helper.assertTrue(helper.getTick() - tossed[0] <= 400, "out " + (helper.getTick() - tossed[0]) + " ticks after the toss"))
+			.thenSucceed();
+	}
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 1400)
+	public void waterStepSparesPreciousBlocks(final GameTestHelper helper) {
+		// The pond with the high far bank, no scaffold in the bag: white wool first in the bag, oak planks after it. The
+		// step put in the water is the planks (the plainer block); the wool is kept.
+		fill(helper, 0, 1, 0, 32, 2, 9, Blocks.DIRT);
+		fill(helper, 0, 1, 10, 0, 4, 20, Blocks.DIRT);
+		fill(helper, 32, 1, 10, 32, 4, 20, Blocks.DIRT);
+		fill(helper, 1, 1, 10, 31, 2, 20, Blocks.WATER);
+		fill(helper, 0, 1, 21, 32, 3, 32, Blocks.DIRT);
+		AgentPlayer agent = spawnAgent(helper, "Thrifty", AgentRole.BUILDER, 16, 3, 5);
+		agent.getInventory().setItem(0, new ItemStack(Items.WOOL.pick(DyeColor.WHITE), 1));
+		agent.getInventory().setItem(1, new ItemStack(Items.OAK_PLANKS, 1));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("thrift"), "goto", "{\"pos\":" + SkillTestSupport.rel(helper, 16, 4, 25) + "}", 60_000);
+		helper.succeedWhen(() -> {
+			String s = status(r);
+			if ("failed".equals(s)) {
+				helper.fail("goto failed: " + error(r));
+			}
+			helper.assertTrue("done".equals(s), "still on the way (" + s + ") at " + agent.blockPosition().toShortString());
+			helper.assertValueEqual(agent.getInventory().countItem(Items.WOOL.pick(DyeColor.WHITE)), 1, "wool kept");
+			helper.assertValueEqual(agent.getInventory().countItem(Items.OAK_PLANKS), 0, "planks used as the step");
+		});
+	}
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 2400)
+	public void waterStrandedAgainSpeaksUpAgain(final GameTestHelper helper) {
+		// The well of the stranded test: stranded, the agent speaks up; handed two dirt, it climbs out. Back in the well a
+		// moment later (its step and pillar block gone again, nothing left in the bag), it is stranded anew and says so at
+		// once: a new stranding is never kept quiet by the last one (it waited 5 minutes before the review).
+		fill(helper, 8, 1, 8, 24, 5, 24, Blocks.STONE);
+		fill(helper, 14, 1, 14, 18, 3, 18, Blocks.WATER);
+		fill(helper, 14, 4, 14, 18, 5, 18, Blocks.AIR);
+		ServerPlayer human = spawnHumanStandIn(helper, 3, 1, 16);
+		AgentPlayer agent = spawnAgent(helper, "Twice", AgentRole.CEO, 16, 3, 16);
+		agent.brain().setFollowTarget(human.getUUID());
+		AtomicInteger spoke = new AtomicInteger();
+		AgentEvents.addListener(e -> {
+			if (e.agentId().equals(agent.agentId()) && "nav.stuck_in_water".equals(e.type())) {
+				spoke.incrementAndGet();
+			}
+		});
+		long[] first = {0};
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertValueEqual(spoke.get(), 1, "times it spoke up"))
+			.thenExecute(() -> {
+				first[0] = helper.getTick();
+				agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 2));
+			})
+			.thenWaitUntil(() -> helper.assertTrue(!agent.isInWater() && agent.onGround() && agent.getBlockY() >= helper.absolutePos(new BlockPos(0, 6, 0)).getY(),
+				"not out on the stone, at " + agent.blockPosition().toShortString()))
+			.thenExecute(() -> {
+				helper.assertValueEqual(spoke.get(), 1, "times it spoke up before it got out");
+				fill(helper, 14, 1, 14, 18, 3, 18, Blocks.WATER);
+				fill(helper, 14, 4, 14, 18, 5, 18, Blocks.AIR);
+				Vec3 in = helper.absoluteVec(new Vec3(16.5, 3.0, 16.5));
+				agent.teleportTo(in.x, in.y, in.z);
+			})
+			.thenWaitUntil(() -> helper.assertValueEqual(spoke.get(), 2, "times it spoke up (the second stranding)"))
+			// Well within the 5 minutes (6000 ticks) a repeat about the same stranding waits.
+			.thenExecute(() -> helper.assertTrue(helper.getTick() - first[0] < 2000, "said " + (helper.getTick() - first[0]) + " ticks after the first time"))
+			.thenSucceed();
+	}
+
+	@GameTest(environment = WATER, structure = FIELD, maxTicks = 20)
+	public void waterStepItemsArePlainBlocks(final GameTestHelper helper) {
+		// What an agent stuck in water may put down to step on (PLAN 7.2 "Water"): plain full cubes, the plainest first;
+		// never ores, metal or gem blocks, containers, falling blocks, slabs, leaves or glazed terracotta.
+		for (Item item : List.of(Items.DIRT, Items.COBBLESTONE, Items.ROOTED_DIRT, Items.STONE, Items.DEEPSLATE, Items.OAK_PLANKS, Items.SPRUCE_LOG,
+			Items.STONE_BRICKS, Items.TERRACOTTA, Items.WOOL.pick(DyeColor.WHITE))) {
+			helper.assertTrue(NavBlocks.isStepItem(new ItemStack(item)), item + " is a step");
+		}
+		for (Item item : List.of(Items.IRON_ORE, Items.DIAMOND_ORE, Items.DEEPSLATE_GOLD_ORE, Items.IRON_BLOCK, Items.GOLD_BLOCK, Items.DIAMOND_BLOCK,
+			Items.EMERALD_BLOCK, Items.COAL_BLOCK, Items.CHEST, Items.FURNACE, Items.CRAFTING_TABLE, Items.SAND, Items.GRAVEL, Items.MAGMA_BLOCK,
+			Items.OAK_LEAVES, Items.OAK_SLAB, Items.OAK_STAIRS, Items.GLASS, Items.TNT, Items.MUD, Items.OBSIDIAN, Items.BREAD,
+			Items.GLAZED_TERRACOTTA.pick(DyeColor.BLUE), Items.WOOL_SLAB.pick(DyeColor.WHITE))) {
+			helper.assertFalse(NavBlocks.isStepItem(new ItemStack(item)), item + " is no step");
+			helper.assertValueEqual(NavBlocks.stepRank(new ItemStack(item)), Integer.MAX_VALUE, item + " step rank");
+		}
+		List<Item> order = List.of(Items.COBBLESTONE, Items.ROOTED_DIRT, Items.BASALT, Items.OAK_PLANKS, Items.OAK_LOG, Items.MOSSY_STONE_BRICKS,
+			Items.DYED_TERRACOTTA.pick(DyeColor.RED), Items.WOOL.pick(DyeColor.WHITE));
+		for (int i = 1; i < order.size(); i++) {
+			helper.assertTrue(NavBlocks.stepRank(new ItemStack(order.get(i - 1))) < NavBlocks.stepRank(new ItemStack(order.get(i))),
+				order.get(i - 1) + " goes before " + order.get(i));
+		}
 		helper.succeed();
 	}
 

@@ -580,6 +580,7 @@ final class DigPathExecutor {
 			int slot = -1;
 			int fallback = -1;
 			int anyStep = -1;
+			int anyRank = Integer.MAX_VALUE;
 			for (int i = 0; i < Inventory.INVENTORY_SIZE; i++) {
 				ItemStack s = inv.getItem(i);
 				if (NavBlocks.isScaffoldItem(s)) {
@@ -590,15 +591,20 @@ final class DigPathExecutor {
 					if (fallback < 0) {
 						fallback = i;
 					}
-				} else if (step && anyStep < 0 && NavBlocks.isStepItem(s)) {
-					anyStep = i;
+				} else if (step) {
+					int rank = NavBlocks.stepRank(s);
+					if (rank < anyRank) {
+						anyRank = rank;
+						anyStep = i;
+					}
 				}
 			}
 			if (slot < 0 && !NavBlocks.isScaffoldItem(hand)) {
 				slot = fallback;
 			}
-			if (slot < 0 && step && !NavBlocks.isStepItem(hand)) {
-				// Out of the water on whatever plain block the bag holds (a log, planks) when it has no scaffold.
+			if (slot < 0 && step && NavBlocks.stepRank(hand) > anyRank) {
+				// Out of the water on the plainest block the bag holds (dirt kinds, stone, planks before logs, wool last) when
+				// it has no scaffold.
 				slot = anyStep;
 			}
 			if (slot >= 0) {

@@ -94,10 +94,15 @@ was saved into the GameTest world, which is kept from run to run, so every later
   enclosed pocket reached through water (a ledge in a cave lake) is not seen as a dead end, and a complete path whose
   exit the water would not lift the body onto (a thin layer of flowing water) still leads in. The WaterEscape reflex
   gets the agent out; without a job, 3 escapes in 3 minutes are said out loud.
-- **A stuck walk wakes the brain at most every 2 minutes.** `nav.loop` (5 failed walks from about the same spot to
-  about the same goal) is an urgency-2 `stuck` event: following a player who stands where no walk leads (a roof, a
-  pillar, a boat) now costs one brain turn per 2 minutes (`BodyEvents` cooldown) besides the bark. Watch the token
-  use in play; a longer cooldown for repeats of the same loop would cut it.
+- **A stuck walk wakes the brain, a few times.** `nav.loop` (5 failed walks from about the same spot to about the
+  same goal) is an urgency-2 `stuck` event: following a player who stands where no walk leads (a roof, a pillar, a
+  boat) costs a brain turn and the bark, again after 2 minutes, then 4, 8 and every 16 while the agent gets nowhere
+  (review: it was every 2 minutes for as long as it lasted). Watch the token use in play.
+- **A step block is counted against the scaffold.** Tier 2 counts a block put in the water to step on and a pillar
+  block in one count, which pillars may only fill up to the scaffold in the bag (and the executor steps on scaffold
+  first, the plainest block): with one dirt and one plank, a way out that needs a step and a pillar is not planned
+  (the plank would do for the step, the dirt for the pillar), and the agent stays stranded until it has two scaffold
+  blocks. Two counts (steps, and scaffold kept for pillars) would plan it.
 - **The current is compensated for the water the body touches now.** A body swimming into faster water a block ahead
   drifts until it gets there; `water_crosses_flowing_river` measured 0.01 blocks off its line (0.34 without the
   upstream aim) in a stream one deep. Strong currents in deep, wide rivers are not tested.

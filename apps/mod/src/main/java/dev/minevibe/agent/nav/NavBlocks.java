@@ -291,6 +291,37 @@ public final class NavBlocks {
 			&& state.isRedstoneConductor(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
 	}
 
+	/**
+	 * Which step block goes first ({@link #isStepItem}), lowest first: scaffold, then dirt kinds, stone kinds, planks,
+	 * logs, stone bricks, terracotta and wool last (what a player hands over for a build). {@link Integer#MAX_VALUE} for
+	 * anything that is no step.
+	 */
+	public static int stepRank(final ItemStack stack) {
+		if (!isStepItem(stack)) {
+			return Integer.MAX_VALUE;
+		}
+		if (isScaffoldItem(stack)) {
+			return 0;
+		}
+		BlockState state = ((BlockItem)stack.getItem()).getBlock().defaultBlockState();
+		if (state.is(BlockTags.DIRT)) {
+			return 1;
+		}
+		if (state.is(BlockTags.BASE_STONE_OVERWORLD) || state.is(BlockTags.BASE_STONE_NETHER)) {
+			return 2;
+		}
+		if (state.is(BlockTags.PLANKS)) {
+			return 3;
+		}
+		if (state.is(BlockTags.LOGS)) {
+			return 4;
+		}
+		if (state.is(BlockTags.STONE_BRICKS)) {
+			return 5;
+		}
+		return state.is(BlockTags.TERRACOTTA) ? 6 : 7;
+	}
+
 	/** Blocks in the bag an agent may step out of water on ({@link #isStepItem}): scaffold and other plain full cubes. */
 	public static int stepCount(final Inventory inventory) {
 		int n = 0;

@@ -146,17 +146,19 @@ What the agents know about the world around them, and what they must leave alone
 
 ## Reflexes (zero tokens, every tick)
 
-Hazard 100, **WaterEscape 98** (in water 3 s without progress while a walk goes or failed: surface, then a Tier-2
+Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, Protect 80, SelfDefense 70, Eat 60,
+**WaterEscape 58** (in water 3 s without progress while a walk goes or failed: surface, then a Tier-2
 walk ashore, onto a bank, a block put in the water, or up a staircase dug from a standing cell; no way: stranded, an
-urgency-2 `stuck` event with the stuck-in-water bark; a job that leads in a third time fails `STUCK_IN_WATER`),
-CreeperBackoff 95, CriticalHeal 90, Flee 85, Protect 80, SelfDefense 70, Eat 60,
+urgency-2 `stuck` event with the stuck-in-water bark, said again after 5, 10, then every 20 minutes; a job that leads
+in a third time fails `STUCK_IN_WATER`; below the survival reflexes, so the agent eats and fights mid-escape),
 **FeedPlayer 55** (player food ≤ 12: toss food, every 15 s at most), **ShareFood 50** (a teammate at food
 ≤ 6 with nothing to eat), **UnseatToSurvive 47** (seated, food ≤ 6, no food), **UnseatToFight 45**
 (seated, hit by a hostile, HP < 50%), **PillarDown 41** (no job, standing on agent scaffold with more than a
 3-block drop on every side: mines the pillar away under its feet), **Approach 40**, **Attend 38**, Job 35,
-**stranded in water 33** (tread water at the surface while WaterEscape waits for its next look), **Shelter 30** (dusk, a home
-set, not following the player), **Pickup 25** (loose items within 6 blocks in sight), idle 10, **afloat 5** (tread
-water when nothing else steers a swimmer).
+**Shelter 30** (dusk, a home set, not following the player), **Pickup 25** (loose items within 6 blocks in sight;
+also a block tossed to a stranded agent), **stranded in water 24** (tread water at the surface while WaterEscape
+waits for its next look, at once when the bag gains a block to step on), idle 10, **afloat 5** (tread water when
+nothing else steers a swimmer).
 A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect,
 SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47) or to fight (45). Approach reports `agent.event approach_blocked{why}` (`combat`,
 `night`, `far`, `dimension`, `pc_screen`) once and stays put, so Node can fall back to a ping.
