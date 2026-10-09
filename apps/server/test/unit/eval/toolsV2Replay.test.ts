@@ -1,6 +1,6 @@
 import { MOD_CAPS } from '@minevibe/protocol';
 import { describe, expect, it } from 'vitest';
-import type { RunResult } from '../../../eval/harness/types.js';
+import type { RunResult, Scenario } from '../../../eval/harness/types.js';
 import { parseCli, runReplays, selectScenarios } from '../../../eval/run.js';
 import { buildWorld, HOUSE, HOUSE_CHEST } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
@@ -39,6 +39,32 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
     const good = get(outcomes, 'mc.logs_table', 'good');
     expect(good.checks.find((c) => c.name === 'house_intact')?.pass).toBe(true);
     expect(good.toolCalls).toBe(1);
+  }, 60_000);
+
+  it('a job its job{wait} already reported wakes nobody after the turn (AgentBrain parity)', async () => {
+    const [logs] = selectScenarios('mc', ['mc.logs_table']);
+    const steps = [
+      { tool: 'gather', args: { item: 'oak_log', count: 10 } },
+      { tool: 'craft', args: { item: 'crafting_table' } },
+    ];
+    const waited: Scenario = {
+      ...(logs as Scenario),
+      replayV2: {
+        good: [
+          [
+            { tool: 'mcp__mc__do', input: { steps } },
+            { tool: 'mcp__mc__job', input: { action: 'wait', seconds: 120 } },
+            { text: 'Got 10 oak logs and made a crafting table.' },
+          ],
+          // Only a (wrong) wake would play this turn.
+          [{ text: 'Woken again.' }],
+        ],
+      },
+    };
+    const [run] = await runReplays([waited], { tools: 'v2' });
+    expect(run?.result).toMatchObject({ success: true, toolCalls: 2, failedCalls: 0, turns: 1 });
+    expect(run?.result.transcript.some((l) => l.startsWith('T2 '))).toBe(false);
+    expect(run?.result.transcript.some((l) => /= done: do 2\/2 steps/.test(l))).toBe(true);
   }, 60_000);
 
   it('--tools and --mod select the tool set and the simulated mod', () => {

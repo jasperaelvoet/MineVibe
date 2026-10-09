@@ -891,7 +891,6 @@ export class AgentBrain {
   toolJobEnded(end: JobEnd): { readonly ok: boolean; readonly text: string } | null {
     const meta = this.toolJobs.meta(end.jobId);
     if (!meta) return null;
-    const running = this.toolJobs.get(end.jobId);
     const { result } = splitFooter(end.result);
     const body = this.#env.body(this.agentId);
     const rendered = renderOutcome(
@@ -904,9 +903,7 @@ export class AgentBrain {
       },
     );
     this.toolJobs.ended(end.jobId, end.status, rendered, end.error?.code);
-    if (end.status === 'cancelled' && running?.cancelledBy) return null;
-    // A job{wait} of this turn was waiting for it: that tool result already carries the end.
-    if (running?.awaited) return null;
+    if (!this.toolJobs.wakeDue(end.jobId, end.status)) return null;
     return { ok: end.status === 'done', text: wakeText(end.jobId, rendered, meta.skill === 'sequence') };
   }
 

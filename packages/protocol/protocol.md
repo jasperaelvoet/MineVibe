@@ -730,7 +730,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   blocks (none: `NOT_FOUND`); the result's `pos` says which. **`give`** without `count` (cap `give.all`) gives
   everything of the item.
 - **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
-  north at rotation 0, roof), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks
+  north at rotation 0, roof, a torch inside when one is carried: without one it ends `done` with
+  `note: "no torch carried: the inside stays dark"`), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks
   ahead at foot level), `stairs_down` (8 steps down, ahead), `farm_plot` (water in the middle, 9×9 tilled and
   planted). "Ahead" is south (+Z) at rotation 0; rotations turn clockwise. Walls take any plain full block (dirt,
   cobblestone, planks, ...); the job checks the material first (`NO_MATERIAL`). Any other id is `UNKNOWN_BLUEPRINT`.

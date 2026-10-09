@@ -17,8 +17,11 @@
 import type { BlockPos } from '@minevibe/protocol';
 import { ApiError } from '../../contracts/common.js';
 
-/** `"12 64 -30"` or `"12,64,-30"` (tools-v2-mc.md §4.1). */
-export const POS_RE = /^\s*(-?\d{1,8})[\s,]+(-?\d{1,4})[\s,]+(-?\d{1,8})\s*$/;
+/**
+ * `"12 64 -30"` or `"12,64,-30"` (tools-v2-mc.md §4.1). Wrapping quotes or brackets are tolerated (`"\"12 64 -30\""`,
+ * `"[12, 64, -30]"`): Haiku sometimes copies the quotes of the schema's `"x y z"` into the value (eval, after v2).
+ */
+export const POS_RE = /^\s*["'[(]?\s*(-?\d{1,8})[\s,]+(-?\d{1,4})[\s,]+(-?\d{1,8})\s*["'\])]?\s*$/;
 
 /** A `"x y z"` string as a block position, or null. */
 export function parsePos(text: unknown): BlockPos | null {

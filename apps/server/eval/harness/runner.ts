@@ -159,7 +159,8 @@ export function jobEndedText(nonce: string, end: JobEnd, label: string): string 
 
 /**
  * The v2 wake of a tracked job (AgentBrain.toolJobEnded + EventRouter.jobEnded): the result line in the v2 format, or
- * null for a job the agent itself stopped or replaced (its tool result already said so).
+ * null when no wake is due ({@link JobRegistry.wakeDue}): the agent itself stopped or replaced the job, or a
+ * `job{wait}` already returned its end.
  */
 export function jobEndedTextV2(
   nonce: string,
@@ -170,7 +171,6 @@ export function jobEndedTextV2(
 ): string | null {
   const meta = jobs.meta(end.jobId);
   if (!meta) return null;
-  const cancelledBy = jobs.get(end.jobId)?.cancelledBy ?? null;
   const rendered = renderOutcome(
     meta,
     {
@@ -182,7 +182,8 @@ export function jobEndedTextV2(
     { here: world.agent.pos, playerName: player, craftTree: world.mod === 'v2' },
   );
   jobs.ended(end.jobId, end.status, rendered, end.error?.code);
-  if (end.status === 'cancelled' && cancelledBy) return null;
+  // As AgentBrain.toolJobEnded: no wake for a job the agent stopped or replaced, or one a job{wait} reported.
+  if (!jobs.wakeDue(end.jobId, end.status)) return null;
   return control(
     nonce,
     end.status === 'done' ? 'JOB DONE' : 'JOB FAILED',
