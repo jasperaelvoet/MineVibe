@@ -49,6 +49,8 @@ export const READ_MAX_CHARS = 56_000;
 export const READ_TOKEN_CAP = READ_MAX_CHARS / 4;
 /** Grep's default head limit (the built-in's). */
 export const GREP_DEFAULT_HEAD_LIMIT = 250;
+/** The most text one grep returns. */
+export const GREP_MAX_CHARS = PC_LIMITS.maxOutputChars;
 
 const IMAGE_TYPES: Readonly<Record<string, string>> = {
   png: 'image/png',
@@ -325,8 +327,18 @@ async function grep(
   }
   const rel = (line: string) => (line.startsWith(`${cwd}/`) ? line.slice(cwd.length + 1) : line);
   const total = res.total ?? res.output.split('\n').filter(Boolean).length;
-  const appliedLimit = headLimit !== undefined && total - offset > headLimit ? headLimit : undefined;
-  const lines = res.output.length > 0 ? res.output.split('\n').map(rel) : [];
+  let appliedLimit = headLimit !== undefined && total - offset > headLimit ? headLimit : undefined;
+  let lines = res.output.length > 0 ? res.output.split('\n').map(rel) : [];
+  // At most 30k characters: fewer lines, reported as the limit that applied, so offset pages on from there.
+  let size = 0;
+  const fit = lines.findIndex((l) => {
+    size += l.length + 1;
+    return size > GREP_MAX_CHARS;
+  });
+  if (fit > 0) {
+    lines = lines.slice(0, fit);
+    appliedLimit = fit;
+  }
   if (mode === 'content') return textResult(grepContent(lines.join('\n'), appliedLimit, offset, total));
   if (mode === 'count') {
     return textResult(grepCount(lines.join('\n'), res.matches, res.files ?? total, appliedLimit, offset));

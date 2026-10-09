@@ -11,6 +11,7 @@ import { type CallToolResult, errorResult, textResult } from '../results.js';
 import { type Def, defs, finishAction, tool } from './common.js';
 import { isMirror, type PcToolContext, type Seat, windowLabel } from './context.js';
 import { openFailed } from './formats.js';
+import { clipOutput } from './shell.js';
 import { roleMatches } from './ui.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -224,7 +225,7 @@ export function helperTools(ctx: PcToolContext): Def[] {
             return textResult('Clipboard set.');
           }
           const text = await ctx.host.pcs.clipboardGet(seat.pcId);
-          return textResult(text.length > 0 ? text : '(clipboard is empty)');
+          return textResult(text.length > 0 ? clipOutput(text) : '(clipboard is empty)');
         }),
     ),
   );

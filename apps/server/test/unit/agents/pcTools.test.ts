@@ -376,6 +376,21 @@ describe('glob and grep', () => {
     await call(reg, 'grep', { pattern: 'l\\w+', output_mode: 'content', '-o': true, head_limit: 0 });
     expect(seen).toMatchObject({ onlyMatching: true, headLimit: undefined });
   });
+
+  it('grep keeps its answer under 30,000 characters and reports the lines it kept as the limit', async () => {
+    const { reg, pcs } = setup();
+    const line = (i: number) => `a.ts:${String(i).padStart(3, '0')}:${'x'.repeat(191)}`; // 200 characters
+    pcs.grep = async () => ({
+      output: Array.from({ length: 400 }, (_, i) => line(i + 1)).join('\n'),
+      matches: 400,
+      total: 400,
+      truncated: false,
+    });
+    const text = (await call(reg, 'grep', { pattern: 'x', output_mode: 'content', head_limit: 0 })).text;
+    expect(text.length).toBeLessThan(30_100);
+    expect(text.endsWith('[Showing results with pagination = limit: 149]')).toBe(true);
+    expect(text.split('\n\n')[0]?.split('\n')).toHaveLength(149);
+  });
 });
 
 describe('bash and task_stop (Claude Code 2.1.293 Bash)', () => {
@@ -907,11 +922,13 @@ describe('seat, info and limits', () => {
     expect((await call(reg, 'handoff_note', { text: 'x', mount: '/etc' })).isError).toBe(true);
   });
 
-  it('no result is larger than 60k characters (D7)', async () => {
-    const { reg } = setup();
+  it('no result is larger than 60k characters (D7); the clipboard keeps to 30k', async () => {
+    const { reg, pcs } = setup();
     await call(reg, 'clipboard', { text: 'z'.repeat(100_000) });
-    const r = await call(reg, 'clipboard', {});
-    expect(r.text.length).toBeLessThanOrEqual(60_000);
-    expect(r.text).toContain('characters cut');
+    const clip = await call(reg, 'clipboard', {});
+    expect(clip.text.length).toBeLessThanOrEqual(30_100);
+    expect(clip.text).toContain('lines truncated');
+    pcs.clipboardGet = async () => '';
+    expect((await call(reg, 'clipboard', {})).text).toBe('(clipboard is empty)');
   });
 });

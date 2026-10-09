@@ -684,6 +684,8 @@ export class InputRouter {
    * flight (it may be a key-down) or a queued key-down. Nothing held, nothing queued.
    */
   #pushRelease(q: PcQueue): void {
+    // A key hold in progress ends now: its own key-ups run before the release.
+    q.holdAbort?.abort();
     const mayHold =
       q.downKeys.size > 0 ||
       q.downButtons.size > 0 ||

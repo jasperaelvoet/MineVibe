@@ -255,6 +255,11 @@ export class PcGuestApi implements PcApi {
   /** spacesd's supported features per PC (`a11y`, `windows`, …), measured once per boot. */
   readonly #features = new Map<string, ReadonlySet<string>>();
   readonly #jobListeners = new Set<(exit: JobExit) => void>();
+  /**
+   * Output files of a seat's commands (`pcId\ntag` → paths): a foreground command's file is normally deleted by its
+   * own exit trap, but one that replaced its shell (`exec`) leaves it, so the seat's end deletes them all.
+   */
+  readonly #seatFiles = new Map<string, Set<string>>();
   readonly #scriptTimeoutMs: number;
   readonly #callTimeoutMs: number;
   #disposed = false;
@@ -904,6 +909,12 @@ export class PcGuestApi implements PcApi {
       );
     }
     const job = { jobId, outputPath, lifetimeMs };
+    if (outputPath) {
+      const key = `${pcId}\n${request.tag}`;
+      const files = this.#seatFiles.get(key) ?? new Set<string>();
+      if (files.size < 1_000) files.add(outputPath);
+      this.#seatFiles.set(key, files);
+    }
     if (request.background) return this.#startJob(pcId, request.tag, callId, proc, job, null);
     return this.#runForeground(pcId, request.tag, callId, proc, timeoutMs, toBackground ? job : null);
   }
@@ -1194,11 +1205,14 @@ export class PcGuestApi implements PcApi {
    */
   async killTag(pcId: string, tag: string): Promise<number> {
     const procs: SpacesdProcessLike[] = [];
-    const files: string[] = [];
+    const seatKey = `${pcId}\n${tag}`;
+    const files: string[] = [...(this.#seatFiles.get(seatKey) ?? [])].flatMap((f) => [f, `${f}.keep`]);
+    this.#seatFiles.delete(seatKey);
     const ended: Job[] = [];
     for (const job of this.#jobs.values()) {
       if (job.pcId !== pcId || job.tag !== tag) continue;
-      if (job.outputPath) files.push(job.outputPath, `${job.outputPath}.keep`);
+      if (job.outputPath && !files.includes(job.outputPath))
+        files.push(job.outputPath, `${job.outputPath}.keep`);
       if (!job.running) continue;
       if (job.proc) procs.push(job.proc);
       job.endReason = 'seat';
@@ -1521,6 +1535,8 @@ export class PcGuestApi implements PcApi {
       job.endedAt ??= Date.now();
       this.#jobEnded(job);
     }
+    for (const key of [...this.#seatFiles.keys()])
+      if (key.startsWith(`${pcId}\n`)) this.#seatFiles.delete(key);
     this.forgetGuest(pcId);
   }
 

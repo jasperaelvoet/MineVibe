@@ -897,7 +897,8 @@ export class AgentBrain {
     if (!job) return;
     this.#pcJobs.delete(exit.pcId, exit.jobId);
     const s = this.fsm.snapshot;
-    if (this.#stopped || s.pcId !== exit.pcId || s.epoch !== job.epoch || !this.fsm.hasPcAccess) return;
+    // The same seat (also while away asking the player: its processes run on); a new seat or none drops it.
+    if (this.#stopped || s.kind !== 'pc' || s.pcId !== exit.pcId || s.epoch !== job.epoch) return;
     const block = jobNotification(job, exit);
     if (!block) return;
     this.enqueue({

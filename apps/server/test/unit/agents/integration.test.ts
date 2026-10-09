@@ -4,6 +4,7 @@
  * swap fallback, the startup checks, transcript sequence numbers, bash job ownership and the status-footer contract.
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -734,3 +735,79 @@ describe('status footer contract (protocol §7.3)', () => {
 });
 
 void resultText;
+
+describe('PC tools V2 in the brain', () => {
+  it('a background command that ends wakes its agent with a task notification; a stopped one does not', async () => {
+    const { w, id, q } = await world();
+    await seatAtPc(w, q, id);
+    await wake(w, q, 'start the dev server');
+    const started = await q.callTool(
+      'mcp__pc__bash',
+      { command: 'npm run dev', description: 'Start the dev server', run_in_background: true },
+      { toolUseId: 'toolu_dev' },
+    );
+    const jobId = /ID: (b[0-9a-f]{8})\./.exec(resultText(started))?.[1] as string;
+    expect(jobId).toBeTruthy();
+    const stopped = await q.callTool('mcp__pc__bash', { command: 'sleep 9', run_in_background: true });
+    const stoppedId = /ID: (b[0-9a-f]{8})\./.exec(resultText(stopped))?.[1] as string;
+    expect(resultText(await q.callTool('mcp__pc__task_stop', { task_id: stoppedId }))).toBe(
+      `Successfully stopped task: ${stoppedId} (sleep 9)`,
+    );
+    q.result();
+    await w.until(() => w.manager.brain(id)?.status === 'idle', 'idle');
+    w.pcs.finishJob('linux-1', jobId, 1, 'boom\n');
+    await w.until(() => w.texts(q).some((t) => t.includes('<task-notification>')), 'task notification');
+    const note = w.texts(q).find((t) => t.includes('<task-notification>')) as string;
+    expect(note).toMatch(/\[MV:[0-9a-f]{6} PC JOB\] A background command ended\./);
+    expect(note).toContain(
+      [
+        '<task-notification>',
+        `<task-id>${jobId}</task-id>`,
+        '<tool-use-id>toolu_dev</tool-use-id>',
+        `<output-file>/home/cua/.mv/jobs/${jobId}.out</output-file>`,
+        '<status>failed</status>',
+        '<summary>Background command "Start the dev server" failed with exit code 1</summary>',
+        '</task-notification>',
+      ].join('\n'),
+    );
+    expect(w.texts(q).filter((t) => t.includes(stoppedId))).toEqual([]);
+  });
+
+  it('the stream tells the pc tools which call ends a batch: only the last one answers with the screen', async () => {
+    const { w, id, q } = await world();
+    await seatAtPc(w, q, id);
+    await wake(w, q, 'type hi into the terminal');
+    // One assistant message with two computer actions, streamed as the CLI does with partial messages.
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg_batch' } },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 't1', name: 'mcp__pc__left_click', input: {} },
+      },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 't2', name: 'mcp__pc__type', input: {} },
+      },
+      { type: 'message_stop' },
+    ]) {
+      q.emit({
+        type: 'stream_event',
+        event,
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: q.sessionId,
+      } as never);
+    }
+    const kinds = (r: Awaited<ReturnType<typeof q.callTool>>) =>
+      ((r.kind === 'allowed' ? r.result : null) as { content: { type: string }[] } | null)?.content.map(
+        (c) => c.type,
+      );
+    const click = await q.callTool('mcp__pc__left_click', { coordinate: [10, 10] }, { toolUseId: 't1' });
+    const typed = await q.callTool('mcp__pc__type', { text: 'hi' }, { toolUseId: 't2' });
+    expect(kinds(click)).toEqual(['text']);
+    expect(kinds(typed)).toEqual(['text', 'image']);
+    expect(w.pcs.input.map((i) => i.kind)).toEqual(['pointer', 'type']);
+  });
+});
