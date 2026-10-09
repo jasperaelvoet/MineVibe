@@ -85,9 +85,15 @@ public final class Messages {
 	public record BlockPos(int x, int y, int z) {}
 
 	/** M→N. First message on every connection. */
-	public record Hello(String mod, String mc, String phase, @Nullable String worldId, @Nullable String playerName) {
+	public record Hello(
+			String mod, String mc, String phase, @Nullable String worldId, @Nullable String playerName, @Nullable List<String> caps) {
 		public static final String PHASE_BOOT = "boot";
 		public static final String PHASE_IN_WORLD = "in_world";
+
+		/** Without {@code caps} (an older mod's hello). */
+		public Hello(final String mod, final String mc, final String phase, final @Nullable String worldId, final @Nullable String playerName) {
+			this(mod, mc, phase, worldId, playerName, null);
+		}
 	}
 
 	/** N→M. Handshake reply with a state snapshot ({@code budget} is null until known). */
@@ -228,7 +234,8 @@ public final class Messages {
 			.req("mc", string(1, 32))
 			.req("phase", oneOf(Hello.PHASE_BOOT, Hello.PHASE_IN_WORLD))
 			.opt("worldId", WORLD_ID)
-			.opt("playerName", PLAYER_NAME));
+			.opt("playerName", PLAYER_NAME)
+			.opt("caps", array(string(1, 64, "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$", "mod cap: lowercase dotted words"), 0, 64)));
 
 	public static final MessageType<HelloOk> HELLO_OK = register("hello.ok", Direction.NODE_TO_MOD, HelloOk.class, object()
 			.req("server", object().req("version", string(1, 64)).req("protocol", literal(PROTOCOL_VERSION)))

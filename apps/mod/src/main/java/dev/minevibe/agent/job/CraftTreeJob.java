@@ -15,6 +15,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.AbstractFurnaceBlock;
 import net.minecraft.world.level.block.Blocks;
+import dev.minevibe.world.provenance.Zones;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -158,6 +159,16 @@ public final class CraftTreeJob extends SkillJob {
 			this.phase = Phase.GATHER;
 			return Status.RUNNING;
 		}
+		// A station to put down (none within reach) is never put down inside a protected zone such as the Base: walk out
+		// first, at most 16 blocks; no room outside is NO_ROOM.
+		if (this.placesStation(agent, p) && Zones.at(level, agent.blockPosition()) != null) {
+			BlockPos outside = outsideZones(agent, 16);
+			if (outside == null) {
+				this.report(agent);
+				return this.fail("NO_ROOM", "inside a protected zone with no free ground outside it within 16 blocks to put a station down");
+			}
+			this.queue.add(new GotoSkillJob(outside, null, 1.0));
+		}
 		for (RecipeTree.Step s : p.steps()) {
 			boolean last = s == p.steps().getLast() && s.item() == this.item;
 			this.queue.add(switch (s.kind()) {
@@ -199,6 +210,38 @@ public final class CraftTreeJob extends SkillJob {
 			return this.fail("MISSING_INGREDIENTS", "made only " + Math.max(0, made) + " of " + this.count + " " + Refs.itemId(this.item));
 		}
 		return this.done();
+	}
+
+	/** Whether running the plan puts a table or furnace down (one is needed and none stands within reach). */
+	private boolean placesStation(final AgentPlayer agent, final RecipeTree.Plan p) {
+		ServerLevel level = agent.level();
+		boolean tableNear = this.table != null
+			|| !BlockScan.nearest(level, agent.blockPosition(), STATION_RADIUS, st -> st.is(Blocks.CRAFTING_TABLE), q -> true, 1).isEmpty();
+		boolean furnaceNear = !BlockScan.nearest(level, agent.blockPosition(), STATION_RADIUS, st -> st.is(Blocks.FURNACE), q -> true, 1).isEmpty();
+		return p.needsTable() && !tableNear || p.needsFurnace() && !furnaceNear;
+	}
+
+	/** The nearest standing spot outside every protected zone within {@code max} blocks, or null. */
+	static @Nullable BlockPos outsideZones(final AgentPlayer agent, final int max) {
+		ServerLevel level = agent.level();
+		BlockPos here = agent.blockPosition();
+		for (int r = 2; r <= max; r++) {
+			for (int dx = -r; dx <= r; dx++) {
+				for (int dz = -r; dz <= r; dz++) {
+					if (Math.max(Math.abs(dx), Math.abs(dz)) != r) {
+						continue;
+					}
+					for (int dy = -2; dy <= 2; dy++) {
+						BlockPos p = here.offset(dx, dy, dz);
+						if (Zones.at(level, p) == null && level.getBlockState(p).canBeReplaced() && level.getBlockState(p.above()).canBeReplaced()
+							&& level.getBlockState(p).getFluidState().isEmpty() && !level.getBlockState(p.below()).canBeReplaced()) {
+							return p;
+						}
+					}
+				}
+			}
+		}
+		return null;
 	}
 
 	/** Notes what a finished child did: gathered items, the station it used or placed. */

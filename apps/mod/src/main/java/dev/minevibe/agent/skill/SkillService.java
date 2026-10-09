@@ -222,7 +222,25 @@ public final class SkillService {
 		}
 		Consents.Request grant = this.consentFor(agent, args, req.consent());
 		job.protection(allowProtected(args), grant != null);
+		// The job this one replaces (cap run.replaced, tools-v2-mc.md M9): the reply says so.
+		Map<String, Object> replaced = null;
+		if (agent.jobs().current() instanceof SkillJob prev && prev.jobId() != null) {
+			replaced = new LinkedHashMap<>();
+			replaced.put("jobId", prev.jobId());
+			replaced.put("skill", ProtocolCodec.clip(prev.skill(), 32));
+			if (!prev.progressText().isEmpty()) {
+				replaced.put("text", ProtocolCodec.clip(prev.progressText(), 256));
+			}
+		}
 		CompletableFuture<Map<String, Object>> reply = this.start(agent, req.jobId(), job, Math.max(0, Math.min(MAX_WAIT_MS, req.waitMs())), grant);
+		if (replaced != null) {
+			Map<String, Object> r = replaced;
+			return reply.thenApply(m -> {
+				Map<String, Object> out = new LinkedHashMap<>(m);
+				out.put("replaced", r);
+				return out;
+			});
+		}
 		return reply;
 	}
 

@@ -144,6 +144,7 @@ class MsgCatalogTest {
 	void okFixturesMatchTheirResultSchemasAndRecords() {
 		Map<String, Schema.Obj> schemas = Map.of(
 				"ok--skill-run.json", Skills.SKILL_RUN_RESULT,
+				"ok--skill-run-replaced.json", Skills.SKILL_RUN_RESULT,
 				"ok--codex-search.json", Org.CODEX_SEARCH_RESULT,
 				"ok--meeting-start.json", Org.MEETING_START_RESULT,
 				"ok--pick-folder.json", Pc.PICK_FOLDER_RESULT);
@@ -151,6 +152,9 @@ class MsgCatalogTest {
 
 		Skills.SkillRunResult run = ProtocolCodec.GSON.fromJson(okResult("ok--skill-run.json"), Skills.SkillRunResult.class);
 		assertEquals(Skills.RUNNING, run.status());
+		assertNull(run.replaced());
+		Skills.SkillRunResult replacing = ProtocolCodec.GSON.fromJson(okResult("ok--skill-run-replaced.json"), Skills.SkillRunResult.class);
+		assertEquals("collect", replacing.replaced().skill());
 		Org.MeetingStartResult start = ProtocolCodec.GSON.fromJson(okResult("ok--meeting-start.json"), Org.MeetingStartResult.class);
 		assertNull(start.meetingId());
 		assertTrue(start.etas().get(1).dialIn());

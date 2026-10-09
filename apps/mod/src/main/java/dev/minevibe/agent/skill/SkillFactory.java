@@ -4,10 +4,12 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import dev.minevibe.agent.job.BuildJob;
 import dev.minevibe.agent.job.CraftJobs;
+import dev.minevibe.agent.job.CraftTreeJob;
 import dev.minevibe.agent.job.FarmJob;
 import dev.minevibe.agent.job.GatherJobs;
 import dev.minevibe.agent.job.GotoSkillJob;
 import dev.minevibe.agent.job.MenuJobs;
+import dev.minevibe.agent.job.SequenceJob;
 import dev.minevibe.agent.job.SkillJob;
 import dev.minevibe.agent.job.WorldJobs;
 import dev.minevibe.bridge.BridgeException;
@@ -54,7 +56,8 @@ public final class SkillFactory {
 				}
 				case "collect" -> {
 					Args.Collect a = read(args, Args.Collect.class);
-					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), 24, 64), Boolean.TRUE.equals(a.replant()));
+					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), 24, 64),
+						Boolean.TRUE.equals(a.replant()), pos(a.near()), Boolean.TRUE.equals(a.make_tools()));
 				}
 				case "hunt" -> {
 					Args.Hunt a = read(args, Args.Hunt.class);
@@ -109,7 +112,8 @@ public final class SkillFactory {
 				}
 				case "give" -> {
 					Args.Give a = read(args, Args.Give.class);
-					yield new WorldJobs.Give(Refs.item(required(a.item(), "item")), count(a.count()), required(a.to(), "to"));
+					// Without count: everything of the item (give.all).
+					yield new WorldJobs.Give(Refs.item(required(a.item(), "item")), a.count() == null ? 0 : count(a.count()), required(a.to(), "to"));
 				}
 				case "craft" -> {
 					Args.Craft a = read(args, Args.Craft.class);
@@ -118,7 +122,10 @@ public final class SkillFactory {
 					if (item == null) {
 						throw Refs.badArgs("craft needs one item, not a tag: " + a.item());
 					}
-					yield new CraftJobs.Craft(item, count(a.count()), pos(a.table()));
+					// tree: the whole recipe tree, stations and smelting included (craft.tree, tools-v2-mc.md M4).
+					yield Boolean.TRUE.equals(a.tree())
+						? new CraftTreeJob(item, count(a.count()), pos(a.table()), Boolean.TRUE.equals(a.gather_missing()))
+						: new CraftJobs.Craft(item, count(a.count()), pos(a.table()));
 				}
 				case "smelt" -> {
 					Args.Smelt a = read(args, Args.Smelt.class);
@@ -133,7 +140,8 @@ public final class SkillFactory {
 					if (!"list".equals(action) && a.item() == null) {
 						throw Refs.badArgs("put and take need item");
 					}
-					yield new MenuJobs.Container(pos(required(a.pos(), "pos")), action, a.item() == null ? null : Refs.item(a.item()), a.count() == null ? 0 : count(a.count()));
+					// Without pos: the nearest chest or barrel within 24 blocks (container.nearest).
+					yield new MenuJobs.Container(pos(a.pos()), action, a.item() == null ? null : Refs.item(a.item()), a.count() == null ? 0 : count(a.count()));
 				}
 				case "open_menu" -> {
 					Args.OpenMenu a = read(args, Args.OpenMenu.class);
@@ -197,11 +205,40 @@ public final class SkillFactory {
 					}
 					yield new WorldJobs.Emote(kind);
 				}
+				case "sequence" -> sequence(args);
 				default -> throw new BridgeException(Codes.UNKNOWN_SKILL, "unknown skill " + skill);
 			};
 		} catch (JsonParseException | IllegalStateException | ClassCastException | UnsupportedOperationException e) {
 			throw Refs.badArgs(skill + ": " + e.getMessage());
 		}
+	}
+
+	/**
+	 * {@code sequence{steps:[{skill, args}], stop_on_fail?}} (tools-v2-mc.md M1): every step is built now, so a bad one
+	 * rejects the whole request ({@code BAD_ARGS: step i: ...}) before anything runs.
+	 */
+	private static SequenceJob sequence(final JsonObject args) {
+		Args.Sequence a = read(args, Args.Sequence.class);
+		List<Args.SequenceStep> steps = required(a.steps(), "steps");
+		if (steps.size() < SequenceJob.MIN_STEPS || steps.size() > SequenceJob.MAX_STEPS) {
+			throw Refs.badArgs("a sequence has " + SequenceJob.MIN_STEPS + "-" + SequenceJob.MAX_STEPS + " steps");
+		}
+		List<SequenceJob.Step> out = new java.util.ArrayList<>();
+		for (int i = 0; i < steps.size(); i++) {
+			Args.SequenceStep step = steps.get(i);
+			if (step == null || step.skill() == null) {
+				throw Refs.badArgs("step " + (i + 1) + ": skill is required");
+			}
+			if (SequenceJob.EXCLUDED.contains(step.skill())) {
+				throw Refs.badArgs("step " + (i + 1) + ": " + step.skill() + " cannot be a step");
+			}
+			try {
+				out.add(new SequenceJob.Step(step.skill(), create(step.skill(), step.args() == null ? new JsonObject() : step.args())));
+			} catch (BridgeException e) {
+				throw new BridgeException(e.code(), "step " + (i + 1) + ": " + e.getMessage());
+			}
+		}
+		return new SequenceJob(out, !Boolean.FALSE.equals(a.stop_on_fail()));
 	}
 
 	private static <T> T read(final JsonObject args, final Class<T> type) {

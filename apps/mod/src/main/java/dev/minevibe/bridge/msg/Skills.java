@@ -34,7 +34,7 @@ public final class Skills {
 	public static final List<String> SKILL_NAMES = List.of(
 			"goto", "mine", "collect", "hunt", "dig", "place", "use_block", "use_item", "attack", "equip", "eat", "sleep",
 			"pickup", "drop", "give", "craft", "smelt", "container", "open_menu", "menu_click", "menu_close", "build", "farm",
-			"ride", "dismount", "emote");
+			"ride", "dismount", "emote", "sequence");
 
 	/** Observation queries ({@code OBS_QUERIES}). */
 	public static final List<String> OBS_QUERIES = List.of(
@@ -64,7 +64,11 @@ public final class Skills {
 	public record Consent(String token) {}
 
 	/** {@code status}: running, done, failed, cancelled. */
-	public record SkillRunResult(String jobId, String status, @Nullable JsonObject result, Types.@Nullable Failure error) {}
+	public record SkillRunResult(
+			String jobId, String status, @Nullable JsonObject result, Types.@Nullable Failure error, @Nullable Replaced replaced) {}
+
+	/** The job a {@code replace: true} run cancelled (cap {@code run.replaced}): its id, skill and last progress. */
+	public record Replaced(String jobId, String skill, @Nullable String text) {}
 
 	/** M→N. */
 	public record SkillProgress(String jobId, String agentId, @Nullable Double progress, String text) {}
@@ -93,8 +97,18 @@ public final class Skills {
 		/** {@code allow_protected} (W1) counts only with Node's {@code consent} on the {@code skill.run}. */
 		public record Mine(String block, int count, @Nullable BlockPos near, @Nullable Integer radius, @Nullable Boolean allow_protected) {}
 
-		/** {@code replant}: plant a sapling on each stump of a felled tree (when the agent has one). */
-		public record Collect(String item, int count, @Nullable Integer radius, @Nullable Boolean replant, @Nullable Boolean allow_protected) {}
+		/**
+		 * {@code replant}: plant a sapling on each stump of a felled tree (when the agent has one). {@code near} and
+		 * {@code make_tools}: the v2 gather (cap {@code collect.gather}).
+		 */
+		public record Collect(
+				String item,
+				int count,
+				@Nullable Integer radius,
+				@Nullable Boolean replant,
+				@Nullable Boolean allow_protected,
+				@Nullable BlockPos near,
+				@Nullable Boolean make_tools) {}
 
 		public record Hunt(String entity, int count, @Nullable Integer radius) {}
 
@@ -119,14 +133,17 @@ public final class Skills {
 
 		public record Drop(String item, @Nullable Integer count) {}
 
-		public record Give(String item, int count, String to) {}
+		/** Without {@code count}: everything of the item (cap {@code give.all}). */
+		public record Give(String item, @Nullable Integer count, String to) {}
 
-		public record Craft(String item, int count, @Nullable BlockPos table) {}
+		/** {@code tree} / {@code gather_missing}: the recipe tree (cap {@code craft.tree}). */
+		public record Craft(String item, int count, @Nullable BlockPos table, @Nullable Boolean tree, @Nullable Boolean gather_missing) {}
 
 		public record Smelt(String item, int count, @Nullable String fuel, @Nullable BlockPos furnace) {}
 
 		/** {@code action}: list, put, take ({@code item} needed for put and take). */
-		public record Container(BlockPos pos, String action, @Nullable String item, @Nullable Integer count, @Nullable Boolean allow_protected) {}
+		public record Container(
+				@Nullable BlockPos pos, String action, @Nullable String item, @Nullable Integer count, @Nullable Boolean allow_protected) {}
 
 		/** Exactly one of {@code pos} / {@code entity}. */
 		public record OpenMenu(@Nullable BlockPos pos, @Nullable String entity) {}
@@ -147,6 +164,12 @@ public final class Skills {
 
 		/** {@code kind}: wave, nod, shake_head, point, cheer, facepalm. */
 		public record Emote(String kind) {}
+
+		/** One step of a {@link Sequence}: a skill (not {@code sequence} or {@code emote}) and its args. */
+		public record SequenceStep(String skill, JsonObject args) {}
+
+		/** 2-8 skills as one job (cap {@code skill.sequence}); {@code stop_on_fail} defaults to true. */
+		public record Sequence(List<SequenceStep> steps, @Nullable Boolean stop_on_fail, @Nullable Boolean allow_protected) {}
 	}
 
 	// -----------------------------------------------------------------------------------------
@@ -258,7 +281,8 @@ public final class Skills {
 			.req("jobId", JOB_ID)
 			.req("status", oneOf(RUNNING, DONE, FAILED, CANCELLED))
 			.opt("result", JSON_OBJECT)
-			.opt("error", FAILURE);
+			.opt("error", FAILURE)
+			.opt("replaced", object().req("jobId", JOB_ID).req("skill", string(1, 32)).opt("text", string(0, 256)));
 
 	public static final Schema.Obj SKILL_CANCEL_RESULT = object().req("cancelled", array(JOB_ID, 0, 16));
 

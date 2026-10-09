@@ -24,6 +24,10 @@ public final class SequenceJob extends SkillJob {
 
 	/** The longest a sequence may run (in controlled ticks). */
 	public static final int MAX_TICKS = 40 * MINUTE;
+	public static final int MIN_STEPS = 2;
+	public static final int MAX_STEPS = 8;
+	/** Skills that cannot be steps: no nesting, and emotes run beside jobs. */
+	public static final java.util.Set<String> EXCLUDED = java.util.Set.of("sequence", "emote");
 
 	private final List<Step> steps;
 	private final boolean stopOnFail;
