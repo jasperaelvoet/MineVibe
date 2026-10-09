@@ -15,6 +15,8 @@ export interface RunningJob {
   progress: string | null;
   /** Set when the agent itself cancelled or replaced the job (its end needs no wake). */
   cancelledBy: 'stop' | 'replace' | null;
+  /** True while a `job{wait}` of the agent waits for it: its end is that tool's result, so it needs no wake. */
+  awaited: boolean;
 }
 
 export interface EndedJob {
@@ -44,7 +46,14 @@ export class JobRegistry {
 
   /** A tool started a job (whatever its first answer was). */
   started(jobId: string, meta: JobMeta): RunningJob {
-    const job: RunningJob = { jobId, meta, startedAt: this.#now(), progress: null, cancelledBy: null };
+    const job: RunningJob = {
+      jobId,
+      meta,
+      startedAt: this.#now(),
+      progress: null,
+      cancelledBy: null,
+      awaited: false,
+    };
     this.#current = job;
     this.#known.set(jobId, job);
     while (this.#known.size > KNOWN_JOBS) {
@@ -66,6 +75,16 @@ export class JobRegistry {
     const job = this.#current;
     if (job) job.cancelledBy = by;
     return job;
+  }
+
+  /**
+   * A tool's start of a new job was refused before the mod started it (`BAD_ARGS`, `BUSY`): the job it would have
+   * replaced still runs, so it is current again and its end wakes the agent as before.
+   */
+  restore(job: RunningJob): void {
+    if (this.#known.get(job.jobId) !== job || this.endedJob(job.jobId)) return;
+    job.cancelledBy = null;
+    this.#current = job;
   }
 
   #refused: { key: string; at: number } | null = null;

@@ -38,7 +38,7 @@ export type FakeSkillOutcome =
  * (default: done at once), running jobs end through {@link finish} or a cancel, and every call is recorded.
  */
 export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
-  readonly #running = new Map<string, { agentId: string; started: number }>();
+  readonly #running = new Map<string, { agentId: string; started: number; skill?: string }>();
   readonly #ended = new Map<string, JobEnd>();
   readonly #waiters = new Map<string, ((end: JobEnd) => void)[]>();
   readonly #modes = new Map<string, IdleMode>();
@@ -67,16 +67,22 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
     validateSkillArgs(request.skill, request.args);
     this.runs.push(request as SkillRunRequest);
     const jobId = request.jobId ?? newJobId();
-    const busy = [...this.#running.values()].some((j) => j.agentId === request.agentId);
+    const busy = [...this.#running.entries()].find(([, j]) => j.agentId === request.agentId);
     if (busy && !request.replace) throw new ApiError(ERROR_CODES.BUSY, `${request.agentId} is busy`);
     if (busy) await this.cancelSkill(request.agentId, { reason: 'replaced' });
+    // Like the mod with cap run.replaced (M9): the reply names the skill job the replace cancelled.
+    const replaced =
+      busy && busy[1].skill !== undefined && this.capSet.has('run.replaced')
+        ? { jobId: busy[0], skill: busy[1].skill }
+        : undefined;
     const outcome = this.skillHandler(request as SkillRunRequest);
     if (outcome.status === 'running') {
-      this.#running.set(jobId, { agentId: request.agentId, started: Date.now() });
-      return { jobId, status: 'running' };
+      this.#running.set(jobId, { agentId: request.agentId, started: Date.now(), skill: request.skill });
+      return replaced ? { jobId, status: 'running', replaced } : { jobId, status: 'running' };
     }
     const end = this.#end(jobId, request.agentId, outcome);
     const result: SkillRunResult = { jobId, status: end.status };
+    if (replaced) result.replaced = replaced;
     if (end.result !== undefined) result.result = end.result;
     if (end.error !== undefined) result.error = end.error;
     return result;

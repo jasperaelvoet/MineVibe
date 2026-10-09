@@ -11,10 +11,15 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.AgentRole;
+import dev.minevibe.agent.job.CraftJobs;
 import dev.minevibe.agent.job.Inv;
+import dev.minevibe.agent.job.Job;
+import dev.minevibe.agent.job.SkillJob;
+import dev.minevibe.agent.skill.SkillFactory;
 import dev.minevibe.bridge.BridgeException;
 import dev.minevibe.world.provenance.Owner;
 import dev.minevibe.world.provenance.Provenance;
+import dev.minevibe.world.provenance.Zones;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,12 +34,14 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.animal.cow.Cow;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 
 /**
  * The v2 skill additions (docs/design/tools-v2-mc.md M1-M9): {@code sequence}, the craft tree with
@@ -232,6 +239,28 @@ public final class SkillsV2GameTests {
 		});
 	}
 
+	/**
+	 * The tree's gathering makes the tool a source needs, as gather does: a furnace from nothing but planks and sticks
+	 * mines its cobblestone with a wooden pickaxe crafted on the way (it used to fail NEEDS_TOOL).
+	 */
+	@GameTest(structure = WIDE_YARD, maxTicks = 2400)
+	public void craftTreeMakesTheToolItsGatheringNeeds(final GameTestHelper helper) {
+		for (int i = 0; i < 8; i++) {
+			helper.setBlock(new BlockPos(22 + i % 4, 1, 18 + i / 4), Blocks.STONE);
+		}
+		helper.setBlock(new BlockPos(20, 1, 23), Blocks.CRAFTING_TABLE);
+		AgentPlayer agent = spawnAgent(helper, "Stoker", AgentRole.BUILDER, 20, 1, 20);
+		agent.getInventory().setItem(0, new ItemStack(Items.OAK_PLANKS, 3));
+		agent.getInventory().setItem(1, new ItemStack(Items.STICK, 2));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"furnace\",\"count\":1,\"tree\":true,\"gather_missing\":true}");
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "furnace");
+			helper.assertValueEqual(Inv.count(agent, Items.FURNACE), 1, "the furnace");
+			helper.assertValueEqual(Inv.count(agent, Items.WOODEN_PICKAXE), 1, "the pickaxe it made to mine the stone");
+			helper.assertTrue(result(r).getAsJsonObject("gathered").has("cobblestone"), "gathered cobblestone: " + result(r));
+		});
+	}
+
 	/** {@code obs.query recipe{tree:true}}: the plan without touching anything. */
 	@GameTest(maxTicks = 40)
 	public void recipeTreePlansWithoutActing(final GameTestHelper helper) {
@@ -280,6 +309,25 @@ public final class SkillsV2GameTests {
 			helper.assertValueEqual(res.get("completed").getAsInt(), 1, "the craft step ran: " + res);
 			helper.assertValueEqual(Inv.count(agent, Items.STICK), 4, "sticks");
 		});
+	}
+
+	/** Cancelled between two steps (the first ended, the next not begun): the result lists only the step that ran. */
+	@GameTest(maxTicks = 20)
+	public void sequenceCancelledBetweenStepsListsOnlyWhatRan(final GameTestHelper helper) {
+		AgentPlayer agent = spawnAgent(helper, "Between", AgentRole.ENGINEER, 3, 0, 3);
+		SkillJob seq = SkillFactory.create("sequence", SkillTestSupport.json(
+			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"eat\",\"args\":{}}],\"stop_on_fail\":false}"));
+		seq.start(agent);
+		// Nothing to eat: step 1 fails on its first tick; step 2 begins on the next one.
+		helper.assertTrue(seq.tick(agent) == Job.Status.RUNNING, "still running after step 1");
+		seq.cancel(agent);
+		seq.onEnd(agent, null, "stop");
+		SkillJob.Outcome o = seq.outcome().getNow(null);
+		helper.assertTrue(o != null && "cancelled".equals(o.status()), "cancelled: " + o);
+		JsonArray steps = o.result().getAsJsonArray("steps");
+		helper.assertValueEqual(steps.size(), 1, "only the step that ran: " + steps);
+		helper.assertValueEqual(steps.get(0).getAsJsonObject().get("status").getAsString(), "failed", "step 1: " + steps);
+		helper.succeed();
 	}
 
 	/** A bad step rejects the whole sequence before anything runs. */
@@ -337,6 +385,71 @@ public final class SkillsV2GameTests {
 			helper.assertTrue(!free.isAlive(), "the free cow was the one");
 			helper.assertTrue(result(r).getAsJsonArray("sources").toString().contains("animal"), "an animal source: " + result(r));
 		});
+	}
+
+	/**
+	 * collect of a block that drops something else (stone: cobblestone) stops after as many blocks as asked, as mine
+	 * does; it used to break every stone in reach until the timeout, for an item that never lands in the bag.
+	 */
+	@GameTest(structure = WIDE_YARD, maxTicks = 1200)
+	public void collectOfABlockThatDropsSomethingElseStopsAtTheCount(final GameTestHelper helper) {
+		List<BlockPos> stones = List.of(new BlockPos(22, 1, 20), new BlockPos(23, 1, 20), new BlockPos(22, 1, 21), new BlockPos(23, 1, 21));
+		for (BlockPos p : stones) {
+			helper.setBlock(p, Blocks.STONE);
+		}
+		AgentPlayer agent = spawnAgent(helper, "Quarry", AgentRole.MINER, 20, 1, 20);
+		agent.getInventory().setItem(0, new ItemStack(Items.WOODEN_PICKAXE));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "collect", "{\"item\":\"stone\",\"count\":2,\"radius\":8}");
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "collect stone");
+			long left = stones.stream().filter(p -> helper.getBlockState(p).is(Blocks.STONE)).count();
+			helper.assertValueEqual((int)left, 2, "stones left of four");
+			helper.assertTrue(Inv.count(agent, Items.COBBLESTONE) >= 1, "its drops: " + result(r));
+			helper.assertTrue(result(r).get("note").getAsString().contains("broke 2"), "says so: " + result(r));
+		});
+	}
+
+	/** Wool: no natural wool block exists, so once the blocks come up empty the animal that drops it is next. */
+	@GameTest(structure = WIDE_YARD, environment = DAY, maxTicks = 1200)
+	public void collectWoolFromASheep(final GameTestHelper helper) {
+		var sheep = helper.spawn(EntityTypes.SHEEP, new BlockPos(25, 1, 20));
+		sheep.setColor(DyeColor.WHITE);
+		AgentPlayer agent = spawnAgent(helper, "Shepherd", AgentRole.FARMER, 20, 1, 20);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_SWORD));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "collect", "{\"item\":\"white_wool\",\"count\":1,\"radius\":16}");
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "collect wool");
+			helper.assertTrue(Inv.count(agent, Items.WOOL.pick(DyeColor.WHITE)) >= 1, "wool");
+			helper.assertTrue(result(r).getAsJsonArray("sources").toString().contains("sheep"), "from the sheep: " + result(r));
+		});
+	}
+
+	// ------------------------------------------------------------------ stations and protected zones
+
+	/**
+	 * A station is put down outside a protected zone when there is room: the craft tree walks out of the Base first and
+	 * must not then put the table back inside, one block over the edge. Inside a zone with no room outside it, the old
+	 * behaviour stays (the v1 craft).
+	 */
+	@GameTest(maxTicks = 20)
+	public void stationSpotPrefersOutsideProtectedZones(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		AgentPlayer agent = spawnAgent(helper, "Edge", AgentRole.BUILDER, 3, 0, 3);
+		String name = "Spot test " + Integer.toHexString(System.identityHashCode(helper));
+		// North of the agent (z < 3, the first direction tried) is the zone.
+		Zones.add(level.getServer(), new Zones.Zone(name, level.dimension(),
+			BoundingBox.fromCorners(helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(6, 3, 2))), "Steve"));
+		try {
+			BlockPos spot = CraftJobs.freeSpotNear(agent);
+			helper.assertTrue(spot != null && Zones.at(level, spot) == null, "outside the zone: " + spot);
+			Zones.add(level.getServer(), new Zones.Zone(name, level.dimension(),
+				BoundingBox.fromCorners(helper.absolutePos(new BlockPos(0, 0, 0)), helper.absolutePos(new BlockPos(6, 3, 6))), "Steve"));
+			BlockPos inside = CraftJobs.freeSpotNear(agent);
+			helper.assertTrue(inside != null && Zones.at(level, inside) != null, "no room outside: still a spot: " + inside);
+		} finally {
+			Zones.remove(level.getServer(), name);
+		}
+		helper.succeed();
 	}
 
 	// ------------------------------------------------------------------ containers and caps

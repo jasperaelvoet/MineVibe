@@ -52,6 +52,10 @@ function short(id: string): string {
  * and the consent token; protocol §7.4.1), or a list of `{ pos, block }` (tolerant of a mod that sends less).
  */
 export function refusalOf(result: Record<string, unknown> | undefined): Refusal {
+  // A `sequence` (the v2 `do`, or Node's macro of it) keeps the refused step's details in `steps[i].result`: the token
+  // the player can allow is there, not at the top.
+  const step = refusedStepResult(result);
+  if (step) return refusalOf(step);
   const positions: BlockPos[] = [];
   const blocks: string[] = [];
   const raw = result?.protected;
@@ -85,6 +89,23 @@ export function refusalOf(result: Record<string, unknown> | undefined): Refusal 
     ...(count !== undefined ? { count } : {}),
     ...(consentId !== undefined ? { consentId } : {}),
   };
+}
+
+/**
+ * The result of a sequence's step that failed `PROTECTED` (`{completed, steps:[{skill, status, code, result}]}`, the
+ * last such step), or null for any other result (one with its own `protected`, a craft's `steps` of text, ...).
+ */
+function refusedStepResult(result: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!result || result.protected !== undefined || !Array.isArray(result.steps)) return null;
+  for (let i = result.steps.length - 1; i >= 0; i--) {
+    const step: unknown = result.steps[i];
+    if (!step || typeof step !== 'object' || Array.isArray(step)) continue;
+    const s = step as Record<string, unknown>;
+    if (s.code !== PROTECTED) continue;
+    const r = s.result;
+    return r && typeof r === 'object' && !Array.isArray(r) ? (r as Record<string, unknown>) : null;
+  }
+  return null;
 }
 
 /** "4 blocks (e.g. stripped_spruce_log at 12 64 -30)". */

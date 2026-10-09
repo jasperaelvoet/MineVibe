@@ -154,7 +154,10 @@ public final class CraftTreeJob extends SkillJob {
 			this.rounds++;
 			for (RecipeTree.Missing m : p.missing()) {
 				Refs.ItemMatcher what = Refs.item(m.ref());
-				this.queue.add(new GatherJobs.Collect(what, m.need(), GATHER_RADIUS));
+				// As the v2 gather does: replant felled trees, and make the tool a source needs (a wooden pickaxe for
+				// the cobblestone of a furnace) from what is carried instead of failing NEEDS_TOOL.
+				boolean logs = m.ref().endsWith("_log") || m.ref().equals(RecipeTree.FUEL_REF);
+				this.queue.add(new GatherJobs.Collect(what, m.need(), GATHER_RADIUS, logs, null, true));
 			}
 			this.phase = Phase.GATHER;
 			return Status.RUNNING;

@@ -797,8 +797,9 @@ export class AgentBrain {
 
   /**
    * v2 (tools-v2-mc.md §6.5, §7): renders a tracked job's end for its wake and records it in the job registry. Null
-   * when no wake is due: the agent itself stopped or replaced the job (its tool result said so), or a player's new
-   * task cancelled it (the player's message wakes the agent).
+   * when no wake is due: the agent itself stopped or replaced the job (its tool result said so), a player's new task
+   * cancelled it (the player's message wakes the agent), or the agent's `job{wait}` was waiting for it (that result
+   * carries the end).
    */
   toolJobEnded(end: JobEnd): { readonly ok: boolean; readonly text: string } | null {
     const meta = this.toolJobs.meta(end.jobId);
@@ -817,6 +818,8 @@ export class AgentBrain {
     );
     this.toolJobs.ended(end.jobId, end.status, rendered, end.error?.code);
     if (end.status === 'cancelled' && running?.cancelledBy) return null;
+    // A job{wait} of this turn was waiting for it: that tool result already carries the end.
+    if (running?.awaited) return null;
     return { ok: end.status === 'done', text: wakeText(end.jobId, rendered, meta.skill === 'sequence') };
   }
 

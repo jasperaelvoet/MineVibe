@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MOD_CAPS } from '@minevibe/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventRouter } from '../../../src/agents/EventRouter.js';
 import { personaPrompt } from '../../../src/agents/prompts/persona.js';
@@ -69,6 +70,103 @@ describe('v2 tools in the agent runtime', () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toMatch(new RegExp(`JOB DONE\\] ${jobId} gather birch_log 2/2 \\| have birch_log 2$`));
   });
+
+  it('a job its job{wait} saw end is not woken for again after the turn', async () => {
+    const { h, q, ceoId } = await v2World();
+    await h.manager.deliverChat({ to: 'all', text: '@ada get logs' });
+    await h.until(() => h.texts(q).some((t) => t.includes('get logs')), 'wake');
+    h.skills.skillHandler = () => ({ status: 'running' });
+    await q.callTool('mcp__mc__gather', { item: 'oak_log', count: 10 });
+    const jobId = h.skills.runningJobs()[0] ?? '';
+    const waiting = q.callTool('mcp__mc__job', { action: 'wait', seconds: 30 });
+    await new Promise((r) => setTimeout(r, 20));
+    h.skills.finish(jobId, { status: 'done', result: { item: 'minecraft:oak_log', got: 10, have: 10 } });
+    expect(resultText(await waiting)).toMatch(/^done: gather oak_log 10\/10/);
+    q.result();
+    await h.until(() => h.manager.brain(ceoId)?.status === 'idle', 'idle');
+    // A job that ends while nobody waits still wakes the agent (the control case).
+    h.skills.skillHandler = () => ({ status: 'running' });
+    await h.manager.deliverChat({ to: 'all', text: '@ada more logs' });
+    await h.until(() => h.texts(q).some((t) => t.includes('more logs')), 'second wake');
+    await q.callTool('mcp__mc__gather', { item: 'birch_log', count: 2 });
+    q.result();
+    await h.until(() => h.manager.brain(ceoId)?.status === 'idle', 'idle again');
+    const second = h.skills.runningJobs()[0] ?? '';
+    h.skills.finish(second, { status: 'done', result: { item: 'minecraft:birch_log', got: 2, have: 2 } });
+    await h.until(() => h.texts(q).some((t) => t.includes('JOB DONE')), 'job done wake');
+    const wakes = h.texts(q).filter((t) => t.includes('JOB DONE') || t.includes('JOB FAILED'));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toContain(`JOB DONE] ${second} gather birch_log 2/2`);
+  });
+
+  for (const native of [true, false]) {
+    it(`a do step the mod refused PROTECTED can be allowed (${native ? "the mod's sequence" : "Node's macro"})`, async () => {
+      const { h, q, ceoId } = await v2World();
+      h.skills.capSet = new Set(Object.values(MOD_CAPS).filter((c) => native || c !== MOD_CAPS.SEQUENCE));
+      await h.manager.deliverChat({ to: 'all', text: '@ada knock down that cabin wall' });
+      await h.until(() => h.texts(q).some((t) => t.includes('cabin wall')), 'wake');
+      const TOKEN = '0123456789abcdef0123456789abcdef';
+      const refused = {
+        dug: 0,
+        protected: {
+          pos: { x: 6, y: 66, z: -6 },
+          what: 'player-built',
+          owner: 'Player',
+          block: 'minecraft:stripped_spruce_log',
+          count: 1,
+          consentId: TOKEN,
+        },
+      };
+      const allowed = (args: unknown) => (args as { allow_protected?: boolean }).allow_protected === true;
+      h.skills.skillHandler = (r) => {
+        if (r.skill === 'sequence') {
+          return allowed(r.args)
+            ? { status: 'done', result: { completed: 2, steps: [] } }
+            : {
+                status: 'failed',
+                code: 'PROTECTED',
+                msg: "step 2/2 dig: that is part of Player's build",
+                result: {
+                  completed: 1,
+                  steps: [
+                    { skill: 'goto', status: 'done', result: {} },
+                    {
+                      skill: 'dig',
+                      status: 'failed',
+                      code: 'PROTECTED',
+                      msg: 'player-built',
+                      result: refused,
+                    },
+                  ],
+                },
+              };
+        }
+        if (r.skill === 'dig' && !allowed(r.args)) {
+          return { status: 'failed', code: 'PROTECTED', msg: 'player-built', result: refused };
+        }
+        return { status: 'done', result: {} };
+      };
+      const call = {
+        steps: [
+          { tool: 'goto', args: { to: '6 66 -4' } },
+          { tool: 'build', args: { action: 'dig', from: '6 66 -6', to: '6 66 -6' } },
+        ],
+      };
+      const out = await q.callTool('mcp__mc__do', call);
+      expect(resultText(out)).toMatch(/^failed: do step 2\/2 build \| PROTECTED/);
+      // The token is the refused step's: the player's "Allow" can grant it.
+      expect(h.manager.consents.openRefusal(ceoId)).toMatchObject({ consentId: TOKEN, zone: 'built' });
+      expect(h.manager.consents.fromChat(ceoId, 'yes, break the stripped spruce log').kind).toBe('granted');
+      const runs = h.skills.runs.length;
+      const retry = await q.callTool('mcp__mc__do', call);
+      expect(resultText(retry)).toMatch(/^done: do /);
+      const consented = h.skills.runs.slice(runs).filter((r) => r.consent !== undefined);
+      expect(consented.map((r) => [r.skill, r.consent])).toEqual([
+        [native ? 'sequence' : 'dig', { token: TOKEN }],
+      ]);
+      expect(consented[0]?.args).toMatchObject({ allow_protected: true });
+    });
+  }
 
   it('a session resumed under the other tool set is told the new names once', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-v2-resume-'));
@@ -236,6 +334,68 @@ describe('Node sequence fallback (§11 M1 without the mod cap)', () => {
     });
     expect(fake.runningJobs()).not.toContain(second);
     expect(ends).toContain('mseq-1:cancelled');
+  });
+
+  it('another job started between two steps ends the macro; its next step never replaces that job', async () => {
+    const fake = new FakeSkillApi();
+    const api = new SequenceFallbackSkillApi(fake);
+    fake.skillHandler = () => ({ status: 'running' });
+    await api.runSkill({
+      agentId: 'ada1',
+      skill: 'sequence',
+      args: {
+        steps: [
+          { skill: 'collect', args: { item: 'oak_log', count: 2 } },
+          { skill: 'craft', args: { item: 'crafting_table', count: 1 } },
+        ],
+      },
+      waitMs: 5,
+      replace: true,
+      jobId: 'mseq-2',
+    });
+    const first = fake.runningJobs()[0] ?? '';
+    // Step 1 ends and, before the macro gets to step 2, the agent starts a goto.
+    fake.finish(first, { status: 'done', result: { got: 2 } });
+    const gotoRun = api.runSkill({
+      agentId: 'ada1',
+      skill: 'goto',
+      args: { entity: 'player' },
+      waitMs: 0,
+      replace: true,
+      jobId: 'jgoto-1',
+    });
+    const end = await api.awaitJob('mseq-2', 1_000);
+    await gotoRun;
+    expect(end.status).toBe('cancelled');
+    expect(end.error?.msg).toBe('replaced by goto');
+    expect(fake.runs.map((r) => r.skill)).toEqual(['collect', 'goto']);
+    expect(fake.runningJobs()).toEqual(['jgoto-1']);
+  });
+
+  it('a replacing run refused for bad arguments leaves the macro running', async () => {
+    const fake = new FakeSkillApi();
+    const api = new SequenceFallbackSkillApi(fake);
+    fake.skillHandler = () => ({ status: 'running' });
+    await api.runSkill({
+      agentId: 'ada1',
+      skill: 'sequence',
+      args: {
+        steps: [
+          { skill: 'collect', args: { item: 'oak_log', count: 2 } },
+          { skill: 'craft', args: { item: 'crafting_table', count: 1 } },
+        ],
+      },
+      waitMs: 5,
+      replace: true,
+      jobId: 'mseq-3',
+    });
+    await expect(
+      api.runSkill({ agentId: 'ada1', skill: 'goto', args: {} as never, replace: true }),
+    ).rejects.toThrow(/BAD_ARGS|exactly one/);
+    const first = fake.runningJobs()[0] ?? '';
+    fake.finish(first, { status: 'done', result: { got: 2 } });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(fake.runs.map((r) => r.skill)).toEqual(['collect', 'craft']);
   });
 
   it('a mod with the cap runs sequences itself', async () => {

@@ -177,6 +177,16 @@ describe('tools v2 additions (protocol §6.1 caps, §7.4 sequence and arguments)
     expect(SkillArgs.craft.safeParse({ item: 'stick', count: 4, table: { x: 1, y: 2, z: 3 } }).success).toBe(
       true,
     );
+    // The tree's gathering can be refused PROTECTED: Node's consent retry sets allow_protected, which must survive.
+    expect(
+      SkillArgs.craft.parse({
+        item: 'furnace',
+        count: 1,
+        tree: true,
+        gather_missing: true,
+        allow_protected: true,
+      }),
+    ).toMatchObject({ allow_protected: true });
     expect(SkillArgs.container.safeParse({ action: 'put', item: 'cobblestone' }).success).toBe(true);
     expect(SkillArgs.container.safeParse({ action: 'take' }).success).toBe(false);
     expect(SkillArgs.give.safeParse({ item: 'bread', to: 'player' }).success).toBe(true);

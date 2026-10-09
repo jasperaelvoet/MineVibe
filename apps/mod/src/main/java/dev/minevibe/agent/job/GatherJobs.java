@@ -180,6 +180,8 @@ public final class GatherJobs {
 		private int collectTicks;
 		private boolean triedTool;
 		private int skippedAnimals;
+		/** No block source was left (wool: no natural wool blocks): the animals that drop the item are next. */
+		private boolean animalsNext;
 
 		public Collect(final Refs.ItemMatcher item, final int count, final int radius) {
 			this(item, count, radius, false);
@@ -260,6 +262,15 @@ public final class GatherJobs {
 				this.report(agent, got);
 				return this.done();
 			}
+			if (got <= 0 && !busy && this.miner != null && !this.miner.treeMode() && !this.miner.collecting() && this.miner.mined() >= this.count
+				&& !Inv.gained(this.before, Inv.counts(agent)).isEmpty()) {
+				// The item's own block drops something else (stone: cobblestone, an ore: its raw metal): as many blocks as
+				// asked were broken, as mine counts. Going on would break every one in reach for an item that never comes.
+				agent.controls().stopMining();
+				this.report(agent, got);
+				this.put("note", this.item.ref().replace("minecraft:", "") + " drops something else: broke " + this.miner.mined());
+				return this.done();
+			}
 			if (Inv.freeSlots(agent) == 0 && !Inv.hasRoomFor(agent, new ItemStack(this.item.item() != null ? this.item.item() : Items.STONE))) {
 				this.report(agent, got);
 				return this.fail("INVENTORY_FULL", "no room for more " + this.item.ref());
@@ -278,7 +289,7 @@ public final class GatherJobs {
 					return Status.RUNNING;
 				}
 			}
-			if (this.sources == null) {
+			if (this.sources == null || this.animalsNext) {
 				if (!this.animals.isEmpty()) {
 					return this.hunt(agent, got);
 				}
@@ -293,6 +304,11 @@ public final class GatherJobs {
 				case WORKING -> Status.RUNNING;
 				case NONE_LEFT -> {
 					if (Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s)) != null && ++this.lastLooks < 200) {
+						yield Status.RUNNING;
+					}
+					if (got < this.count && !this.animals.isEmpty() && !this.miner.busy()) {
+						// Blocks and animals both drop it (wool): no natural block left, so the animals.
+						this.animalsNext = true;
 						yield Status.RUNNING;
 					}
 					this.report(agent, got);
@@ -371,7 +387,8 @@ public final class GatherJobs {
 					String why = this.skippedAnimals > 0
 						? " (" + this.skippedAnimals + " left alone: in the Base, pets, named, leashed or young)"
 						: "";
-					return this.noNaturalSource(agent, this.item.ref() + why, this.radius, List.of());
+					return this.noNaturalSource(agent, this.item.ref() + why, this.radius,
+						this.miner == null ? List.of() : this.miner.candidates(agent));
 				}
 			}
 			if (!Fight.tick(agent, this.prey, this.walk)) {

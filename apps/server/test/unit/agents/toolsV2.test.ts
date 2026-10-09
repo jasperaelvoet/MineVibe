@@ -1,6 +1,7 @@
-import { MOD_CAPS } from '@minevibe/protocol';
+import { MOD_CAPS, type SkillName, type SkillRunResult } from '@minevibe/protocol';
 import { describe, expect, it } from 'vitest';
 import { categoryOf, MC_TOOLS_V2 } from '../../../src/agents/tools/catalog.js';
+import { hintFor, type JobMeta } from '../../../src/agents/tools/format.js';
 import { JobRegistry } from '../../../src/agents/tools/jobs.js';
 import { createMcServer, type McHost } from '../../../src/agents/tools/mcServer.js';
 import {
@@ -8,10 +9,11 @@ import {
   MC_V2_INSTRUCTIONS,
   MC_V2_TOOL_NAMES,
 } from '../../../src/agents/tools/mcToolsV2.js';
-import { agentActor } from '../../../src/contracts/common.js';
+import { ApiError, agentActor } from '../../../src/contracts/common.js';
 import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
 import { withSequenceFallback } from '../../../src/contracts/SequenceFallback.js';
+import { type SkillRunRequest, validateSkillArgs } from '../../../src/contracts/SkillApi.js';
 import { listTools, toolListChars } from '../../helpers/listTools.js';
 
 type Registered = Record<
@@ -201,6 +203,26 @@ describe('v2 world tools (§5)', () => {
     expect(fake.runs[0]?.args).toEqual({ item: 'oak_log', count: 3, radius: 48, replant: true });
   });
 
+  it('gather of a block that drops something else asks for the drop (never breaks every stone in reach)', async () => {
+    const { reg, fake } = v2Host();
+    fake.skillHandler = (r) => ({
+      status: 'done',
+      result: { item: `minecraft:${(r.args as { item: string }).item}`, got: 3, have: 3 },
+    });
+    const ore = await call(reg, 'gather', { item: 'minecraft:iron_ore', count: 3 });
+    expect(fake.runs[0]?.args).toMatchObject({ item: 'raw_iron', count: 3 });
+    expect(ore.text.split('\n')[0]).toBe('done: gather raw_iron (from iron_ore) 3/3 | have raw_iron 3');
+    await call(reg, 'gather', { item: 'stone', count: 3 });
+    await call(reg, 'gather', { item: '#minecraft:coal_ores', count: 3 });
+    await call(reg, 'gather', { item: 'cobblestone', count: 3 });
+    expect(fake.runs.map((r) => (r.args as { item: string }).item)).toEqual([
+      'raw_iron',
+      'cobblestone',
+      'coal',
+      'cobblestone',
+    ]);
+  });
+
   it('positions are strings: a bad one is BAD_ARGS with an example, nothing is sent', async () => {
     const { reg, fake } = v2Host();
     const res = await call(reg, 'gather', { item: 'oak_log', count: 3, near: 'by the river' });
@@ -239,6 +261,64 @@ describe('v2 world tools (§5)', () => {
     expect(res.text).toContain(`(stopped your previous job ${first} gather oak_log 4/10)`);
     expect(fake.runs[1]).toMatchObject({ skill: 'goto', args: { entity: 'crafting_table' } });
     expect(jobs.get(first)?.cancelledBy).toBe('replace');
+  });
+
+  it('with run.replaced the mod says what a replace stopped: nothing stale, and jobs no tool started', async () => {
+    const { reg, fake, jobs } = v2Host();
+    fake.skillHandler = (r) =>
+      r.skill === 'collect'
+        ? { status: 'running' }
+        : { status: 'done', result: { pos: { x: 5, y: 66, z: 0 } } };
+    await call(reg, 'gather', { item: 'oak_log', count: 10 });
+    const first = jobs.current()?.jobId ?? '';
+    // It ended in the mod and its skill.result never reached Node (a reconnect): Node still thinks it runs.
+    fake.finish(first, { status: 'done', result: { got: 10 } });
+    const after = await call(reg, 'goto', { to: 'crafting_table' });
+    expect(after.text).not.toContain('stopped your previous job');
+    // A job no tool started (an /mv skill command, say) is still named.
+    await fake.runSkill({
+      agentId: 'ada-1',
+      skill: 'collect',
+      args: { item: 'dirt', count: 5 },
+      replace: true,
+      jobId: 'jmod-1',
+    });
+    const res = await call(reg, 'goto', { to: 'crafting_table' });
+    expect(res.text).toContain('(stopped your previous job jmod-1 collect)');
+  });
+
+  it('a call the mod refuses before starting it (BAD_ARGS) leaves the running job current, still due a wake', async () => {
+    /** The mod's SkillFactory rejects an unknown item before it touches the running job. */
+    class RefusingMod extends FakeSkillApi {
+      refuse = false;
+      override async runSkill<S extends SkillName>(r: SkillRunRequest<S>): Promise<SkillRunResult> {
+        if (this.refuse) throw new ApiError('BAD_ARGS', 'unknown item minecraft:oak_lgo');
+        return super.runSkill(r);
+      }
+    }
+    const mod = new RefusingMod();
+    mod.capSet = new Set(ALL_CAPS);
+    const { reg, jobs } = v2Host({ skills: withSequenceFallback(mod) });
+    mod.skillHandler = () => ({ status: 'running' });
+    await call(reg, 'gather', { item: 'oak_log', count: 10 });
+    const first = jobs.current()?.jobId ?? '';
+    mod.refuse = true;
+    const res = await call(reg, 'gather', { item: 'oak_lgo', count: 2 });
+    expect(res.text).toMatch(/^failed: gather oak_lgo \| BAD_ARGS: unknown item/);
+    expect(jobs.current()?.jobId).toBe(first);
+    expect(jobs.get(first)?.cancelledBy).toBeNull();
+    expect(jobs.recent()[0]?.rendered.head).toMatch(/^failed: gather oak_lgo \| BAD_ARGS/);
+  });
+
+  it('craft carries the consent of a refused gather: allow_protected survives the wire schema', () => {
+    const args = validateSkillArgs('craft', {
+      item: 'furnace',
+      count: 1,
+      tree: true,
+      gather_missing: true,
+      allow_protected: true,
+    });
+    expect(args).toMatchObject({ allow_protected: true });
   });
 
   it('goto: places, crew, mobs, positions and Codex places; nothing matching is UNKNOWN_PLACE with a hint', async () => {
@@ -515,6 +595,57 @@ describe('v2 do (§5.10)', () => {
     cont.fake.skillHandler = fake.skillHandler;
     await call(cont.reg, 'do', { steps, stop_on_fail: false });
     expect(cont.fake.runs.map((r) => r.skill)).toEqual(['collect', 'craft']);
+  });
+});
+
+describe('v2 next: hints (§8)', () => {
+  it('every call a hint suggests is a valid call when copied as is (no BAD_ARGS)', async () => {
+    const codes = [
+      'UNKNOWN_PLACE',
+      'NOT_FOUND',
+      'UNREACHABLE',
+      'NEEDS_TOOL',
+      'MISSING_INGREDIENTS',
+      'NO_FUEL',
+      'NO_RECIPE',
+      'NO_ITEM',
+      'INVENTORY_FULL',
+      'OCCUPIED',
+      'NO_FOOD',
+      'NOT_A_CONTAINER',
+      'NOT_RIDEABLE',
+      'TIMEOUT',
+      'UNKNOWN_JOB',
+    ];
+    const metas: JobMeta[] = [
+      {
+        tool: 'gather',
+        skill: 'collect',
+        what: 'gather oak_log',
+        want: { item: 'oak_log', count: 10 },
+        args: { item: 'oak_log', count: 10 },
+      },
+      { tool: 'craft', skill: 'craft', what: 'craft furnace', want: { item: 'furnace', count: 1 } },
+      // A failure before any wire call (a do step's translation): no item, no target in the arguments.
+      { tool: 'do', skill: '', what: 'do 2 steps', args: { steps: [] } },
+    ];
+    const { reg } = v2Host();
+    const CALL_RE = /\b([a-z_]+)(\{[^{}]*(?:\[[^\]]*\])?[^{}]*\})/g;
+    let checked = 0;
+    for (const meta of metas) {
+      for (const code of codes) {
+        const next = hintFor(code, meta, { here: null, playerName: 'Jasper' }) ?? '';
+        for (const m of next.matchAll(CALL_RE)) {
+          const [, tool = '', json = '{}'] = m;
+          if (!reg[tool]) continue;
+          const res = await call(reg, tool, JSON.parse(json));
+          expect(res.invalid, `${code}: ${m[0]}`).toBe(false);
+          expect(res.text, `${code}: ${m[0]}`).not.toContain('BAD_ARGS');
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
   });
 });
 

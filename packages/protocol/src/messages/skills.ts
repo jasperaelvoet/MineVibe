@@ -142,7 +142,8 @@ const BASE_SKILL_ARGS = {
   give: z.object({ item: ItemId, count: Count.optional(), to: EntityRef }),
   /**
    * `tree`: resolve the whole recipe tree (intermediates, smelting, a station placed when needed); `gather_missing`:
-   * also gather missing raw materials from nature (mod cap `craft.tree`).
+   * also gather missing raw materials from nature (mod cap `craft.tree`). Its gathering can be refused `PROTECTED`
+   * like `collect`, so it takes the same `allow_protected` (W1).
    */
   craft: z.object({
     item: ItemId,
@@ -150,6 +151,7 @@ const BASE_SKILL_ARGS = {
     table: BlockPos.optional(),
     tree: z.boolean().optional(),
     gather_missing: z.boolean().optional(),
+    allow_protected: AllowProtected,
   }),
   smelt: z.object({ item: ItemId, count: Count, fuel: ItemId.optional(), furnace: BlockPos.optional() }),
   /** Without `pos`: the nearest chest or barrel within 24 blocks (mod cap `container.nearest`). */

@@ -166,6 +166,11 @@ public final class Miner {
 			|| this.treeMode() && this.collectAt != null;
 	}
 
+	/** True while it picks up the drops of the block it broke last. */
+	public boolean collecting() {
+		return this.collectAt != null;
+	}
+
 	/** Protected matches the miner left alone, nearest first. */
 	public List<Protection.Verdict> protectedSeen() {
 		return List.copyOf(this.protectedSeen);

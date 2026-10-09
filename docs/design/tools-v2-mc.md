@@ -866,7 +866,7 @@ Failures render as `failed: <what> <progress> | <CODE>: <msg>`, then detail line
 | NEEDS_TABLE / NO_TABLE / NEEDS_FURNACE / NO_FURNACE / FURNACE_BUSY | mod (craft) | Station problem the tree could not solve | `craft{…,"gather_missing":true}` or `station:"x y z"` | no |
 | NO_FUEL | mod | Ran out of fuel | `craft{…,"gather_missing":true}` (gathers coal or uses logs) | no |
 | NO_ITEM | mod | You don't have the item | `observe{"sections":["inventory"]}`, then gather or craft | no |
-| INVENTORY_FULL | mod | No room | `items{"action":"store"}` at a chest, or drop junk | no |
+| INVENTORY_FULL | mod | No room | `items{"action":"store","item":"dirt"}` (store needs an item) at a chest, or drop junk | no |
 | OCCUPIED / NO_SUPPORT / BLOCKED / CANNOT_PLACE / NO_ROOM | mod | Placement failed | choose another spot (observe scene) | no |
 | NO_FOOD / NOT_HUNGRY / CANNOT_EAT | mod | Eating | gather food / nothing to do | no |
 | NO_BED / NOT_NIGHT / NOT_SAFE / OBSTRUCTED / CANNOT_SLEEP_HERE | mod | Sleeping | per msg (wait for night, clear mobs, find a bed) | no |
@@ -1277,4 +1277,33 @@ Every v1 and v2 script behaves: good runs pass and bad runs fail. The incident (
 - **M10:** one-tick `observe`.
 - **Entity provenance** for animals (§15 Q3).
 - **Consent on a Node macro** covers only its first block-changing step.
+- **Consent for right-clicks and menu clicks:** `use_block` and `menu_click` can be refused `PROTECTED` (W1) but take no
+  `allow_protected`, so no "Allow" unlocks them; their hint says to ask what to do instead.
 - The simulated mod's craft tree is a simplified `RecipeTree`: it does not reorder smelts and does not set fuel aside.
+
+### 16.9 Review fixes
+
+- **`do` could never be allowed after `PROTECTED`.** A sequence keeps the refused step's `protected` detail (and its
+  consent token) in `steps[i].result`; Node read only the top level, so the player's "Allow" found no token (the Node
+  macro even overwrote the step's good refusal with an empty one). `refusalOf` now reads the refused step.
+- **`craft` dropped its consent.** The craft tree's gathering can be refused `PROTECTED`, and the retry sent
+  `allow_protected`, but the wire schema of `craft` had no such field, so it was stripped and the player's token used up
+  for nothing. `craft` takes `allow_protected` now (protocol, additive).
+- **`job{wait}` woke the agent twice.** A job that ended while `job{wait}` waited for it also sent `[JOB DONE]` after
+  the turn, one more turn for a result the agent already had. The registry marks the awaited job; its end wakes no one.
+- **A gather of a block that drops something else broke every one in reach.** `gather{item:"stone"}` (or an ore)
+  became `collect` of an item that never lands in the bag, so the job mined until the radius or its timeout ran out
+  (v1's `mine` counted blocks). Node now asks for the drop (`stone` → cobblestone, `iron_ore` / `#iron_ores` →
+  raw_iron, ...: `DROPPED_AS` in translate.ts), and the mod's `collect` stops after `count` such blocks with a `note`.
+- **The Node macro could replace the agent's next job.** A job started between two steps did not end the macro, whose
+  next step then cancelled it. A replacing run now ends the macro first.
+- **A refused start lost track of the running job.** When the mod refuses a new call before starting it (`BAD_ARGS`),
+  the job it would have replaced runs on; the registry now keeps it current, still due its wake.
+- **The replace notice** uses the mod's `replaced` (cap `run.replaced`) when there is one: no notice for a job that had
+  already ended, and a notice for a job no tool started.
+- **Composites:** a cancelled sequence no longer lists a step that never started; `collect` falls back to animals once
+  no natural block of the item is left (wool from sheep); the craft tree's gathering makes the tools it needs and
+  replants, as `gather` does; a station is put down outside protected zones when there is room (the tree walked out of
+  the Base and then put the table back inside, one block over the edge).
+- **Hints** that suggested an invalid call now suggest a valid one (`items{"action":"store"}` without an item;
+  `codex` search with an empty query), checked by a test that runs every suggested call.

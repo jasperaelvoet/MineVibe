@@ -296,7 +296,14 @@ public final class CraftJobs {
 	}
 
 	/** A replaceable spot with a solid floor next to the agent (not where it stands), or null. */
-	static @Nullable BlockPos freeSpotNear(final AgentPlayer agent) {
+	public static @Nullable BlockPos freeSpotNear(final AgentPlayer agent) {
+		// A spot outside every protected zone first (the craft tree walks out of the Base to put a station down, and must
+		// not then put it back inside, one block over the edge); inside one only when nothing else is free.
+		BlockPos outside = freeSpotNear(agent, true);
+		return outside != null ? outside : freeSpotNear(agent, false);
+	}
+
+	private static @Nullable BlockPos freeSpotNear(final AgentPlayer agent, final boolean outsideZones) {
 		ServerLevel level = agent.level();
 		BlockPos feet = agent.blockPosition();
 		for (int r = 1; r <= 2; r++) {
@@ -305,7 +312,8 @@ public final class CraftJobs {
 					BlockPos p = feet.relative(d, r).above(dy);
 					BlockState s = level.getBlockState(p);
 					if (s.canBeReplaced() && s.getFluidState().isEmpty() && !level.getBlockState(p.below()).canBeReplaced()
-						&& !agent.getBoundingBox().intersects(new AABB(p)) && level.getEntities(agent, new AABB(p), e -> e.blocksBuilding).isEmpty()) {
+						&& !agent.getBoundingBox().intersects(new AABB(p)) && level.getEntities(agent, new AABB(p), e -> e.blocksBuilding).isEmpty()
+						&& (!outsideZones || dev.minevibe.world.provenance.Zones.at(level, p) == null)) {
 						return p;
 					}
 				}

@@ -11,6 +11,7 @@ import {
   type BlockPos,
   ERROR_CODES,
   type IdleMode,
+  MOD_CAPS,
   type ObsQueryName,
   type PayloadOf,
   type SkillName,
@@ -93,14 +94,22 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
     this.calls.push({ kind: 'skill', name: request.skill, args, at: this.world.clock });
     const w = this.world;
     if (w.current && !request.replace) throw new ApiError(ERROR_CODES.BUSY, `${request.agentId} is busy`);
+    // The v2 mod names the job its replace cancelled (cap run.replaced, M9).
+    const prev = w.current;
+    const replaced =
+      prev && this.caps().has(MOD_CAPS.RUN_REPLACED)
+        ? { jobId: prev.jobId, skill: prev.skill, ...(prev.text ? { text: prev.text.slice(0, 256) } : {}) }
+        : undefined;
     if (w.current) w.cancelJob('replaced by a new job');
     const jobId = request.jobId ?? newJobId();
     const logic = buildJobLogic(w, request.skill, args);
     const job = w.startJob(jobId, request.skill, args, logic);
     const waitMs = Math.min(request.waitMs ?? 20_000, MOD_WAIT_CAP_MS);
     w.advance(w.clock + msToTicks(waitMs), () => job.status !== 'running');
-    if (job.status === 'running') return { jobId, status: 'running' };
+    if (job.status === 'running')
+      return replaced ? { jobId, status: 'running', replaced } : { jobId, status: 'running' };
     const out: SkillRunResult = { jobId, status: job.status, result: this.#withFooter(job.result) };
+    if (replaced) out.replaced = replaced;
     if (job.error) out.error = { code: job.error.code, msg: job.error.msg };
     return out;
   }

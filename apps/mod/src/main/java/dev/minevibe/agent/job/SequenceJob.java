@@ -71,8 +71,12 @@ public final class SequenceJob extends SkillJob {
 	@Override
 	public void cancel(final AgentPlayer agent) {
 		super.cancel(agent);
+		// Between two steps no child runs: the last outcome is the previous step's, already recorded.
+		boolean running = this.runner.active();
 		this.runner.cancel(agent, "cancelled");
-		this.record(this.runner.last());
+		if (running) {
+			this.record(this.runner.last());
+		}
 	}
 
 	@Override

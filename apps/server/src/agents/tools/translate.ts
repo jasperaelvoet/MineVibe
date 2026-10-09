@@ -111,8 +111,50 @@ export async function translateGoto(a: Record<string, unknown>, host: TranslateH
 
 export const GATHER_EXAMPLE = call('gather', { item: 'oak_log', count: 10 });
 
+/**
+ * Natural blocks that drop another item when broken without silk touch (the mod's `GatherJobs.DROPS`, reversed), and
+ * the ore tags. `gather` counts items gained, and the block itself never lands in the bag: `collect{item:"stone"}`
+ * would break stone until the radius or the timeout ran out (v1's `mine` counted blocks). So gather asks for what
+ * the block drops: "mine 10 iron ore" gets 10 raw iron.
+ */
+export const DROPPED_AS: Readonly<Record<string, string>> = {
+  stone: 'cobblestone',
+  deepslate: 'cobbled_deepslate',
+  grass_block: 'dirt',
+  clay: 'clay_ball',
+  glowstone: 'glowstone_dust',
+  snow_block: 'snowball',
+  coal_ore: 'coal',
+  deepslate_coal_ore: 'coal',
+  '#coal_ores': 'coal',
+  iron_ore: 'raw_iron',
+  deepslate_iron_ore: 'raw_iron',
+  '#iron_ores': 'raw_iron',
+  copper_ore: 'raw_copper',
+  deepslate_copper_ore: 'raw_copper',
+  '#copper_ores': 'raw_copper',
+  gold_ore: 'raw_gold',
+  deepslate_gold_ore: 'raw_gold',
+  '#gold_ores': 'raw_gold',
+  diamond_ore: 'diamond',
+  deepslate_diamond_ore: 'diamond',
+  '#diamond_ores': 'diamond',
+  emerald_ore: 'emerald',
+  deepslate_emerald_ore: 'emerald',
+  '#emerald_ores': 'emerald',
+  redstone_ore: 'redstone',
+  deepslate_redstone_ore: 'redstone',
+  '#redstone_ores': 'redstone',
+  lapis_ore: 'lapis_lazuli',
+  deepslate_lapis_ore: 'lapis_lazuli',
+  '#lapis_ores': 'lapis_lazuli',
+  nether_quartz_ore: 'quartz',
+};
+
 export function translateGather(a: Record<string, unknown>, host: TranslateHost): WireCall {
-  const item = itemId(a.item, 'item', GATHER_EXAMPLE);
+  const asked = itemId(a.item, 'item', GATHER_EXAMPLE);
+  const dropped = DROPPED_AS[short(asked)];
+  const item = dropped ?? asked;
   const count = int(a.count);
   if (count === undefined || count < 1 || count > MAX_GATHER) {
     throw badArgs(`count must be 1-${MAX_GATHER}`, GATHER_EXAMPLE);
@@ -132,7 +174,7 @@ export function translateGather(a: Record<string, unknown>, host: TranslateHost)
     meta: {
       tool: 'gather',
       skill: 'collect',
-      what: `gather ${short(item)}`,
+      what: dropped ? `gather ${dropped} (from ${short(asked)})` : `gather ${short(item)}`,
       want: { item, count },
       from: host.here(),
       args: a,

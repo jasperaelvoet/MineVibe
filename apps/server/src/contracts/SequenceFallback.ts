@@ -125,7 +125,29 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
   }
 
   async runSkill<S extends SkillName>(request: SkillRunRequest<S>): Promise<SkillRunResult> {
-    if (request.skill !== 'sequence' || this.#native()) return this.#inner.runSkill(request);
+    if (request.skill !== 'sequence' || this.#native()) {
+      // Another job replaces the agent's macro, as it would the mod's own sequence. The running step is cancelled by
+      // the mod's replace; between two steps nothing runs there, so the macro must not start its next step (it would
+      // replace this job in turn). Marked before the request goes out, synchronously.
+      const reason = `replaced by ${request.skill}`;
+      const marked: Macro[] = [];
+      if (request.replace) {
+        for (const m of this.#macros.values()) {
+          if (m.agentId !== request.agentId || m.cancelled !== null) continue;
+          m.cancelled = reason;
+          marked.push(m);
+        }
+      }
+      try {
+        return await this.#inner.runSkill(request);
+      } catch (err) {
+        // Refused before it started (bad arguments): nothing was replaced, the macro goes on.
+        if (err instanceof ApiError && err.code === 'BAD_ARGS') {
+          for (const m of marked) if (m.cancelled === reason) m.cancelled = null;
+        }
+        throw err;
+      }
+    }
     const args = validateSkillArgs('sequence', request.args);
     // Like the mod: a run for the agent replaces its current job (the first step's own run does that for mod jobs).
     if (!request.replace && [...this.#macros.values()].some((m) => m.agentId === request.agentId)) {

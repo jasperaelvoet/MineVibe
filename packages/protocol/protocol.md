@@ -657,11 +657,13 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   did. `result: { completed, steps: [{ skill, status, code?, msg?, result }] }` (steps that never ran are absent). The
   timeout is the sum of the steps' timeouts, at most 40 minutes. `allow_protected` with the `skill.run` consent
   token covers every step (the grant lasts while the sequence runs).
-- **The craft tree.** `craft{item, count, table?, tree:true, gather_missing?}` (cap `craft.tree`; M4) makes `count`
+- **The craft tree.** `craft{item, count, table?, tree:true, gather_missing?, allow_protected?}` (cap `craft.tree`;
+  M4; `allow_protected` with the consent token covers its child jobs, like a sequence's steps) makes `count`
   new items end to end: it plans from the inventory (intermediates such as logs → planks → sticks, smelting in a
   furnace, recipes picked by what the inventory fits, at most 4 levels deep, never a recipe that consumes an item
   being made higher up, never a compressed form such as a block of iron unless it is carried), gathers missing raw
-  materials from nature with child `collect` jobs when `gather_missing` (fuel: logs), plans again, then crafts and
+  materials from nature with child `collect{make_tools:true}` jobs when `gather_missing` (fuel: logs; felled trees
+  replanted), plans again, then crafts and
   smelts step by step. A table or furnace within 24 blocks (the Base's are fine to use) or the given `table` is used;
   else the agent's own is put down, crafted first if needed; never inside a protected zone (the agent walks out, at
   most 16 blocks, else `NO_ROOM`). Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
@@ -719,9 +721,11 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   craft tree, instead of failing `NEEDS_TOOL`; animal drops (beef and leather: cows, porkchop: pigs, mutton and wool:
   sheep, chicken and feathers: chickens, rabbit and rabbit hide: rabbits) come from the nearest animal outside
   protected zones that is no pet, named, leashed or young (none: `NO_NATURAL_SOURCE`, saying how many were left
-  alone); drops are picked up within 5 blocks for up to 5 seconds after each break. `result` adds `item`, `got` (the
-  same as `collected`: more of the item than at the start), `sources: [{ kind: tree|ore|stone|animal, what, pos, n }]`
-  and `tools_made`.
+  alone), also once no natural block of an item both drop is left (wool); drops are picked up within 5 blocks for
+  up to 5 seconds after each break. A block that drops something else (`stone`: cobblestone, an ore: its raw metal)
+  is broken `count` times, as `mine` counts, and the job is done with `result.note` saying so (Node's v2 `gather`
+  asks for the drop instead). `result` adds `item`, `got` (the same as `collected`: more of the item than at the
+  start), `sources: [{ kind: tree|ore|stone|animal, what, pos, n }]`, `tools_made` and `note`.
 - **`container`** without `pos` (cap `container.nearest`) uses the nearest chest, trapped chest or barrel within 24
   blocks (none: `NOT_FOUND`); the result's `pos` says which. **`give`** without `count` (cap `give.all`) gives
   everything of the item.

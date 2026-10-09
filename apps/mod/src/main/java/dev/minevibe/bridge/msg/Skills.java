@@ -136,8 +136,12 @@ public final class Skills {
 		/** Without {@code count}: everything of the item (cap {@code give.all}). */
 		public record Give(String item, @Nullable Integer count, String to) {}
 
-		/** {@code tree} / {@code gather_missing}: the recipe tree (cap {@code craft.tree}). */
-		public record Craft(String item, int count, @Nullable BlockPos table, @Nullable Boolean tree, @Nullable Boolean gather_missing) {}
+		/**
+		 * {@code tree} / {@code gather_missing}: the recipe tree (cap {@code craft.tree}); {@code allow_protected} (W1) covers
+		 * its child jobs, with Node's {@code consent}.
+		 */
+		public record Craft(String item, int count, @Nullable BlockPos table, @Nullable Boolean tree, @Nullable Boolean gather_missing,
+				@Nullable Boolean allow_protected) {}
 
 		public record Smelt(String item, int count, @Nullable String fuel, @Nullable BlockPos furnace) {}
 

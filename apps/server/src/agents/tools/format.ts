@@ -18,8 +18,9 @@
  * the eval harness share it.
  */
 
-import type { BlockPos } from '@minevibe/protocol';
+import type { BlockPos, SkillName } from '@minevibe/protocol';
 import { escapeShared, singleLine } from '../envelope.js';
+import { CONSENT_SKILLS_V2 } from './host.js';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Basics (R1-R6)
@@ -315,6 +316,8 @@ export function describeResult(
         .map((t) => idText(t))
         .filter(Boolean);
       if (tools.length > 0) facts.push(`made ${tools.join(', ')}`);
+      const note = typeof r.note === 'string' ? singleLine(r.note, 80) : null;
+      if (note) facts.push(note);
       const have = haveText(r, want);
       if (have) facts.push(have);
       break;
@@ -555,8 +558,12 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
   switch (code) {
     case 'BAD_ARGS':
       return null;
-    case 'UNKNOWN_PLACE':
-      return `${call('codex', { action: 'search', query: String(meta.args?.to ?? meta.args?.target ?? '') })} or give "x y z"`;
+    case 'UNKNOWN_PLACE': {
+      const name = String(meta.args?.to ?? meta.args?.target ?? '').trim();
+      return name
+        ? `${call('codex', { action: 'search', query: name.slice(0, 60) })} or give "x y z"`
+        : 'give "x y z" (copy it from observe or find), "player" or a crew @handle';
+    }
     case 'NOT_FOUND':
       return item
         ? `${call('find', { target: item, radius: 64 })}, goto elsewhere, or ask ${p} where to look`
@@ -568,7 +575,10 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
     case 'NO_NATURAL_SOURCE':
       return `ask ${p} (AskUserQuestion: go further / use something else / skip). Never take ${item ? short(item) : 'it'} from buildings.`;
     case 'PROTECTED':
-      return `ask ${p} with AskUserQuestion; only an option starting "Allow" lets you repeat this exact call. Never work around it.`;
+      // Right-clicks and menu clicks carry no consent (protocol §7.4.3): an "Allow" could not unlock them.
+      return meta.skill && !CONSENT_SKILLS_V2.has(meta.skill as SkillName)
+        ? `ask ${p} with AskUserQuestion what to do instead: this one cannot be allowed through you (${p} can do it). Never work around it.`
+        : `ask ${p} with AskUserQuestion; only an option starting "Allow" lets you repeat this exact call. Never work around it.`;
     case 'OTHER_DIMENSION':
       return `goto a portal, or ask ${p}`;
     case 'NEEDS_TOOL':
@@ -596,7 +606,7 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
     case 'NO_MATERIAL':
       return `${call('observe', { sections: ['inventory'] })}, then gather or craft it`;
     case 'INVENTORY_FULL':
-      return `${call('items', { action: 'store' })} at a chest, or drop what you don't need`;
+      return `store what you don't need in the nearest chest, e.g. ${call('items', { action: 'store', item: 'dirt' })}, or drop it`;
     case 'OCCUPIED':
     case 'NO_SUPPORT':
     case 'BLOCKED':

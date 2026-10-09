@@ -21,6 +21,7 @@ import {
   MOD_CAPS,
   type ObsQueryName,
   type SkillConsent,
+  type SkillRunResult,
 } from '@minevibe/protocol';
 import { z } from 'zod';
 import { isApiError } from '../../contracts/common.js';
@@ -62,6 +63,7 @@ import {
   short,
 } from './format.js';
 import { CONSENT_SKILLS_V2, type McHost, resolveCodexPlace, splitFooter } from './host.js';
+import type { JobRegistry, RunningJob } from './jobs.js';
 import { type CallToolResult, errorResult, textResult } from './results.js';
 import { parsePos, requirePos } from './targets.js';
 import {
@@ -463,13 +465,18 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
         ...(consent ? { consent } : {}),
       });
     } catch (err) {
-      host.jobs?.ended(jobId, 'failed', { head: '', details: [], next: null, isError: true });
-      return failure(meta.what, err, meta, true);
+      const out = failure(meta.what, err, meta, true);
+      host.jobs?.ended(jobId, 'failed', {
+        head: out.text.split('\n')[0] ?? '',
+        details: [],
+        next: null,
+        isError: true,
+      });
+      // Refused before it started: the job it would have replaced runs on (and still wakes the agent when it ends).
+      if (previous && isApiError(err) && NOT_STARTED_CODES.has(err.code)) host.jobs?.restore(previous);
+      return out;
     }
-    const replaced =
-      previous && previous.jobId !== res.jobId
-        ? `(stopped your previous job ${previous.jobId} ${previous.meta.what}${previous.progress ? ` ${progressFor(previous.meta, previous.progress)}` : ''})`
-        : null;
+    const replaced = replacedNote(previous, res, caps().has(MOD_CAPS.RUN_REPLACED), host.jobs ?? null);
     if (res.status === 'running') {
       host.trackJob(res.jobId, meta.what);
       const running = host.jobs?.get(res.jobId);
@@ -794,6 +801,9 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
                 isError: ended.rendered.isError,
                 footer: nodeFooter(),
               };
+            // While this call waits, the job's end is its result: no [JOB DONE] wake repeats it after the turn.
+            const awaited = jobs?.get(id) ?? null;
+            if (awaited) awaited.awaited = true;
             try {
               const end = await host.skills.awaitJob(id, seconds * 1000);
               const meta = jobs?.meta(id) ?? { tool: 'job', skill: '', what: `job ${id}` };
@@ -810,6 +820,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
                 footer: footerLine(footer) ?? nodeFooter(),
               };
             } catch (err) {
+              if (awaited) awaited.awaited = false;
               if (!isApiError(err, 'TIMEOUT')) throw err;
               const running = jobs?.get(id);
               const progress = running?.progress ? ` ${progressFor(running.meta, running.progress)}` : '';
@@ -931,6 +942,14 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   return defs;
 }
 
+/** Codes with which the mod (or Node's own check) refuses a `skill.run` before it replaces the running job. */
+const NOT_STARTED_CODES: ReadonlySet<string> = new Set([
+  'BAD_ARGS',
+  'BUSY',
+  'UNKNOWN_SKILL',
+  'UNKNOWN_AGENT',
+]);
+
 const EMOTE_PAST: Readonly<Record<string, string>> = {
   wave: 'waved',
   nod: 'nodded',
@@ -947,6 +966,35 @@ function orgOut(result: OrgToolResult): Out {
 function secondsSince(t: number): string {
   const s = Math.max(0, Math.round((Date.now() - t) / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/**
+ * `(stopped your previous job j2-6 gather oak_log 4/10)`, or null. A mod with the cap `run.replaced` says which job its
+ * `replace` cancelled (M9): that is the truth, also for a job Node's registry still thinks runs but that already ended,
+ * and for one no tool started. Without the cap, the registry's current job.
+ */
+function replacedNote(
+  previous: RunningJob | null,
+  res: SkillRunResult,
+  modSays: boolean,
+  jobs: JobRegistry | null,
+): string | null {
+  const stopped = (id: string, what: string) => `(stopped your previous job ${id} ${what})`;
+  if (!modSays) {
+    if (!previous || previous.jobId === res.jobId) return null;
+    const progress = previous.progress ? ` ${progressFor(previous.meta, previous.progress)}` : '';
+    return stopped(previous.jobId, `${previous.meta.what}${progress}`);
+  }
+  const r = res.replaced;
+  if (!r) return null;
+  const known = jobs?.get(r.jobId) ?? null;
+  if (known) {
+    known.cancelledBy ??= 'replace';
+    const progress = known.progress ? ` ${progressFor(known.meta, known.progress)}` : '';
+    return stopped(r.jobId, `${known.meta.what}${progress}`);
+  }
+  const text = r.text ? ` ${singleLine(r.text.replace(/minecraft:/g, ''), 60)}` : '';
+  return stopped(r.jobId, `${singleLine(r.skill, 32)}${text}`);
 }
 
 /** Inserts the replace notice as the first detail line. */
