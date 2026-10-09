@@ -73,6 +73,12 @@ PC development switches, read by the game straight from the environment (no Grad
 `MINEVIBE_PC_DEMO=<pcId>` runs the scripted monitor demo `spikes/s4-monitor/run.mjs` uses (it places a
 workstation in the current world; see `spikes/s4-monitor/result.md`).
 
+Navigation switch, also from the environment (or `-Dminevibe.navDebug=true`): `MINEVIBE_NAV_DEBUG=1` logs every
+failed walk with a top-down terrain map around the agent and its goal, Tier-2 plans step by step, and partial
+Tier-1 paths (`[nav] ...` lines in `latest.log`). `npm run play` and the acceptance harness pass their environment to
+the game, so `MINEVIBE_NAV_DEBUG=1 node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripted
+--steps 1,3 --seed 42` diagnoses a seed at zero tokens. `-Dminevibe.nav.tier2=false` turns Tier 2 off (Tier 1 only).
+
 Screens: `GuiSetScreenMixin` (the one `Gui#setScreen` choke point) shows BootScreen instead of TitleScreen
 and DisconnectedScreen, GameOverScreen instead of DeathScreen, and the non-pausing MineVibeMenuScreen
 instead of PauseScreen. Every change is logged as `[screen] <shown> (requested <asked>)`. Under client
@@ -100,6 +106,8 @@ When you accept the EULA:
 ```bash
 ./gradlew build -Pminevibe.acceptMinecraftEula=true              # + headless server GameTests
 ./gradlew runClientGameTest -Pminevibe.acceptMinecraftEula=true  # client GameTests (opens a window)
+# only some server GameTests (vanilla's test selector, * wildcards), e.g. the navigation ones:
+./gradlew runGameTest -Pminevibe.acceptMinecraftEula=true -Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'
 ```
 
 CI can only run GameTests if the repository owner explicitly decides to pass this flag in the

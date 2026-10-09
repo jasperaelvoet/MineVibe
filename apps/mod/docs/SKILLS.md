@@ -108,8 +108,10 @@ What the agents know about the world around them, and what they must leave alone
   blocks, and no building block: planks, glass, doors, trapdoors, stairs, slabs, fences, gates, walls, wool, beds,
   bricks, cobblestone, chests, barrels, crafting tables, furnaces, bookshelves. A log cabin is never a tree, even in a
   world from before provenance and even when a real tree grows against it; the whole cluster is searched once):
-  `Miner` picks the nearest tree the agent can walk to (`Reach`: one A* per tree), fells it
-  bottom-up (stepping into the cut trunk, pillaring at most 2 blocks with dirt or cobblestone, clearing the pillar),
+  `Miner` picks the nearest tree the agent can walk to (`Reach`: one A* per tree; with no walking way to any, the
+  nearest tree for Tier 2 to dig, pillar or bridge to, unreachable if it finds no way either), fells it bottom-up (each
+  log reached with Tier 2; failing that, stepping into the cut trunk, pillaring at most 2 blocks with dirt or
+  cobblestone; every pillar cleared),
   picks up the logs at the stump and replants on request. Nothing natural in reach: `NO_NATURAL_SOURCE` with the
   candidates it saw (unreachable, too far, protected, not a tree); it never substitutes another block.
 - **Perception** (`Scene`). `look_around` answers a scene, most important first: position, cover and time; the zone;
@@ -127,6 +129,33 @@ set, not following the player), **Pickup 25** (loose items within 6 blocks in si
 A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect,
 SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47) or to fight (45). Approach reports `agent.event approach_blocked{why}` (`combat`,
 `night`, `far`, `dimension`, `pc_screen`) once and stays put, so Node can fall back to a ping.
+
+## Navigation (PLAN 7.2)
+
+Jobs walk through `dev.minevibe.agent.job.Walk`, which drives `dev.minevibe.agent.nav.AgentNavigator`:
+
+| Walk call | Used by | Navigation |
+|---|---|---|
+| `toMine(block)` | `mine`, `collect` (`Miner`) | Tier 2 straight away: a cell with the block in hand reach and a face open toward the eyes, beside, above or below it, never standing on it |
+| `toTrunk(log)` | (for tree jobs) | Tier 2: any standable cell next to the trunk, at any height a pillar reaches |
+| `toBlock(block)` | `craft`, `place`, `use_block`, `build`, `farm`, menus | Tier 1, then Tier 2 if it finds no way |
+| `toDig(point)` | `goto` (`pos`, places) | Tier 1, then Tier 2 if it finds no way |
+| `toItem(pos)` | drops after mining, `collect`'s loose items, `pickup` | Tier 1, then Tier 2 to anywhere the pickup box reaches the item (a drop caught in leaves) |
+| `to(point)`, `toEntity` | `hunt`, `give`, beds, seats | Tier 1 only: mobs and people move, and are never dug for |
+
+A job's walks share one navigator: `Walk.stop()` (a walk arrived, the job acts) stops whatever still moves the body,
+so a walk left running for a vanished item never keeps digging while the job works. A walk asked for the same block
+more than 8 times without getting there gives up (`no_progress`). Reflexes call the navigator directly and stay on
+Tier 1. Tier 2 (`DigPathPlanner`) breaks natural blocks nobody placed and the scaffold agents placed to get somewhere
+only (`NavBlocks.mayBreak`: never a crew build, never the office, never a block with a block entity, never what
+`Protection.check` protects), pillars and bridges with dirt or cobblestone from the bag (into empty cells or
+replaceable plants nobody placed, never inside a protected zone), and never digs straight down, opens a block next to
+water or lava, or takes a drop whose landing went away since the plan. Felling a tree, the miner clears the pillars
+Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay). It plans within 1.5 ms
+per tick per agent. Its plans
+are logged as `[agent <id>] nav.dig {steps, breaks, places, nodes, ms}`; `mine` and `collect` results carry
+`unreachable` (targets given up on). With `MINEVIBE_NAV_DEBUG=1` (or `-Dminevibe.navDebug=true`) every failed walk logs
+`[nav]` lines and a terrain map around the agent and its goal.
 
 ## Body messages
 

@@ -2,6 +2,10 @@ package dev.minevibe.agent.nav;
 
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
@@ -20,12 +24,19 @@ import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Tier-1 navigation (PLAN 7.2): vanilla {@link PathFinder} with a {@link WalkNodeEvaluator} (4000 nodes)
- * run against a never-added {@link NavProxyMob}, planned in waypoints of at most 40 blocks and followed by
- * {@link PathExecutor}.
+ * Agent navigation (PLAN 7.2), in two tiers.
  *
- * <p>Stuck ladder, one rung per {@value #STUCK_TICKS} ticks without progress: jump, replan, a visible
- * "poof" unstuck of at most 3 blocks, then a {@code nav.failed} event and {@link Status#FAILED}.
+ * <p><b>Tier 1:</b> vanilla {@link PathFinder} with a {@link WalkNodeEvaluator} (4000 nodes) run against a never-added
+ * {@link NavProxyMob}, planned in waypoints of at most 40 blocks and followed by {@link PathExecutor}. Stuck ladder,
+ * one rung per {@value #STUCK_TICKS} ticks without progress: jump, replan, a visible "poof" unstuck of at most 3
+ * blocks, then a {@code nav.failed} event and {@link Status#FAILED}.
+ *
+ * <p><b>Tier 2:</b> {@link DigPathPlanner}, an incremental A* (1.5 ms per tick, 20 000 nodes, 96 blocks) whose paths
+ * may break natural blocks, pillar and bridge with scaffold, followed by {@link DigPathExecutor}. It runs when Tier 1
+ * finds no way to a goal whose caller allows digging ({@link #moveTo(Vec3, double, boolean)},
+ * {@link #approachBlock}), and straight away for "reach a block to mine" ({@link #reachBlock}) and "reach a tree trunk"
+ * ({@link #reachTrunk}). A step that turns out unsafe or blocked re-plans (at most {@value #MAX_DIG_REPLANS} times).
+ * Being stuck behind an entity (a Tier-1 "stuck") never falls back to digging.
  */
 public final class AgentNavigator {
 	public enum Status {
@@ -37,12 +48,18 @@ public final class AgentNavigator {
 
 	/** Emits nav.plan / nav.stuck events (noisy; for debugging and GameTests). */
 	public static boolean debug = Boolean.getBoolean("minevibe.navDebug");
+	/** Tier 2 on or off ({@code -Dminevibe.nav.tier2=false}: Tier 1 only, as before navigation v2). */
+	public static boolean tier2Enabled = !"false".equalsIgnoreCase(System.getProperty("minevibe.nav.tier2", "true"));
 
 	public static final int MAX_VISITED_NODES = 4000;
 	public static final int WAYPOINT_BLOCKS = 40;
+	/** Eye-to-centre distance a Tier-2 "reach a block" path ends within (a little under the hands' 4.0). */
+	public static final double PLAN_REACH = 3.75;
+	private static final double BLOCK_REACH = 4.0;
 	private static final float MAX_SEGMENT_PATH_LENGTH = 64.0F;
 	private static final int STUCK_TICKS = 30;
 	private static final int MAX_FRUITLESS_SEGMENTS = 4;
+	private static final int MAX_DIG_REPLANS = 8;
 
 	private final AgentPlayer agent;
 	private final WalkNodeEvaluator evaluator = new WalkNodeEvaluator();
@@ -53,6 +70,32 @@ public final class AgentNavigator {
 	private Status status = Status.IDLE;
 	private @Nullable Vec3 goal;
 	private double reach = 1.0;
+	/** Tier 1 also arrives once this block is in hand reach ({@link #approachBlock}). */
+	private @Nullable BlockPos reachTarget;
+
+	// Tier 2
+	private @Nullable DigGoal digFallback;
+	/** The current walk may dig (kept when a moving goal is updated). */
+	private boolean digAllowed;
+	private @Nullable DigGoal digGoal;
+	private @Nullable DigPathPlanner planner;
+	private final NavDoors digDoors = new NavDoors();
+	private final LongSet forbidden = new LongOpenHashSet();
+	private final DigPathExecutor digExecutor = new DigPathExecutor(this.digDoors, this.forbidden);
+	private int digReplans;
+	private int digWaitTicks;
+	private @Nullable DigPath lastDigPath;
+	private int digPlans;
+	private int digNodes;
+	private long digNanosTotal;
+	private long digTickNanosMax;
+	private int digPlanTicks;
+	private int digTicksOverBudget;
+	private final long[] digTickSamples = new long[256];
+	private int digTickSampleNext;
+	/** One node expansion past the deadline is the most a tick may overrun (timer resolution included). */
+	private static final long OVER_BUDGET_SLACK_NANOS = 200_000L;
+
 	private boolean finalSegment;
 	private int finalApproachTicks;
 	private int fruitlessSegments;
@@ -80,10 +123,95 @@ public final class AgentNavigator {
 
 	// ---------------------------------------------------------------- API
 
-	/** Starts moving to {@code goal}; arrives when within {@code reach} blocks (horizontally, |dy| <= 1.5). */
+	/**
+	 * Starts moving to {@code goal}; arrives when within {@code reach} blocks (horizontally, |dy| <= 1.5). Tier 1 only:
+	 * reflexes (following, fleeing, fighting) never dig.
+	 */
 	public void moveTo(final Vec3 goal, final double reach) {
+		this.moveTo(goal, reach, false);
+	}
+
+	/**
+	 * Like {@link #moveTo(Vec3, double)}; with {@code dig}, a goal Tier 1 cannot reach is tried again with Tier 2
+	 * (breaking natural blocks, pillars, bridges).
+	 */
+	public void moveTo(final Vec3 goal, final double reach, final boolean dig) {
+		// Tier 2 tests cells: a cell next to the point is near enough (a body picks items up from there too).
+		this.startTier1(goal, reach, null, dig && tier2Enabled ? DigGoal.near(goal, Math.max(1.0, reach)) : null);
+	}
+
+	public void moveTo(final BlockPos goal, final double reach) {
+		this.moveTo(Vec3.atBottomCenterOf(goal), reach);
+	}
+
+	/**
+	 * Walks to pick up an item lying at {@code item}: Tier 1 to it; if that finds no way (a drop caught in the leaves of a
+	 * tree, on a ledge), Tier 2 to anywhere the pickup box reaches it from.
+	 */
+	public void moveToItem(final Vec3 item) {
+		this.startTier1(item, 0.5, null, tier2Enabled ? DigGoal.pickup(item) : null);
+	}
+
+	/**
+	 * Walks until {@code block} is in hand reach (to use it, or place next to it): Tier 1 toward it first, Tier 2 if that
+	 * finds no way.
+	 */
+	public void approachBlock(final BlockPos block) {
+		this.startTier1(Vec3.atBottomCenterOf(block), 2.0, block.immutable(), tier2Enabled ? DigGoal.block(block, PLAN_REACH) : null);
+	}
+
+	/**
+	 * "Reach a block to mine": Tier 2 straight away, to a spot with {@code block} in hand reach and one face open toward
+	 * the eyes (beside it, above it or below it; never standing on it). Without Tier 2, as {@link #approachBlock}.
+	 */
+	public void reachBlock(final BlockPos block) {
+		if (!tier2Enabled) {
+			this.approachBlock(block);
+			return;
+		}
+		this.startTier2(DigGoal.block(block, PLAN_REACH), "mine");
+	}
+
+	/** "Reach a tree trunk": Tier 2 to any cell next to the trunk {@code log} belongs to, at any height a pillar reaches. */
+	public void reachTrunk(final BlockPos log) {
+		DigGoal trunk = DigGoal.trunk(this.agent.level(), log);
+		if (!tier2Enabled) {
+			this.startTier1(Vec3.atBottomCenterOf(trunk.anchor()), 1.8, null, null);
+			return;
+		}
+		this.startTier2(trunk, "trunk");
+	}
+
+	/** Tier 2 to any {@link DigGoal}. */
+	public void moveTo(final DigGoal goal) {
+		this.startTier2(goal, "goal");
+	}
+
+	/** Like {@link #moveTo} but keeps the current path when the goal only moved a little (following). */
+	public void updateGoal(final Vec3 goal, final double reach) {
+		if (this.status == Status.MOVING && this.goal != null && this.goal.distanceTo(goal) < 1.5 && this.digGoal == null) {
+			this.goal = goal;
+			this.reach = reach;
+			return;
+		}
+		this.moveTo(goal, reach, this.digAllowed);
+	}
+
+	public void stop() {
+		this.status = Status.IDLE;
+		this.goal = null;
+		this.executor.clear(this.agent);
+		this.endTier2();
+		this.agent.controls().stopMovement();
+	}
+
+	private void startTier1(final Vec3 goal, final double reach, final @Nullable BlockPos reachTarget, final @Nullable DigGoal fallback) {
+		this.endTier2();
 		this.goal = goal;
 		this.reach = Math.max(0.5, reach);
+		this.reachTarget = reachTarget;
+		this.digFallback = fallback;
+		this.digAllowed = fallback != null;
 		this.status = Status.MOVING;
 		this.failureReason = null;
 		this.fruitlessSegments = 0;
@@ -96,25 +224,103 @@ public final class AgentNavigator {
 		}
 	}
 
-	public void moveTo(final BlockPos goal, final double reach) {
-		this.moveTo(Vec3.atBottomCenterOf(goal), reach);
-	}
-
-	/** Like {@link #moveTo} but keeps the current path when the goal only moved a little (following). */
-	public void updateGoal(final Vec3 goal, final double reach) {
-		if (this.status == Status.MOVING && this.goal != null && this.goal.distanceTo(goal) < 1.5) {
-			this.goal = goal;
-			this.reach = reach;
-			return;
-		}
-		this.moveTo(goal, reach);
-	}
-
-	public void stop() {
-		this.status = Status.IDLE;
-		this.goal = null;
+	private void startTier2(final DigGoal goal, final String why) {
 		this.executor.clear(this.agent);
-		this.agent.controls().stopMovement();
+		this.endTier2();
+		this.digGoal = goal;
+		this.digFallback = null;
+		this.digAllowed = true;
+		this.reachTarget = null;
+		this.goal = Vec3.atBottomCenterOf(goal.anchor());
+		this.reach = 1.0;
+		this.status = Status.MOVING;
+		this.failureReason = null;
+		this.digReplans = 0;
+		this.digWaitTicks = 0;
+		this.forbidden.clear();
+		if (NavDebug.ENABLED) {
+			// Every mine target starts one: worth a line only when diagnosing (failures are always logged).
+			NavDebug.log(this.agent.agentId(), "tier2", "why", why, "goal", goal.describe(), "from", this.agent.blockPosition().toShortString());
+		}
+		if (this.digArrived()) {
+			this.arrive();
+		}
+	}
+
+	private void endTier2() {
+		if (this.planner != null || this.digExecutor.hasPath()) {
+			this.digExecutor.clear(this.agent);
+		}
+		this.planner = null;
+		this.digGoal = null;
+	}
+
+	/** True while Tier 2 (dig planner) drives the agent. */
+	public boolean isTier2() {
+		return this.digGoal != null;
+	}
+
+	/** The last path Tier 2 found (tests, logs). */
+	public @Nullable DigPath lastDigPath() {
+		return this.lastDigPath;
+	}
+
+	/** Tier-2 searches started. */
+	public int digPlans() {
+		return this.digPlans;
+	}
+
+	/** Nodes all Tier-2 searches expanded. */
+	public int digNodes() {
+		return this.digNodes;
+	}
+
+	/** The longest time a Tier-2 search took in one tick (the budget is 1.5 ms). */
+	public double digMaxTickMillis() {
+		return this.digTickNanosMax / 1.0E6;
+	}
+
+	/** Average time per tick a Tier-2 search ran in. */
+	public double digAvgTickMillis() {
+		return this.digPlanTicks == 0 ? 0.0 : this.digNanosTotal / 1.0E6 / this.digPlanTicks;
+	}
+
+	/** Ticks Tier-2 searches ran in. */
+	public int digPlanTicks() {
+		return this.digPlanTicks;
+	}
+
+	/** Ticks in which a Tier-2 search ran more than 0.2 ms past its 1.5 ms budget (a GC pause, or a slow node). */
+	public int digTicksOverBudget() {
+		return this.digTicksOverBudget;
+	}
+
+	/** The time (ms) Tier-2 searches took in each of the last 256 ticks they ran in, oldest first. */
+	public double[] digTickMillis() {
+		int n = Math.min(this.digTickSampleNext, this.digTickSamples.length);
+		double[] out = new double[n];
+		int first = this.digTickSampleNext - n;
+		for (int i = 0; i < n; i++) {
+			out[i] = this.digTickSamples[(first + i) % this.digTickSamples.length] / 1.0E6;
+		}
+		return out;
+	}
+
+	/** Blocks Tier 2 broke and placed on the way. */
+	public int digBroken() {
+		return this.digExecutor.broken();
+	}
+
+	public int digPlaced() {
+		return this.digExecutor.placed();
+	}
+
+	/**
+	 * The pillar blocks Tier 2 placed since the last call, bottom first. A job that cleans up after itself (felling a tree)
+	 * takes them to mine them away; nobody else needs to call it.
+	 */
+	public List<BlockPos> drainPlacedPillars() {
+		return this.digExecutor.drainPillars();
 	}
 
 	public Status status() {
@@ -157,7 +363,12 @@ public final class AgentNavigator {
 
 	public void tick() {
 		this.executor.maintainDoors(this.agent);
+		this.digDoors.closeBehind(this.agent, this.digExecutor::goesThrough);
 		if (this.status != Status.MOVING || this.goal == null) {
+			return;
+		}
+		if (this.digGoal != null) {
+			this.tickTier2();
 			return;
 		}
 		if (this.hasArrived()) {
@@ -169,7 +380,7 @@ public final class AgentNavigator {
 				&& Math.abs(this.goal.y - this.agent.getY()) <= 1.5) {
 				// The path ends next to the goal (A* stops within reach of the target block): walk the last bit straight.
 				if (++this.finalApproachTicks > 40) {
-					this.fail("unreachable");
+					this.tier1Failed("unreachable");
 					return;
 				}
 				if (!this.steerDirect(this.goal)) {
@@ -190,7 +401,131 @@ public final class AgentNavigator {
 	}
 
 	private boolean hasArrived() {
+		if (this.reachTarget != null && this.inHandReach(this.reachTarget)) {
+			return true;
+		}
 		return this.horizontalDistanceToGoal() <= this.reach && Math.abs(this.goal.y - this.agent.getY()) <= 1.5;
+	}
+
+	private boolean inHandReach(final BlockPos block) {
+		return this.agent.getEyePosition().distanceTo(Vec3.atCenterOf(block)) <= BLOCK_REACH;
+	}
+
+	/** Tier 1 found no way: Tier 2 if the caller allows digging, else a failure. */
+	private void tier1Failed(final String reason) {
+		DigGoal fallback = this.digFallback;
+		if (fallback == null || !tier2Enabled) {
+			this.fail(reason);
+			return;
+		}
+		NavDebug.log(this.agent.agentId(), "tier1_failed", "reason", reason, "from", this.agent.blockPosition().toShortString());
+		this.startTier2(fallback, "tier1_" + reason);
+	}
+
+	// ---------------------------------------------------------------- tier 2
+
+	private boolean digArrived() {
+		DigGoal g = this.digGoal;
+		if (g == null) {
+			return false;
+		}
+		boolean settled = this.agent.onGround() || this.agent.isInWater() || this.agent.onClimbable();
+		return settled && g.satisfiedAt(this.agent.level(), this.agent.blockPosition());
+	}
+
+	private void tickTier2() {
+		if (this.digArrived()) {
+			this.arrive();
+			return;
+		}
+		if (this.planner == null && !this.digExecutor.hasPath()) {
+			// Plan from where the agent stands (or swims): wait for a landing first.
+			boolean settled = this.agent.onGround() || this.agent.isInWater() || this.agent.onClimbable();
+			if (!settled && ++this.digWaitTicks < 40) {
+				return;
+			}
+			this.digWaitTicks = 0;
+			this.startSearch();
+		}
+		DigPathPlanner p = this.planner;
+		if (p != null) {
+			this.agent.controls().stopMovement();
+			DigPathPlanner.State s = p.step(DigPathPlanner.TICK_BUDGET_NANOS);
+			this.digPlanTicks++;
+			long tickNanos = p.lastStepNanos();
+			this.digTickNanosMax = Math.max(this.digTickNanosMax, tickNanos);
+			if (tickNanos > DigPathPlanner.TICK_BUDGET_NANOS + OVER_BUDGET_SLACK_NANOS) {
+				this.digTicksOverBudget++;
+			}
+			this.digTickSamples[this.digTickSampleNext++ % this.digTickSamples.length] = tickNanos;
+			if (s == DigPathPlanner.State.SEARCHING) {
+				return;
+			}
+			this.planner = null;
+			this.digNanosTotal += p.nanos();
+			this.digNodes += p.expanded();
+			if (s == DigPathPlanner.State.FAILED) {
+				NavDebug.log(this.agent.agentId(), "tier2_failed", "reason", p.failure(), "goal", p.goal().describe(), "nodes", p.expanded(), "ticks", p.ticks(),
+					"ms", String.format(Locale.ROOT, "%.1f", p.nanos() / 1.0E6));
+				this.fail(p.failure());
+				return;
+			}
+			DigPath path = p.path();
+			this.lastDigPath = path;
+			if (path == null || path.isEmpty()) {
+				this.arrive();
+				return;
+			}
+			AgentEvents.emit(this.agent, "nav.dig", Map.of(
+				"goal", p.goal().describe(),
+				"steps", Integer.toString(path.steps().size()),
+				"breaks", Integer.toString(path.breaks()),
+				"places", Integer.toString(path.places()),
+				"nodes", Integer.toString(path.nodes()),
+				"ticks", Integer.toString(path.ticks()),
+				"ms", String.format(Locale.ROOT, "%.1f", path.nanos() / 1.0E6)
+			));
+			if (debug || NavDebug.ENABLED) {
+				NavDebug.log(this.agent.agentId(), "dig_path", "steps", path.steps());
+			}
+			this.digExecutor.setPath(path);
+			return;
+		}
+		switch (this.digExecutor.tick(this.agent)) {
+			case RUNNING -> {
+			}
+			case DONE -> {
+				boolean settled = this.agent.onGround() || this.agent.isInWater() || this.agent.onClimbable();
+				if (this.digArrived()) {
+					this.arrive();
+				} else if (settled || ++this.digWaitTicks >= 40) {
+					// Landed (or never will) somewhere that is not the goal after all: plan again from here.
+					this.digWaitTicks = 0;
+					this.digReplan("done_not_there");
+				}
+			}
+			case REPLAN -> this.digReplan(String.valueOf(this.digExecutor.replanReason()));
+		}
+	}
+
+	private void digReplan(final String why) {
+		NavDebug.log(this.agent.agentId(), "tier2_replan", "why", why, "at", this.agent.blockPosition().toShortString(), "n", this.digReplans + 1);
+		this.digExecutor.setPath(null);
+		if (++this.digReplans > MAX_DIG_REPLANS) {
+			this.fail("stuck");
+		}
+	}
+
+	private void startSearch() {
+		DigGoal g = this.digGoal;
+		if (g == null) {
+			return;
+		}
+		ServerLevel level = this.agent.level();
+		DigPathPlanner.Config config = DigPathPlanner.Config.standard(this.agent.getHealth(), NavBlocks.scaffoldCount(this.agent.getInventory()))
+			.withAgent(this.agent.agentId());
+		this.planner = new DigPathPlanner(level, this.agent.getInventory(), this.agent.blockPosition(), g, config, this.forbidden);
+		this.digPlans++;
 	}
 
 	private double horizontalDistanceToGoal() {
@@ -218,15 +553,27 @@ public final class AgentNavigator {
 	private void arrive() {
 		this.status = Status.ARRIVED;
 		this.executor.clear(this.agent);
+		this.endTier2();
 		this.agent.controls().stopMovement();
 	}
 
 	private void fail(final String reason) {
+		String tier = this.digGoal != null ? "2" : "1";
+		DigGoal dg = this.digGoal != null ? this.digGoal : this.digFallback;
+		String kind = dg != null ? dg.kind() : this.reachTarget != null ? "block" : "walk";
 		this.status = Status.FAILED;
 		this.failureReason = reason;
+		NavDebug.log(this.agent.agentId(), "failed", "reason", reason, "tier", tier, "from", this.agent.blockPosition().toShortString(),
+			"goal", this.goal == null ? "-" : BlockPos.containing(this.goal).toShortString(), "fruitless", this.fruitlessSegments);
+		if (NavDebug.ENABLED && this.goal != null) {
+			BlockPos g = BlockPos.containing(this.goal);
+			NavDebug.terrainMap(this.agent.level(), this.agent.agentId(), this.agent.blockPosition(), g);
+			NavDebug.column(this.agent.level(), this.agent.agentId(), g, 8, 1);
+		}
 		this.executor.clear(this.agent);
+		this.endTier2();
 		this.agent.controls().stopMovement();
-		AgentEvents.emit(this.agent, "nav.failed", Map.of("reason", reason, "goal", this.goal == null ? "" : this.goal.toString()));
+		AgentEvents.emit(this.agent, "nav.failed", Map.of("reason", reason, "tier", tier, "kind", kind, "goal", this.goal == null ? "" : this.goal.toString()));
 	}
 
 	// ---------------------------------------------------------------- planning
@@ -237,7 +584,7 @@ public final class AgentNavigator {
 		double goalDistance = pos.distanceTo(this.goal);
 		if (goalDistance >= this.bestGoalDistanceAtSegmentStart - 0.5) {
 			if (++this.fruitlessSegments > MAX_FRUITLESS_SEGMENTS) {
-				this.fail("no_path");
+				this.tier1Failed("no_path");
 				return false;
 			}
 		} else {
@@ -266,11 +613,17 @@ public final class AgentNavigator {
 		}
 		Path path = this.findPath(target, reachRange);
 		if (path == null || path.getNodeCount() == 0) {
-			this.fail("no_path");
+			this.tier1Failed("no_path");
 			return false;
 		}
 		this.executor.setPath(path, this.agent);
 		this.finalApproachTicks = 0;
+		if (!path.canReach() && NavDebug.ENABLED) {
+			Node end = path.getEndNode();
+			NavDebug.log(this.agent.agentId(), "partial", "from", this.agent.blockPosition().toShortString(), "target", target.toShortString(),
+				"nodes", path.getNodeCount(), "end", end == null ? "-" : end.asBlockPos().toShortString(),
+				"left", String.format(java.util.Locale.ROOT, "%.1f", path.getDistToTarget()), "fruitless", this.fruitlessSegments);
+		}
 		if (debug) {
 			Node end = path.getEndNode();
 			AgentEvents.emit(this.agent, "nav.plan", Map.of(
@@ -288,7 +641,7 @@ public final class AgentNavigator {
 		if (this.executor.isDone()) {
 			// The best we can do is where we stand.
 			if (this.finalSegment && !path.canReach()) {
-				this.fail("unreachable");
+				this.tier1Failed("unreachable");
 				return false;
 			}
 		}

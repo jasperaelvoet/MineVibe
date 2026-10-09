@@ -89,6 +89,10 @@ public final class GatherJobs {
 				// Let the last drops be picked up (the miner collects right after each break).
 				return this.miner.collecting(agent) ? Status.RUNNING : this.finish(agent, false);
 			}
+			if (this.miner.mined() >= this.count) {
+				// Enough: finish the tree being felled, then stop (no next tree).
+				this.miner.finishCurrentTree();
+			}
 			Miner.Tick t = this.miner.tick(agent);
 			this.progress((double)Math.min(this.miner.mined(), this.count) / this.count, this.miner.mined() + "/" + this.count + " " + this.block.ref());
 			return switch (t) {
@@ -120,6 +124,7 @@ public final class GatherJobs {
 		private Status finish(final AgentPlayer agent, final boolean ranOut) {
 			agent.controls().stopMining();
 			this.put("mined", this.miner.mined());
+			this.put("unreachable", this.miner.unreachable());
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
 			if (this.miner.treeMode()) {
 				this.put("trees", this.miner.treesFelled());
@@ -262,6 +267,10 @@ public final class GatherJobs {
 				this.report(agent, got);
 				return this.done();
 			}
+			if (got >= this.count && this.miner != null) {
+				// Enough: finish the tree being felled, then stop (no next tree).
+				this.miner.finishCurrentTree();
+			}
 			if (got <= 0 && !busy && this.miner != null && !this.miner.treeMode() && !this.miner.collecting() && this.miner.mined() >= this.count
 				&& !Inv.gained(this.before, Inv.counts(agent)).isEmpty()) {
 				// The item's own block drops something else (stone: cobblestone, an ore: its raw metal): as many blocks as
@@ -283,7 +292,7 @@ public final class GatherJobs {
 			if (this.prey == null && (this.miner == null || this.miner.target() == null && !busy)) {
 				ItemEntity loose = Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s));
 				if (loose != null && !this.ignored.contains(loose)) {
-					if (agent.position().distanceTo(loose.position()) > 0.6 && this.walk.to(agent, loose.position(), 0.5) == Walk.State.FAILED) {
+					if (agent.position().distanceTo(loose.position()) > 0.6 && this.walk.toItem(agent, loose.position()) == Walk.State.FAILED) {
 						this.ignored.add(loose);
 					}
 					return Status.RUNNING;
@@ -403,6 +412,10 @@ public final class GatherJobs {
 			this.put("item", this.item.item() != null ? Refs.itemId(this.item.item()) : this.item.ref());
 			this.put("got", Math.max(0, got));
 			this.put("collected", Math.max(0, got));
+			if (this.miner != null) {
+				this.put("mined", this.miner.mined());
+				this.put("unreachable", this.miner.unreachable());
+			}
 			this.put("have", Inv.count(agent, this.item));
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
 			com.google.gson.JsonArray src = new com.google.gson.JsonArray();
@@ -807,7 +820,7 @@ public final class GatherJobs {
 					return this.done();
 				}
 			}
-			if (++this.targetTicks > 15 * SECOND || this.walk.to(agent, this.target.position(), 0.5) == Walk.State.FAILED) {
+			if (++this.targetTicks > 15 * SECOND || this.walk.toItem(agent, this.target.position()) == Walk.State.FAILED) {
 				this.unreachable.add(this.target);
 				this.target = null;
 			}

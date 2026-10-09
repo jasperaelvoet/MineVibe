@@ -88,9 +88,10 @@ The cap was about 40 agent turns for the whole job; 26 were used (9 + 13 + 1 + 3
 
 ## Found, not fixed
 
-In [DEBT.md](DEBT.md), "Found in the live acceptance run": visible oak unreachable on most seeds (`mine`
-`UNREACHABLE (no_path)`), no `/mnt/codex` in the PCs, the mod's `ok` replies drop nested nulls, plan cards without a
-plan when the agent states its plan in prose, and throwaway homes leaking PC instances into the shared dev engine.
+In [DEBT.md](DEBT.md), "Found in the live acceptance run": no `/mnt/codex` in the PCs, the mod's `ok` replies drop
+nested nulls, plan cards without a plan when the agent states its plan in prose, and throwaway homes leaking PC
+instances into the shared dev engine. The visible oak that was unreachable on most seeds is fixed by navigation v2
+(below).
 
 Fixed since, in the D2 sweep (same day): PCs mount the Codex read-only at `/mnt/codex` with `~/codex` (step 5's
 `ls /mnt/codex` would now list the pages); `ok` replies keep nested nulls, so `debug.state`'s per-agent and
@@ -108,3 +109,76 @@ instance on exit (replacing `out/leaked-instances.txt`). The oak item stays open
   run 2 ran alone. The engine is shared by design (leases): with another MineVibe up, step 9 accepts the engine
   staying up for it, which run 2 did not need.
 - The scenario's oak step depends on terrain: seed `mv-forest-1` was picked by the zero-token scout.
+
+## Navigation v2, step 3 at zero tokens (2026-10-09)
+
+DEBT's "visible oak is unreachable on most seeds", run down with `MINEVIBE_NAV_DEBUG=1` (terrain maps of every failed
+walk in the game log) and fixed by Tier 2 of PLAN §7.2 (`DigPathPlanner`), plus exit stairs for the starter office.
+
+**Diagnosis.** Not the trees. On seeds `42` and `minevibe-e2e` the starter office is sunk into a hillside: the floor
+sits at the median of 9 terrain samples, which a lake (42) or a slope pulled down, so the ground around three sides
+stands 3 to 7 blocks above the floor and the porch is a 3-high hole into the hill. No walking path leads out of the
+office, from inside or from the porch; Tier 1's best partial path led back into the office toward the tree, and after
+4 segments that got no closer it gave up (`no_path`). On the other seeds Tier 1 reached nearly every log it targeted
+(2 given up); what it lost there were drops caught in leaves (13 to 40 per run).
+
+**Fix.** Tier 2 digs through natural ground (grass is `#grass_blocks`, not `#dirt`, in 26.3), pillars and bridges
+where no walk leads, and fetches drops from the leaves. Since W1 (merged meanwhile) protects the Base, natural ground
+around the office included, agents may not dig out of a sunk office; `OfficeBuilder` now cuts stairs up from the porch
+when the ground in front stands higher than a step, so the player and the crew walk out. Bugs found on the way, fixed
+with tests: a job's walks share one navigator, so a walk left running for a vanished item kept digging while the job
+mined elsewhere (each tick's held attack aborted the other's, and nothing ever broke); a walk that arrived next to an
+item it could not pick up stood there until the item despawned (5 minutes); a block that came into reach at the top
+of a pillar's jump stopped the pillar, and the body fell back out of reach and started over (a loop); and W1's tree
+felling never ended a `collect` or `mine` whose count was met (it picked the next tree in the same tick the last one's
+chores ended, so the job felled trees until its 6-minute timeout).
+
+**How it runs.** `--crew scripted --steps 1,3`: step 3 then has the mod's own jobs do it, from the body's spawn next
+to the player in the office: `collect` 10 logs (oak, or the nearest other log when no oak is within 48 blocks) with
+`radius: 48`, then planks and a crafting table. `mine` and `collect` default to 24 blocks, so the radius is passed
+(DEBT). Two baselines, because W1 landed on `main` during this work: `main` before W1 (`d747169`) and with it
+(`b7c347f`), both Tier 1 only; after = this branch, on each, and once more after rebasing onto `5f7e72d` (tools v2
+and mode profiles merged).
+
+```sh
+cd apps/mod && ./gradlew build && cd ../..
+node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripted --steps 1,3 --seed 42
+```
+
+| Seed | Log | Nearest | `d747169` | This branch on `d747169` | `b7c347f` (W1) | This branch on `b7c347f` | This branch on `5f7e72d` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `42` | oak | 11.4 | FAIL, `UNREACHABLE` in 8.9 s | PASS, 62.8 s | FAIL, `NO_NATURAL_SOURCE` | PASS, 98.1 s | PASS, 45.7 s |
+| `mv-forest-1` | oak | 28.9 | PASS, 45.1 s | PASS, 43.9 s | `TIMEOUT` (87 logs) | PASS, 41.3 s | PASS, 42.1 s |
+| `minevibe-e2e` | oak | 17.5 | FAIL, `UNREACHABLE` in 7.9 s | PASS, 76.7 s | FAIL, `NO_NATURAL_SOURCE` | PASS, 77.8 s | PASS, 72.9 s |
+| `3037014017` | oak | 36.1 | PASS, 68.6 s | PASS, 54.8 s | `TIMEOUT` (86 logs) | PASS, 57.6 s | PASS, 58.9 s |
+| `217793310` | spruce | 3.3 | PASS, 102.7 s | PASS, 62.3 s | `TIMEOUT` (57 logs) | PASS, 97.2 s | PASS, 89.9 s |
+| `2921725920` | oak | 3.2 | PASS, 65.7 s | PASS, 46.2 s | `TIMEOUT` (75 logs) | PASS, 49.8 s | PASS, 41.9 s |
+| **Collect done** | | | **4 of 6** | **6 of 6** | **0 of 6** | **6 of 6** | **6 of 6** |
+| **Reach** | | | **40 of 60 (0.67)** | **66 of 69 (0.96)** | | **87 of 117 (0.74)** | **80 of 94 (0.85)** |
+| **Drops left** | | | **99** | **0** | | **0** | **1** |
+
+- **Reach** is mining targets reached of those tried: blocks mined against targets given up on (the job's own
+  `mined` and `unreachable`; on `d747169`, a failed walk to a block's bottom centre in the game log and the logs
+  collected for the mined count, so a lower bound). **Drops left** are walks to a drop that failed. With `mine`'s
+  default radius of 24 only one seed passed on `d747169` (`2921725920`); the others found no oak in range.
+- With W1 a tree is felled whole, bottom-up, so "given up" also counts the high logs of a felled tree that neither a
+  Tier-2 pillar (3 blocks) nor W1's own reaches (`logsLeftHigh`): 30 of them on `b7c347f` and 14 on `5f7e72d`, most
+  in the spruce of `217793310` and the tall oaks of `minevibe-e2e`. The job collects 10-16 logs because it finishes
+  the tree it is felling. On `5f7e72d` seed `42`'s nearest oak is 19.6 blocks away, not 11.4.
+- `b7c347f`'s `TIMEOUT` rows are the felling loop above (the logs were there, the job never ended); its two FAILs are
+  the sunk office (the oak by the office is in the Base, the others unreachable on foot).
+- Tier 2 planned 1 to 16 times per run, each search within 1.5 ms per tick (the first one on `d747169`, out of seed
+  42's office by digging, 349 nodes in 10 ticks; a search that runs out, 20 000 nodes in 70-110 ticks).
+- The 27 navigation GameTests (`NavGameTests`, `-Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'`): a
+  tree on a 3-block ledge (dug stairs, or a 2-block pillar with dirt in the bag), across a 2-wide gap 4 deep (bridged),
+  behind a leaf wall, on a hill with a 2-high grass step (1 block cut), across a river (swum), an office sunk in a hill
+  (walked out by its stairs, office untouched), a sealed tree (`no_path`, not one block broken), a goal past 96 blocks
+  (`too_far` at once), a door, a ladder, `goto` falling back to Tier 2, drops fetched from leaves, a stale walk
+  stopped, a pillar not cut short at the top of its jump, `collect` stopping at its count, the safety rules (no block
+  next to water, nothing under the feet, only natural blocks), and four agents planning at once (median 1.45 ms, 90th
+  percentile 1.48 ms per agent tick). Six more from the review (each failed before its fix): a ring the crew built
+  (planks, glass, bricks) is never broken, even under a stale scaffold note, while the agent's own scaffold is; a tree
+  felled after a `goto` pillared elsewhere leaves that pillar's position (a crew build by then) alone; a drop whose
+  landing is mined away while the agent walks to the edge re-plans instead of falling 6 blocks; a 9-block fall into a
+  pool is no re-plan; no scaffold is planned into a torch's cell (one clean `no_path`, not 9 searches ending `stuck`);
+  and the office's exit stairs seal off a pond beside them and sand above them.

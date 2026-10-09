@@ -676,8 +676,9 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   - Logs come from **natural trees**: a cluster of log blocks touching leaves with `persistent=false` that nobody
     placed and that touches no building block (planks, glass, doors, stairs, slabs, fences, walls, wool, beds,
     bricks, cobblestone, chests...). Logs in buildings are never trees, even in a world from before provenance. A tree is felled whole, bottom-up: the nearest one the agent can walk
-    to (a quick A* per tree), stepping into the cut trunk or pillaring up at most 2 blocks (dirt or cobblestone) for
-    high logs and clearing the pillar afterwards; drops are picked up at the stump, and `collect{replant:true}`
+    to (a quick A* per tree; with no walking way to any, the nearest one Tier-2 navigation can dig or build its way
+    to), each log reached by digging natural ground, pillaring or bridging if needed (else by stepping into the cut
+    trunk or pillaring up at most 2 blocks), every pillar cleared afterwards; drops are picked up at the stump, and `collect{replant:true}`
     plants a sapling of the same kind there. `result.trees` counts felled trees, `logsLeftHigh` logs left out of
     reach.
   - Protected blocks are never targets. Nothing natural in reach: `NO_NATURAL_SOURCE` (only protected blocks of the
@@ -729,6 +730,9 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 - **`container`** without `pos` (cap `container.nearest`) uses the nearest chest, trapped chest or barrel within 24
   blocks (none: `NOT_FOUND`); the result's `pos` says which. **`give`** without `count` (cap `give.all`) gives
   everything of the item.
+- **`mine` and `collect`** reach their blocks by digging through natural ground, pillaring and bridging if there is
+  no walking way (the mod's Tier-2 navigation, which breaks only what section 7.4.3 lets agents break); their
+  `result` counts `mined` and `unreachable` (the targets given up on).
 - **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
   north at rotation 0, roof, a torch inside when one is carried: without one it ends `done` with
   `note: "no torch carried: the inside stays dark"`), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks

@@ -1,6 +1,8 @@
 package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
+import dev.minevibe.agent.nav.AgentNavigator;
+import dev.minevibe.agent.nav.NavBlocks;
 import dev.minevibe.agent.perception.Compass;
 import dev.minevibe.agent.perception.Reach;
 import dev.minevibe.agent.perception.Sources;
@@ -38,9 +40,10 @@ import org.jspecify.annotations.Nullable;
  *   <li><b>Blocks</b> that are protected (player-built, in the Base) are never targets; they are remembered so a job
  *       that finds nothing else can say so ({@link #candidates}).</li>
  *   <li><b>Trees</b> ({@code treeMode}: the request is for logs): the nearest natural tree the agent can walk to (a
- *       quick A* per tree) is felled whole, bottom-up. Logs above reach are reached by stepping into the cut trunk,
- *       then by pillaring up at most {@value #MAX_PILLAR} blocks (with dirt or cobblestone in the bag); the pillar is
- *       mined away afterwards. Drops are picked up when the tree is done, and a sapling of the same kind is planted
+ *       quick A* per tree; with no walking way to any, the nearest tree at all) is felled whole, bottom-up. Every
+ *       target is walked to with Tier-2 navigation ({@link Walk#toMine}), which digs, pillars and bridges where no
+ *       walk leads. Logs it cannot reach are tried by stepping into the cut trunk, then by pillaring up at most
+ *       {@value #MAX_PILLAR} blocks (with dirt or cobblestone in the bag); that pillar is mined away afterwards. Drops are picked up when the tree is done, and a sapling of the same kind is planted
  *       on the stump when asked ({@code replant}).</li>
  * </ul>
  */
@@ -85,10 +88,16 @@ public final class Miner {
 	// tree mode
 	private Trees.@Nullable Tree tree;
 	private final Set<BlockPos> doneTrees = new HashSet<>();
+	/** Trees no walk leads to, picked for Tier 2 to dig its way there: one failed way and the tree is unreachable. */
+	private final Set<BlockPos> digOnly = new HashSet<>();
+	/** Set by {@link #finishCurrentTree}: no new tree is picked. */
+	private boolean lastTree;
 	private final Map<BlockPos, Reach.Result> reachable = new HashMap<>();
 	private int treesFelled;
 	private int logsLeftHigh;
 	private final List<BlockPos> pillar = new ArrayList<>();
+	/** The pillars earlier walks left (a goto, another job) were dropped: only this job's own are cleared. */
+	private boolean pillarBacklogDropped;
 	private @Nullable BlockPos pillarFrom;
 	private int climbTicks;
 	private boolean triedColumn;
@@ -119,6 +128,11 @@ public final class Miner {
 	/** Blocks broken so far. */
 	public int mined() {
 		return this.mined;
+	}
+
+	/** Targets given up on so far (no way to them, or too slow to break). */
+	public int unreachable() {
+		return this.skip.size();
 	}
 
 	public String failureCode() {
@@ -158,6 +172,15 @@ public final class Miner {
 	/** Logs left standing because they were out of reach even after climbing. */
 	public int logsLeftHigh() {
 		return this.logsLeftHigh;
+	}
+
+	/**
+	 * The job has enough: finish the tree being felled (its pillar, drops and sapling) but start no other. Without it a
+	 * job whose count was met while {@link #busy()} never ended: the next tree was picked in the same tick the last one's
+	 * chores ended, so the miner was never idle when the job looked (collect 10 logs felled trees until its timeout).
+	 */
+	public void finishCurrentTree() {
+		this.lastTree = true;
 	}
 
 	/** True while a tree is half felled (or its pillar not yet cleared): the job should let it finish. */
@@ -228,6 +251,18 @@ public final class Miner {
 
 	public Tick tick(final AgentPlayer agent) {
 		ServerLevel level = agent.level();
+		if (this.treeMode()) {
+			// Pillars the walk built (Tier 2) are cleared with the tree, like the miner's own. Those built before this job
+			// started (any walk's: the navigator keeps them until a felling job takes them) are not this job's to clear: it
+			// would walk back to wherever they were and mine whatever stands there by now.
+			List<BlockPos> placed = agent.navigator().drainPlacedPillars();
+			if (!this.pillarBacklogDropped) {
+				this.pillarBacklogDropped = true;
+			} else if (!placed.isEmpty()) {
+				this.pillar.addAll(placed);
+				this.pillarsBuilt += placed.size();
+			}
+		}
 		if (this.collecting(agent)) {
 			return Tick.WORKING;
 		}
@@ -277,15 +312,27 @@ public final class Miner {
 			this.skipTarget();
 			return Tick.WORKING;
 		}
-		if (!Walk.inReach(agent, t)) {
+		// In reach only at the top of a jump (a pillar being built) is not in reach yet: let the walk finish. The block
+		// under the feet is never mined (no digging straight down): the walk steps aside first.
+		if (!Walk.inReach(agent, t) || Walk.standsOn(agent, t) || !Walk.settled(agent) && agent.navigator().isMoving()) {
 			if (this.climbing) {
 				return this.climbToward(agent, t);
 			}
-			Walk.State s = this.walk.toBlock(agent, t);
+			// Tier 2 straight away ("reach a block to mine"): digs, pillars and bridges where no walk leads.
+			Walk.State s = this.walk.toMine(agent, t);
 			if (s == Walk.State.MOVING) {
 				return Tick.WORKING;
 			}
 			if (s == Walk.State.FAILED) {
+				Trees.Tree current = this.tree;
+				if (this.treeMode() && current != null && this.digOnly.remove(current.base())) {
+					// No walk led there and Tier 2 found no way either: unreachable, like any tree no walk reaches.
+					this.reject(agent, current.base(), "unreachable", current.species() + " tree");
+					this.doneTrees.add(current.base());
+					this.tree = null;
+					this.skipTarget();
+					return this.skip.size() > MAX_SKIPS ? this.failed("UNREACHABLE", "cannot reach any matching block (" + this.walk.failure() + ")") : Tick.WORKING;
+				}
 				if (this.treeMode() && this.tree != null && t.getY() > agent.getBlockY()) {
 					// Stay on this tree: no more walking around under it (that would step off a pillar).
 					this.climbing = true;
@@ -297,6 +344,10 @@ public final class Miner {
 		} else {
 			this.walk.stop(agent);
 			agent.controls().setJumping(false);
+		}
+		if (this.tree != null) {
+			// Got there: from now on this tree's logs fail one by one, like any other tree's.
+			this.digOnly.remove(this.tree.base());
 		}
 		BlockState state = level.getBlockState(t);
 		if (BlockOps.wouldDropNothing(agent, state)) {
@@ -367,6 +418,10 @@ public final class Miner {
 				this.treeDone(agent);
 				return null;
 			}
+			if (this.lastTree) {
+				// The job has what it asked for: this tree was the last one.
+				return null;
+			}
 			Trees.Tree next = this.pickTree(agent);
 			if (next == null) {
 				return null;
@@ -385,14 +440,19 @@ public final class Miner {
 		if (!this.pillar.isEmpty()) {
 			this.cleaning = true;
 			BlockPos top = this.pillar.getLast();
-			if (agent.level().getBlockState(top).isAir()) {
+			if (!NavBlocks.isScaffoldBlock(agent.level().getBlockState(top))) {
+				// Gone (or replaced by something that is no pillar block since): nothing of ours to clear there.
 				this.pillar.removeLast();
 				return Tick.WORKING;
 			}
 			if (!Walk.inReach(agent, top) && this.walk.toBlock(agent, top) == Walk.State.MOVING) {
 				return Tick.WORKING;
 			}
-			if (BlockOps.mineTick(agent, top) || ++this.climbTicks > 20 * 20) {
+			boolean broke = BlockOps.mineTick(agent, top);
+			if (broke || ++this.climbTicks > 20 * 20) {
+				if (broke) {
+					NavBlocks.forgetScaffold(agent.level(), top);
+				}
 				this.pillar.removeLast();
 				this.climbTicks = 0;
 			}
@@ -502,6 +562,7 @@ public final class Miner {
 		trees.sort(Comparator.comparingDouble(t -> t.base().distSqr(agent.blockPosition())));
 		int checks = 0;
 		Trees.Tree unknown = null;
+		Trees.Tree noWalk = null;
 		for (Trees.Tree t : trees) {
 			Reach.Result r = this.reachable.get(t.base());
 			if (r == null) {
@@ -516,6 +577,13 @@ public final class Miner {
 				return t;
 			}
 			if (r == Reach.Result.NO) {
+				if (AgentNavigator.tier2Enabled) {
+					// No walking way (a hill, a gap, an office sunk into the ground): the mine walk may still dig there.
+					if (noWalk == null) {
+						noWalk = t;
+					}
+					continue;
+				}
 				this.reject(agent, t.base(), "unreachable", t.species() + " tree");
 				this.doneTrees.add(t.base());
 			} else if (unknown == null) {
@@ -526,6 +594,13 @@ public final class Miner {
 			// Too far for one search: walk there and see.
 			this.reachable.put(unknown.base(), Reach.Result.YES);
 			return unknown;
+		}
+		if (noWalk != null) {
+			// The nearest tree no walk leads to: Tier 2 may dig, pillar or bridge there (an office sunk into a hill, a
+			// ledge, a gap). If it finds no way either, the tree is reported unreachable like the others.
+			this.reachable.put(noWalk.base(), Reach.Result.YES);
+			this.digOnly.add(noWalk.base());
+			return noWalk;
 		}
 		return null;
 	}
@@ -588,6 +663,8 @@ public final class Miner {
 		agent.controls().setJumping(false);
 		BlockOps.Place r = BlockOps.placeTick(agent, at, Miner::pillarBlock);
 		if (r == BlockOps.Place.PLACED) {
+			// Scaffold: if it is ever left standing, navigation may break it again (never a crew build).
+			NavBlocks.noteScaffold(agent.level(), at);
 			this.pillar.add(at);
 			this.pillarsBuilt++;
 			this.pillarFrom = null;
@@ -696,7 +773,7 @@ public final class Miner {
 			return false;
 		}
 		if (agent.position().distanceTo(item.position()) > 0.6) {
-			walk.to(agent, item.position(), 0.5);
+			walk.toItem(agent, item.position());
 		}
 		return true;
 	}
