@@ -15,8 +15,9 @@
  * Usage (repo root, after `npm install` and `cd apps/mod && ./gradlew build`):
  *   node --conditions=source --import tsx scripts/e2e/run-scenario.ts [options]
  *     --crew agents|scripted   agents (default) spends subscription quota; scripted is zero-token (steps 1, 8, 9
- *                              plus a chat/UI smoke test and a tree check for --seed, and step 3 done by the
- *                              mod's own jobs: collect 10 oak logs and craft a table, with reach numbers)
+ *                              plus a chat/UI smoke test and a tree check for --seed, step 2 with a greeting
+ *                              instead of the welcome turn, and step 3 done by the mod's own jobs: collect 10
+ *                              oak logs and craft a table, with reach numbers)
  *     --steps 1,2,3            run only these steps (9 always runs last)
  *     --seed <seed>            MINEVIBE_WORLD_SEED for repeatable terrain
  *     --max-turns <n>          stop prompting the crew after n agent turns (default 40)
@@ -770,13 +771,27 @@ async function step2(r: StepResult): Promise<void> {
       (e: Error) => r.notes.push(e.message),
     );
     await sleep(1500);
+  } else {
+    // The scripted crew has no welcome turn: greet the CEO (zero tokens). It "thinks" for 1.2 s (THINKING head icon),
+    // then answers in a bubble. Sampled at 10 Hz here, so a 1.2 s icon is not missed between the 3 Hz samples.
+    const at = Date.now();
+    await chat(`@${boss.handle} hello`);
+    await waitFor(
+      'a reply bubble',
+      15_000,
+      async () => {
+        sampleState((await debug().state(2000)) as DebugState);
+        return bubblesSeen.some((b) => b.at >= at && b.agentId === boss.agentId) || null;
+      },
+      100,
+    ).catch((e: Error) => r.notes.push(e.message));
   }
   const icons = [...new Set(iconsSeen.filter((i) => i.agentId === boss.agentId).map((i) => i.icon))];
   const bubbles = bubblesSeen.filter((b) => b.agentId === boss.agentId).map((b) => b.text.slice(0, 80));
   r.numbers.headIcons = icons;
   r.numbers.bubbles = bubbles.slice(0, 4);
   check(r, bubbles.length > 0, 'a bubble over the CEO on the client');
-  if (crewMode === 'agents') check(r, icons.includes('THINKING'), 'the THINKING head icon during its turn');
+  check(r, icons.includes('THINKING'), 'the THINKING head icon during its turn');
   screenshot('step2-ceo');
 }
 
