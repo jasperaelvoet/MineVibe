@@ -1147,17 +1147,25 @@ function buildV2Logic(world: SimWorld, skill: string, args: Record<string, unkno
       const prot = protectedIn(world, min, max);
       return prot
         ? oneShot(2, () =>
-            fail('PROTECTED', `${(prot.protected as { count: number }).count} block(s) in the box were built by ${world.player.name}`, {
-              ...prot,
-              dug: 0,
-            }),
+            fail(
+              'PROTECTED',
+              `${(prot.protected as { count: number }).count} block(s) in the box were built by ${world.player.name}`,
+              {
+                ...prot,
+                dug: 0,
+              },
+            ),
           )
         : null;
     }
     case 'place': {
       const at = args.pos as Pos;
       const prot = protectedIn(world, at, at);
-      return prot ? oneShot(2, () => fail('PROTECTED', `the block at ${short(at)} was built by ${world.player.name}`, prot)) : null;
+      return prot
+        ? oneShot(2, () =>
+            fail('PROTECTED', `the block at ${short(at)} was built by ${world.player.name}`, prot),
+          )
+        : null;
     }
     default:
       return null;

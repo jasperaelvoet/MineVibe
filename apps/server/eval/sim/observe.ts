@@ -8,6 +8,7 @@ import { ERROR_CODES } from '@minevibe/protocol';
 import { ApiError } from '../../src/contracts/common.js';
 import { CRAFTING, isKnownBlock, matches, NS, normId, SMELTING, TAGS, toolOf } from './items.js';
 import { craftable, ingredientsOf } from './jobs.js';
+import { findBlocks, recipeTree } from './v2.js';
 import {
   AIR,
   dayAndTime,
@@ -19,7 +20,6 @@ import {
   type SimWorld,
   TPS,
 } from './world.js';
-import { findBlocks, recipeTree } from './v2.js';
 
 function badArgs(msg: string): ApiError {
   return new ApiError(ERROR_CODES.BAD_ARGS, msg);
@@ -353,7 +353,8 @@ export function observe(
           const filter = typeof args.filter === 'string' ? args.filter : 'any';
           o.filter = filter;
           o.matches = findBlocks(world, normId(what), radius, limit, filter);
-          if ((o.matches as unknown[]).length === 0) o.note = `none within ${radius} blocks (only loaded chunks are searched)`;
+          if ((o.matches as unknown[]).length === 0)
+            o.note = `none within ${radius} blocks (only loaded chunks are searched)`;
           else delete o.note;
         }
         return o;

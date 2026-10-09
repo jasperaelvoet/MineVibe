@@ -1,10 +1,10 @@
+import { MOD_CAPS } from '@minevibe/protocol';
 import { describe, expect, it } from 'vitest';
 import type { RunResult } from '../../../eval/harness/types.js';
 import { parseCli, runReplays, selectScenarios } from '../../../eval/run.js';
 import { buildWorld, HOUSE, HOUSE_CHEST } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
 import { planTree } from '../../../eval/sim/v2.js';
-import { MOD_CAPS } from '@minevibe/protocol';
 
 const get = (outcomes: Awaited<ReturnType<typeof runReplays>>, id: string, variant: 'good' | 'bad') =>
   outcomes.find((o) => o.scenario === id && o.variant === variant)?.result as RunResult;
@@ -29,7 +29,9 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
     expect(get(outcomes, 'mc.iron', 'good')).toMatchObject({ toolCalls: 1, failedCalls: 0 });
     // Without reachable trees gather stops with NO_NATURAL_SOURCE and the candidates; the agent asks.
     const ask = get(outcomes, 'mc.unreachable_ask', 'good');
-    expect(ask.transcript.some((l) => l.includes('NO_NATURAL_SOURCE') && l.includes('unreachable'))).toBe(true);
+    expect(ask.transcript.some((l) => l.includes('NO_NATURAL_SOURCE') && l.includes('unreachable'))).toBe(
+      true,
+    );
   }, 60_000);
 
   it('the v2 tools on the v1 mod fall back (Node runs do; single-level craft) and still never touch the house', async () => {
@@ -71,7 +73,7 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
     });
     expect(logs.status).toBe('done');
     expect(world.damage(HOUSE)).toHaveLength(0);
-    expect((logs.result?.sources as { kind: string }[])[0]?.kind).toBe('tree');
+    expect((logs.result?.sources as { kind: string }[] | undefined)?.[0]?.kind).toBe('tree');
     // A wooden pickaxe without a table nearby... the house has one: no table is planned.
     const plan = planTree(world, 'minecraft:wooden_pickaxe', 1);
     expect(plan.missing).toEqual([]);
@@ -82,7 +84,13 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
       'minecraft:wooden_pickaxe',
     ]);
     // The nearest chest when no container is named.
-    const list = await api.runSkill({ agentId: 'ada', skill: 'container', args: { action: 'list' }, waitMs: 60_000, replace: true });
+    const list = await api.runSkill({
+      agentId: 'ada',
+      skill: 'container',
+      args: { action: 'list' },
+      waitMs: 60_000,
+      replace: true,
+    });
     expect(list).toMatchObject({ status: 'done', result: { pos: HOUSE_CHEST } });
   });
 });

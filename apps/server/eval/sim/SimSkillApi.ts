@@ -29,8 +29,8 @@ import {
 import { TypedEmitter } from '../../src/util/TypedEmitter.js';
 import { buildJobLogic } from './jobs.js';
 import { observe } from './observe.js';
-import { type SimJob, type SimWorld, TPS } from './world.js';
 import { SIM_V2_CAPS } from './v2.js';
+import { type SimJob, type SimWorld, TPS } from './world.js';
 
 /** Game ticks per real millisecond of waiting (20 tps). */
 function msToTicks(ms: number): number {

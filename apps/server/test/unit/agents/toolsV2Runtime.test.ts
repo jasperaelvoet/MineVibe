@@ -83,7 +83,9 @@ describe('v2 tools in the agent runtime', () => {
     const q2 = b.query(0);
     expect(q2.options.resume).toBe(a.q.options.sessionId);
     await b.until(() => b.texts(q2).some((t) => t.includes('TOOLS UPDATED')), 'tools note');
-    expect(b.texts(q2).find((t) => t.includes('TOOLS UPDATED'))).toContain('mine, collect, pickup, hunt (for drops) → gather');
+    expect(b.texts(q2).find((t) => t.includes('TOOLS UPDATED'))).toContain(
+      'mine, collect, pickup, hunt (for drops) → gather',
+    );
   });
 });
 
@@ -92,7 +94,9 @@ describe('v2 texts and gate', () => {
     expect(mcToolsVersion({})).toBe('v1');
     expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'V2' })).toBe('v2');
     expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'v3' })).toBe('v1');
-    expect(mcRefs('v2').reportTaskWith('ev-3')).toBe('mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}');
+    expect(mcRefs('v2').reportTaskWith('ev-3')).toBe(
+      'mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}',
+    );
     expect(mcRefs('v1').codexRead).toBe('mcp__mc__codex_read');
     const v2 = personaPrompt({
       name: 'Ada',
@@ -106,7 +110,9 @@ describe('v2 texts and gate', () => {
     for (const old of ['calendar_add', 'report_task', 'codex_search', 'mcp__mc__mine', 'mcp__mc__collect']) {
       expect(v2, old).not.toContain(old);
     }
-    expect(toolsUpdatedNote('abcdef', 'v1', 'v2')).toMatch(/^\[MV:abcdef TOOLS UPDATED\] Your mc tools changed/);
+    expect(toolsUpdatedNote('abcdef', 'v1', 'v2')).toMatch(
+      /^\[MV:abcdef TOOLS UPDATED\] Your mc tools changed/,
+    );
   });
 
   it('the scheduled-task wake names report in the tool set the router was made for', () => {
@@ -117,7 +123,9 @@ describe('v2 texts and gate', () => {
       'Mine iron',
     );
     const text = (routed.item as { text: string }).text;
-    expect(text).toContain('When done, call mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}.');
+    expect(text).toContain(
+      'When done, call mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}.',
+    );
     expect(text).not.toContain('report_task');
   });
 
@@ -158,17 +166,27 @@ describe('v2 texts and gate', () => {
     expect((await decide('observe', {})).behavior).toBe('allow');
     expect((await decide('mine', { block: 'oak_log', count: 1 })).behavior).toBe('deny');
     // Scheduling others is the CEO's: without assignees v2 schedules for the caller.
-    const wandering = { seat: { ...seat, state: 'wandering', kind: null, pcId: null, epoch: 0 } } as Partial<GateContext>;
-    expect((await decide('calendar', { action: 'add', title: 't', when: 'now' }, wandering)).behavior).toBe('allow');
+    const wandering = {
+      seat: { ...seat, state: 'wandering', kind: null, pcId: null, epoch: 0 },
+    } as Partial<GateContext>;
+    expect((await decide('calendar', { action: 'add', title: 't', when: 'now' }, wandering)).behavior).toBe(
+      'allow',
+    );
     expect(
-      (await decide('calendar', { action: 'add', title: 't', when: 'now', assignees: ['ada1'] }, wandering)).behavior,
+      (await decide('calendar', { action: 'add', title: 't', when: 'now', assignees: ['ada1'] }, wandering))
+        .behavior,
     ).toBe('deny');
     expect(
-      (await decide('calendar', { action: 'add', title: 't', when: 'now', assignees: ['bram1'] }, wandering)).behavior,
+      (await decide('calendar', { action: 'add', title: 't', when: 'now', assignees: ['bram1'] }, wandering))
+        .behavior,
     ).toBe('allow');
     // v1 sessions keep v1 names.
-    expect((await decide('gather', { item: 'x', count: 1 }, { ...wandering, mcTools: 'v1' })).behavior).toBe('deny');
-    expect((await decide('mine', { block: 'x', count: 1 }, { ...wandering, mcTools: 'v1' })).behavior).toBe('allow');
+    expect((await decide('gather', { item: 'x', count: 1 }, { ...wandering, mcTools: 'v1' })).behavior).toBe(
+      'deny',
+    );
+    expect((await decide('mine', { block: 'x', count: 1 }, { ...wandering, mcTools: 'v1' })).behavior).toBe(
+      'allow',
+    );
   });
 });
 
@@ -209,7 +227,13 @@ describe('Node sequence fallback (§11 M1 without the mod cap)', () => {
     expect(await api.cancelSkill('ada1', { jobId: 'mseq-1', reason: 'stop' })).toEqual(['mseq-1']);
     const end = await api.awaitJob('mseq-1', 1_000);
     expect(end.status).toBe('cancelled');
-    expect(end.result).toMatchObject({ completed: 1, steps: [{ skill: 'collect', status: 'done' }, { skill: 'craft', status: 'cancelled' }] });
+    expect(end.result).toMatchObject({
+      completed: 1,
+      steps: [
+        { skill: 'collect', status: 'done' },
+        { skill: 'craft', status: 'cancelled' },
+      ],
+    });
     expect(fake.runningJobs()).not.toContain(second);
     expect(ends).toContain('mseq-1:cancelled');
   });
@@ -221,7 +245,12 @@ describe('Node sequence fallback (§11 M1 without the mod cap)', () => {
     await api.runSkill({
       agentId: 'ada1',
       skill: 'sequence',
-      args: { steps: [{ skill: 'eat', args: {} }, { skill: 'eat', args: {} }] },
+      args: {
+        steps: [
+          { skill: 'eat', args: {} },
+          { skill: 'eat', args: {} },
+        ],
+      },
       replace: true,
     });
     expect(fake.runs.map((r) => r.skill)).toEqual(['sequence']);
@@ -233,7 +262,12 @@ describe('Node sequence fallback (§11 M1 without the mod cap)', () => {
       api.runSkill({
         agentId: 'ada1',
         skill: 'sequence',
-        args: { steps: [{ skill: 'collect', args: { item: 'oak_log' } }, { skill: 'eat', args: {} }] } as never,
+        args: {
+          steps: [
+            { skill: 'collect', args: { item: 'oak_log' } },
+            { skill: 'eat', args: {} },
+          ],
+        } as never,
         replace: true,
       }),
     ).rejects.toThrow(/steps\.0\.args\.count/);

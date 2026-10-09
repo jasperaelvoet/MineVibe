@@ -40,6 +40,7 @@ import type {
   DeliveryResult,
 } from '../contracts/CrewApi.js';
 import { ApiError, isApiError, PLAYER } from '../contracts/common.js';
+import { mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
 import { withSequenceFallback } from '../contracts/SequenceFallback.js';
@@ -55,7 +56,7 @@ import { formatAnswerEcho, frontCard } from './chat/answerGrammar.js';
 import { type ChatContext, ChatInbox, ChatRouter, type Delivery } from './chat/ChatRouter.js';
 import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
-import { CREW_CAP, LAST_WORDS_MS, MOD_AGENT_ID, type McToolsVersion } from './constants.js';
+import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
@@ -75,7 +76,6 @@ import { UsageGovernor } from './UsageGovernor.js';
 import { ConsentLedger, type GrantVerdict, grantScope } from './world/consent.js';
 import { PROTECTED, refusalOf } from './world/guard.js';
 import { zoneOfBody } from './world/scene.js';
-import { mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 
 /** First names for agents (handles derive from them). */
 export const AGENT_NAMES = [
@@ -263,7 +263,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     this.scheduler = new BrainScheduler({ now: this.#now });
     this.governor = new UsageGovernor({ now: this.#now });
     this.supervisor = new BrainSupervisor({ now: this.#now, ...options.supervisor });
-    this.router = new EventRouter({ now: this.#now, playerName: options.playerName, mcTools: options.mcTools });
+    this.router = new EventRouter({
+      now: this.#now,
+      playerName: options.playerName,
+      mcTools: options.mcTools,
+    });
     this.pending = new PendingStore({
       fileOf: (agentId) => (this.#world ? join(this.#agentDir(agentId), 'pending.json') : null),
       onError: (err) => this.#log.warn({ err }, 'pending store'),

@@ -82,13 +82,15 @@ class RecipeTreeTest {
 		b.craft(Items.STICK, 4, true, n(2, Items.OAK_PLANKS, Items.BIRCH_PLANKS));
 		b.craft(Items.CRAFTING_TABLE, 1, true, n(4, Items.OAK_PLANKS, Items.BIRCH_PLANKS));
 		b.craft(Items.WOODEN_PICKAXE, 1, false, concat(n(3, Items.OAK_PLANKS, Items.BIRCH_PLANKS), n(2, Items.STICK)));
-		b.craft(Items.FURNACE, 1, false, n(8, Items.COBBLESTONE));
+		// The book's order, as the server lists them: the stone tag sorts blackstone first, the ore recipe comes first.
+		b.craft(Items.FURNACE, 1, false, n(8, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE, Items.COBBLESTONE));
 		b.craft(Items.IRON_PICKAXE, 1, false, concat(n(3, Items.IRON_INGOT), n(2, Items.STICK)));
 		b.craft(Items.IRON_INGOT, 1, false, n(9, Items.IRON_NUGGET));
 		b.craft(Items.IRON_INGOT, 9, true, n(1, Items.IRON_BLOCK));
 		b.craft(Items.IRON_NUGGET, 9, true, n(1, Items.IRON_INGOT));
 		b.craft(Items.IRON_BLOCK, 1, false, n(9, Items.IRON_INGOT));
-		b.smelt(Items.IRON_INGOT, Items.RAW_IRON, Items.IRON_ORE);
+		b.smelt(Items.IRON_INGOT, Items.IRON_ORE, Items.DEEPSLATE_IRON_ORE);
+		b.smelt(Items.IRON_INGOT, Items.RAW_IRON);
 		return b;
 	}
 
@@ -168,6 +170,29 @@ class RecipeTreeTest {
 		assertEquals(3, need.get(Items.RAW_IRON), p.missing().toString());
 		assertEquals(8, need.get(Items.COBBLESTONE), "a furnace first: " + p.missing());
 		assertTrue(p.makesFurnace());
+	}
+
+	@Test
+	void withNothingCarriedTheLeavesAreTheEverydayMaterials() {
+		RecipeTree.Plan p = RecipeTree.plan(book(), Items.IRON_PICKAXE, 1, inv(Items.STICK, 2), NONE);
+		List<Item> leaves = p.missing().stream().map(RecipeTree.Missing::item).filter(java.util.Objects::nonNull).toList();
+		assertTrue(leaves.contains(Items.RAW_IRON), "raw iron, not ore blocks: " + p.missing());
+		assertTrue(leaves.contains(Items.COBBLESTONE), "cobblestone, not blackstone: " + p.missing());
+		assertFalse(leaves.contains(Items.DEEPSLATE_IRON_ORE) || leaves.contains(Items.BLACKSTONE), p.missing().toString());
+	}
+
+	@Test
+	void theSmeltsBurnTheCarriedCoalNotTheLogsForTheSticks() {
+		RecipeTree.Plan p = RecipeTree.plan(book(), Items.IRON_PICKAXE, 1, inv(Items.RAW_IRON, 3, Items.OAK_LOG, 2, Items.COAL, 1), BOTH);
+		assertTrue(p.complete(), p.missing().toString());
+		assertEquals(Map.of(Items.COAL, 1), p.fuel(), "one coal burns 1600 ticks");
+		assertTrue(texts(p).contains("oak_log 1 → oak_planks 4"), texts(p).toString());
+		// Without coal, the planks the sticks leave over are the fuel: the smelt waits until they are made.
+		RecipeTree.Plan planks = RecipeTree.plan(book(), Items.IRON_PICKAXE, 1, inv(Items.RAW_IRON, 3, Items.OAK_LOG, 1), BOTH);
+		assertTrue(planks.complete(), planks.missing().toString());
+		assertEquals(Map.of(Items.OAK_PLANKS, 2), planks.fuel());
+		assertEquals(List.of("oak_log 1 → oak_planks 4", "oak_planks 2 → stick 4", "raw_iron 3 → iron_ingot 3",
+			"iron_ingot 3 + stick 2 → iron_pickaxe 1"), texts(planks));
 	}
 
 	@Test

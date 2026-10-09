@@ -173,7 +173,7 @@ public final class CraftTreeJob extends SkillJob {
 			boolean last = s == p.steps().getLast() && s.item() == this.item;
 			this.queue.add(switch (s.kind()) {
 				case CRAFT -> new CraftJobs.Craft(s.item(), last ? this.count : s.made(), s.needsTable() ? this.table : null);
-				case SMELT -> new CraftJobs.Smelt(Refs.item(Refs.itemId(s.from().keySet().iterator().next())), s.times(), null, null);
+				case SMELT -> CraftJobs.Smelt.withFuel(Refs.item(Refs.itemId(s.from().keySet().iterator().next())), s.times(), p.fuel().keySet());
 			});
 			this.stepTexts.add(s.text());
 		}

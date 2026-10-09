@@ -11,12 +11,12 @@
  */
 
 import type { AgentRole, Autonomy, PayloadOf } from '@minevibe/protocol';
+import { type McToolsVersion, mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 import type { WakePriority } from './BrainScheduler.js';
 import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE_MS } from './constants.js';
 import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
 import type { UsageMode } from './UsageGovernor.js';
 import { failureText } from './world/guard.js';
-import { type McToolsVersion, mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 
 /** One queued item for an agent. */
 export type Routed =

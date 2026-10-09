@@ -127,7 +127,9 @@ export const MC_TOOLS_V2 = {
   stand_up: 'stand',
   request_hire: 'hire',
   codex: (input) =>
-    input.action === 'search' || input.action === 'list' || input.action === 'read' ? 'codex_read' : 'codex_write',
+    input.action === 'search' || input.action === 'list' || input.action === 'read'
+      ? 'codex_read'
+      : 'codex_write',
   calendar: 'calendar',
 } as const satisfies Record<string, McCategoryRule>;
 
@@ -198,7 +200,9 @@ export const PC_PREFIX = 'mcp__pc__';
 export function mcToolName(name: string): McToolName | null {
   if (!name.startsWith(MC_PREFIX)) return null;
   const short = name.slice(MC_PREFIX.length);
-  return Object.hasOwn(MC_TOOLS_V1, short) || Object.hasOwn(MC_TOOLS_V2, short) ? (short as McToolName) : null;
+  return Object.hasOwn(MC_TOOLS_V1, short) || Object.hasOwn(MC_TOOLS_V2, short)
+    ? (short as McToolName)
+    : null;
 }
 
 export function pcToolName(name: string): PcToolName | null {

@@ -235,7 +235,8 @@ public final class SkillFactory {
 			try {
 				out.add(new SequenceJob.Step(step.skill(), create(step.skill(), step.args() == null ? new JsonObject() : step.args())));
 			} catch (BridgeException e) {
-				throw new BridgeException(e.code(), "step " + (i + 1) + ": " + e.getMessage());
+				String msg = e.getMessage() == null ? e.code() : e.getMessage();
+				throw new BridgeException(e.code(), "step " + (i + 1) + ": " + (msg.contains(step.skill()) ? msg : step.skill() + ": " + msg));
 			}
 		}
 		return new SequenceJob(out, !Boolean.FALSE.equals(a.stop_on_fail()));

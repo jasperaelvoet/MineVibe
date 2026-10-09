@@ -325,6 +325,8 @@ public final class CraftJobs {
 		private final Refs.ItemMatcher item;
 		private final int count;
 		private final Refs.@Nullable ItemMatcher fuel;
+		/** The craft tree's planned fuel (any of these), when no {@code fuel} is given. */
+		private java.util.@Nullable Set<Item> fuels;
 		private final @Nullable BlockPos requestedFurnace;
 		private final MenuJobs.Opener opener = new MenuJobs.Opener();
 		private final Walk walk = new Walk();
@@ -344,6 +346,16 @@ public final class CraftJobs {
 			this.count = count;
 			this.fuel = fuel;
 			this.requestedFurnace = furnace;
+		}
+
+		/**
+		 * A smelt for the craft tree (tools-v2-mc.md M4): it burns only {@code fuels}, the fuel the plan set aside, so the
+		 * logs a later step turns into planks stay in the bag. Empty: any fuel.
+		 */
+		public static Smelt withFuel(final Refs.ItemMatcher item, final int count, final java.util.Set<Item> fuels) {
+			Smelt s = new Smelt(item, count, null, null);
+			s.fuels = fuels.isEmpty() ? null : java.util.Set.copyOf(fuels);
+			return s;
 		}
 
 		@Override
@@ -539,14 +551,18 @@ public final class CraftJobs {
 			// Fuel first: without enough of it, nothing is loaded (the input would otherwise sit in an unlit furnace).
 			int batch = inSlot.isEmpty() ? this.toSmelt : Math.min(inSlot.getCount() + this.toSmelt, proto.getMaxStackSize());
 			ItemStack fuelThere = menu.getSlot(AbstractFurnaceMenu.FUEL_SLOT).getItem();
-			java.util.function.Predicate<ItemStack> isFuel = s -> (this.fuel == null ? Recipes.burnTicks(s) > 0 && !ItemStack.isSameItemSameComponents(s, proto) : this.fuel.test(s))
+			java.util.Set<Item> planned = this.fuels;
+			java.util.function.Predicate<ItemStack> isFuel = s -> (this.fuel != null ? this.fuel.test(s)
+				: Recipes.burnTicks(s) > 0 && !ItemStack.isSameItemSameComponents(s, proto) && (planned == null || planned.contains(s.getItem())))
 				&& (fuelThere.isEmpty() || ItemStack.isSameItemSameComponents(s, fuelThere));
 			int burnLeft = menu.isLit() ? 200 : 0;
 			burnLeft += Recipes.burnTicks(fuelThere) * fuelThere.getCount();
 			int needTicks = batch * 200 - burnLeft;
 			if (needTicks > 0 && Inv.find(agent, isFuel) < 0) {
 				agent.closeContainer();
-				return this.fail("NO_FUEL", this.fuel == null ? "no fuel (coal, charcoal, logs, planks...) in the inventory" : "no " + this.fuel.ref() + " in the inventory");
+				return this.fail("NO_FUEL", this.fuel != null ? "no " + this.fuel.ref() + " in the inventory"
+					: planned != null ? "none of the planned fuel (" + planned.stream().map(Refs::itemId).sorted().collect(java.util.stream.Collectors.joining(", ")) + ") in the inventory"
+					: "no fuel (coal, charcoal, logs, planks...) in the inventory");
 			}
 			int loaded = MenuView.transfer(agent, menu, mine, List.of(AbstractFurnaceMenu.INGREDIENT_SLOT), s -> ItemStack.isSameItemSameComponents(s, proto), this.toSmelt);
 			if (loaded <= 0 && inSlot.isEmpty()) {

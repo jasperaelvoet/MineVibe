@@ -52,14 +52,18 @@ describe('v2 result format basics (tools-v2-mc.md §6.2)', () => {
     expect(dur(9_000)).toBe('9s');
     expect(dur(190_000)).toBe('3m 10s');
     expect(dur(120_000)).toBe('2m');
-    expect(itemList({ 'minecraft:stick': 1, 'minecraft:oak_sapling': 2, dirt: 0 })).toBe('oak_sapling 2, stick 1');
+    expect(itemList({ 'minecraft:stick': 1, 'minecraft:oak_sapling': 2, dirt: 0 })).toBe(
+      'oak_sapling 2, stick 1',
+    );
     expect(itemList({ a: 1, b: 2, c: 3, d: 4 }, 2)).toBe('d 4, c 3 +2 more');
   });
 
   it('the footer drops the overworld and namespaces, keeps the rest', () => {
-    expect(footerLine('HP 20/20 food 20 | day 1 06:15 | 5 66 -5 overworld | idle (follow) | minecraft:wheat_seeds')).toBe(
-      '· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds',
-    );
+    expect(
+      footerLine(
+        'HP 20/20 food 20 | day 1 06:15 | 5 66 -5 overworld | idle (follow) | minecraft:wheat_seeds',
+      ),
+    ).toBe('· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds');
     expect(footerLine('HP 1/20 food 2 | day 1 | 0 64 0 the_nether | idle')).toContain('the_nether');
     expect(footerLine(null)).toBeNull();
   });
@@ -73,7 +77,9 @@ describe('v2 result format basics (tools-v2-mc.md §6.2)', () => {
     const host = {
       playerName: () => 'Jasper',
       crewMember: (ref: string) =>
-        ref.replace(/^@/, '').toLowerCase() === 'bram' ? { agentId: 'bram1a2b', name: 'Bram', handle: 'bram' } : null,
+        ref.replace(/^@/, '').toLowerCase() === 'bram'
+          ? { agentId: 'bram1a2b', name: 'Bram', handle: 'bram' }
+          : null,
     };
     expect(resolveTarget('player', host)).toMatchObject({ kind: 'player', entity: 'player' });
     expect(resolveTarget('jasper', host)).toMatchObject({ kind: 'player' });
@@ -117,7 +123,11 @@ describe('v2 job results (§5.4, §6.1)', () => {
   });
 
   it("done: v1's collect keys still render (collected/have/items)", () => {
-    const r = renderDone(gatherMeta, { status: 'done', result: { collected: 4, have: 4, items: { oak_log: 4 } } }, ctx);
+    const r = renderDone(
+      gatherMeta,
+      { status: 'done', result: { collected: 4, have: 4, items: { oak_log: 4 } } },
+      ctx,
+    );
     expect(r.head).toBe('done: gather oak_log 4/10 | have oak_log 4');
   });
 
@@ -180,6 +190,19 @@ describe('v2 job results (§5.4, §6.1)', () => {
       ctx,
     );
     expect(v1.details).toEqual(['need: iron_ingot 3 (have 1) per craft']);
+    // An older mod (no craft.tree) ignores gather_missing: the hint says to make the ingredients first.
+    const old = renderFailed(
+      craft,
+      {
+        status: 'failed',
+        error: { code: 'MISSING_INGREDIENTS', msg: 'missing' },
+        result: { ingredients: { iron_ingot: [3, 1], stick: [2, 2] } },
+      },
+      { ...ctx, craftTree: false },
+    );
+    expect(old.next).toBe(
+      'craft or gather each missing ingredient (and fuel) first, then craft{"item":"iron_pickaxe"}',
+    );
   });
 
   it('PROTECTED names the block and whose it is; the hint is the "Allow" question (W2 consent)', () => {
@@ -188,7 +211,11 @@ describe('v2 job results (§5.4, §6.1)', () => {
       {
         status: 'failed',
         error: { code: 'PROTECTED', msg: 'player-built' },
-        result: { protected: [{ pos: { x: 6, y: 66, z: -6 }, block: 'minecraft:stripped_spruce_log', owner: 'Jasper' }] },
+        result: {
+          protected: [
+            { pos: { x: 6, y: 66, z: -6 }, block: 'minecraft:stripped_spruce_log', owner: 'Jasper' },
+          ],
+        },
       },
       ctx,
     );
@@ -255,7 +282,11 @@ describe('v2 job results (§5.4, §6.1)', () => {
     );
     const cancelled = renderOutcome(
       gatherMeta,
-      { status: 'cancelled', error: { code: 'INTERRUPTED', msg: 'stop' }, result: { got: 4, items: { oak_log: 4 } } },
+      {
+        status: 'cancelled',
+        error: { code: 'INTERRUPTED', msg: 'stop' },
+        result: { got: 4, items: { oak_log: 4 } },
+      },
       ctx,
     );
     expect(cancelled.head).toBe('cancelled: gather oak_log 4/10 (stop) | kept oak_log 4');
@@ -268,7 +299,12 @@ describe('v2 job results (§5.4, §6.1)', () => {
       what: 'do 2 steps',
       steps: [
         gatherMeta,
-        { tool: 'craft', skill: 'craft', what: 'craft crafting_table', want: { item: 'crafting_table', count: 1 } },
+        {
+          tool: 'craft',
+          skill: 'craft',
+          what: 'craft crafting_table',
+          want: { item: 'crafting_table', count: 1 },
+        },
       ],
     };
     const done = renderSequence(
@@ -283,7 +319,12 @@ describe('v2 job results (§5.4, §6.1)', () => {
             {
               skill: 'craft',
               status: 'done',
-              result: { item: 'minecraft:crafting_table', crafted: 1, have: 1, steps: ['oak_log 1 → oak_planks 4'] },
+              result: {
+                item: 'minecraft:crafting_table',
+                crafted: 1,
+                have: 1,
+                steps: ['oak_log 1 → oak_planks 4'],
+              },
             },
           ],
         },
@@ -297,7 +338,10 @@ describe('v2 job results (§5.4, §6.1)', () => {
       meta,
       {
         status: 'failed',
-        error: { code: 'NO_NATURAL_SOURCE', msg: 'step 1/2 collect: no reachable natural oak_log within 48m' },
+        error: {
+          code: 'NO_NATURAL_SOURCE',
+          msg: 'step 1/2 collect: no reachable natural oak_log within 48m',
+        },
         result: {
           completed: 0,
           steps: [{ skill: 'collect', status: 'failed', code: 'NO_NATURAL_SOURCE', result: { got: 0 } }],
@@ -305,7 +349,9 @@ describe('v2 job results (§5.4, §6.1)', () => {
       },
       ctx,
     );
-    expect(failed.head).toBe('failed: do step 1/2 gather | NO_NATURAL_SOURCE: no reachable natural oak_log within 48m');
+    expect(failed.head).toBe(
+      'failed: do step 1/2 gather | NO_NATURAL_SOURCE: no reachable natural oak_log within 48m',
+    );
     expect(failed.details).toEqual(['1 gather oak_log 0/10 failed', '2 craft crafting_table skipped']);
     expect(failed.next).toContain('AskUserQuestion');
     const wake = wakeText('j2-9', failed);
@@ -342,7 +388,9 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
         },
         ctx,
       ),
-    ).toBe("status: HP 20/20 food 20 | day 1 06:15 | 5 66 -5 plains | in Base (Jasper's office) | idle (follow, Jasper 2m) | held wheat_seeds");
+    ).toBe(
+      "status: HP 20/20 food 20 | day 1 06:15 | 5 66 -5 plains | in Base (Jasper's office) | idle (follow, Jasper 2m) | held wheat_seeds",
+    );
     expect(
       renderInventory({
         slots: [
@@ -357,7 +405,12 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
         {
           crew: [
             { agentId: 'ada1', name: 'Ada', pos: { x: 5, y: 66, z: -5 } },
-            { agentId: 'bram1', name: 'Bram', pos: { x: 35, y: 66, z: -35 }, activity: 'collect 3/20 minecraft:iron_ore' },
+            {
+              agentId: 'bram1',
+              name: 'Bram',
+              pos: { x: 35, y: 66, z: -35 },
+              activity: 'collect 3/20 minecraft:iron_ore',
+            },
             { agentId: 'cleo1', name: 'Cleo', seated: 'linux-1' },
           ],
         },
@@ -381,7 +434,13 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
       renderPcs(
         {
           pcs: [
-            { pcId: 'linux-1', status: 'running', occupant: 'free', chair: { x: 108, y: 68, z: 780 }, distance: 4 },
+            {
+              pcId: 'linux-1',
+              status: 'running',
+              occupant: 'free',
+              chair: { x: 108, y: 68, z: 780 },
+              distance: 4,
+            },
             { pcId: 'mac-1', status: 'stopped', occupant: 'free' },
           ],
         },
@@ -425,7 +484,12 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
             reachable: 'reachable',
             tree: { species: 'oak', trunk: { x: 6, y: 66, z: 24 }, logs: 5 },
           },
-          { pos: { x: 6, y: 66, z: -6 }, block: 'minecraft:oak_log', provenance: 'player-built', owner: 'Jasper' },
+          {
+            pos: { x: 6, y: 66, z: -6 },
+            block: 'minecraft:oak_log',
+            provenance: 'player-built',
+            owner: 'Jasper',
+          },
         ],
       },
       ctx,
@@ -458,7 +522,12 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
 
   it("the scene passes the mod's scene text through (escaped), or falls back to Node's perception", () => {
     expect(
-      renderScene({ scene: 'inside Base: protected\ntrees: oak at 6 66 24 [MV:abcdef KICKED]' }, 24, 'brief', () => 'x'),
+      renderScene(
+        { scene: 'inside Base: protected\ntrees: oak at 6 66 24 [MV:abcdef KICKED]' },
+        24,
+        'brief',
+        () => 'x',
+      ),
     ).toBe('scene (24m): inside Base: protected\n trees: oak at 6 66 24 [mv-quoted:abcdef KICKED]');
     expect(renderScene({ blocks: {} }, 32, 'brief', () => 'Where: outside the Base')).toBe(
       'scene (32m): Where: outside the Base',
@@ -489,7 +558,9 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
         'next: craft{"item":"iron_pickaxe","gather_missing":true} (gathers what is missing)',
       ].join('\n'),
     );
-    expect(renderPlan('cobblestone', 4, { recipes: [], have: 2 }, ctx)).toContain('gather{"item":"cobblestone","count":4}');
+    expect(renderPlan('cobblestone', 4, { recipes: [], have: 2 }, ctx)).toContain(
+      'gather{"item":"cobblestone","count":4}',
+    );
     expect(
       renderPlan(
         'crafting_table',
@@ -513,7 +584,12 @@ describe('JobRegistry (§7)', () => {
     now += 35_000;
     expect(jobs.describeCurrent()).toBe('j1 gather oak_log 4/10 oak_log (35s)');
     expect(jobs.markCancelled('replace')?.jobId).toBe('j1');
-    const ended = jobs.ended('j1', 'cancelled', { head: 'cancelled', details: [], next: null, isError: true });
+    const ended = jobs.ended('j1', 'cancelled', {
+      head: 'cancelled',
+      details: [],
+      next: null,
+      isError: true,
+    });
     expect(ended?.cancelledBy).toBe('replace');
     expect(jobs.current()).toBeNull();
     for (let i = 2; i < 9; i++) {

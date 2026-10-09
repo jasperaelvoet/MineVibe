@@ -9,12 +9,7 @@
  * Unlike the mod's job, a macro does not survive a Node restart.
  */
 
-import {
-  MOD_CAPS,
-  type SequenceStepSkill,
-  type SkillName,
-  type SkillRunResult,
-} from '@minevibe/protocol';
+import { MOD_CAPS, type SequenceStepSkill, type SkillName, type SkillRunResult } from '@minevibe/protocol';
 import { TypedEmitter } from '../util/TypedEmitter.js';
 import { ApiError } from './common.js';
 import {
@@ -122,7 +117,11 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
 
   #stepProgress(macro: Macro, text: string): void {
     const prefix = this.#progressText.get(macro.id) ?? '';
-    this.emit('progress', { jobId: macro.id, agentId: macro.agentId, text: `${prefix} ${text}`.trim().slice(0, 256) });
+    this.emit('progress', {
+      jobId: macro.id,
+      agentId: macro.agentId,
+      text: `${prefix} ${text}`.trim().slice(0, 256),
+    });
   }
 
   async runSkill<S extends SkillName>(request: SkillRunRequest<S>): Promise<SkillRunResult> {
@@ -156,13 +155,20 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
   ): Promise<void> {
     const outcomes: StepOutcome[] = [];
     const n = steps.length;
-    let consent = request.consent && (request.args as { allow_protected?: boolean }).allow_protected === true ? request.consent : null;
+    let consent =
+      request.consent && (request.args as { allow_protected?: boolean }).allow_protected === true
+        ? request.consent
+        : null;
     let failure: { code: string; msg: string } | null = null;
     for (const [i, step] of steps.entries()) {
       if (macro.cancelled) break;
       if (failure && stopOnFail) break;
       this.#progressText.set(macro.id, `step ${i + 1}/${n}`);
-      this.emit('progress', { jobId: macro.id, agentId: macro.agentId, text: `step ${i + 1}/${n} ${step.skill}` });
+      this.emit('progress', {
+        jobId: macro.id,
+        agentId: macro.agentId,
+        text: `step ${i + 1}/${n} ${step.skill}`,
+      });
       const childId = newJobId();
       macro.childId = childId;
       this.#children.set(childId, macro);
@@ -217,7 +223,10 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
         break;
       }
       if (end.status === 'failed' && !failure) {
-        failure = { code: end.error?.code ?? 'FAILED', msg: `step ${i + 1}/${n} ${step.skill}: ${end.error?.msg ?? 'failed'}` };
+        failure = {
+          code: end.error?.code ?? 'FAILED',
+          msg: `step ${i + 1}/${n} ${step.skill}: ${end.error?.msg ?? 'failed'}`,
+        };
       }
     }
     const completed = outcomes.filter((o) => o.status === 'done').length;
@@ -233,7 +242,14 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
           error: { code: 'INTERRUPTED', msg: macro.cancelled },
         }
       : failure
-        ? { jobId: macro.id, agentId: macro.agentId, status: 'failed', durationMs, result: summary, error: failure }
+        ? {
+            jobId: macro.id,
+            agentId: macro.agentId,
+            status: 'failed',
+            durationMs,
+            result: summary,
+            error: failure,
+          }
         : { jobId: macro.id, agentId: macro.agentId, status: 'done', durationMs, result: summary };
     this.#macros.delete(macro.id);
     this.#progressText.delete(macro.id);
@@ -267,7 +283,10 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
     const cancelled = await this.#inner.cancelSkill(agentId, options);
     // The running step's id belongs to the macro: report the macro instead.
     const childIds = new Set(macros.map((m) => m.childId));
-    return [...cancelled.filter((id) => !childIds.has(id)), ...(options.jobId ? [] : macros.map((m) => m.id))];
+    return [
+      ...cancelled.filter((id) => !childIds.has(id)),
+      ...(options.jobId ? [] : macros.map((m) => m.id)),
+    ];
   }
 
   awaitJob(jobId: string, timeoutMs?: number): Promise<JobEnd> {

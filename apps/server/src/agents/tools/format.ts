@@ -195,6 +195,11 @@ export interface RenderContext {
   /** The agent's position now (distances and directions), or null. */
   readonly here: Vec3Like | null;
   readonly playerName: string;
+  /**
+   * Whether the mod plans crafting trees (cap `craft.tree`). False: an older mod crafts one level, so a craft hint
+   * says to make the ingredients first instead of offering `gather_missing`. Absent: assume it does.
+   */
+  readonly craftTree?: boolean;
 }
 
 /** A rendered job: the first line, detail lines and an optional `next:` hint. */
@@ -242,7 +247,8 @@ function sourcesText(result: Record<string, unknown>): string | null {
     for (const [key, v] of byKind) {
       const kind = key.slice(0, key.indexOf(':'));
       const near = v.pos ? ` near ${posText(v.pos)}` : '';
-      if (kind === 'tree') parts.push(`${v.n} ${v.what ? `${v.what} ` : ''}tree${v.n === 1 ? '' : 's'}${near}`);
+      if (kind === 'tree')
+        parts.push(`${v.n} ${v.what ? `${v.what} ` : ''}tree${v.n === 1 ? '' : 's'}${near}`);
       else if (kind === 'animal') parts.push(`${v.n} ${v.what || 'animal'}${v.n === 1 ? '' : 's'}`);
       else if (kind === 'ground') parts.push(`${v.n} picked up`);
       else parts.push(`${v.n} ${v.what || kind}${near}`);
@@ -416,7 +422,9 @@ export function describeResult(
     case 'build': {
       const placed = num(r.placed);
       const dug = num(r.dug);
-      const parts = [placed !== null ? `placed ${placed}` : null, dug ? `cleared ${dug}` : null].filter(Boolean);
+      const parts = [placed !== null ? `placed ${placed}` : null, dug ? `cleared ${dug}` : null].filter(
+        Boolean,
+      );
       if (parts.length > 0) facts.push(parts.join(', '));
       const skipped = num(r.skipped);
       if (skipped) facts.push(`skipped ${skipped}`);
@@ -440,7 +448,10 @@ export function describeResult(
     default: {
       // R8: an unknown skill falls back to `k v` pairs (scalars only), capped.
       const pairs = Object.entries(r)
-        .filter(([k, v]) => k !== 'footer' && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'))
+        .filter(
+          ([k, v]) =>
+            k !== 'footer' && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'),
+        )
         .map(([k, v]) => `${k} ${typeof v === 'string' ? singleLine(short(v), 40) : String(v)}`);
       if (pairs.length > 0) facts.push(singleLine(pairs.join(', '), 300));
     }
@@ -454,7 +465,8 @@ export function renderDone(meta: JobMeta, outcome: JobOutcome, ctx: RenderContex
   const r = outcome.result ?? {};
   if (meta.skill === 'sequence') return renderSequence(meta, outcome, ctx);
   const progress = progressOf(meta, r);
-  const time = outcome.durationMs !== undefined && outcome.durationMs >= 1000 ? ` in ${dur(outcome.durationMs)}` : '';
+  const time =
+    outcome.durationMs !== undefined && outcome.durationMs >= 1000 ? ` in ${dur(outcome.durationMs)}` : '';
   const { facts, details } = describeResult(meta, r, ctx);
   const head = [`done: ${meta.what}${progress ? ` ${progress}` : ''}${time}`, ...facts].join(' | ');
   return { head, details, next: null, isError: false };
@@ -506,7 +518,9 @@ export function failureDetails(
     const what = idText(c.what) ?? idText(c.block) ?? 'source';
     const why = typeof c.why === 'string' ? singleLine(c.why.replace(/_/g, ' '), 60) : 'unreachable';
     const owner = gameText(c.owner, 24);
-    out.push(`seen: ${what} at ${at(pos, ctx.here)}, ${why}${owner && why === 'protected' ? ` (${owner}'s)` : ''}`);
+    out.push(
+      `seen: ${what} at ${at(pos, ctx.here)}, ${why}${owner && why === 'protected' ? ` (${owner}'s)` : ''}`,
+    );
   }
   if (code === 'PROTECTED') {
     // W1: one `protected` object {pos, what: player-built|base, owner, block, zone?, count}; W2's reading: a list.
@@ -566,6 +580,11 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
     case 'NO_FURNACE':
     case 'FURNACE_BUSY':
     case 'NO_FUEL':
+      if (ctx.craftTree === false) {
+        return item
+          ? `craft or gather each missing ingredient (and fuel) first, then ${call('craft', { item, ...(count > 1 ? { count } : {}) })}`
+          : `${call('observe', { sections: ['inventory'] })}, then gather or craft`;
+      }
       return meta.tool === 'craft' && item
         ? `${call('craft', { item, ...(count > 1 ? { count } : {}), gather_missing: true })}`
         : item
@@ -683,7 +702,8 @@ export function renderSequence(meta: JobMeta, outcome: JobOutcome, ctx: RenderCo
   const r = outcome.result ?? {};
   const results = arr(r.steps).map(obj);
   const completed = num(r.completed) ?? results.filter((s) => s?.status === 'done').length;
-  const time = outcome.durationMs !== undefined && outcome.durationMs >= 1000 ? ` in ${dur(outcome.durationMs)}` : '';
+  const time =
+    outcome.durationMs !== undefined && outcome.durationMs >= 1000 ? ` in ${dur(outcome.durationMs)}` : '';
   const details: string[] = [];
   let failedAt = -1;
   let failedCode: string | null = null;
@@ -706,7 +726,9 @@ export function renderSequence(meta: JobMeta, outcome: JobOutcome, ctx: RenderCo
         failedCode = code;
       }
       const progress = stepResult ? progressOf(step, stepResult) : null;
-      details.push(`${i + 1} ${step.what}${progress ? ` ${progress}` : ''} ${status === 'cancelled' ? 'cancelled' : 'failed'}`);
+      details.push(
+        `${i + 1} ${step.what}${progress ? ` ${progress}` : ''} ${status === 'cancelled' ? 'cancelled' : 'failed'}`,
+      );
     }
   }
   if (outcome.status === 'done') {
@@ -715,7 +737,12 @@ export function renderSequence(meta: JobMeta, outcome: JobOutcome, ctx: RenderCo
   const code = outcome.error?.code ?? failedCode ?? 'FAILED';
   const msg = singleLine(outcome.error?.msg ?? 'failed', 200).replace(/^step \d+\/\d+ \S+: /, '');
   if (outcome.status === 'cancelled') {
-    return { head: `cancelled: do ${completed}/${n} steps${time} (${msg})`, details, next: null, isError: true };
+    return {
+      head: `cancelled: do ${completed}/${n} steps${time} (${msg})`,
+      details,
+      next: null,
+      isError: true,
+    };
   }
   const idx = failedAt >= 0 ? failedAt : Math.min(completed, n - 1);
   const step = steps[idx];
@@ -762,12 +789,17 @@ function capSection(name: string, text: string, detail: Detail): string {
 }
 
 /** `status: HP 20/20 food 20 | day 1 06:15 clear | 5 66 -5 plains | idle (follow, Player 2m) | held wheat_seeds`. */
-export function renderStatus(r: Record<string, unknown>, ctx: RenderContext, detail: Detail = 'brief'): string {
+export function renderStatus(
+  r: Record<string, unknown>,
+  ctx: RenderContext,
+  detail: Detail = 'brief',
+): string {
   const parts: string[] = [];
   const hp = num(r.hp);
   const maxHp = num(r.maxHp);
   const food = num(r.food);
-  if (hp !== null) parts.push(`HP ${Math.ceil(hp)}/${Math.round(maxHp ?? 20)}${food !== null ? ` food ${food}` : ''}`);
+  if (hp !== null)
+    parts.push(`HP ${Math.ceil(hp)}/${Math.round(maxHp ?? 20)}${food !== null ? ` food ${food}` : ''}`);
   const time = gameText(r.time, 24);
   const weather = typeof r.weather === 'string' && r.weather !== 'clear' ? ` ${r.weather}` : '';
   if (time) parts.push(`${time.replace(/^Day/, 'day')}${weather}`);
@@ -775,8 +807,11 @@ export function renderStatus(r: Record<string, unknown>, ctx: RenderContext, det
   const dim = typeof r.dim === 'string' && r.dim !== 'minecraft:overworld' ? ` ${short(r.dim)}` : '';
   const biome = idText(r.biome, 24);
   if (pos) parts.push(`${posText(pos)}${dim}${biome ? ` ${biome}` : ''}`);
+  // W1: the footer's words ("in Base", "12m from Base"); an older shape: {kind, name}.
+  const zoneText = typeof r.zone === 'string' ? gameText(r.zone, 40) : null;
   const zone = obj(r.zone);
-  if (zone && typeof zone.kind === 'string') {
+  if (zoneText) parts.push(zoneText);
+  else if (zone && typeof zone.kind === 'string') {
     const name = gameText(zone.name, 40);
     if (zone.kind === 'base') parts.push(`in Base${name ? ` (${name})` : ''}`);
     else if (zone.kind === 'built') parts.push(`by ${ctx.playerName}'s builds`);
@@ -878,7 +913,11 @@ export function renderCrew(
             : '';
     const activity = gameText(m.activity, 40);
     const hp = num(m.hp);
-    const bits = [name, where, activity && !where.startsWith('seated') ? activity.replace(/minecraft:/g, '') : null];
+    const bits = [
+      name,
+      where,
+      activity && !where.startsWith('seated') ? activity.replace(/minecraft:/g, '') : null,
+    ];
     if (detail === 'full' && hp !== null) bits.push(`HP ${Math.ceil(hp)}`);
     parts.push(bits.filter(Boolean).join(' '));
   }
@@ -899,7 +938,11 @@ export function renderEvents(r: Record<string, unknown>, detail: Detail = 'brief
     const extra = data
       ? Object.entries(data)
           .slice(0, 3)
-          .map(([k, v]) => (k === 'job' || k === 'item' || k === 'reflex' ? gameText(short(String(v)), 30) : `${k} ${gameText(short(String(v)), 30)}`))
+          .map(([k, v]) =>
+            k === 'job' || k === 'item' || k === 'reflex'
+              ? gameText(short(String(v)), 30)
+              : `${k} ${gameText(short(String(v)), 30)}`,
+          )
           .filter(Boolean)
           .join(' ')
       : '';
@@ -939,16 +982,21 @@ export function renderMenu(r: Record<string, unknown>, detail: Detail = 'brief')
     .filter((o): o is Record<string, unknown> => o !== null);
   if (offers.length > 0) {
     const shown = offers.slice(0, detail === 'full' ? 12 : 5).map((o) => {
-      const cost = [o.costA, o.costB].map((c) => (typeof c === 'string' ? short(c).replace(' x', ' ') : null)).filter(Boolean);
+      const cost = [o.costA, o.costB]
+        .map((c) => (typeof c === 'string' ? short(c).replace(' x', ' ') : null))
+        .filter(Boolean);
       const res = typeof o.result === 'string' ? short(o.result).replace(' x', ' ') : '?';
       return `${num(o.button) ?? '?'} = ${cost.join(' + ')} → ${res}${o.outOfStock === true ? ' (out of stock)' : ''}`;
     });
-    lines.push(` buttons: ${shown.join('; ')}${offers.length > shown.length ? ` +${offers.length - shown.length} more` : ''}`);
+    lines.push(
+      ` buttons: ${shown.join('; ')}${offers.length > shown.length ? ` +${offers.length - shown.length} more` : ''}`,
+    );
   }
   const costs = arr(r.levelCosts).map(num);
   if (costs.length > 0) lines.push(` buttons: -2/-3/-4 = enchant options costing ${costs.join('/')} levels`);
   const recipes = num(r.recipes);
-  if (recipes !== null) lines.push(` buttons: -2 - index picks one of ${recipes} recipes (selected ${num(r.selected) ?? -1})`);
+  if (recipes !== null)
+    lines.push(` buttons: -2 - index picks one of ${recipes} recipes (selected ${num(r.selected) ?? -1})`);
   const theirs: string[] = [];
   const own: string[] = [];
   for (const raw of arr(r.slots)) {
@@ -958,7 +1006,10 @@ export function renderMenu(r: Record<string, unknown>, detail: Detail = 'brief')
     (s.own === true ? own : theirs).push(text);
   }
   if (theirs.length > 0) lines.push(` slots: ${theirs.slice(0, detail === 'full' ? 40 : 12).join(', ')}`);
-  if (own.length > 0) lines.push(` yours: ${own.slice(0, detail === 'full' ? 40 : 8).join(', ')}${own.length > 8 && detail !== 'full' ? ' …' : ''}`);
+  if (own.length > 0)
+    lines.push(
+      ` yours: ${own.slice(0, detail === 'full' ? 40 : 8).join(', ')}${own.length > 8 && detail !== 'full' ? ' …' : ''}`,
+    );
   const carried = typeof r.carried === 'string' ? short(r.carried) : null;
   if (carried) lines.push(` carried: ${singleLine(carried, 40)}`);
   return capSection('menu', lines.join('\n'), detail);
@@ -970,7 +1021,7 @@ export function renderJobStatus(r: Record<string, unknown>): string | null {
   if (!status) return null;
   if (status === 'idle') return 'idle';
   const id = typeof r.jobId === 'string' ? r.jobId : '';
-  const skill = typeof r.skill === 'string' ? r.skill : (typeof r.current === 'string' ? r.current : '');
+  const skill = typeof r.skill === 'string' ? r.skill : typeof r.current === 'string' ? r.current : '';
   const text = typeof r.text === 'string' ? ` ${singleLine(short(r.text), 60)}` : '';
   const elapsed = num(r.elapsedS);
   return `${status} ${[id, skill].filter(Boolean).join(' ')}${text}${elapsed !== null ? ` (${dur(elapsed * 1000)})` : ''}`;
@@ -1024,7 +1075,11 @@ export function renderFind(
       else if (prov !== null || legacyProtected || base) {
         isProtected = true;
         const owner = gameText(m.owner, 24) ?? ctx.playerName;
-        marks.push(prov === 'base' || (prov === null && base) ? 'Base, protected' : `${owner}'s (player-built), protected`);
+        marks.push(
+          prov === 'base' || (prov === null && base)
+            ? 'Base, protected'
+            : `${owner}'s (player-built), protected`,
+        );
       }
       const reach =
         typeof m.reachable === 'string'
@@ -1041,12 +1096,19 @@ export function renderFind(
       const note = typeof m.note === 'string' ? m.note : '';
       if (/not a tree/.test(note)) marks.push('not a tree');
       const block = idText(m.block) ?? what;
-      const label = trunk ? `${idText(tree?.species) ?? ''} tree, trunk ×${num(tree?.logs) ?? '?'}`.trim() : block;
+      const label = trunk
+        ? `${idText(tree?.species) ?? ''} tree, trunk ×${num(tree?.logs) ?? '?'}`.trim()
+        : block;
       const where = trunk ?? pos;
       rank++;
-      lines.push(`${rank}. ${label} at ${at(where, ctx.here)}${marks.length > 0 ? `, ${marks.join(', ')}` : ''}`);
+      lines.push(
+        `${rank}. ${label} at ${at(where, ctx.here)}${marks.length > 0 ? `, ${marks.join(', ')}` : ''}`,
+      );
       if (!trees && !isProtected && (trunk || /_log$|_stem$/.test(block))) {
-        trees = { pos: where, reachable: reach === 'unreachable' ? false : reach === 'reachable' ? true : null };
+        trees = {
+          pos: where,
+          reachable: reach === 'unreachable' ? false : reach === 'reachable' ? true : null,
+        };
       }
     } else if (kind === 'entity') {
       const name =
@@ -1077,7 +1139,9 @@ export function renderFind(
     };
   }
   const text =
-    rank === 1 ? `${head}${have}: ${(lines[0] ?? '').replace(/^1\. /, '')}` : [`${head}${have}`, ...lines].join('\n');
+    rank === 1
+      ? `${head}${have}: ${(lines[0] ?? '').replace(/^1\. /, '')}`
+      : [`${head}${have}`, ...lines].join('\n');
   return { text: capText(text, detail === 'full' ? 1500 : 700), trees };
 }
 
@@ -1094,7 +1158,11 @@ export function renderScene(
   const raw = typeof r.scene === 'string' && r.scene.trim().length > 0 ? r.scene : fallback(r);
   const text = raw
     .split('\n')
-    .map((l) => escapeShared(l).replace(/minecraft:/g, '').trimEnd())
+    .map((l) =>
+      escapeShared(l)
+        .replace(/minecraft:/g, '')
+        .trimEnd(),
+    )
     .filter((l) => l.length > 0)
     .join('\n ');
   return capSection('scene', `scene (${radius}m): ${text}`, detail);

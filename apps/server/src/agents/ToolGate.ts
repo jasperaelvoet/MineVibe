@@ -160,7 +160,8 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
       if (ctx.ceo || scheduling === null) return allow('calendar');
       const assignees = assigneesOf(input);
       // v2 `calendar{add}` without assignees schedules for the caller (tools-v2-mc.md §4.5).
-      if (assignees === undefined && (scheduling === 'update' || tool === 'calendar')) return allow('calendar self');
+      if (assignees === undefined && (scheduling === 'update' || tool === 'calendar'))
+        return allow('calendar self');
       const selfOnly = Array.isArray(assignees) && assignees.length === 1 && assignees[0] === ctx.agentId;
       return selfOnly
         ? allow('calendar self')

@@ -58,7 +58,7 @@ class SkillFactoryV2Test {
 		assertTrue(error(() -> SkillFactory.create("sequence", json(
 			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"emote\",\"args\":{\"kind\":\"wave\"}}]}"))).contains("step 2: emote"));
 		assertTrue(error(() -> SkillFactory.create("sequence", json(
-			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"craft\",\"args\":{\"count\":1}}]}"))).contains("step 2: item is required"));
+			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"craft\",\"args\":{\"count\":1}}]}"))).contains("step 2: craft: item is required"));
 		assertTrue(error(() -> SkillFactory.create("sequence", json(
 			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"fly\",\"args\":{}}]}"))).startsWith("UNKNOWN_SKILL: step 2"));
 	}

@@ -29,6 +29,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Logger } from 'pino';
+import { mcRefs } from '../../contracts/mcRefs.js';
 import { writeFileAtomic } from '../../util/atomicFile.js';
 import {
   formatGameTime,
@@ -60,7 +61,6 @@ import {
   type Recurrence,
   RING_SIZE,
 } from './types.js';
-import { mcRefs } from '../../contracts/mcRefs.js';
 
 export interface CalendarLimits {
   /** Lateness that still counts as on time. */

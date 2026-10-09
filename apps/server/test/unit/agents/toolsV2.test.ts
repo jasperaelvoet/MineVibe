@@ -81,7 +81,9 @@ function v2Host(over: Partial<McHost> = {}, caps: readonly string[] = ALL_CAPS) 
     taskReported: (r) => log.push(`report:${r.eventId}:${r.status}`),
     jobs,
     crewMember: (ref) =>
-      ref.replace(/^@/, '').toLowerCase() === 'bram' ? { agentId: 'bram1a2b', name: 'Bram', handle: 'bram' } : null,
+      ref.replace(/^@/, '').toLowerCase() === 'bram'
+        ? { agentId: 'bram1a2b', name: 'Bram', handle: 'bram' }
+        : null,
     ...over,
   };
   return { host, fake, skills, org, log, jobs, reg: registry(createMcServer(host, 'v2')) };
@@ -93,7 +95,8 @@ describe('v2 mc tool list (tools-v2-mc.md §3, §13)', () => {
     const { tools, instructions } = await listTools(createMcServer(host, 'v2'));
     expect(tools.map((t) => t.name)).toEqual([...MC_V2_TOOL_NAMES]);
     expect(Object.keys(MC_TOOLS_V2).sort()).toEqual([...MC_V2_TOOL_NAMES].sort());
-    for (const t of tools) expect(t.description).toBe(MC_V2_DESCRIPTIONS[t.name as keyof typeof MC_V2_DESCRIPTIONS]);
+    for (const t of tools)
+      expect(t.description).toBe(MC_V2_DESCRIPTIONS[t.name as keyof typeof MC_V2_DESCRIPTIONS]);
     expect(instructions).toBe(MC_V2_INSTRUCTIONS);
     expect(instructions).toContain('PROTECTED and NO_NATURAL_SOURCE are hard stops');
   });
@@ -133,7 +136,8 @@ describe('v2 mc tool list (tools-v2-mc.md §3, §13)', () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.observe?.annotations?.readOnlyHint).toBe(true);
     expect(byName.find?.annotations?.readOnlyHint).toBe(true);
-    for (const n of ['gather', 'build', 'use', 'do']) expect(byName[n]?.annotations?.destructiveHint, n).toBe(true);
+    for (const n of ['gather', 'build', 'use', 'do'])
+      expect(byName[n]?.annotations?.destructiveHint, n).toBe(true);
     for (const t of tools) expect(t._meta?.['anthropic/alwaysLoad'], t.name).toBe(true);
   });
 
@@ -194,7 +198,7 @@ describe('v2 world tools (§5)', () => {
   it('gather on an older mod (no collect.gather cap) sends plain v1 collect args', async () => {
     const { reg, fake } = v2Host({}, []);
     await call(reg, 'gather', { item: 'oak_log', count: 3, near: '9 67 -12' });
-    expect(fake.runs[0]?.args).toEqual({ item: 'oak_log', count: 3, radius: 48 });
+    expect(fake.runs[0]?.args).toEqual({ item: 'oak_log', count: 3, radius: 48, replant: true });
   });
 
   it('positions are strings: a bad one is BAD_ARGS with an example, nothing is sent', async () => {
@@ -209,8 +213,12 @@ describe('v2 world tools (§5)', () => {
     const { reg, fake, log, jobs } = v2Host();
     fake.skillHandler = () => ({ status: 'running' });
     const res = await call(reg, 'gather', { item: 'oak_log', count: 10 });
-    expect(res.text).toMatch(/^running: gather oak_log \(job j\S+, \d+s so far\)\nnext: end your turn; \[JOB DONE\] wakes you/);
-    expect(res.text.endsWith('· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds')).toBe(true);
+    expect(res.text).toMatch(
+      /^running: gather oak_log \(job j\S+, \d+s so far\)\nnext: end your turn; \[JOB DONE\] wakes you/,
+    );
+    expect(
+      res.text.endsWith('· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds'),
+    ).toBe(true);
     expect(log[0]).toMatch(/^track:j\S+:gather oak_log$/);
     const id = jobs.current()?.jobId ?? '';
     jobs.progress(id, '4/10 minecraft:oak_log');
@@ -220,7 +228,10 @@ describe('v2 world tools (§5)', () => {
 
   it('a new world call says which running job it stopped', async () => {
     const { reg, fake, jobs } = v2Host();
-    fake.skillHandler = (r) => (r.skill === 'collect' ? { status: 'running' } : { status: 'done', result: { pos: { x: 5, y: 66, z: 0 } } });
+    fake.skillHandler = (r) =>
+      r.skill === 'collect'
+        ? { status: 'running' }
+        : { status: 'done', result: { pos: { x: 5, y: 66, z: 0 } } };
     await call(reg, 'gather', { item: 'oak_log', count: 10 });
     const first = jobs.current()?.jobId ?? '';
     jobs.progress(first, '4/10 oak_log');
@@ -261,7 +272,10 @@ describe('v2 world tools (§5)', () => {
   it('craft resolves the tree with the mod (craft.tree) and smelts through craft on an older mod', async () => {
     const { reg, fake } = v2Host();
     await call(reg, 'craft', { item: 'crafting_table' });
-    expect(fake.runs[0]).toMatchObject({ skill: 'craft', args: { item: 'crafting_table', count: 1, tree: true } });
+    expect(fake.runs[0]).toMatchObject({
+      skill: 'craft',
+      args: { item: 'crafting_table', count: 1, tree: true },
+    });
     await call(reg, 'craft', { item: 'iron_pickaxe', gather_missing: true, station: '5 66 0' });
     expect(fake.runs[1]?.args).toEqual({
       item: 'iron_pickaxe',
@@ -287,7 +301,10 @@ describe('v2 world tools (§5)', () => {
     });
     const plan = await call(reg, 'craft', { item: 'crafting_table', plan: true });
     expect(fake.runs).toHaveLength(0);
-    expect(fake.obsCalls[0]).toEqual({ query: 'recipe', args: { item: 'crafting_table', count: 1, tree: true } });
+    expect(fake.obsCalls[0]).toEqual({
+      query: 'recipe',
+      args: { item: 'crafting_table', count: 1, tree: true },
+    });
     expect(plan.text).toContain('plan: crafting_table ×1');
     expect(plan.text).toContain(' oak_planks ×4 ← oak_log 1 ok');
   });
@@ -396,7 +413,15 @@ describe('v2 world tools (§5)', () => {
             status: 'failed',
             code: 'PROTECTED',
             msg: 'player-built',
-            result: { protected: { pos: { x: 6, y: 66, z: -6 }, what: 'player-built', owner: 'Jasper', block: 'minecraft:stripped_spruce_log', count: 1 } },
+            result: {
+              protected: {
+                pos: { x: 6, y: 66, z: -6 },
+                what: 'player-built',
+                owner: 'Jasper',
+                block: 'minecraft:stripped_spruce_log',
+                count: 1,
+              },
+            },
           }
         : { status: 'done', result: { dug: 1 } };
     const refused = await call(reg, 'build', dig);
@@ -433,7 +458,11 @@ describe('v2 do (§5.10)', () => {
         completed: 2,
         steps: [
           { skill: 'collect', status: 'done', result: { got: 10, have: 10 } },
-          { skill: 'craft', status: 'done', result: { crafted: 1, have: 1, item: 'minecraft:crafting_table' } },
+          {
+            skill: 'craft',
+            status: 'done',
+            result: { crafted: 1, have: 1, item: 'minecraft:crafting_table' },
+          },
         ],
       },
     });
@@ -458,7 +487,9 @@ describe('v2 do (§5.10)', () => {
   it('a bad step fails the whole call naming the step, before anything runs', async () => {
     const { reg, fake } = v2Host();
     const res = await call(reg, 'do', { steps: [steps[0], { tool: 'craft', args: { count: 2 } }] });
-    expect(res.text).toContain('BAD_ARGS: step 2 craft: item is required. Example: craft{"item":"crafting_table"}');
+    expect(res.text).toContain(
+      'BAD_ARGS: step 2 craft: item is required. Example: craft{"item":"crafting_table"}',
+    );
     expect(fake.runs).toHaveLength(0);
     expect((await call(reg, 'do', { steps: [steps[0]] })).invalid).toBe(true);
   });
@@ -467,7 +498,12 @@ describe('v2 do (§5.10)', () => {
     const { reg, fake } = v2Host({}, []);
     fake.skillHandler = (r) =>
       r.skill === 'collect'
-        ? { status: 'failed', code: 'NO_NATURAL_SOURCE', msg: 'no reachable natural oak_log within 48m', result: { got: 0 } }
+        ? {
+            status: 'failed',
+            code: 'NO_NATURAL_SOURCE',
+            msg: 'no reachable natural oak_log within 48m',
+            result: { got: 0 },
+          }
         : { status: 'done' };
     const res = await call(reg, 'do', { steps });
     expect(fake.runs.map((r) => r.skill)).toEqual(['collect']);
@@ -502,9 +538,23 @@ describe('v2 job, observe and the rest', () => {
 
   it('observe: sections in a fixed order, in parallel; a failing section does not fail the call', async () => {
     const { reg, fake } = v2Host();
-    fake.observations.set('status', { hp: 20, maxHp: 20, food: 20, pos: { x: 5, y: 66, z: -5 }, mode: 'follow', footer: FOOTER });
-    fake.observations.set('inventory', { slots: [{ item: 'minecraft:wheat_seeds', count: 3 }], freeSlots: 35, footer: FOOTER });
-    fake.observations.set('look_around', { scene: 'inside Base: protected\ntrees: oak 28m S, reachable', footer: FOOTER });
+    fake.observations.set('status', {
+      hp: 20,
+      maxHp: 20,
+      food: 20,
+      pos: { x: 5, y: 66, z: -5 },
+      mode: 'follow',
+      footer: FOOTER,
+    });
+    fake.observations.set('inventory', {
+      slots: [{ item: 'minecraft:wheat_seeds', count: 3 }],
+      freeSlots: 35,
+      footer: FOOTER,
+    });
+    fake.observations.set('look_around', {
+      scene: 'inside Base: protected\ntrees: oak 28m S, reachable',
+      footer: FOOTER,
+    });
     const res = await call(reg, 'observe', { sections: ['inventory', 'status', 'scene', 'pcs'] });
     const lines = res.text.split('\n');
     expect(lines[0]).toMatch(/^status: HP 20\/20 food 20/);
@@ -514,9 +564,14 @@ describe('v2 job, observe and the rest', () => {
     expect(lines[4]).toBe('pcs: unavailable (NOT_HANDLED)');
     // No footer: status says it all.
     expect(lines).toHaveLength(5);
-    expect(fake.obsCalls.find((c) => c.query === 'look_around')?.args).toEqual({ radius: 24, detail: 'brief' });
+    expect(fake.obsCalls.find((c) => c.query === 'look_around')?.args).toEqual({
+      radius: 24,
+      detail: 'brief',
+    });
     const noStatus = await call(reg, 'observe', { sections: ['inventory'] });
-    expect(noStatus.text.endsWith('· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds')).toBe(true);
+    expect(
+      noStatus.text.endsWith('· HP 20/20 food 20 | day 1 06:15 | 5 66 -5 | idle (follow) | wheat_seeds'),
+    ).toBe(true);
   });
 
   it('observe scene radius is clamped to what the mod accepts (32 without the cap)', async () => {
@@ -548,7 +603,9 @@ describe('v2 job, observe and the rest', () => {
     );
     expect(fake.modeOf('ada-1')).toBe('guard');
     expect((await call(reg, 'tell', { to: '@bram', text: 'hi' })).text).toBe('Told @bram: hi');
-    expect((await call(reg, 'sit_at_pc', { pc: 'linux-1', purpose: 'tests' })).text).toBe('sit linux-1 60000');
+    expect((await call(reg, 'sit_at_pc', { pc: 'linux-1', purpose: 'tests' })).text).toBe(
+      'sit linux-1 60000',
+    );
   });
 
   it('codex and calendar map their actions onto the org tools (self by default, clock inferred, report)', async () => {
@@ -563,10 +620,23 @@ describe('v2 job, observe and the rest', () => {
     expect(created.isError).toBe(false);
     const search = await call(reg, 'codex', { action: 'search', query: 'iron' });
     expect(search.text).toContain('Iron cave');
-    expect((await call(reg, 'codex', { action: 'create', title: 'x', body: 'y', category: 'rules', scope: 'world' })).text).toContain(
-      "rules pages are the player's",
-    );
-    const added = await call(reg, 'calendar', { action: 'add', title: 'Mine iron', when: 'now', task: 'Mine 20 iron ore' });
+    expect(
+      (
+        await call(reg, 'codex', {
+          action: 'create',
+          title: 'x',
+          body: 'y',
+          category: 'rules',
+          scope: 'world',
+        })
+      ).text,
+    ).toContain("rules pages are the player's");
+    const added = await call(reg, 'calendar', {
+      action: 'add',
+      title: 'Mine iron',
+      when: 'now',
+      task: 'Mine 20 iron ore',
+    });
     expect(added.isError).toBe(false);
     const id = /ev-\d+/.exec(added.text)?.[0] ?? '';
     expect(id).not.toBe('');
@@ -574,6 +644,8 @@ describe('v2 job, observe and the rest', () => {
     expect(listed.text).toContain('Mine iron');
     await call(reg, 'calendar', { action: 'report', id, status: 'done' });
     expect(log).toContain(`report:${id}:done`);
-    expect((await call(reg, 'calendar', { action: 'add', title: 'x' })).text).toContain('add needs title and when');
+    expect((await call(reg, 'calendar', { action: 'add', title: 'x' })).text).toContain(
+      'add needs title and when',
+    );
   });
 });

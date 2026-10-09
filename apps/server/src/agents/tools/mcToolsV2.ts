@@ -46,8 +46,8 @@ import {
   num,
   obj,
   posText,
-  type Rendered,
   type RenderContext,
+  type Rendered,
   renderCrew,
   renderEvents,
   renderFind,
@@ -110,7 +110,12 @@ export const MC_V2_TOOL_NAMES = [
 export type McV2ToolName = (typeof MC_V2_TOOL_NAMES)[number];
 
 /** Tools that could be deferred behind tool search once that is verified for Haiku (§13 phase C). */
-export const MC_V2_DEFERRABLE: ReadonlySet<McV2ToolName> = new Set(['menu', 'codex', 'calendar', 'request_hire']);
+export const MC_V2_DEFERRABLE: ReadonlySet<McV2ToolName> = new Set([
+  'menu',
+  'codex',
+  'calendar',
+  'request_hire',
+]);
 
 /** The tool descriptions (§5), verbatim: when to use the tool, and one example. */
 export const MC_V2_DESCRIPTIONS: Readonly<Record<McV2ToolName, string>> = {
@@ -165,7 +170,16 @@ const PosDesc = Pos.describe('"x y z"');
 const Item = z.string().min(1).max(64);
 const TargetText = z.string().min(1).max(80);
 
-export const OBSERVE_SECTIONS = ['status', 'scene', 'inventory', 'crew', 'jobs', 'events', 'pcs', 'menu'] as const;
+export const OBSERVE_SECTIONS = [
+  'status',
+  'scene',
+  'inventory',
+  'crew',
+  'jobs',
+  'events',
+  'pcs',
+  'menu',
+] as const;
 type Section = (typeof OBSERVE_SECTIONS)[number];
 
 const SHAPES = {
@@ -210,7 +224,13 @@ const SHAPES = {
     action: z.enum(['place', 'break', 'interact', 'use_item', 'attack', 'ride', 'dismount', 'sleep']),
     target: TargetText.optional().describe('"x y z" or an entity: "player", @handle, mob type'),
     item: Item.optional().describe('id or #tag'),
-    count: z.number().int().min(1).max(64).optional().describe('attack: how many of that mob type (default 1)'),
+    count: z
+      .number()
+      .int()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe('attack: how many of that mob type (default 1)'),
   },
   items: {
     action: z.enum(['equip', 'eat', 'drop', 'give', 'store', 'take', 'list']),
@@ -229,7 +249,13 @@ const SHAPES = {
   menu: {
     action: z.enum(['open', 'state', 'click', 'close']),
     target: TargetText.optional(),
-    slot: z.number().int().min(-999).max(255).optional().describe('From state; -2 or less presses button -slot-2'),
+    slot: z
+      .number()
+      .int()
+      .min(-999)
+      .max(255)
+      .optional()
+      .describe('From state; -2 or less presses button -slot-2'),
     button: z.number().int().min(0).max(40).optional(),
     click: z.enum(['pickup', 'quick_move', 'swap', 'throw', 'pickup_all']).optional(),
   },
@@ -317,12 +343,16 @@ function toResult(out: Out): CallToolResult {
 
 /** Builds the v2 `mc` tool definitions of one agent. */
 export function mcToolDefinitionsV2(host: McHost): Def[] {
+  const caps = (): ReadonlySet<string> => host.skills.caps?.() ?? new Set<string>();
   const ctx = (): RenderContext => {
     const here = host.here();
-    return { here: here ? here.pos : null, playerName: host.playerName() };
+    return {
+      here: here ? here.pos : null,
+      playerName: host.playerName(),
+      craftTree: caps().has(MOD_CAPS.CRAFT_TREE),
+    };
   };
   const nodeFooter = (): string | null => footerLine(host.footer());
-  const caps = (): ReadonlySet<string> => host.skills.caps?.() ?? new Set<string>();
   const obs = async (query: ObsQueryName, args: Record<string, unknown> = {}) => {
     const { result, footer } = splitFooter(await host.skills.obsQuery(host.agentId, query, args));
     return { result: result ?? {}, footer };
@@ -403,7 +433,9 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   const runWire = async (wire: WireCall): Promise<Out> => {
     const key = wireKey(wire);
     const meta: JobMeta = { ...wire.meta, wire: key };
-    const refused = guard(wire.skill === 'sequence' ? (meta.steps ?? []).map((s, i) => stepCall(wire, s, i)) : [wire]);
+    const refused = guard(
+      wire.skill === 'sequence' ? (meta.steps ?? []).map((s, i) => stepCall(wire, s, i)) : [wire],
+    );
     if (refused) return refused;
     // The player's consent (§8 PROTECTED): the model repeats the exact call the mod refused, after the player picked an
     // "Allow" option; Node then attaches the mod's token and asks for it (allow_protected). Never from tool arguments.
@@ -499,7 +531,9 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
           const text = texts.join('\n');
           const cap = OBSERVE_MAX[detail];
           const capped = text.length > cap ? `${text.slice(0, cap - 1)}…` : text;
-          const footer = want.has('status') ? null : (footerLine(footers.find((f) => f) ?? null) ?? nodeFooter());
+          const footer = want.has('status')
+            ? null
+            : (footerLine(footers.find((f) => f) ?? null) ?? nodeFooter());
           return { text: capped, footer };
         }),
       READ_ONLY,
@@ -526,7 +560,10 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
         const world = host.world?.() ?? null;
         let trees = treesOf(result);
         const text = renderScene(result, r, detail, (raw) => {
-          const seen = perceiveLookAround(raw, world ?? { here: c.here, base: null, playerName: c.playerName });
+          const seen = perceiveLookAround(
+            raw,
+            world ?? { here: c.here, base: null, playerName: c.playerName },
+          );
           trees = trees ?? seen.trees;
           return seen.text;
         });
@@ -620,7 +657,13 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       'gather',
       MC_V2_DESCRIPTIONS.gather,
       SHAPES.gather,
-      (args) => run(`gather ${short(args.item)}`, true, async () => runWire(translateGather(args, translateHost)), args),
+      (args) =>
+        run(
+          `gather ${short(args.item)}`,
+          true,
+          async () => runWire(translateGather(args, translateHost)),
+          args,
+        ),
       DESTRUCTIVE,
     ),
     tool('craft', MC_V2_DESCRIPTIONS.craft, SHAPES.craft, (args) =>
@@ -633,7 +676,8 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       'build',
       MC_V2_DESCRIPTIONS.build,
       SHAPES.build,
-      (args) => run(`build ${args.action}`, true, async () => runWire(translateBuild(args, translateHost)), args),
+      (args) =>
+        run(`build ${args.action}`, true, async () => runWire(translateBuild(args, translateHost)), args),
       DESTRUCTIVE,
     ),
     tool(
@@ -668,11 +712,13 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       (args) =>
         run(`do ${args.steps.length} steps`, true, async () => {
           const calls: WireCall[] = [];
-          for (const [i, step] of args.steps.entries()) calls.push(await translateStep(i, step, translateHost));
+          for (const [i, step] of args.steps.entries())
+            calls.push(await translateStep(i, step, translateHost));
           const stepArgs = calls.map((c) => ({ skill: c.skill, args: c.args }));
           const sequence: WireCall = {
             skill: 'sequence',
-            args: args.stop_on_fail === false ? { steps: stepArgs, stop_on_fail: false } : { steps: stepArgs },
+            args:
+              args.stop_on_fail === false ? { steps: stepArgs, stop_on_fail: false } : { steps: stepArgs },
             meta: {
               tool: 'do',
               skill: 'sequence',
@@ -742,7 +788,12 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
               return { text: `ok: waited ${seconds}s; no job was running`, footer: nodeFooter() };
             }
             const ended = jobs?.endedJob(id);
-            if (ended) return { text: compose(ended.rendered, null), isError: ended.rendered.isError, footer: nodeFooter() };
+            if (ended)
+              return {
+                text: compose(ended.rendered, null),
+                isError: ended.rendered.isError,
+                footer: nodeFooter(),
+              };
             try {
               const end = await host.skills.awaitJob(id, seconds * 1000);
               const meta = jobs?.meta(id) ?? { tool: 'job', skill: '', what: `job ${id}` };
@@ -928,7 +979,9 @@ export function wireKey(wire: Pick<WireCall, 'skill' | 'args'>): string {
 
 /** The wire call of `do` step `i` (for the guard; the steps are in the sequence's args). */
 function stepCall(wire: WireCall, meta: JobMeta, i: number): WireCall {
-  const steps = Array.isArray(wire.args.steps) ? (wire.args.steps as { skill: string; args: Record<string, unknown> }[]) : [];
+  const steps = Array.isArray(wire.args.steps)
+    ? (wire.args.steps as { skill: string; args: Record<string, unknown> }[])
+    : [];
   const step = steps[i];
   return { skill: (step?.skill ?? meta.skill) as WireCall['skill'], args: step?.args ?? {}, meta };
 }
@@ -940,7 +993,8 @@ function adviceFor(c: WireCall): string {
   if (t.startsWith('#')) {
     return `Name the exact natural block instead (oak_log, spruce_log, stone), e.g. ${call('gather', { item: 'oak_log', count: 10 })}; gather looks for it in nature.`;
   }
-  if (t.endsWith('_planks')) return `Get logs and craft planks: ${call('craft', { item: t, gather_missing: true })}.`;
+  if (t.endsWith('_planks'))
+    return `Get logs and craft planks: ${call('craft', { item: t, gather_missing: true })}.`;
   if (/crafting_table|furnace|chest|torch|lantern|_bed$|_door$/.test(t)) {
     return `Use the Base's ${t} where it stands, or make your own: ${call('craft', { item: t })}.`;
   }
@@ -963,7 +1017,12 @@ function treesOf(result: Record<string, unknown>): { pos: BlockPos; reachable: b
  * `craft{plan:true}` → text. With the mod's tree (M5: `steps`, `missing`, `station`) the whole plan; with an older
  * mod the first recipes and their ingredients.
  */
-export function renderPlan(item: string, count: number, r: Record<string, unknown>, ctx: RenderContext): string {
+export function renderPlan(
+  item: string,
+  count: number,
+  r: Record<string, unknown>,
+  ctx: RenderContext,
+): string {
   const lines: string[] = [];
   const name = short(item);
   const steps = arr(r.steps)
@@ -979,7 +1038,10 @@ export function renderPlan(item: string, count: number, r: Record<string, unknow
       const s = obj(raw);
       const pos = asPos(s?.pos);
       const how = typeof s?.how === 'string' ? s.how : null;
-      if (pos) stationBits.push(`${kind}: at ${posText(pos)}${ctx.here ? ` (${Math.round(Math.hypot(pos.x - ctx.here.x, pos.z - ctx.here.z))}m)` : ''}`);
+      if (pos)
+        stationBits.push(
+          `${kind}: at ${posText(pos)}${ctx.here ? ` (${Math.round(Math.hypot(pos.x - ctx.here.x, pos.z - ctx.here.z))}m)` : ''}`,
+        );
       else if (how) stationBits.push(`${kind}: ${singleLine(how, 40)}`);
     }
     lines.push([`plan: ${name} ×${count}`, ...stationBits].join(' | '));
@@ -992,8 +1054,14 @@ export function renderPlan(item: string, count: number, r: Record<string, unknow
       lines.push(` ${out} ×${n} ← ${action}${from}${ready}`);
     }
     if (missing.length > 0) {
-      lines.push(` missing raw: ${missing.map((m) => `${idText(m.item) ?? '?'} ${num(m.need) ?? 0}`).join(', ')}`);
-      lines.push(nextLine(`${call('craft', { item, ...(count > 1 ? { count } : {}), gather_missing: true })} (gathers what is missing)`));
+      lines.push(
+        ` missing raw: ${missing.map((m) => `${idText(m.item) ?? '?'} ${num(m.need) ?? 0}`).join(', ')}`,
+      );
+      lines.push(
+        nextLine(
+          `${call('craft', { item, ...(count > 1 ? { count } : {}), gather_missing: true })} (gathers what is missing)`,
+        ),
+      );
     } else {
       lines.push(nextLine(`${call('craft', { item, ...(count > 1 ? { count } : {}) })}`));
     }
@@ -1015,7 +1083,9 @@ export function renderPlan(item: string, count: number, r: Record<string, unknow
       .map(obj)
       .filter((x): x is Record<string, unknown> => x !== null)
       .map((x) => `${singleLine(String(x.item ?? '?'), 30)} ${num(x.need) ?? 0} (have ${num(x.have) ?? 0})`);
-    lines.push(` ${station}: ${ings.join(', ')}${num(rec.canCraftNow) ? ` | can make ${num(rec.canCraftNow)} now` : ''}`);
+    lines.push(
+      ` ${station}: ${ings.join(', ')}${num(rec.canCraftNow) ? ` | can make ${num(rec.canCraftNow)} now` : ''}`,
+    );
   }
   lines.push(nextLine(`${call('craft', { item, ...(count > 1 ? { count } : {}) })}`));
   return lines.join('\n');
@@ -1054,13 +1124,15 @@ async function codexCall(host: McHost, a: CodexArgs): Promise<OrgToolResult> {
     case 'create':
     case 'update':
     case 'append': {
-      if (a.category === 'rules') throw badArgs('rules pages are the player\'s: pick another category', CODEX_EXAMPLES.create);
+      if (a.category === 'rules')
+        throw badArgs("rules pages are the player's: pick another category", CODEX_EXAMPLES.create);
       if (!a.body) throw badArgs(`${a.action} needs body`, CODEX_EXAMPLES[a.action]);
       if (a.action === 'create' && (!a.title || !a.category || !a.scope)) {
         throw badArgs('create needs title, body, category and scope', CODEX_EXAMPLES.create);
       }
       if (a.action !== 'create' && !a.id) throw badArgs(`${a.action} needs id`, CODEX_EXAMPLES[a.action]);
-      if (a.action === 'update' && !a.base_rev) throw badArgs('update needs base_rev (from read)', CODEX_EXAMPLES.update);
+      if (a.action === 'update' && !a.base_rev)
+        throw badArgs('update needs base_rev (from read)', CODEX_EXAMPLES.update);
       const input: Record<string, unknown> = { mode: a.action, body: a.body };
       for (const k of ['title', 'tags', 'category', 'scope', 'id', 'base_rev', 'here'] as const) {
         if (a[k] !== undefined) input[k] = a[k];
@@ -1082,7 +1154,13 @@ async function codexCall(host: McHost, a: CodexArgs): Promise<OrgToolResult> {
 }
 
 const CALENDAR_EXAMPLES = {
-  add: call('calendar', { action: 'add', kind: 'task', title: 'Mine iron', when: 'now', task: 'Mine 20 iron ore' }),
+  add: call('calendar', {
+    action: 'add',
+    kind: 'task',
+    title: 'Mine iron',
+    when: 'now',
+    task: 'Mine 20 iron ore',
+  }),
   update: call('calendar', { action: 'update', id: 'ev-3', when: 'Day 4 07:00' }),
   cancel: call('calendar', { action: 'cancel', id: 'ev-3' }),
   report: call('calendar', { action: 'report', id: 'ev-3', status: 'done' }),
@@ -1144,5 +1222,4 @@ async function calendarCall(host: McHost, a: CalendarArgs): Promise<OrgToolResul
 }
 
 /** For tests: the position parser the handlers use. */
-export { parsePos };
-export { DO_EXAMPLE };
+export { DO_EXAMPLE, parsePos };

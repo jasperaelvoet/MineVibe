@@ -95,7 +95,11 @@ export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set([
  * v2 also sends consent with `craft` (its recipe tree may place a station and gather) and `sequence` (whose steps
  * change blocks): the consent stays scoped to the refused positions or zone, so it never widens.
  */
-export const CONSENT_SKILLS_V2: ReadonlySet<SkillName> = new Set([...BLOCK_CHANGING_SKILLS, 'craft', 'sequence']);
+export const CONSENT_SKILLS_V2: ReadonlySet<SkillName> = new Set([
+  ...BLOCK_CHANGING_SKILLS,
+  'craft',
+  'sequence',
+]);
 
 /**
  * Splits the mod's status `footer` off a skill or observation result (protocol §7.3): the rest is the result the

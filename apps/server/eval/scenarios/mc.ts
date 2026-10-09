@@ -253,12 +253,7 @@ export const ironIngots: McScenario = {
       ],
       [{ text: 'Three iron ingots, done.' }],
     ],
-    bad: [
-      [
-        { tool: mc('craft'), input: { item: 'iron_ingot', count: 3 } },
-        { text: 'I have the iron.' },
-      ],
-    ],
+    bad: [[{ tool: mc('craft'), input: { item: 'iron_ingot', count: 3 } }, { text: 'I have the iron.' }]],
   },
 };
 
@@ -321,7 +316,10 @@ export const storeLogs: McScenario = {
   },
   replayV2: {
     good: [
-      [{ tool: mc('items'), input: { action: 'store', item: '#logs' } }, { text: 'All 16 logs are in the chest.' }],
+      [
+        { tool: mc('items'), input: { action: 'store', item: '#logs' } },
+        { text: 'All 16 logs are in the chest.' },
+      ],
     ],
     bad: [[{ tool: mc('items'), input: { action: 'store', item: 'oak_log' } }, { text: 'Stored the logs.' }]],
   },

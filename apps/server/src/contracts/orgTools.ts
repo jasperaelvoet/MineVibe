@@ -19,8 +19,8 @@ import {
 import { z } from 'zod';
 import { authorLabel, singleLine, wrapNote } from '../agents/envelope.js';
 import { type Actor, ApiError, isApiError } from './common.js';
-import type { CalendarEventInput, OrgAgentTools, OrgApi, OrgToolResult } from './OrgApi.js';
 import { mcRefs } from './mcRefs.js';
+import type { CalendarEventInput, OrgAgentTools, OrgApi, OrgToolResult } from './OrgApi.js';
 
 /** Day N hh:mm → overworld clock ticks (06:00 = tick 0 of the day; PLAN §6.6). */
 export function gameTimeToTicks(day: number, hour: number, minute: number): number {

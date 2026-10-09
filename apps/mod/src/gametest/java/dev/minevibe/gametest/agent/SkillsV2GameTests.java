@@ -205,6 +205,7 @@ public final class SkillsV2GameTests {
 		agent.getInventory().setItem(0, new ItemStack(Items.STICK, 2));
 		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"iron_pickaxe\",\"count\":1,\"tree\":true}");
 		helper.succeedWhen(() -> {
+			helper.assertTrue(r.isDone(), "still running");
 			helper.assertTrue("failed".equals(status(r)), "expected failure, got " + status(r));
 			helper.assertTrue(error(r).contains("MISSING_INGREDIENTS"), "error " + error(r));
 			String missing = result(r).getAsJsonArray("missing").toString();
@@ -255,6 +256,7 @@ public final class SkillsV2GameTests {
 		CompletableFuture<Map<String, Object>> stop = run(helper, agent, "sequence",
 			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"craft\",\"args\":{\"item\":\"stick\",\"count\":4}}]}");
 		helper.succeedWhen(() -> {
+			helper.assertTrue(stop.isDone(), "still running");
 			helper.assertTrue("failed".equals(status(stop)), "expected failure, got " + status(stop) + " " + result(stop));
 			helper.assertTrue(error(stop).contains("step 1/2 eat"), "names the step: " + error(stop));
 			JsonObject res = result(stop);
@@ -272,6 +274,7 @@ public final class SkillsV2GameTests {
 		CompletableFuture<Map<String, Object>> go = run(helper, agent, "sequence",
 			"{\"steps\":[{\"skill\":\"eat\",\"args\":{}},{\"skill\":\"craft\",\"args\":{\"item\":\"stick\",\"count\":4}}],\"stop_on_fail\":false}");
 		helper.succeedWhen(() -> {
+			helper.assertTrue(go.isDone(), "still running");
 			helper.assertTrue("failed".equals(status(go)), "the eat step failed: " + status(go));
 			JsonObject res = result(go);
 			helper.assertValueEqual(res.get("completed").getAsInt(), 1, "the craft step ran: " + res);

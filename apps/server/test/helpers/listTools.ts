@@ -21,7 +21,10 @@ export async function listTools(server: McpSdkServerConfigWithInstance): Promise
   instructions: string | undefined;
 }> {
   const [a, b] = InMemoryTransport.createLinkedPair();
-  const instance = server.instance as unknown as { connect(t: unknown): Promise<void>; close(): Promise<void> };
+  const instance = server.instance as unknown as {
+    connect(t: unknown): Promise<void>;
+    close(): Promise<void>;
+  };
   await instance.connect(a);
   const client = new Client({ name: 'measure', version: '1' });
   await client.connect(b);

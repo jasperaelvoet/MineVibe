@@ -5,10 +5,10 @@
  * arrives inside a data envelope.
  */
 
+import { mcRefs } from '../../contracts/mcRefs.js';
 import { type ControlNonce, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
 import { formatCoords, pageAuthor } from './format.js';
 import type { CodexCategory, CodexPage } from './types.js';
-import { mcRefs } from '../../contracts/mcRefs.js';
 
 export interface DigestStats {
   readonly reads: Readonly<Record<string, number>>;

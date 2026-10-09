@@ -9,7 +9,9 @@
 export type McToolsVersion = 'v1' | 'v2';
 export const DEFAULT_MC_TOOLS: McToolsVersion = 'v1';
 
-export function mcToolsVersion(env: Readonly<Record<string, string | undefined>> = process.env): McToolsVersion {
+export function mcToolsVersion(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): McToolsVersion {
   const v = env.MINEVIBE_MC_TOOLS?.trim().toLowerCase();
   return v === 'v1' || v === 'v2' ? v : DEFAULT_MC_TOOLS;
 }

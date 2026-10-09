@@ -11,14 +11,15 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type {
-  AgentBody,
-  AgentRole,
-  Autonomy,
-  BrainStatus,
-  ModelTier,
-  PayloadOf,
-  Place,
+import {
+  type AgentBody,
+  type AgentRole,
+  type Autonomy,
+  type BrainStatus,
+  MOD_CAPS,
+  type ModelTier,
+  type PayloadOf,
+  type Place,
 } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { ApiError, agentActor } from '../contracts/common.js';
@@ -37,9 +38,9 @@ import {
   CONTEXT_GUARD_TIMEOUT_MS,
   HAIKU_CONTEXT_TOKENS,
   MAX_SEATED,
+  type McToolsVersion,
   MEETING_SWAP_DEBOUNCE_MS,
   MEETING_TURN_TIMEOUT_MS,
-  type McToolsVersion,
   mcToolsVersion,
   SEATED_PROFILE,
   WANDERING_PROFILE,
@@ -69,9 +70,9 @@ import { type PcToolName, pcToolName } from './tools/catalog.js';
 import { type CrewNames, renderOutcome, wakeText } from './tools/format.js';
 import { JobRegistry } from './tools/jobs.js';
 import { createMcServer, type McHost, splitFooter, ticksToGameTime } from './tools/mcServer.js';
-import { toolsUpdatedNote } from './tools/toolRefs.js';
-import type { CrewRef } from './tools/targets.js';
 import { createPcServer, type PcHost } from './tools/pcServer.js';
+import type { CrewRef } from './tools/targets.js';
+import { toolsUpdatedNote } from './tools/toolRefs.js';
 import type { UsageGovernor } from './UsageGovernor.js';
 import type { ConsentLedger } from './world/consent.js';
 import { PerceptionMemory, sceneLine, zoneOfBody } from './world/scene.js';
@@ -808,7 +809,11 @@ export class AgentBrain {
     const rendered = renderOutcome(
       meta,
       { status: end.status, result, error: end.error, durationMs: end.durationMs },
-      { here: body ? body.pos : null, playerName: this.#env.playerName() },
+      {
+        here: body ? body.pos : null,
+        playerName: this.#env.playerName(),
+        craftTree: this.#env.skills.caps?.().has(MOD_CAPS.CRAFT_TREE) ?? false,
+      },
     );
     this.toolJobs.ended(end.jobId, end.status, rendered, end.error?.code);
     if (end.status === 'cancelled' && running?.cancelledBy) return null;

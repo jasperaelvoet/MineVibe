@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { PayloadOf, Place } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { type MineVibePaths, worldDir } from '../config/paths.js';
+import { mcRefs } from '../contracts/mcRefs.js';
 import type { OrgToolResult } from '../contracts/OrgApi.js';
 import {
   type ApproachCard,
@@ -80,7 +81,6 @@ import {
   ReportTaskInput,
 } from './toolInputs.js';
 import { toWireCalendarFired, toWireCalendarState, toWireCodexIndex, toWireMeetingState } from './wire.js';
-import { mcRefs } from '../contracts/mcRefs.js';
 
 export type { OrgToolResult };
 

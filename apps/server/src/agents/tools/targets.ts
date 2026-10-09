@@ -26,7 +26,9 @@ export function parsePos(text: unknown): BlockPos | null {
   const m = POS_RE.exec(text);
   if (!m) return null;
   const pos = { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]) };
-  return Number.isSafeInteger(pos.x) && Number.isSafeInteger(pos.y) && Number.isSafeInteger(pos.z) ? pos : null;
+  return Number.isSafeInteger(pos.x) && Number.isSafeInteger(pos.y) && Number.isSafeInteger(pos.z)
+    ? pos
+    : null;
 }
 
 /** A required `"x y z"` argument; `BAD_ARGS` with an example otherwise. */
@@ -196,7 +198,8 @@ export function resolveTarget(raw: string, host: TargetHost): Target | null {
   }
   const crew = host.crewMember?.(text) ?? null;
   if (crew) return { kind: 'agent', entity: crew.agentId, label: crew.name };
-  if ((MOD_PLACES as readonly string[]).includes(lower)) return { kind: 'place', entity: lower, label: lower };
+  if ((MOD_PLACES as readonly string[]).includes(lower))
+    return { kind: 'place', entity: lower, label: lower };
   if (PC_PLACE_RE.test(text)) return { kind: 'place', entity: text, label: text };
   if (UUID_RE.test(text)) return { kind: 'uuid', entity: lower, label: 'that entity' };
   const bare = lower.replace(/^minecraft:/, '');

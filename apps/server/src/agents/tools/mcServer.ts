@@ -42,7 +42,13 @@ export function mcServerOptions(version: McToolsVersion = mcToolsVersion()): {
   instructions?: string;
 } {
   return version === 'v2'
-    ? { name: 'mc', version: '2.0.0', alwaysLoad: true, timeout: MCP_TOOL_TIMEOUT_MS, instructions: MC_V2_INSTRUCTIONS }
+    ? {
+        name: 'mc',
+        version: '2.0.0',
+        alwaysLoad: true,
+        timeout: MCP_TOOL_TIMEOUT_MS,
+        instructions: MC_V2_INSTRUCTIONS,
+      }
     : { name: 'mc', version: '1.0.0', alwaysLoad: true, timeout: MCP_TOOL_TIMEOUT_MS };
 }
 

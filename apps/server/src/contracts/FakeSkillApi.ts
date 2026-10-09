@@ -51,7 +51,9 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
   /** `obs.query` answers by query name. */
   readonly observations = new Map<ObsQueryName, Record<string, unknown>>();
   /** Answers `obs.query` from its arguments when set (before {@link observations}); null falls through. */
-  obsHandler: ((query: ObsQueryName, args: Record<string, unknown>) => Record<string, unknown> | null) | null = null;
+  obsHandler:
+    | ((query: ObsQueryName, args: Record<string, unknown>) => Record<string, unknown> | null)
+    | null = null;
   /** Every `obs.query`, in order. */
   readonly obsCalls: { readonly query: ObsQueryName; readonly args: Record<string, unknown> }[] = [];
   /** The mod's `hello.caps` this fake claims (protocol §6.1). */
@@ -129,7 +131,10 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
       const timer =
         timeoutMs === undefined
           ? null
-          : setTimeout(() => reject(new ApiError(ERROR_CODES.TIMEOUT, `job ${jobId} still running`)), timeoutMs);
+          : setTimeout(
+              () => reject(new ApiError(ERROR_CODES.TIMEOUT, `job ${jobId} still running`)),
+              timeoutMs,
+            );
       this.#waiters.set(jobId, [
         ...(this.#waiters.get(jobId) ?? []),
         (e) => {

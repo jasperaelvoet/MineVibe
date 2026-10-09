@@ -126,7 +126,8 @@ function makeTool(world: SimWorld, blockId: string): string | null {
 
 function craftTimes(world: SimWorld, recipe: CraftRecipe): number {
   let n = Number.POSITIVE_INFINITY;
-  for (const ing of recipe.ingredients) n = Math.min(n, Math.floor(world.count((id) => matches(ing.ref, id)) / ing.count));
+  for (const ing of recipe.ingredients)
+    n = Math.min(n, Math.floor(world.count((id) => matches(ing.ref, id)) / ing.count));
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -147,7 +148,9 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
   const near = (args.near as Pos | undefined) ?? null;
   const makeTools = args.make_tools === true;
   const isMine = skill === 'mine';
-  const sources = isMine ? (sourcesOf(ref) ?? ((id: string) => matches(ref, id) && !buildingVariant(id))) : sourcesOf(ref);
+  const sources = isMine
+    ? (sourcesOf(ref) ?? ((id: string) => matches(ref, id) && !buildingVariant(id)))
+    : sourcesOf(ref);
   const match = (id: string) => matches(ref, id) && (!ref.startsWith('#') || !buildingVariant(id));
   const start = world.count(match);
   const before = new Map(world.agent.inventory);
@@ -209,7 +212,8 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
         // The tree being felled first (bottom-up), then the nearest.
         .sort(
           (a, b) =>
-            Number(b.block.structure === tree && tree !== null) - Number(a.block.structure === tree && tree !== null) ||
+            Number(b.block.structure === tree && tree !== null) -
+              Number(a.block.structure === tree && tree !== null) ||
             (a.block.structure === tree && tree !== null ? a.pos.y - b.pos.y : 0) ||
             dist(a.pos, center) - dist(b.pos, center),
         );
@@ -234,7 +238,11 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
         }
       }
       if (!t.harvest) {
-        return fail('NEEDS_TOOL', `breaking ${target.block.id} drops nothing without the right tool`, report());
+        return fail(
+          'NEEDS_TOOL',
+          `breaking ${target.block.id} drops nothing without the right tool`,
+          report(),
+        );
       }
       tree = target.block.structure?.startsWith('tree:') ? target.block.structure : null;
       const dt = walkTicks(world.agent.pos, target.pos) + Math.round((t.seconds + 0.5) * TPS);
@@ -253,7 +261,11 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
             world.agentEvent('picked_up', { item: drop, count: 1 });
           }
           const key = now.structure ?? `${now.id}@${posKey(target.pos)}`;
-          const kind = now.structure?.startsWith('tree:') ? 'tree' : now.id.endsWith('_ore') ? 'ore' : 'stone';
+          const kind = now.structure?.startsWith('tree:')
+            ? 'tree'
+            : now.id.endsWith('_ore')
+              ? 'ore'
+              : 'stone';
           const what = kind === 'tree' ? shortId(now.id).replace(/_log$/, '') : shortId(now.id);
           const s = used.get(key) ?? { kind, what, pos: target.pos, n: 0 };
           s.n++;
@@ -286,7 +298,9 @@ function pickFor(ref: string, inv: Map<string, number>): string {
   const r = normId(ref);
   if (!r.startsWith('#')) return r;
   const options = (TAGS[r.slice(1)] ?? []).filter((id) => !buildingVariant(id) || id.endsWith('_planks'));
-  const held = options.filter((id) => (inv.get(id) ?? 0) > 0).sort((a, b) => (inv.get(b) ?? 0) - (inv.get(a) ?? 0));
+  const held = options
+    .filter((id) => (inv.get(id) ?? 0) > 0)
+    .sort((a, b) => (inv.get(b) ?? 0) - (inv.get(a) ?? 0));
   if (held[0]) return held[0];
   // Planks whose log is carried.
   for (const id of options) {
@@ -310,7 +324,14 @@ export function planTree(world: SimWorld, item: string, count: number): TreePlan
     if (m) m.need += n;
     else missing.set(id, { item: shortId(id), need: n, have: 0, for: forItem ? shortId(forItem) : null });
   };
-  const need = (id: string, n: number, depth: number, up: Set<string>, forItem: string | null, fresh = false) => {
+  const need = (
+    id: string,
+    n: number,
+    depth: number,
+    up: Set<string>,
+    forItem: string | null,
+    fresh = false,
+  ) => {
     const have = fresh ? 0 : (inv.get(id) ?? 0);
     const take = Math.min(have, n);
     if (take > 0) inv.set(id, have - take);
@@ -391,9 +412,13 @@ export function planTree(world: SimWorld, item: string, count: number): TreePlan
 export function recipeTree(world: SimWorld, item: string, count: number): Record<string, unknown> {
   const p = planTree(world, item, count);
   const station = (id: string) => {
-    const found = world.scan(world.agent.pos, 24, (i) => i === id).sort((a, b) => dist(a.pos, world.agent.pos) - dist(b.pos, world.agent.pos))[0];
+    const found = world
+      .scan(world.agent.pos, 24, (i) => i === id)
+      .sort((a, b) => dist(a.pos, world.agent.pos) - dist(b.pos, world.agent.pos))[0];
     if (found) return { pos: pos(found.pos) };
-    return world.count((i) => i === id) > 0 ? { how: 'put down the one you carry' } : { how: 'craft one first' };
+    return world.count((i) => i === id) > 0
+      ? { how: 'put down the one you carry' }
+      : { how: 'craft one first' };
   };
   const stations: Record<string, unknown> = {};
   if (p.needsTable) stations.table = station(`${NS}crafting_table`);
@@ -495,7 +520,9 @@ export function craftTreeJob(
             return fail(end.error?.code ?? 'FAILED', `${label}: ${end.error?.msg ?? 'failed'}`, report(keep));
           }
           if (phase === 'gather') {
-            for (const [k, v] of Object.entries((end.result.items as Record<string, number> | undefined) ?? {})) {
+            for (const [k, v] of Object.entries(
+              (end.result.items as Record<string, number> | undefined) ?? {},
+            )) {
               gathered[shortId(k)] = (gathered[shortId(k)] ?? 0) + v;
             }
           } else {
@@ -519,23 +546,39 @@ export function craftTreeJob(
           const made = world.count((i) => i === item) - start;
           return made >= count
             ? done(report())
-            : fail('MISSING_INGREDIENTS', `made only ${Math.max(0, made)} of ${count} ${shortId(item)}`, report());
+            : fail(
+                'MISSING_INGREDIENTS',
+                `made only ${Math.max(0, made)} of ${count} ${shortId(item)}`,
+                report(),
+              );
         }
         // Plan (again).
         const plan = planTree(world, item, count);
-        if (plan.steps.length === 0 && plan.missing.length === 1 && normId(plan.missing[0]?.item ?? '') === item) {
+        if (
+          plan.steps.length === 0 &&
+          plan.missing.length === 1 &&
+          normId(plan.missing[0]?.item ?? '') === item
+        ) {
           return fail('NO_RECIPE', `nothing crafts or smelts ${item}; gather it instead`, report());
         }
         if (plan.missing.length > 0) {
           if (!gatherMissing || rounds >= 3) {
             const text = plan.missing.map((m) => `${m.item} ${m.need}`).join(', ');
-            return fail('MISSING_INGREDIENTS', `raw materials missing: ${text}`, report({ missing: plan.missing }));
+            return fail(
+              'MISSING_INGREDIENTS',
+              `raw materials missing: ${text}`,
+              report({ missing: plan.missing }),
+            );
           }
           rounds++;
           phase = 'gather';
           queue = plan.missing.map((m) => ({
             label: `gather ${m.item}`,
-            logic: () => gatherJob(world, { item: m.item.includes(':') ? m.item : m.item.startsWith('#') ? m.item : `${NS}${m.item}`, count: m.need }),
+            logic: () =>
+              gatherJob(world, {
+                item: m.item.includes(':') ? m.item : m.item.startsWith('#') ? m.item : `${NS}${m.item}`,
+                count: m.need,
+              }),
           }));
           continue;
         }
@@ -543,7 +586,11 @@ export function craftTreeJob(
         texts.length = 0;
         queue = plan.steps.map((s, i) => {
           const last = i === plan.steps.length - 1 && s.item === item;
-          texts.push(`${Object.entries(s.from).map(([k, v]) => `${shortId(k)} ${v}`).join(' + ')} → ${shortId(s.item)} ${s.made}`);
+          texts.push(
+            `${Object.entries(s.from)
+              .map(([k, v]) => `${shortId(k)} ${v}`)
+              .join(' + ')} → ${shortId(s.item)} ${s.made}`,
+          );
           return s.kind === 'craft'
             ? {
                 label: `craft ${shortId(s.item)}`,
@@ -593,7 +640,10 @@ export function sequenceJob(
         result,
       });
       if (end.status !== 'done') {
-        const f = { code: end.error?.code ?? 'FAILED', msg: `step ${i + 1}/${n} ${skill}: ${end.error?.msg ?? 'failed'}` };
+        const f = {
+          code: end.error?.code ?? 'FAILED',
+          msg: `step ${i + 1}/${n} ${skill}: ${end.error?.msg ?? 'failed'}`,
+        };
         firstFail ??= f;
         if (stopOnFail) return fail(f.code, f.msg, summary());
       }
@@ -646,7 +696,11 @@ export function findBlocks(
   return world
     .scan(a, radius, (id) => matches(ref, id) && (!isTagged || filter !== 'natural' || !buildingVariant(id)))
     .filter((m) =>
-      filter === 'natural' ? m.block.placedBy !== 'player' : filter === 'built' ? m.block.placedBy === 'player' : true,
+      filter === 'natural'
+        ? m.block.placedBy !== 'player'
+        : filter === 'built'
+          ? m.block.placedBy === 'player'
+          : true,
     )
     .sort((x, y) => dist(x.pos, a) - dist(y.pos, a))
     .slice(0, limit)
@@ -665,11 +719,21 @@ export function findBlocks(
         out.provenance = m.block.placedBy === 'agent' ? 'agent-built' : 'natural';
         const structure = m.block.structure;
         if (structure?.startsWith('tree:')) {
-          const logs = world.scan(m.pos, 8, (id) => id === m.block.id).filter((l) => l.block.structure === structure);
+          const logs = world
+            .scan(m.pos, 8, (id) => id === m.block.id)
+            .filter((l) => l.block.structure === structure);
           const base = logs.reduce((lo, l) => (l.pos.y < lo.y ? l.pos : lo), m.pos);
-          out.tree = { species: shortId(m.block.id).replace(/_log$/, ''), trunk: pos(base), logs: logs.length };
+          out.tree = {
+            species: shortId(m.block.id).replace(/_log$/, ''),
+            trunk: pos(base),
+            logs: logs.length,
+          };
         }
-        out.reachable = world.isUnreachable(m.pos) ? 'unreachable' : dist(m.pos, a) > 56 ? 'far' : 'reachable';
+        out.reachable = world.isUnreachable(m.pos)
+          ? 'unreachable'
+          : dist(m.pos, a) > 56
+            ? 'far'
+            : 'reachable';
       }
       return out;
     });

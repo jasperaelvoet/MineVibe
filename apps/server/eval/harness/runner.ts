@@ -42,12 +42,17 @@ import { buildSessionOptions } from '../../src/agents/sessionOptions.js';
 import { createToolGateHook, type GateContext } from '../../src/agents/ToolGate.js';
 import { renderOutcome, wakeText } from '../../src/agents/tools/format.js';
 import { JobRegistry } from '../../src/agents/tools/jobs.js';
-import { type McHost, mcServerOptions, mcToolDefinitions, splitFooter } from '../../src/agents/tools/mcServer.js';
-import { withSequenceFallback } from '../../src/contracts/SequenceFallback.js';
+import {
+  type McHost,
+  mcServerOptions,
+  mcToolDefinitions,
+  splitFooter,
+} from '../../src/agents/tools/mcServer.js';
 import { type PcHost, pcToolDefinitions } from '../../src/agents/tools/pcServer.js';
 import type { CallToolResult } from '../../src/agents/tools/results.js';
 import { agentActor } from '../../src/contracts/common.js';
 import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
+import { withSequenceFallback } from '../../src/contracts/SequenceFallback.js';
 import type { JobEnd } from '../../src/contracts/SkillApi.js';
 import { SERVER_VERSION } from '../../src/version.js';
 import { HOME } from '../pc/content.js';
@@ -160,8 +165,13 @@ export function jobEndedTextV2(
   const cancelledBy = jobs.get(end.jobId)?.cancelledBy ?? null;
   const rendered = renderOutcome(
     meta,
-    { status: end.status, result: splitFooter(end.result).result, error: end.error, durationMs: end.durationMs },
-    { here: world.agent.pos, playerName: player },
+    {
+      status: end.status,
+      result: splitFooter(end.result).result,
+      error: end.error,
+      durationMs: end.durationMs,
+    },
+    { here: world.agent.pos, playerName: player, craftTree: world.mod === 'v2' },
   );
   jobs.ended(end.jobId, end.status, rendered, end.error?.code);
   if (end.status === 'cancelled' && cancelledBy) return null;
@@ -538,7 +548,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         .map(([id, label]) => {
           delivered.add(id);
           const end = endOf.get(id) as JobEnd;
-          return tools === 'v2' ? jobEndedTextV2(nonce, end, jobs, PLAYER, world) : jobEndedText(nonce, end, label);
+          return tools === 'v2'
+            ? jobEndedTextV2(nonce, end, jobs, PLAYER, world)
+            : jobEndedText(nonce, end, label);
         })
         .filter((t): t is string => t !== null);
       if (wakes.length === 0) break;

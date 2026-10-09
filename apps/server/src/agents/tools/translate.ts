@@ -11,7 +11,15 @@
 import { type BlockPos, ItemId, MOD_CAPS, type SkillName } from '@minevibe/protocol';
 import { ApiError } from '../../contracts/common.js';
 import { call, type JobMeta, posText, short } from './format.js';
-import { optionalPos, requirePos, requireTarget, resolveTarget, type Target, type TargetHost, wireTarget } from './targets.js';
+import {
+  optionalPos,
+  requirePos,
+  requireTarget,
+  resolveTarget,
+  type Target,
+  type TargetHost,
+  wireTarget,
+} from './targets.js';
 
 /** One skill to send. */
 export interface WireCall {
@@ -29,7 +37,10 @@ export interface TranslateHost extends TargetHost {
   /** A Codex `places` page (title or id) → its coordinates, or null (§4.2 rule 6, `goto` only). */
   codexPlace?(name: string): Promise<BlockPos | null>;
   /** An observation (fallback lookups for older mods). */
-  obs(query: 'inventory' | 'find' | 'recipe', args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  obs(
+    query: 'inventory' | 'find' | 'recipe',
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>>;
 }
 
 /** World tools a `do` step may use. */
@@ -113,6 +124,8 @@ export function translateGather(a: Record<string, unknown>, host: TranslateHost)
     if (near) args.near = near;
     args.make_tools = true;
   }
+  // W1: plant a sapling on each stump of a felled tree (when one is carried); logs only.
+  if (/(^|[:#_])logs?$|_log$/.test(item)) args.replant = true;
   return {
     skill: 'collect',
     args,
@@ -213,7 +226,10 @@ export function translateBuild(a: Record<string, unknown>, host: TranslateHost):
         const volume =
           (Math.abs(to.x - from.x) + 1) * (Math.abs(to.y - from.y) + 1) * (Math.abs(to.z - from.z) + 1);
         if (volume > DIG_MAX_BLOCKS) {
-          throw badArgs(`dig is at most ${DIG_MAX_BLOCKS} blocks at a time (that box has ${volume})`, BUILD_EXAMPLES.dig);
+          throw badArgs(
+            `dig is at most ${DIG_MAX_BLOCKS} blocks at a time (that box has ${volume})`,
+            BUILD_EXAMPLES.dig,
+          );
         }
         return {
           skill: 'dig',
@@ -276,7 +292,10 @@ function entityTarget(
   if (!raw) throw badArgs(`${action} needs target`, USE_EXAMPLES[action]);
   const t = requireTarget(raw, host);
   if (t.kind === 'pos' || t.kind === 'place') {
-    throw badArgs(`${action} needs an entity target ("player", @handle or a mob type), not a place`, USE_EXAMPLES[action]);
+    throw badArgs(
+      `${action} needs an entity target ("player", @handle or a mob type), not a place`,
+      USE_EXAMPLES[action],
+    );
   }
   return t;
 }
@@ -299,7 +318,11 @@ export function translateUse(a: Record<string, unknown>, host: TranslateHost): W
       }
       const block = itemId(a.item, 'item', USE_EXAMPLES.place, false);
       const pos = posTarget(a, 'place');
-      return { skill: 'place', args: { block, pos }, meta: meta('place', `place ${short(block)} at ${posText(pos)}`) };
+      return {
+        skill: 'place',
+        args: { block, pos },
+        meta: meta('place', `place ${short(block)} at ${posText(pos)}`),
+      };
     }
     case 'break': {
       const pos = posTarget(a, 'break');
@@ -325,7 +348,8 @@ export function translateUse(a: Record<string, unknown>, host: TranslateHost): W
       const raw = str(a.target);
       if (raw) {
         const t = requireTarget(raw, host);
-        if (t.kind === 'place') throw badArgs('use_item target is "x y z" or an entity', USE_EXAMPLES.use_item);
+        if (t.kind === 'place')
+          throw badArgs('use_item target is "x y z" or an entity', USE_EXAMPLES.use_item);
         Object.assign(args, wireTarget(t));
         what += ` on ${t.label}`;
       }
@@ -382,7 +406,9 @@ async function nearestContainer(host: TranslateHost): Promise<BlockPos> {
   for (const what of ['minecraft:chest', 'minecraft:barrel']) {
     try {
       const found = await host.obs('find', { what, radius: CONTAINER_RADIUS, limit: 1 });
-      const first = Array.isArray(found.matches) ? (found.matches[0] as Record<string, unknown> | undefined) : undefined;
+      const first = Array.isArray(found.matches)
+        ? (found.matches[0] as Record<string, unknown> | undefined)
+        : undefined;
       const p = first?.pos as Record<string, unknown> | undefined;
       if (p && typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number') {
         return { x: p.x, y: p.y, z: p.z };
@@ -391,7 +417,10 @@ async function nearestContainer(host: TranslateHost): Promise<BlockPos> {
       // try the next kind
     }
   }
-  throw new ApiError('NOT_FOUND', `no chest or barrel within ${CONTAINER_RADIUS} blocks; give container "x y z"`);
+  throw new ApiError(
+    'NOT_FOUND',
+    `no chest or barrel within ${CONTAINER_RADIUS} blocks; give container "x y z"`,
+  );
 }
 
 /** How many of `item` the agent carries (for "give all" on an older mod). */
@@ -437,7 +466,8 @@ export async function translateItems(a: Record<string, unknown>, host: Translate
       return { skill: 'drop', args, meta: meta('drop', `drop ${short(item)}`) };
     }
     case 'give': {
-      if (a.item === undefined || a.to === undefined) throw badArgs('give needs item and to', ITEMS_EXAMPLES.give);
+      if (a.item === undefined || a.to === undefined)
+        throw badArgs('give needs item and to', ITEMS_EXAMPLES.give);
       const item = itemId(a.item, 'item', ITEMS_EXAMPLES.give);
       const raw = str(a.to) ?? '';
       const t = requireTarget(raw, host, 'to');

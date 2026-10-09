@@ -81,7 +81,11 @@ const V1_SHAPES: Partial<Record<V1Skill, z.ZodRawShape>> = {
     const { near: _near, make_tools: _makeTools, ...shape } = SkillArgs.collect.shape;
     return shape;
   })(),
-  craft: { item: SkillArgs.craft.shape.item, count: SkillArgs.craft.shape.count, table: SkillArgs.craft.shape.table },
+  craft: {
+    item: SkillArgs.craft.shape.item,
+    count: SkillArgs.craft.shape.count,
+    table: SkillArgs.craft.shape.table,
+  },
   container: { ...SkillArgs.container.shape, pos: BlockPos },
   give: { ...SkillArgs.give.shape, count: z.number().int().min(1).max(2304) },
 };

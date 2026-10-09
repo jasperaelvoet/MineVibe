@@ -3,10 +3,10 @@
  * Node-stamped authors. Only player-written `rules` pages are presented as binding house rules.
  */
 
+import { mcRefs } from '../../contracts/mcRefs.js';
 import { type Author, escapeSharedText, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
 import { encodeRev } from './rev.js';
 import type { CodexPage, CodexPageMeta, CodexSearchHit, CodexWriteResult } from './types.js';
-import { mcRefs } from '../../contracts/mcRefs.js';
 
 export function pageAuthor(meta: Pick<CodexPageMeta, 'authorKind' | 'authorName'>): Author {
   return { kind: meta.authorKind, name: meta.authorName };

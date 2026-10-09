@@ -100,9 +100,12 @@ public final class RecipeTree {
 	public record Stations(boolean table, boolean furnace) {
 	}
 
-	/** The plan: steps in order, raw materials missing, and the stations it needs. */
+	/**
+	 * The plan: steps in order, raw materials missing, and the stations it needs. {@code fuel}: the carried fuel the
+	 * smelts burn (what the other steps leave over), so a smelt never burns the logs a later step needs.
+	 */
 	public record Plan(Item item, int count, List<Step> steps, List<Missing> missing, boolean needsTable, boolean needsFurnace,
-		boolean makesTable, boolean makesFurnace, int smelts) {
+		boolean makesTable, boolean makesFurnace, int smelts, Map<Item, Integer> fuel) {
 		public boolean complete() {
 			return this.missing.isEmpty();
 		}
@@ -117,6 +120,7 @@ public final class RecipeTree {
 	private final Map<Item, Integer> inv;
 	private final List<Step> steps = new ArrayList<>();
 	private final Map<String, Missing> missing = new LinkedHashMap<>();
+	private final Map<Item, Integer> fuelUse = new LinkedHashMap<>();
 	private boolean needsTable;
 	private boolean needsFurnace;
 	private int smelts;
@@ -149,8 +153,35 @@ public final class RecipeTree {
 				t = run(book, target, count, inventory, true, true);
 			}
 		}
-		return new Plan(target, count, List.copyOf(t.steps), List.copyOf(t.missing.values()), t.needsTable, t.needsFurnace,
-			makeTable, makeFurnace, t.smelts);
+		return new Plan(target, count, smeltsLate(t.steps), List.copyOf(t.missing.values()), t.needsTable, t.needsFurnace,
+			makeTable, makeFurnace, t.smelts, Map.copyOf(t.fuelUse));
+	}
+
+	/**
+	 * Smelts run as late as they can: right before the first step that uses what they make. The crafts before them
+	 * leave the planned fuel (spare planks, say) in the bag, and a smelt never waits on a craft it does not need.
+	 * Totals do not change, so every step still finds its inputs.
+	 */
+	static List<Step> smeltsLate(final List<Step> steps) {
+		List<Step> out = new ArrayList<>();
+		List<Step> waiting = new ArrayList<>();
+		for (Step s : steps) {
+			if (s.kind() == Kind.SMELT) {
+				waiting.add(s);
+				continue;
+			}
+			boolean uses = false;
+			for (Step w : waiting) {
+				uses |= s.from().containsKey(w.item());
+			}
+			if (uses) {
+				out.addAll(waiting);
+				waiting.clear();
+			}
+			out.add(s);
+		}
+		out.addAll(waiting);
+		return List.copyOf(out);
 	}
 
 	private static RecipeTree run(final Book book, final Item target, final int count, final Map<Item, Integer> inventory,
@@ -202,7 +233,9 @@ public final class RecipeTree {
 			RecipeTree dry = this.copy();
 			dry.apply(c, item, rest, depth, ancestors);
 			int lacking = dry.missingCount();
-			if (best == null || lacking < best.lacking) {
+			// Ties (nothing carried fits either way) go to the more common materials: raw iron over ore blocks,
+			// cobblestone over blackstone; else the book's order (2x2 first).
+			if (best == null || lacking < best.lacking || lacking == best.lacking && c.rank() < best.rank()) {
 				best = c.withLacking(lacking);
 				if (lacking == 0) {
 					break;
@@ -220,6 +253,15 @@ public final class RecipeTree {
 	private record Choice(@Nullable CraftOption craft, @Nullable SmeltOption smelt, List<Item> picks, int lacking) {
 		Choice withLacking(final int n) {
 			return new Choice(this.craft, this.smelt, this.picks, n);
+		}
+
+		/** How common the picked items are (lower: more common). */
+		int rank() {
+			int r = 0;
+			for (Item p : this.picks) {
+				r += preference(p);
+			}
+			return r;
 		}
 	}
 
@@ -315,10 +357,16 @@ public final class RecipeTree {
 		return false;
 	}
 
-	/** Lower is preferred among interchangeable items: plain logs and oak first, stripped logs and wood last. */
+	/** The everyday form of interchangeable materials: what an agent finds or gathers first. */
+	private static final Set<String> COMMON = Set.of("cobblestone", "raw_iron", "raw_gold", "raw_copper", "coal", "stick");
+
+	/**
+	 * Lower is preferred among interchangeable items: everyday materials (cobblestone, raw metal), plain logs and oak
+	 * first; ore blocks, stripped logs and wood last.
+	 */
 	static int preference(final Item item) {
 		String id = id(item);
-		int p = 0;
+		int p = COMMON.contains(id) ? -2 : 0;
 		if (id.startsWith("stripped_")) {
 			p += 4;
 		}
@@ -381,6 +429,7 @@ public final class RecipeTree {
 			}
 			int use = Math.min(e.getValue(), (ticks + burn - 1) / burn);
 			this.inv.put(e.getKey(), e.getValue() - use);
+			this.fuelUse.merge(e.getKey(), use, Integer::sum);
 			ticks -= use * burn;
 		}
 		if (ticks > 0) {

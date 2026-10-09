@@ -5,7 +5,5 @@
   "mod": "0.2.0",
   "mc": "26.3",
   "phase": "boot",
-  "caps": [
-    "Skill Sequence"
-  ]
+  "caps": ["Skill Sequence"]
 }
