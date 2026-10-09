@@ -2,6 +2,7 @@ package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.nav.AgentNavigator;
+import dev.minevibe.agent.nav.NavBlocks;
 import dev.minevibe.agent.perception.Compass;
 import dev.minevibe.agent.perception.Reach;
 import dev.minevibe.agent.perception.Sources;
@@ -95,6 +96,8 @@ public final class Miner {
 	private int treesFelled;
 	private int logsLeftHigh;
 	private final List<BlockPos> pillar = new ArrayList<>();
+	/** The pillars earlier walks left (a goto, another job) were dropped: only this job's own are cleared. */
+	private boolean pillarBacklogDropped;
 	private @Nullable BlockPos pillarFrom;
 	private int climbTicks;
 	private boolean triedColumn;
@@ -249,9 +252,13 @@ public final class Miner {
 	public Tick tick(final AgentPlayer agent) {
 		ServerLevel level = agent.level();
 		if (this.treeMode()) {
-			// Pillars the walk built (Tier 2) are cleared with the tree, like the miner's own.
+			// Pillars the walk built (Tier 2) are cleared with the tree, like the miner's own. Those built before this job
+			// started (any walk's: the navigator keeps them until a felling job takes them) are not this job's to clear: it
+			// would walk back to wherever they were and mine whatever stands there by now.
 			List<BlockPos> placed = agent.navigator().drainPlacedPillars();
-			if (!placed.isEmpty()) {
+			if (!this.pillarBacklogDropped) {
+				this.pillarBacklogDropped = true;
+			} else if (!placed.isEmpty()) {
 				this.pillar.addAll(placed);
 				this.pillarsBuilt += placed.size();
 			}
@@ -433,14 +440,19 @@ public final class Miner {
 		if (!this.pillar.isEmpty()) {
 			this.cleaning = true;
 			BlockPos top = this.pillar.getLast();
-			if (agent.level().getBlockState(top).isAir()) {
+			if (!NavBlocks.isScaffoldBlock(agent.level().getBlockState(top))) {
+				// Gone (or replaced by something that is no pillar block since): nothing of ours to clear there.
 				this.pillar.removeLast();
 				return Tick.WORKING;
 			}
 			if (!Walk.inReach(agent, top) && this.walk.toBlock(agent, top) == Walk.State.MOVING) {
 				return Tick.WORKING;
 			}
-			if (BlockOps.mineTick(agent, top) || ++this.climbTicks > 20 * 20) {
+			boolean broke = BlockOps.mineTick(agent, top);
+			if (broke || ++this.climbTicks > 20 * 20) {
+				if (broke) {
+					NavBlocks.forgetScaffold(agent.level(), top);
+				}
 				this.pillar.removeLast();
 				this.climbTicks = 0;
 			}
@@ -651,6 +663,8 @@ public final class Miner {
 		agent.controls().setJumping(false);
 		BlockOps.Place r = BlockOps.placeTick(agent, at, Miner::pillarBlock);
 		if (r == BlockOps.Place.PLACED) {
+			// Scaffold: if it is ever left standing, navigation may break it again (never a crew build).
+			NavBlocks.noteScaffold(agent.level(), at);
 			this.pillar.add(at);
 			this.pillarsBuilt++;
 			this.pillarFrom = null;

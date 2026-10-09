@@ -15,6 +15,11 @@ import dev.minevibe.agent.nav.DigGoal;
 import dev.minevibe.agent.nav.DigPath;
 import dev.minevibe.agent.nav.DigPathPlanner;
 import dev.minevibe.agent.nav.DigStep;
+import dev.minevibe.agent.nav.NavBlocks;
+import dev.minevibe.org.office.OfficeBuilder;
+import dev.minevibe.org.office.OfficePlan;
+import dev.minevibe.world.provenance.Owner;
+import dev.minevibe.world.provenance.Provenance;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +40,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Tier-2 navigation (navigation v2, PLAN 7.2): trees an agent can only reach by digging, pillaring, bridging or
@@ -574,6 +580,225 @@ public final class NavGameTests {
 			helper.assertTrue("done".equals(status(r)), "mine " + status(r) + (r.isDone() ? " " + error(r) : ""));
 			helper.assertFalse(above.get(), "mined the block it stood on");
 			helper.assertTrue(helper.getLevel().getBlockState(target).isAir(), "mined");
+		});
+	}
+
+	// ------------------------------------------------------------------ what stays standing, and falls that stay safe
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 20)
+	public void navNeverBreaksCrewBuilds(final GameTestHelper helper) {
+		// The agent stands in a ring of planks, glass and bricks the crew placed (provenance: an agent's). A crew build is no
+		// scaffold: no plan breaks it, not even where navigation once noted scaffold (a stale note). Scaffold the agent
+		// placed to get somewhere (remembered, still a scaffold block) may be broken again.
+		ServerLevel level = helper.getLevel();
+		Owner crew = Owner.agent("crew_builder", "Builder");
+		Block[] kinds = {Blocks.OAK_PLANKS, Blocks.GLASS, Blocks.BRICKS};
+		List<BlockPos> ring = new ArrayList<>();
+		for (int x = 15; x <= 17; x++) {
+			for (int z = 15; z <= 17; z++) {
+				for (int y = 1; y <= 2; y++) {
+					if (x == 16 && z == 16) {
+						continue;
+					}
+					helper.setBlock(new BlockPos(x, y, z), kinds[(x + y + z) % 3]);
+					BlockPos p = helper.absolutePos(new BlockPos(x, y, z));
+					Provenance.mark(level, p, crew);
+					ring.add(p);
+				}
+			}
+		}
+		AgentTestSupport.onTestEnd(helper, () -> ring.forEach(p -> NavBlocks.forgetScaffold(level, p)));
+		AgentPlayer agent = spawnAgent(helper, "Ringed", AgentRole.MINER, 16, 1, 16);
+		agent.brain().setEnabled(false);
+		BlockPos from = helper.absolutePos(new BlockPos(16, 1, 16));
+		DigGoal out = DigGoal.near(helper.absoluteVec(new Vec3(24.5, 1.0, 16.5)), 1.0);
+		DigPathPlanner.Config config = DigPathPlanner.Config.standard(20.0F, 0).withAgent(agent.agentId());
+		DigPathPlanner build = new DigPathPlanner(level, agent.getInventory(), from, out, config, new LongOpenHashSet());
+		helper.assertTrue(build.runToEnd() == DigPathPlanner.State.FAILED, "a way out through the crew's build: " + build.path());
+		ring.forEach(p -> NavBlocks.noteScaffold(level, p));
+		DigPathPlanner stale = new DigPathPlanner(level, agent.getInventory(), from, out, config, new LongOpenHashSet());
+		helper.assertTrue(stale.runToEnd() == DigPathPlanner.State.FAILED, "a way out through the crew's build (stale scaffold notes): " + stale.path());
+		// The east side is the agent's own scaffold now: cobblestone it placed, remembered.
+		List<BlockPos> scaffold = new ArrayList<>();
+		for (int y = 1; y <= 2; y++) {
+			helper.setBlock(new BlockPos(17, y, 16), Blocks.COBBLESTONE);
+			scaffold.add(helper.absolutePos(new BlockPos(17, y, 16)));
+		}
+		DigPathPlanner own = new DigPathPlanner(level, agent.getInventory(), from, out, config, new LongOpenHashSet());
+		helper.assertTrue(own.runToEnd() == DigPathPlanner.State.FOUND, "a way out through its own scaffold: " + own.failure());
+		for (DigStep step : own.path().steps()) {
+			for (BlockPos b : step.breaks()) {
+				helper.assertTrue(scaffold.contains(b), "broke " + level.getBlockState(b).getBlock() + " at " + b.toShortString());
+			}
+		}
+		helper.succeed();
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 2400)
+	public void navFellingLeavesEarlierPillarsAlone(final GameTestHelper helper) {
+		// A goto pillars up the 3-high ledge (dirt in the bag) and leaves its pillar standing, as walks do; the crew then
+		// builds where it stood. A tree felled afterwards clears the pillars of its own job only: it never walks back to the
+		// earlier one, nor mines what stands there now.
+		ServerLevel level = helper.getLevel();
+		fill(helper, 14, 1, 0, 32, 3, 32, Blocks.DIRT);
+		AgentPlayer agent = spawnAgent(helper, "Earlier", AgentRole.MINER, 4, 1, 16);
+		agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 16));
+		CompletableFuture<Map<String, Object>> go = run(helper, agent, jobId("ledge"), "goto", "{\"pos\":" + SkillTestSupport.rel(helper, 20, 4, 16) + "}",
+			60_000);
+		List<BlockPos> build = new ArrayList<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> fell = new AtomicReference<>();
+		helper.startSequence()
+			.thenWaitUntil(() -> {
+				String s = status(go);
+				if ("failed".equals(s)) {
+					helper.fail("goto failed: " + error(go));
+				}
+				helper.assertTrue("done".equals(s), "still walking (" + s + ") at " + agent.blockPosition().toShortString());
+			})
+			.thenExecute(() -> {
+				helper.assertTrue(agent.navigator().digPlaced() >= 1, "the goto pillared (placed " + agent.navigator().digPlaced() + ")");
+				// Its pillar stands below the ledge (x < 14): the crew builds there now.
+				for (int x = 0; x < 14; x++) {
+					for (int z = 0; z <= 32; z++) {
+						for (int y = 1; y <= 3; y++) {
+							BlockPos rel = new BlockPos(x, y, z);
+							if (helper.getBlockState(rel).is(Blocks.DIRT)) {
+								helper.setBlock(rel, Blocks.OAK_PLANKS);
+								Provenance.mark(level, helper.absolutePos(rel), Owner.agent("crew_builder", "Builder"));
+								build.add(helper.absolutePos(rel));
+							}
+						}
+					}
+				}
+				helper.assertFalse(build.isEmpty(), "found the goto's pillar");
+				tree(helper, 22, 4, 16, 5);
+				fell.set(run(helper, agent, jobId("fell"), "collect", "{\"item\":\"oak_log\",\"count\":1,\"radius\":16}", 120_000));
+			})
+			.thenWaitUntil(() -> {
+				String s = status(fell.get());
+				if ("failed".equals(s) || "cancelled".equals(s)) {
+					helper.fail("collect " + s + ": " + error(fell.get()) + " " + result(fell.get()));
+				}
+				helper.assertTrue("done".equals(s), "still collecting (" + s + ") at " + agent.blockPosition().toShortString());
+			})
+			.thenExecute(() -> {
+				for (BlockPos p : build) {
+					helper.assertTrue(level.getBlockState(p).is(Blocks.OAK_PLANKS), "mined the crew's planks at " + p.toShortString()
+						+ " (where an earlier walk's pillar stood)");
+				}
+			})
+			.thenSucceed();
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 1200)
+	public void navDropLandingRecheckedBeforeFall(final GameTestHelper helper) {
+		// A 6-high dirt platform with a 3-high step beside it: the plan drops 3 onto the step, then 3 to the ground. The
+		// step is mined away while the agent walks to the edge: it must not fall the 6 blocks it never planned (3 hearts),
+		// but plan again (a staircase dug down the platform).
+		fill(helper, 0, 1, 0, 10, 6, 32, Blocks.DIRT);
+		fill(helper, 11, 1, 0, 13, 3, 32, Blocks.DIRT);
+		AgentPlayer agent = spawnAgent(helper, "Edge", AgentRole.MINER, 2, 7, 16);
+		agent.brain().setEnabled(false);
+		agent.navigator().moveTo(DigGoal.near(helper.absoluteVec(new Vec3(20.5, 1.0, 16.5)), 1.0));
+		AtomicBoolean removed = new AtomicBoolean();
+		AtomicReference<Float> lowest = new AtomicReference<>(agent.getHealth());
+		helper.startSequence().thenExecuteFor(1200, () -> {
+			if (!removed.get() && agent.navigator().lastDigPath() != null) {
+				helper.assertTrue(agent.navigator().lastDigPath().steps().stream().anyMatch(st -> st.kind() == DigStep.Kind.DROP),
+					"the plan drops onto the step: " + agent.navigator().lastDigPath().steps());
+				fill(helper, 11, 1, 0, 13, 3, 32, Blocks.AIR);
+				removed.set(true);
+			}
+			lowest.set(Math.min(lowest.get(), agent.getHealth()));
+		});
+		helper.succeedWhen(() -> {
+			AgentNavigator nav = agent.navigator();
+			helper.assertTrue(removed.get(), "no plan yet");
+			helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "fell further than planned: hp " + lowest.get());
+			helper.assertTrue(nav.status() != AgentNavigator.Status.FAILED, "failed: " + nav.failureReason());
+			helper.assertTrue(nav.status() == AgentNavigator.Status.ARRIVED, "walking, at " + agent.blockPosition().toShortString());
+			helper.assertTrue(nav.digPlans() >= 2, "planned again once the landing was gone (" + nav.digPlans() + " plans)");
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 400)
+	public void navDeepDropIntoWaterStaysOnPath(final GameTestHelper helper) {
+		// From an 11-high platform down into a pool: falling 9 blocks takes the body far from both ends of its step, yet it
+		// is on its path (it used to count as pushed off and plan again in mid-air). The goal takes in the whole depth of
+		// the pool, wherever the plunge ends.
+		fill(helper, 0, 1, 0, 10, 11, 32, Blocks.DIRT);
+		fill(helper, 11, 1, 11, 16, 3, 21, Blocks.DIRT);
+		fill(helper, 11, 1, 12, 15, 3, 20, Blocks.WATER);
+		AgentPlayer agent = spawnAgent(helper, "Diver", AgentRole.MINER, 6, 12, 16);
+		agent.brain().setEnabled(false);
+		agent.navigator().moveTo(DigGoal.near(helper.absoluteVec(new Vec3(13.5, 2.0, 16.5)), 1.0));
+		AtomicReference<Float> lowest = new AtomicReference<>(agent.getHealth());
+		helper.startSequence().thenExecuteFor(400, () -> lowest.set(Math.min(lowest.get(), agent.getHealth())));
+		helper.succeedWhen(() -> {
+			AgentNavigator nav = agent.navigator();
+			helper.assertTrue(nav.status() != AgentNavigator.Status.FAILED, "failed: " + nav.failureReason());
+			helper.assertTrue(nav.status() == AgentNavigator.Status.ARRIVED, "on the way, at " + agent.blockPosition().toShortString());
+			DigPath path = nav.lastDigPath();
+			helper.assertTrue(path != null && path.steps().stream().anyMatch(st -> st.kind() == DigStep.Kind.DROP && st.from().getY() - st.dest().getY() >= 8),
+				"dropped into the pool: " + path);
+			helper.assertValueEqual(nav.digPlans(), 1, "searches (a fall into water is no reason to plan again)");
+			helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "hurt: hp " + lowest.get());
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 300)
+	public void navNoScaffoldIntoTorchCell(final GameTestHelper helper) {
+		// The agent stands in a torch's cell at the bottom of a 3-deep obsidian shaft, dirt in the bag. A pillar from there
+		// would put its block where the torch is, which never places: no such plan is made (one clean no_path), rather than
+		// made and made again until the walk gives up stuck.
+		for (int x = 15; x <= 17; x++) {
+			for (int z = 15; z <= 17; z++) {
+				for (int y = 1; y <= 3; y++) {
+					if (x != 16 || z != 16) {
+						helper.setBlock(new BlockPos(x, y, z), Blocks.OBSIDIAN);
+					}
+				}
+			}
+		}
+		helper.setBlock(new BlockPos(16, 1, 16), Blocks.TORCH);
+		AgentPlayer agent = spawnAgent(helper, "Torchlit", AgentRole.MINER, 16, 1, 16);
+		agent.brain().setEnabled(false);
+		agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 16));
+		agent.navigator().moveTo(DigGoal.near(helper.absoluteVec(new Vec3(16.5, 4.0, 16.5)), 1.0));
+		helper.succeedWhen(() -> {
+			AgentNavigator nav = agent.navigator();
+			helper.assertTrue(nav.status() == AgentNavigator.Status.FAILED, "still going (" + nav.status() + ") at " + agent.blockPosition().toShortString());
+			helper.assertValueEqual(nav.failureReason(), "no_path", "failure reason");
+			helper.assertValueEqual(nav.digPlans(), 1, "searches");
+			helper.assertTrue(helper.getBlockState(new BlockPos(16, 1, 16)).is(Blocks.TORCH), "the torch is still there");
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 100)
+	public void navOfficeExitSealsWaterAndSand(final GameTestHelper helper) {
+		// The office sunk into a hill again, a pond in the hill right beside its exit stairs and sand on the ground above
+		// the first step. The stairs are cut with the pond and the sand sealed off: no water pours, no sand falls onto them.
+		ServerLevel level = helper.getLevel();
+		fill(helper, 0, 1, 0, 32, 5, 32, Blocks.DIRT);
+		fill(helper, 0, 6, 0, 32, 6, 32, Blocks.GRASS_BLOCK);
+		int doorX = 6 + OfficePlan.DOOR_X;
+		int porchZ = 4 + OfficePlan.PORCH_Z;
+		fill(helper, doorX + 2, 2, porchZ + 1, doorX + 4, 5, porchZ + 4, Blocks.WATER);
+		helper.setBlock(new BlockPos(doorX, 6, porchZ + 1), Blocks.SAND);
+		OfficeBuilder.build(level, helper.absolutePos(new BlockPos(6, 1, 4)), null);
+		helper.runAfterDelay(20, () -> {
+			boolean cut = helper.getBlockState(new BlockPos(doorX, 3, porchZ + 1)).isAir() && helper.getBlockState(new BlockPos(doorX, 4, porchZ + 1)).isAir();
+			helper.assertTrue(cut, "the first step was cut");
+			for (int x = doorX - 1; x <= doorX + 1; x++) {
+				for (int z = porchZ; z <= porchZ + 5; z++) {
+					for (int y = 2; y <= 9; y++) {
+						BlockState s = helper.getBlockState(new BlockPos(x, y, z));
+						helper.assertTrue(s.getFluidState().isEmpty(), "water on the stairs at " + helper.absolutePos(new BlockPos(x, y, z)).toShortString());
+						helper.assertFalse(s.is(Blocks.SAND), "sand fell onto the stairs at " + helper.absolutePos(new BlockPos(x, y, z)).toShortString());
+					}
+				}
+			}
+			helper.succeed();
 		});
 	}
 

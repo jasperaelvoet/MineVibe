@@ -17,6 +17,7 @@ import dev.minevibe.world.seat.SeatKind;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
@@ -32,8 +33,10 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.HorizontalDirectionalBlock;
 import net.minecraft.world.level.block.LanternBlock;
+import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.RotatedPillarBlock;
 import net.minecraft.world.level.block.WallTorchBlock;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
@@ -55,8 +58,9 @@ import org.jspecify.annotations.Nullable;
  *   <li><b>Safe.</b> It only touches its own footprint (and the porch in front of the door): a solid foundation is
  *       filled down to the ground (at most {@value OfficePlan#MAX_FOUNDATION_DEPTH} blocks) under every cell, and
  *       only the room inside the walls is cleared. The one exception: when the ground in front of the porch stands
- *       higher than a step, stairs are cut up through it (natural blocks only), so the office always has a way out. Blocks are set without neighbour updates, so nothing outside reacts
- *       (no redstone, no falling sand), but shapes still connect (panes, doors, beds).</li>
+ *       higher than a step, stairs are cut up through it (natural blocks only; water, lava, sand and gravel the cut
+ *       would expose are sealed with cobblestone first), so the office always has a way out. Blocks are set without
+ *       neighbour updates, so nothing outside reacts (no redstone), but shapes still connect (panes, doors, beds).</li>
  *   <li><b>Workstations.</b> Both slots are marked with polished andesite on the floor and reported as
  *       {@code workstation} slots. The PC blocks install a {@link WorkstationPlacer} ({@code PcModInit}) that puts
  *       the first PC's desk and chair into slot 1, bound to {@code linux-1} (PLAN §7.5), and that slot then carries
@@ -359,10 +363,13 @@ public final class OfficeBuilder {
 	 * (seeds 42 and minevibe-e2e: 3 to 7 blocks), and the porch then opened into the hill with no way out for the player
 	 * or the crew (who may not dig in the Base). One step up per block outward, 3 wide and 3 high, a cobblestone tread
 	 * where the ground has a hole. Only natural ground, stone, plants and trees nobody placed are cut; anything else ends
-	 * the stairs.
+	 * the stairs. What a cut would let in is sealed with cobblestone first: water or lava beside or above a cut block
+	 * (the blocks are set with shape updates, so a lake would pour down the stairs onto the porch at once), and sand or
+	 * gravel resting on one (it would fall onto the steps, or onto whoever climbs them).
 	 */
 	private static void cutExit(final ServerLevel level, final BlockPos origin) {
 		int feet = origin.getY() + 1;
+		int doorX = origin.getX() + OfficePlan.DOOR_X;
 		for (int i = 1; i <= MAX_EXIT_STEPS; i++) {
 			int z = OfficePlan.PORCH_Z + i;
 			int ground = Integer.MIN_VALUE;
@@ -374,8 +381,12 @@ public final class OfficeBuilder {
 				return;
 			}
 			feet++;
+			int stepZ = origin.getZ() + z;
+			int stepFeet = feet;
+			List<BlockPos> cut = new ArrayList<>();
+			List<BlockPos> treads = new ArrayList<>();
 			for (int dx = -1; dx <= 1; dx++) {
-				BlockPos column = new BlockPos(origin.getX() + OfficePlan.DOOR_X + dx, feet, origin.getZ() + z);
+				BlockPos column = new BlockPos(doorX + dx, feet, stepZ);
 				for (int y = 0; y < 3; y++) {
 					BlockPos p = column.above(y);
 					BlockState s = level.getBlockState(p);
@@ -385,18 +396,53 @@ public final class OfficeBuilder {
 					if (!cuttable(level, p, s)) {
 						return;
 					}
-					set(level, p, Blocks.AIR.defaultBlockState());
+					cut.add(p);
 				}
 				BlockPos tread = column.below();
 				BlockState t = level.getBlockState(tread);
 				if (t.getCollisionShape(level, tread).isEmpty()) {
-					if (!t.isAir() && !cuttable(level, tread, t)) {
+					if (!t.isAir() && !cuttable(level, tread, t) && !fillable(t)) {
 						return;
 					}
-					set(level, tread, FOUNDATION);
+					treads.add(tread);
 				}
 			}
+			Predicate<BlockPos> inStep = n -> n.getZ() == stepZ && Math.abs(n.getX() - doorX) <= 1 && n.getY() >= stepFeet
+				&& n.getY() <= stepFeet + 2;
+			List<BlockPos> seal = new ArrayList<>();
+			for (BlockPos p : cut) {
+				for (Direction d : new Direction[] {Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST, Direction.UP}) {
+					BlockPos n = p.relative(d);
+					if (inStep.test(n)) {
+						continue;
+					}
+					BlockState ns = level.getBlockState(n);
+					if (!ns.getFluidState().isEmpty()) {
+						if (!fillable(ns)) {
+							// Waterlogged leaves or the like: no sealing that, so no stairs here.
+							return;
+						}
+						seal.add(n);
+					} else if (d == Direction.UP && ns.getBlock() instanceof FallingBlock) {
+						seal.add(n);
+					}
+				}
+			}
+			for (BlockPos n : seal) {
+				set(level, n, FOUNDATION);
+			}
+			for (BlockPos t : treads) {
+				set(level, t, FOUNDATION);
+			}
+			for (BlockPos p : cut) {
+				set(level, p, Blocks.AIR.defaultBlockState());
+			}
 		}
+	}
+
+	/** Plain water or lava (source or flowing), or a plant growing in it: cobblestone may take its place. */
+	private static boolean fillable(final BlockState s) {
+		return !s.getFluidState().isEmpty() && (s.getBlock() instanceof LiquidBlock || s.canBeReplaced());
 	}
 
 	/** The lowest height from {@code from} up where a body fits in the column of {@code at}: two free cells. */

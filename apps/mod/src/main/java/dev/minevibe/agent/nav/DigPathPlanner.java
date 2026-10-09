@@ -91,6 +91,8 @@ public final class DigPathPlanner {
 	private static final short HAZARD = 0x20;
 	private static final short DOOR_CELL = 0x40;
 	private static final short UNLOADED = 0x80;
+	/** Empty, or a replaceable plant or snow layer nobody placed: scaffold may go here. */
+	private static final short PLACE = 0x200;
 	private static final double INF = Double.POSITIVE_INFINITY;
 
 	private final NavView view;
@@ -119,8 +121,8 @@ public final class DigPathPlanner {
 	private long lastStepNanos;
 
 	/**
-	 * A search from feet cell {@code from} to {@code goal}. {@code forbidden} lists cells never to break (the executor
-	 * found them unsafe); {@code startGrounded} says whether the agent stands (or swims) at {@code from}.
+	 * A search from feet cell {@code from} to {@code goal}. {@code forbidden} lists cells never to break or to place
+	 * scaffold in (the executor found them unsafe, or a placement there failed).
 	 */
 	public DigPathPlanner(final ServerLevel level, final Inventory inventory, final BlockPos from, final DigGoal goal, final Config config,
 		final LongSet forbidden) {
@@ -336,7 +338,7 @@ public final class DigPathPlanner {
 		}
 		// Pillar: jump and place a block under the feet.
 		if (this.config.build() && grounded && !inWater && !onClimb && n.scaffoldUsed < this.config.scaffold() && n.pillar < this.config.maxPillar()
-			&& y + 2 <= this.level.getMaxY() && Math.abs(y + 1 - this.sy) <= MAX_DY && (here & (PASS | DOOR_CELL)) == PASS && !this.isProtected(x, y, z)) {
+			&& y + 2 <= this.level.getMaxY() && Math.abs(y + 1 - this.sy) <= MAX_DY && this.placeable(x, y, z)) {
 			double head = this.cellCost(x, y + 2, z);
 			if (head < INF) {
 				this.offer(n, x, y + 1, z, true, n.pillar + 1, n.scaffoldUsed + 1, PILLAR + SCAFFOLD + head, DigStep.Kind.PILLAR,
@@ -454,10 +456,14 @@ public final class DigPathPlanner {
 		return (c & (WATER | CLIMB)) != 0 || (this.cell(x, y - 1, z) & FLOOR) != 0;
 	}
 
-	/** A cell a scaffold block may go into: empty (no fluid, not a ladder or door), not part of the office. */
+	/**
+	 * A cell a scaffold block may go into: empty or a replaceable plant nobody placed (not a torch, rail, sign or carpet:
+	 * a block there fails to place, and a plan that places there again would only fail again), no fluid, not a ladder or
+	 * door, not a cell a placement already failed in, not part of the office or a protected zone.
+	 */
 	private boolean placeable(final int x, final int y, final int z) {
 		short c = this.cell(x, y, z);
-		return (c & PASS) != 0 && (c & (WATER | CLIMB | DOOR_CELL | HAZARD | UNLOADED)) == 0 && !this.isProtected(x, y, z);
+		return (c & (PASS | PLACE)) == (PASS | PLACE) && (c & (WATER | CLIMB | DOOR_CELL | HAZARD | UNLOADED)) == 0 && !this.isProtected(x, y, z);
 	}
 
 	private boolean lavaBelow(final int x, final int y, final int z) {
@@ -527,6 +533,10 @@ public final class DigPathPlanner {
 			}
 			if (NavBlocks.isOpenableDoor(state)) {
 				c |= DOOR_CELL;
+			}
+			if ((state.isAir() || state.canBeReplaced() && dev.minevibe.world.provenance.Provenance.ownerAt(this.level, pos) == null)
+				&& !this.forbidden.contains(pos.asLong())) {
+				c |= PLACE;
 			}
 		} else if (!this.forbidden.contains(pos.asLong()) && NavBlocks.mayBreak(this.level, pos, state, this.config.agentId())
 			&& NavBlocks.safeToOpen(this.view, pos)

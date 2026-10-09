@@ -23,8 +23,10 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Every step is checked again before it runs, and every block again before it is broken: a block that is no
  * longer natural, has water or lava next to it, gravel on top, or carries the agent is never broken; the executor asks
- * for a new plan instead ({@link Result#REPLAN}) and remembers the cell in {@code forbidden} for it. A step that takes
- * too long, or an agent pushed off its path, also re-plans.
+ * for a new plan instead ({@link Result#REPLAN}) and remembers the cell in {@code forbidden} for it (so is a cell a
+ * scaffold block failed to go into). A drop is only taken while it still lands within the safe fall (or in water) on
+ * something that does not hurt: a landing mined away since the plan re-plans rather than fall further. A step that
+ * takes too long, or an agent pushed off its path, also re-plans.
  */
 final class DigPathExecutor {
 	enum Result {
@@ -46,6 +48,10 @@ final class DigPathExecutor {
 	private static final int MOVE_TIMEOUT = 120;
 	private static final int PLACE_TIMEOUT = 60;
 	private static final double HAND_REACH = 4.4;
+	/** Pillar blocks kept for a job to clear; older ones (walks no job cleans up after) are forgotten. */
+	private static final int MAX_PILLARS_KEPT = 64;
+	/** How far below a drop's edge the landing is looked for (the planner drops at most 16 into water). */
+	private static final int MAX_DROP_SCAN = 17;
 
 	private final NavDoors doors;
 	private final LongSet forbidden;
@@ -162,12 +168,13 @@ final class DigPathExecutor {
 			BlockState s = level.getBlockState(step.place());
 			boolean already = NavBlocks.isFloor(level, step.place(), s);
 			if (!already && !s.canBeReplaced()) {
+				this.forbidden.add(step.place().asLong());
 				return this.replan(agent, "place_blocked");
 			}
 			if (!already && NavBlocks.scaffoldCount(agent.getInventory()) == 0) {
 				return this.replan(agent, "no_scaffold");
 			}
-		} else if (!this.destSupported(level, step)) {
+		} else if (step.kind() == DigStep.Kind.DROP ? !dropSafe(level, step, agent.getHealth()) : !this.destSupported(level, step)) {
 			return this.replan(agent, "floor_gone");
 		}
 		this.enter(Phase.BREAK);
@@ -180,6 +187,7 @@ final class DigPathExecutor {
 		if (this.breaking != null && NavBlocks.isPassable(level, this.breaking, level.getBlockState(this.breaking))) {
 			// Broken by last tick's held attack.
 			this.broken++;
+			NavBlocks.forgetScaffold(level, this.breaking);
 			this.breaking = null;
 		}
 		BlockPos next = null;
@@ -275,6 +283,8 @@ final class DigPathExecutor {
 		if (this.phaseTicks > PLACE_TIMEOUT) {
 			controls.setJumping(false);
 			controls.setSneaking(false);
+			// Something keeps the block out (a protection refusal, a body in the way): plan around this cell next time.
+			this.forbidden.add(at.asLong());
 			return this.replan(agent, "place_timeout");
 		}
 		if (step.kind() == DigStep.Kind.PILLAR) {
@@ -301,6 +311,9 @@ final class DigPathExecutor {
 			NavBlocks.noteScaffold(level, at);
 			this.placed++;
 			if (step.kind() == DigStep.Kind.PILLAR) {
+				if (this.pillars.size() >= MAX_PILLARS_KEPT) {
+					this.pillars.removeFirst();
+				}
 				this.pillars.add(at.immutable());
 			}
 			controls.setJumping(false);
@@ -331,6 +344,10 @@ final class DigPathExecutor {
 		if (!NavBlocks.isPassable(level, step.dest(), level.getBlockState(step.dest())) && !NavBlocks.isWater(level.getBlockState(step.dest()))
 			|| !NavBlocks.isPassable(level, step.dest().above(), level.getBlockState(step.dest().above()))) {
 			return this.replan(agent, "blocked");
+		}
+		if (step.kind() == DigStep.Kind.DROP && agent.onGround() && agent.getY() > step.from().getY() - 0.5 && !dropSafe(level, step, agent.getHealth())) {
+			// Still on the edge, and the landing went away while walking up to it.
+			return this.replan(agent, "floor_gone");
 		}
 		switch (step.kind()) {
 			case PILLAR -> {
@@ -401,7 +418,8 @@ final class DigPathExecutor {
 			|| next.kind() == DigStep.Kind.SWIM || next.kind() == DigStep.Kind.DROP || next.kind() == DigStep.Kind.ASCEND);
 		double tol = through ? PASS_THROUGH : ARRIVE;
 		return switch (step.kind()) {
-			case SWIM -> hd <= Math.max(tol, 0.6) && Math.abs(dy) < 1.2;
+			// The last swim ends in its own cell (the goal is checked by cell): 0.6 off is the next cell over.
+			case SWIM -> hd <= (last ? ARRIVE : Math.max(tol, 0.6)) && Math.abs(dy) < 1.2;
 			case CLIMB_UP -> dy >= -0.05 && hd <= 0.6;
 			case CLIMB_DOWN -> dy <= 0.2 && hd <= 0.6;
 			case PILLAR -> agent.onGround() && dy >= -0.05 && dy < 0.6;
@@ -437,19 +455,51 @@ final class DigPathExecutor {
 		Vec3 p = agent.position();
 		Vec3 a = Vec3.atBottomCenterOf(step.from());
 		Vec3 b = Vec3.atBottomCenterOf(step.dest());
+		if (step.kind() == DigStep.Kind.DROP) {
+			// Falling (up to 16 blocks into water): far from both ends on the way down, not off the path.
+			return horizontal(p, a) > 3.0 && horizontal(p, b) > 3.0;
+		}
 		return p.distanceTo(a) > 3.0 && p.distanceTo(b) > 3.0;
 	}
 
 	private boolean destSupported(final ServerLevel level, final DigStep step) {
 		BlockPos d = step.dest();
 		BlockState feet = level.getBlockState(d);
-		if (step.kind() == DigStep.Kind.DROP || NavBlocks.isWater(feet) || NavBlocks.isClimbable(feet)) {
+		if (NavBlocks.isWater(feet) || NavBlocks.isClimbable(feet)) {
 			return true;
 		}
 		BlockPos below = d.below();
 		BlockState floor = level.getBlockState(below);
 		// The floor may itself be in the way right now only if this step breaks it (it never does).
 		return NavBlocks.isFloor(level, below, floor) || step.kind() == DigStep.Kind.CLIMB_UP || step.kind() == DigStep.Kind.SWIM;
+	}
+
+	/**
+	 * True if stepping off the edge for {@code step} (a drop) lands safely now: through free cells, in water or on a
+	 * floor at most the safe fall below the edge (3 blocks, 2 at low health; landing higher than planned is fine), never
+	 * on or through lava, fire, magma or anything else that hurts. The planner checked it; the world may have changed
+	 * since (the landing mined away, lava flowed in).
+	 */
+	static boolean dropSafe(final ServerLevel level, final DigStep step, final float health) {
+		BlockPos d = step.dest();
+		int edge = step.from().getY();
+		int maxFall = health <= DigPathPlanner.LOW_HEALTH ? 2 : 3;
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		for (int y = edge - 1; y >= edge - MAX_DROP_SCAN && y > level.getMinY(); y--) {
+			p.set(d.getX(), y, d.getZ());
+			BlockState s = level.getBlockState(p);
+			if (NavBlocks.isHazard(s)) {
+				return false;
+			}
+			if (NavBlocks.isWater(s)) {
+				return true;
+			}
+			if (!NavBlocks.isPassable(level, p, s)) {
+				// Lands on top of this block.
+				return NavBlocks.isFloor(level, p, s) && edge - (y + 1) <= maxFall;
+			}
+		}
+		return false;
 	}
 
 	/** Policy and safety, now: natural, not protected, no fluid to let in, no gravel or sand on top. */

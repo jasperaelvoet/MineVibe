@@ -169,11 +169,16 @@ node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripte
   the sunk office (the oak by the office is in the Base, the others unreachable on foot).
 - Tier 2 planned 1 to 16 times per run, each search within 1.5 ms per tick (the first one on `d747169`, out of seed
   42's office by digging, 349 nodes in 10 ticks; a search that runs out, 20 000 nodes in 70-110 ticks).
-- The 21 navigation GameTests (`NavGameTests`, `-Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'`): a
+- The 27 navigation GameTests (`NavGameTests`, `-Pminevibe.gametestFilter='minevibe-gametest:nav_game_tests_*'`): a
   tree on a 3-block ledge (dug stairs, or a 2-block pillar with dirt in the bag), across a 2-wide gap 4 deep (bridged),
   behind a leaf wall, on a hill with a 2-high grass step (1 block cut), across a river (swum), an office sunk in a hill
   (walked out by its stairs, office untouched), a sealed tree (`no_path`, not one block broken), a goal past 96 blocks
   (`too_far` at once), a door, a ladder, `goto` falling back to Tier 2, drops fetched from leaves, a stale walk
   stopped, a pillar not cut short at the top of its jump, `collect` stopping at its count, the safety rules (no block
   next to water, nothing under the feet, only natural blocks), and four agents planning at once (median 1.45 ms, 90th
-  percentile 1.48 ms per agent tick).
+  percentile 1.48 ms per agent tick). Six more from the review (each failed before its fix): a ring the crew built
+  (planks, glass, bricks) is never broken, even under a stale scaffold note, while the agent's own scaffold is; a tree
+  felled after a `goto` pillared elsewhere leaves that pillar's position (a crew build by then) alone; a drop whose
+  landing is mined away while the agent walks to the edge re-plans instead of falling 6 blocks; a 9-block fall into a
+  pool is no re-plan; no scaffold is planned into a torch's cell (one clean `no_path`, not 9 searches ending `stuck`);
+  and the office's exit stairs seal off a pond beside them and sand above them.

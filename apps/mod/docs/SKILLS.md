@@ -146,10 +146,13 @@ Jobs walk through `dev.minevibe.agent.job.Walk`, which drives `dev.minevibe.agen
 A job's walks share one navigator: `Walk.stop()` (a walk arrived, the job acts) stops whatever still moves the body,
 so a walk left running for a vanished item never keeps digging while the job works. A walk asked for the same block
 more than 8 times without getting there gives up (`no_progress`). Reflexes call the navigator directly and stay on
-Tier 1. Tier 2 (`DigPathPlanner`) breaks natural blocks and blocks agents placed only (`NavBlocks.mayBreak`: never
-the office, never a block with a block entity, never what `Protection.check` protects), pillars and bridges with dirt
-or cobblestone from the bag (never inside a protected zone), and never digs straight down or opens a block next to
-water or lava. Felling a tree, the miner clears the pillars Tier 2 built (`AgentNavigator.drainPlacedPillars`). It plans within 1.5 ms per tick per agent. Its plans
+Tier 1. Tier 2 (`DigPathPlanner`) breaks natural blocks nobody placed and the scaffold agents placed to get somewhere
+only (`NavBlocks.mayBreak`: never a crew build, never the office, never a block with a block entity, never what
+`Protection.check` protects), pillars and bridges with dirt or cobblestone from the bag (into empty cells or
+replaceable plants nobody placed, never inside a protected zone), and never digs straight down, opens a block next to
+water or lava, or takes a drop whose landing went away since the plan. Felling a tree, the miner clears the pillars
+Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay). It plans within 1.5 ms
+per tick per agent. Its plans
 are logged as `[agent <id>] nav.dig {steps, breaks, places, nodes, ms}`; `mine` and `collect` results carry
 `unreachable` (targets given up on). With `MINEVIBE_NAV_DEBUG=1` (or `-Dminevibe.navDebug=true`) every failed walk logs
 `[nav]` lines and a terrain map around the agent and its goal.

@@ -238,7 +238,10 @@ public final class AgentNavigator {
 		this.digReplans = 0;
 		this.digWaitTicks = 0;
 		this.forbidden.clear();
-		NavDebug.log(this.agent.agentId(), "tier2", "why", why, "goal", goal.describe(), "from", this.agent.blockPosition().toShortString());
+		if (NavDebug.ENABLED) {
+			// Every mine target starts one: worth a line only when diagnosing (failures are always logged).
+			NavDebug.log(this.agent.agentId(), "tier2", "why", why, "goal", goal.describe(), "from", this.agent.blockPosition().toShortString());
+		}
 		if (this.digArrived()) {
 			this.arrive();
 		}

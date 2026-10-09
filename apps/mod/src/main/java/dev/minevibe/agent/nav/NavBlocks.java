@@ -37,9 +37,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * What the navigator may walk through, stand on, break and build with (Tier 2, {@link DigPathPlanner}).
  *
- * <p><b>Breaking.</b> Only natural material is ever broken (ground, stone, sand and gravel, ores, natural, non
- * persistent leaves, huge mushrooms, snow) and blocks agents placed themselves (block provenance, W1, and the scaffold
- * remembered here). Never a block with a block entity, an unbreakable one, the office ({@link OfficeService#protects}),
+ * <p><b>Breaking.</b> Only natural material nobody placed is ever broken (ground, stone, sand and gravel, ores,
+ * natural, non persistent leaves, huge mushrooms, snow), and the scaffold agents placed to get somewhere (remembered
+ * here, and still a scaffold block). Never anything else an agent placed (what the crew built stays standing), a block
+ * with a block entity, an unbreakable one, the office ({@link OfficeService#protects}),
  * or anything {@link Protection#check} protects: player-built blocks, the Base zone, what holds those up, and the floor
  * under a player's roof. Logs are not broken to make way (they are what jobs mine, and cabins are built of them).
  *
@@ -141,10 +142,10 @@ public final class NavBlocks {
 	}
 
 	/**
-	 * May {@code agentId} (null: any agent) break the block at {@code pos} to make way (policy only: natural or an
-	 * agent's own, not protected)? Safety (fluids next to it, gravity blocks above it, the block under the agent) is
-	 * checked separately. {@link Protection#check} reads the neighbours too, so a block at the edge of the loaded world
-	 * is left alone rather than loading a chunk for it.
+	 * May {@code agentId} (null: any agent) break the block at {@code pos} to make way (policy only: natural and nobody's,
+	 * or an agent's scaffold; not protected)? Safety (fluids next to it, gravity blocks above it, the block under the
+	 * agent) is checked separately. {@link Protection#check} reads the neighbours too, so a block at the edge of the
+	 * loaded world is left alone rather than loading a chunk for it.
 	 */
 	public static boolean mayBreak(final ServerLevel level, final BlockPos pos, final BlockState state, final @Nullable String agentId) {
 		if (state.isAir() || isHazard(state) || !state.getFluidState().isEmpty()) {
@@ -154,8 +155,14 @@ public final class NavBlocks {
 			return false;
 		}
 		Owner owner = Provenance.ownerAt(level, pos);
-		boolean agents = owner != null && owner.isAgent() || isScaffold(level, pos);
-		if (!agents && (owner != null || !isNaturalMaterial(state))) {
+		if (owner != null) {
+			// A placed block: only scaffold navigation put there itself. Never what the crew built (a shelter's walls, a
+			// plank house, a crafting table; a build job's walk would otherwise tunnel through the walls it just built),
+			// nor a player's or the Base's.
+			if (!owner.isAgent() || !isScaffold(level, pos, state)) {
+				return false;
+			}
+		} else if (!isNaturalMaterial(state)) {
 			return false;
 		}
 		if (OfficeService.protects(level, pos)) {
@@ -236,6 +243,17 @@ public final class NavBlocks {
 		return n;
 	}
 
+	/**
+	 * A block a scaffold item places, or a dirt block grass has grown over since: what a pillar or bridge is made of. The
+	 * pillar a job clears is checked against it, so a position that holds something else by now is left alone.
+	 */
+	public static boolean isScaffoldBlock(final BlockState state) {
+		Block b = state.getBlock();
+		return b == Blocks.DIRT || b == Blocks.COARSE_DIRT || b == Blocks.GRASS_BLOCK || b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE
+			|| b == Blocks.NETHERRACK || b == Blocks.STONE || b == Blocks.ANDESITE || b == Blocks.DIORITE || b == Blocks.GRANITE || b == Blocks.TUFF
+			|| b == Blocks.DEEPSLATE || b == Blocks.END_STONE;
+	}
+
 	/** Remembers a block an agent placed as scaffold, so navigation may break it again later. */
 	public static void noteScaffold(final ServerLevel level, final BlockPos pos) {
 		synchronized (SCAFFOLD) {
@@ -249,7 +267,24 @@ public final class NavBlocks {
 		}
 	}
 
-	public static boolean isScaffold(final ServerLevel level, final BlockPos pos) {
+	/** Forgets the scaffold at {@code pos} (it was broken): whatever is built there later is not scaffold. */
+	public static void forgetScaffold(final ServerLevel level, final BlockPos pos) {
+		synchronized (SCAFFOLD) {
+			Set<Long> set = SCAFFOLD.get(level);
+			if (set != null) {
+				set.remove(pos.asLong());
+			}
+		}
+	}
+
+	/**
+	 * True if the block at {@code pos} ({@code state}) is scaffold an agent placed to get somewhere: remembered, and
+	 * still a scaffold block (a crew build put at a former scaffold position is not).
+	 */
+	public static boolean isScaffold(final ServerLevel level, final BlockPos pos, final BlockState state) {
+		if (!isScaffoldBlock(state)) {
+			return false;
+		}
 		synchronized (SCAFFOLD) {
 			Set<Long> set = SCAFFOLD.get(level);
 			return set != null && set.contains(pos.asLong());

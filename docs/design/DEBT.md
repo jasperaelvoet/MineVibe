@@ -30,6 +30,16 @@ gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bri
   Tier 2 built; any other walk leaves its scaffold (noted, so agents may break it again later).
 - **The office's floor still follows the median of 9 terrain samples.** Its exit stairs fix the buried porch, but a
   porch high above the ground in front (a cliff side) gets no stairs down; a drop over 3 blocks there hurts the player.
+- **Found in the navigation v2 review (fixed meanwhile: crew builds broken to make way, an earlier walk's pillar
+  cleared by a later felling job, drops taken after their landing went, scaffold planned into a torch's cell, mid-fall
+  re-plans, the office stairs flooding).** Still open:
+  - Tier 2 pillars and bridges with any dirt, cobblestone or plain stone in the bag, the material a `build` job was
+    given included (its `toBlock` walks fall back to Tier 2), and may put scaffold on top of a player's build outside
+    a zone (W1 lets agents place there); that scaffold stays unless a felling job built it.
+  - Water is fuzzy: a swim step arrives within 1.2 blocks vertically, so a goal checked by cell (a pickup, a block in
+    reach) can need one more small plan after a plunge; a swim step is not re-checked if the water drained meanwhile.
+  - The office stairs cut natural-looking blocks nobody placed, generated structures included (a village house's log
+    corner in front of a sunk porch); planks or cobblestone end the stairs.
 - **`mine` and `collect` search 24 blocks by default, `find` 32.** An agent that `find`s oak at 28 blocks and then
   `collect`s without `radius` gets `NOT_FOUND` (seed `mv-forest-1`, nearest oak 27.9 from the office). The scripted
   step 3 passes `radius: 48`. Fix: one default for both (W1 owns tree targeting).
