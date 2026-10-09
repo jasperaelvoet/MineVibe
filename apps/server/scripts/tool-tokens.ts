@@ -32,15 +32,13 @@ import { type McHost, mcServerOptions, mcToolDefinitions } from '../src/agents/t
 import { type PcHost, pcToolDefinitions } from '../src/agents/tools/pcServer.js';
 import { SERVER_VERSION } from '../src/version.js';
 
-/** A host whose every member throws: the definitions are only rendered, never run. */
+/**
+ * A host whose every member is a no-op: the definitions are only rendered, never run (a tool server may still
+ * subscribe to host events while it builds them).
+ */
 function inert<T extends object>(): T {
   return new Proxy({} as T, {
-    get: (_t, key) => {
-      if (key === 'then') return undefined;
-      return () => {
-        throw new Error(`tool-tokens: host.${String(key)} called`);
-      };
-    },
+    get: (_t, key) => (key === 'then' ? undefined : () => undefined),
   });
 }
 

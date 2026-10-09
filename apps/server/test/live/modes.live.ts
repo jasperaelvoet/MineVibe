@@ -61,8 +61,15 @@ interface TurnRecord {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** The session's user messages, as they are handed to claude. */
-function recording(prompt: AsyncIterable<SDKUserMessage>, sent: string[]): AsyncIterable<SDKUserMessage> {
+/**
+ * The session's user messages, as they are handed to claude. The hard turn cap lives here: a message that would start
+ * model turn number TURN_CAP + 1 is never handed over (the input ends, so the session ends).
+ */
+function recording(
+  prompt: AsyncIterable<SDKUserMessage>,
+  sent: string[],
+  queries: { n: number },
+): AsyncIterable<SDKUserMessage> {
   return {
     [Symbol.asyncIterator]() {
       const it = prompt[Symbol.asyncIterator]();
@@ -71,7 +78,11 @@ function recording(prompt: AsyncIterable<SDKUserMessage>, sent: string[]): Async
           const r = await it.next();
           if (!r.done) {
             const c = r.value.message.content;
-            sent.push(typeof c === 'string' ? c : JSON.stringify(c));
+            const text = typeof c === 'string' ? c : JSON.stringify(c);
+            if ((r.value as { shouldQuery?: boolean }).shouldQuery !== false && ++queries.n > TURN_CAP) {
+              return { value: undefined, done: true };
+            }
+            sent.push(text);
           }
           return r;
         },
@@ -94,12 +105,13 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
     skills.observations.set('status', { hp: 20, maxHp: 20, food: 20, pos: { x: 0, y: 64, z: 0 }, job: null });
     skills.observations.set('inventory', { items: [{ item: 'minecraft:oak_log', count: 3 }] });
     const sent: string[] = [];
+    const queries = { n: 0 };
     let turnsStarted = 0;
     // Safety caps on top of the production options: API round trips per turn, spend, and the turn cap itself.
     const factory: QueryFactory = (params) =>
       sdkQueryFactory({
         ...params,
-        prompt: recording(params.prompt, sent),
+        prompt: recording(params.prompt, sent, queries),
         options: { ...params.options, maxTurns: 8, maxBudgetUsd: 2 },
       });
     const manager = new AgentManager({
@@ -207,7 +219,8 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
       );
       expect(wander.models).toContain('claude-haiku-5-5');
       expect(wander.efforts).toContain('xhigh');
-      expect(wander.tools).toContain('pc__bash:deny(not_seated)');
+      // The banner already says there is no PC here: a pc call is refused, or the agent does not even try.
+      expect(wander.tools.filter((t) => t.startsWith('pc__') && t.includes(':allow'))).toEqual([]);
       expect(wander.tools).toContain('mc__status:allow');
 
       // 3. Sit.
@@ -234,7 +247,10 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
       expect(kickoff.models).toContain('claude-opus-5-5');
       expect(kickoff.efforts).toContain('medium');
       expect(kickoff.tools).toContain('pc__bash:allow');
-      expect(kickoff.tools).toContain('mc__inventory:deny(mode)');
+      // inventory is not a PC-mode tool: refused (`mode`), or skipped because the banner said so.
+      expect(
+        kickoff.tools.filter((t) => t.startsWith('mc__inventory:') && t !== 'mc__inventory:deny(mode)'),
+      ).toEqual([]);
       expect(kickoff.tools).toContain('mc__status:allow');
       expect(kickoff.tools).toContain('mc__stand_up:allow');
       const listed = modeProfile('seated', brain()?.mcTools).mc.filter((t) => kickoff.text.includes(t));
@@ -251,8 +267,9 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
       expect(back.opened.startsWith(opens('Minecraft mode'))).toBe(true);
       expect(back.models).toContain('claude-haiku-5-5');
       expect(back.efforts).toContain('xhigh');
-      expect(back.tools).toContain('pc__bash:deny(not_seated)');
+      expect(back.tools.filter((t) => t.startsWith('pc__') && t.includes(':allow'))).toEqual([]);
       expect(back.tools).toContain('mc__inventory:allow');
+      expect(queries.n).toBeLessThanOrEqual(TURN_CAP);
       expect(swaps.map((s) => s.to)).toEqual(['claude-opus-5-5', 'claude-haiku-5-5']);
       expect(listed.length).toBeGreaterThan(0);
       console.log(`seated mc tools the agent named: ${listed.join(', ')}`);
@@ -264,6 +281,7 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
         turns,
         swaps,
         modelTurns: results.length,
+        queryMessages: queries.n,
         totalCostUsd: results.at(-1)?.total_cost_usd ?? null,
         banners: sent.filter((t) => t.includes(' MODE] ')).map((t) => t.split('\n')[0]),
         denials: observations
