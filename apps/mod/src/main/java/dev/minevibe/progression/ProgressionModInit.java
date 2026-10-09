@@ -23,8 +23,12 @@ public final class ProgressionModInit implements ModInitializer {
 	public void onInitialize() {
 		ProgressionContent.register();
 		GuideHint.registerEvents();
+		Awakening.registerEvents();
 		ServerLifecycleEvents.SERVER_STARTED.register(s -> server = s);
-		ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
+		ServerLifecycleEvents.SERVER_STOPPED.register(s -> {
+			server = null;
+			CorePayment.reset();
+		});
 		MineVibeBridge.onInstall(ProgressionModInit::attach);
 	}
 

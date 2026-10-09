@@ -553,9 +553,11 @@ records flatten every variant into one record with `@Nullable` fields.
   §7.5 "Agent Core"): the player used an Agent Core on the top of two stacked copper blocks; `pos` is the lower block.
   The mod takes both blocks and the core aside first and sends this; Node hires a CEO with `agent.spawn{at: pos}` and
   answers `ok`, after which the mod keeps the core, strikes a visual-only lightning bolt and grants the "It's alive!"
-  advancement. Any `err` (or no answer in 15 s, or no bridge) gives the blocks and the core back with Node's message.
-  Errors: `CEO_EXISTS` (the CEO hires the crew; a hire card costs the core instead), `NOT_READY` (no world open, a
-  ritual already running, or no usable `claude`), `SPAWN_FAILED`; `NOT_HANDLED` when no agent runtime
+  advancement. Any `err` (or no answer in 30 s, longer than Node's own `agent.spawn` wait, or no bridge) gives the
+  blocks and the core back with Node's message; so does the server stopping while the ritual waits. One ritual per
+  player at a time. Errors: `CEO_EXISTS` (the CEO hires the crew; a hire card costs the core instead; also while a
+  living agent is about to be promoted after the CEO died), `NOT_READY` (no world open, a ritual already running, or
+  no usable `claude`), `SPAWN_FAILED`; `NOT_HANDLED` when no agent runtime
   runs (the scripted crew).
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
@@ -871,7 +873,11 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   answer or chat) costs the player one Agent Core (PLAN §7.5): before the hire arrives Node asks the mod to take one
   from the local player's inventory (nothing is taken in creative mode). `err NO_CORE` when there is none: Node then
   refuses the approval with that message and the card stays up. `refund: true` gives the core back when the approved
-  hire could not arrive. A successful take grants the "Growing the team" advancement.
+  hire could not arrive, when the card went while the core was taken, or after a take that failed or timed out. Both
+  are idempotent per `pendingId` (the mod keeps a ledger for the game session): paying again for a paid card takes
+  nothing, and a refund gives back only a core really taken for that card, once (nothing after a creative approval).
+  Node applies one decision per card at a time (a second approve or decline meanwhile gets `err NOT_READY`). A
+  successful take grants the "Growing the team" advancement.
 - `agent.cmd` (request): `{ agentId, cmd, on?, level? }`, `cmd` one of `follow`, `stay`, `guard`, `wander`,
   `stop`, `interrupt`, `kick`, `dismiss`, `plan_first` (needs `on`), `ping_instead` (needs `on`), `autonomy`
   (needs `level`), `retry_brain`.
@@ -906,7 +912,8 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - `pc.action` (request, `PcActionResult { pcId }`): `{ action, pcId?, type?, pos?, placed? }`. `create` takes `type`
   and no `pcId`; it plugs an existing PC of the same family (Linux or macOS) that has no desk in this world instead of
   creating a new one, and answers with its id (`placed`: the PCs the mod knows have a desk here; Node also remembers
-  the world each PC was last plugged into); every other action (`start`, `stop`, `restart`, `reimage`,
+  the world each PC was last plugged into; `placed` since 2026-10-09, additive: it also lists the workstation slots of
+  the world's starter office, whose desks may sit in unloaded chunks); every other action (`start`, `stop`, `restart`, `reimage`,
   `decommission`, `reissue`, `unplug`, `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,
   `PC_UNKNOWN`, `ENGINE_DOWN`.
 - `pc.consent` (request): `{ pcId, consentId, accept }`. `err NOT_READY` when that prompt is no longer waiting. An

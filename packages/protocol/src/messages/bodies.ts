@@ -191,7 +191,7 @@ export const AgentMode = defineMessage('agent.mode', {
  * M→N request (PLAN §7.5 "Agent Core"). The player used an Agent Core on two stacked copper blocks: wake a CEO there.
  * `pos` is the lower block (where the body will stand); the mod has already taken both blocks and the core aside,
  * and gives them back unless Node answers `ok`. Errors: `CEO_EXISTS` (the CEO hires the crew instead), `NOT_READY`
- * (no world open, or no brains), `NOT_HANDLED` (no agent runtime), `SPAWN_FAILED`.
+ * (no world open, or no brains), `NOT_HANDLED` (no agent runtime), `SPAWN_FAILED`. The mod waits 30 s.
  */
 export const AgentAwaken = defineMessage('agent.awaken', {
   pos: BlockPos,

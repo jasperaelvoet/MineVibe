@@ -586,6 +586,104 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
     expect(paid).toEqual([]);
     expect(w.skills.spawned).toHaveLength(1);
   });
+
+  it('two approvals at once (the card, G and chat) charge one core and hire once', async () => {
+    const paid: { pendingId: string; refund: boolean }[] = [];
+    let release: () => void = () => {};
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ pendingId: req.pendingId, refund: req.refund });
+        if (!req.refund) await new Promise<void>((r) => (release = r));
+      },
+    });
+    const id = await hire(w);
+    const first = w.manager.answerCard(id, { kind: 'approve' });
+    await w.until(() => paid.length === 1, 'hire.pay in flight');
+    // While the core is being taken, a second approval (or a decline) is turned away instead of paying again.
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'NOT_READY'),
+    );
+    await expect(w.manager.answerCard(id, { kind: 'decline' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'NOT_READY'),
+    );
+    release();
+    expect((await first).echo).toMatch(/hire approved: Bram/);
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy((e) =>
+      isApiError(e, 'CARD_GONE'),
+    );
+    expect(paid).toEqual([{ pendingId: id, refund: false }]);
+    expect(w.skills.spawned).toHaveLength(2);
+  });
+
+  it('a hire.pay that fails (a timeout) asks for a refund, keeps the card up and spawns nobody', async () => {
+    const paid: { refund: boolean }[] = [];
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ refund: req.refund });
+        if (!req.refund) throw Object.assign(new Error('hire.pay timed out'), { code: 'TIMEOUT' });
+      },
+    });
+    const id = await hire(w);
+    await expect(w.manager.answerCard(id, { kind: 'approve' })).rejects.toSatisfy(
+      (e) => isApiError(e, 'NOT_READY') && /nothing was spent/.test(e.message),
+    );
+    await settle();
+    // The mod gives back only a core it really took for this card (hire.pay refunds are idempotent).
+    expect(paid).toEqual([{ refund: false }, { refund: true }]);
+    expect(w.manager.pendingCards().find((c) => c.id === id)).toBeDefined();
+    expect(w.skills.spawned).toHaveLength(1);
+  });
+
+  it('a card that goes while its core is being taken gets the core back and hires nobody', async () => {
+    const paid: { refund: boolean }[] = [];
+    let release: () => void = () => {};
+    const w = await freshWorld({
+      payHire: async (req) => {
+        paid.push({ refund: req.refund });
+        if (!req.refund) await new Promise<void>((r) => (release = r));
+      },
+    });
+    const id = await hire(w);
+    const approving = w.manager.answerCard(id, { kind: 'approve' });
+    await w.until(() => paid.length === 1, 'hire.pay in flight');
+    // The CEO dies meanwhile: nobody is left, so the hire card ends.
+    await w.manager.onAgentDied({
+      agentId: w.ceoId,
+      worldId: 'w1',
+      cause: 'lava',
+      day: 1,
+      pos: { x: 0, y: 60, z: 0 },
+      dim: 'minecraft:overworld',
+    });
+    release();
+    await expect(approving).rejects.toSatisfy((e) => isApiError(e, 'CARD_GONE'));
+    await settle();
+    expect(paid).toEqual([{ refund: false }, { refund: true }]);
+    expect(w.skills.spawned).toHaveLength(1);
+  });
+
+  it("no second CEO wakes while the dead CEO's successor is being promoted", async () => {
+    const w = await freshWorld();
+    const id = await hire(w);
+    await w.manager.answerCard(id, { kind: 'approve' });
+    expect(w.manager.listAgents().filter((a) => a.status === 'alive')).toHaveLength(2);
+    // The CEO dies, and the player performs the ritual before the successor is promoted.
+    const died = w.manager.onAgentDied({
+      agentId: w.ceoId,
+      worldId: 'w1',
+      cause: 'lava',
+      day: 1,
+      pos: { x: 0, y: 60, z: 0 },
+      dim: 'minecraft:overworld',
+    });
+    const woke = w.manager.awaken({ pos: { x: 3, y: 64, z: 3 }, dim: 'minecraft:overworld' });
+    await expect(woke).rejects.toSatisfy((e) => isApiError(e, 'CEO_EXISTS') && /Bram/.test(e.message));
+    await died;
+    const alive = w.manager.listAgents().filter((a) => a.status === 'alive');
+    expect(alive).toHaveLength(1);
+    expect(alive[0]).toMatchObject({ name: 'Bram', ceo: true });
+    expect(w.skills.spawned).toHaveLength(2);
+  });
 });
 
 describe('AgentManager: commands and usage', () => {

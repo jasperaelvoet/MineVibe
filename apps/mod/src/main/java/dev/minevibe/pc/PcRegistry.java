@@ -183,6 +183,24 @@ public final class PcRegistry {
 		return java.util.Set.copyOf(ids);
 	}
 
+	/**
+	 * The PCs with a desk in {@code server}'s world as far as the mod can tell ({@code pc.action{create, placed}}): the
+	 * desks seen this session ({@link #pcIds}) and the workstation slots of the world's starter office, whose desks may
+	 * stand in chunks not loaded yet (worlds from before Node remembered where each PC was plugged in).
+	 */
+	public static java.util.Set<String> placedPcIds(final MinecraftServer server) {
+		java.util.Set<String> ids = new java.util.HashSet<>(pcIds());
+		dev.minevibe.org.office.OfficeLayout office = dev.minevibe.org.office.OfficeService.layout(server);
+		if (office != null) {
+			for (dev.minevibe.org.office.OfficeLayout.Slot slot : office.slots()) {
+				if (dev.minevibe.org.office.OfficeLayout.WORKSTATION.equals(slot.kind()) && slot.pcId() != null) {
+					ids.add(slot.pcId());
+				}
+			}
+		}
+		return java.util.Set.copyOf(ids);
+	}
+
 	// -----------------------------------------------------------------------------------------
 	// LED
 	// -----------------------------------------------------------------------------------------

@@ -128,7 +128,7 @@ public final class PcBlockEntity extends BlockEntity {
 		MinecraftServer server = level.getServer();
 		// Node plugs a PC of this family that has no desk here yet (linux-1 for the first Linux desk), and creates one only
 		// when every one has: tell it which desks this world has, as far as this session has seen them.
-		CompletableFuture<JsonObject> reply = PcBridge.create(this.type, new Messages.BlockPos(pos.getX(), pos.getY(), pos.getZ()), PcRegistry.pcIds());
+		CompletableFuture<JsonObject> reply = PcBridge.create(this.type, new Messages.BlockPos(pos.getX(), pos.getY(), pos.getZ()), PcRegistry.placedPcIds(server));
 		reply.whenComplete((ok, err) -> {
 			String created = err == null && ok != null && ok.has("pcId") ? ok.get("pcId").getAsString() : null;
 			String code = err != null ? PcBridge.codeOf(err) : created == null ? Messages.Codes.INTERNAL : null;

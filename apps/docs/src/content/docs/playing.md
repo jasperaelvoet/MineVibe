@@ -296,10 +296,12 @@ guide.
    the middle and an ender pearl at the bottom middle.
 3. **Awaken your CEO.** Stack two copper blocks (plain, exposed, weathered or oxidized, waxed or not; not cut
    copper) and use the Agent Core on the top one. Both blocks and the core are spent, lightning strikes and your CEO
-   stands where the copper was. If MineVibe can't wake anyone (a CEO is already alive, or the agent server or your
-   `claude` is not ready), you get the core and the copper back with the reason.
+   stands where the copper was (in creative mode the core is not used up). If MineVibe can't wake anyone (a CEO
+   is already alive, or the agent server or your `claude` is not ready), you get the core and the copper back with
+   the reason.
 4. **Give the crew a computer.** Craft a Linux Workstation (glass pane, iron, redstone, copper) and place it. The
-   first one in a world shows `linux-1`, your PC from the first run; each further desk is a new PC.
+   first one in a world shows `linux-1`, your PC from the first run; a further desk takes another of your Linux PCs
+   that has no desk in this world yet, and only then is a new PC.
 5. **Build the office yourself.** Craft a Codex (bookshelves, a book and quill, an amethyst shard), a calendar or
    wall calendar (a clock and paper), a meeting table (wooden slabs on two logs) and office chairs (wool and iron).
 6. **Grow the team.** Your CEO proposes hires; each approval costs one more Agent Core.

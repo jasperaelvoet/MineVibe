@@ -5,6 +5,7 @@ import com.mojang.authlib.GameProfile;
 import dev.minevibe.MineVibeMod;
 import dev.minevibe.bridge.BridgeException;
 import dev.minevibe.bridge.msg.Bodies;
+import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.progression.Awakening;
 import dev.minevibe.progression.CorePayment;
 import dev.minevibe.progression.ProgressionContent;
@@ -147,6 +148,49 @@ public final class ProgressionGameTests {
 		});
 	}
 
+	@GameTest(maxTicks = 40)
+	public void aRitualStillWaitingWhenTheServerStopsGivesEverythingBack(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		ServerPlayer player = standIn(helper, 1, 0, 2);
+		BlockPos base = helper.absolutePos(new BlockPos(3, 0, 3));
+		BlockState lower = copper("weathered_copper");
+		BlockState upper = copper("copper_block");
+		level.setBlockAndUpdate(base, lower);
+		level.setBlockAndUpdate(base.above(), upper);
+		ItemStack cores = new ItemStack(ProgressionContent.AGENT_CORE, 1);
+		player.setItemInHand(InteractionHand.MAIN_HAND, cores);
+		CompletableFuture<JsonObject> answer = new CompletableFuture<>();
+		NODE.put(name(player), request -> answer);
+		onTestEnd(helper, () -> NODE.remove(name(player)));
+
+		use(level, player, cores, base.above());
+		helper.assertTrue(Awakening.pending(player.getUUID()), "waiting for Node");
+		// A second use while waiting starts nothing (one ritual per player).
+		player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(ProgressionContent.AGENT_CORE, 1));
+		level.setBlockAndUpdate(base.east(), copper("copper_block"));
+		level.setBlockAndUpdate(base.east().above(), copper("copper_block"));
+		InteractionResult second = use(level, player, player.getMainHandItem(), base.east().above());
+		helper.assertFalse(second.consumesAction(), "the second ritual did not start: " + second);
+		helper.assertTrue(level.getBlockState(base.east().above()) == copper("copper_block"), "its copper stays");
+		helper.assertTrue(count(player.getInventory()) == 1, "its core stays");
+
+		// The server stops before Node answers (what SERVER_STOPPING does for every waiting ritual).
+		Awakening.settle(level.getServer(), player.getUUID());
+		helper.assertFalse(Awakening.pending(player.getUUID()), "settled");
+		helper.assertTrue(level.getBlockState(base) == lower && level.getBlockState(base.above()) == upper, "the copper is back");
+		helper.assertTrue(count(player.getInventory()) == 2, "the core is back: " + count(player.getInventory()));
+		// Node's answer comes too late: it changes nothing (no second refund, nothing taken).
+		JsonObject ok = new JsonObject();
+		ok.addProperty("agentId", "ada1234");
+		ok.addProperty("name", "Ada");
+		answer.complete(ok);
+		helper.runAfterDelay(5, () -> {
+			helper.assertTrue(count(player.getInventory()) == 2, "still 2 cores: " + count(player.getInventory()));
+			helper.assertTrue(level.getBlockState(base) == lower && level.getBlockState(base.above()) == upper, "the copper stays");
+			helper.succeed();
+		});
+	}
+
 	@GameTest(maxTicks = 20)
 	public void onlyTwoStackedCopperBlocksMakeAnAltar(final GameTestHelper helper) {
 		ServerLevel level = helper.getLevel();
@@ -194,6 +238,42 @@ public final class ProgressionGameTests {
 		helper.succeed();
 	}
 
+	@GameTest(maxTicks = 20)
+	public void hirePayChargesOncePerCardAndRefundsOnlyWhatItTook(final GameTestHelper helper) {
+		ServerPlayer player = standIn(helper, 1, 0, 1);
+		Inventory inventory = player.getInventory();
+		inventory.setItem(3, new ItemStack(ProgressionContent.AGENT_CORE, 2));
+		String card = "h-" + Long.toString(System.nanoTime(), 36);
+		pay(player, new Ui.HirePay(card, "Bram", false));
+		helper.assertTrue(count(inventory) == 1, "one core taken");
+		// The same approval again (card, G and chat; a retry): never charged twice.
+		pay(player, new Ui.HirePay(card, "Bram", false));
+		helper.assertTrue(count(inventory) == 1, "still one core: " + count(inventory));
+		pay(player, new Ui.HirePay(card, "Bram", true));
+		helper.assertTrue(count(inventory) == 2, "the refund gave it back");
+		pay(player, new Ui.HirePay(card, "Bram", true));
+		helper.assertTrue(count(inventory) == 2, "refunded once only: " + count(inventory));
+		// A refund for a card never paid (the take timed out before it happened) gives nothing.
+		pay(player, new Ui.HirePay(card + "x", "Cleo", true));
+		helper.assertTrue(count(inventory) == 2, "nothing for an unpaid card");
+		// A creative approval takes nothing, and its refund gives nothing.
+		player.setGameMode(GameType.CREATIVE);
+		String creative = card + "c";
+		pay(player, new Ui.HirePay(creative, "Dana", false));
+		pay(player, new Ui.HirePay(creative, "Dana", true));
+		helper.assertTrue(count(inventory) == 2, "creative: no core in or out: " + count(inventory));
+		player.setGameMode(GameType.SURVIVAL);
+		// Without a core: NO_CORE.
+		inventory.setItem(3, ItemStack.EMPTY);
+		try {
+			CorePayment.pay(player, new Ui.HirePay(card + "n", "Eli", false));
+			helper.fail("expected NO_CORE");
+		} catch (BridgeException e) {
+			helper.assertTrue(CorePayment.NO_CORE.equals(e.code()), "code: " + e.code());
+		}
+		helper.succeed();
+	}
+
 	// ------------------------------------------------------------------ crafting
 
 	@GameTest(maxTicks = 5)
@@ -218,6 +298,14 @@ public final class ProgressionGameTests {
 	private static InteractionResult use(final ServerLevel level, final ServerPlayer player, final ItemStack stack, final BlockPos top) {
 		BlockHitResult hit = new BlockHitResult(Vec3.atCenterOf(top).add(0, 0.5, 0), Direction.UP, top, false);
 		return stack.useOn(new UseOnContext(level, player, InteractionHand.MAIN_HAND, stack, hit));
+	}
+
+	private static void pay(final ServerPlayer player, final Ui.HirePay req) {
+		try {
+			CorePayment.pay(player, req);
+		} catch (BridgeException e) {
+			throw new AssertionError("hire.pay failed: " + e.code(), e);
+		}
 	}
 
 	private static BlockState copper(final String path) {

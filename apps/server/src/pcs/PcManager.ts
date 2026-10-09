@@ -461,6 +461,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #locks = new Map<string, Promise<unknown>>();
   /** Ids handed out by `create` but not yet in `#file` (M9). */
   readonly #reservedIds = new Set<string>();
+  /** PCs being decommissioned (their record goes at the end). */
+  readonly #decommissioning = new Set<string>();
   #engineDown: string | null = null;
   /** Set when `shutdown` begins: nothing starts any more (a `bootAll` still going stops planning starts). */
   #closing = false;
@@ -3405,6 +3407,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         (p) =>
           PC_TYPE_SPECS[p.type].family === family &&
           !exclude.has(p.id) &&
+          !this.#decommissioning.has(p.id) &&
           (worldId === null || p.placedIn !== worldId),
       )
       .sort((a, b) => Number(a.plugged) - Number(b.plugged) || a.slot - b.slot);
@@ -3469,7 +3472,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   /** Removes the PC entirely: container, volumes, network, token and record. Vault folders are untouched. */
   decommission(id: string): Promise<void> {
     this.#imageWaits.get(id)?.abort();
-    return this.#serialize(id, async () => {
+    // A new desk must not take a PC on its way out (unplacedPc).
+    this.#decommissioning.add(id);
+    const done = this.#serialize(id, async () => {
       const p = this.#rec(id);
       try {
         this.#setStatus(id, { status: 'stopping' });
@@ -3501,6 +3506,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.#save();
       this.emit('pc.state', this.views());
     });
+    return done.finally(() => this.#decommissioning.delete(id));
   }
 
   async #destroyContainerAndVolumes(p: PcRecord): Promise<void> {

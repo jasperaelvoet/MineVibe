@@ -293,7 +293,8 @@ export const HireDecision = defineMessage('hire.decision', {
 /**
  * N→M request (PLAN §7.5 "Agent Core"). Approving a hire costs the player one Agent Core: Node asks the mod to take it
  * from the player's inventory before the hire arrives (`ok {}`; `err NO_CORE` when there is none, and the card stays
- * up), and to give it back (`refund: true`) when the approved hire then could not arrive.
+ * up), and to give it back (`refund: true`) when the approved hire then could not arrive. Idempotent per `pendingId`:
+ * a second take for the same card takes nothing, and a refund returns only a core really taken for it, once.
  */
 export const HirePay = defineMessage('hire.pay', {
   pendingId: PendingId,

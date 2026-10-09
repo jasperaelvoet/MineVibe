@@ -393,6 +393,25 @@ describe('requests', () => {
     expect(t.manager.unplacedPc('linux', 'world-2')?.id).toBe('linux-1');
   });
 
+  it('where each PC is plugged in survives a restart; a PC being decommissioned is never handed to a new desk', async () => {
+    const t = await setup();
+    await t.bridge.call('pc.action', { action: 'create', type: 'linux', pos: { x: 1, y: 64, z: 2 } });
+    await t.bridge.call('pc.action', { action: 'create', type: 'linux', pos: { x: 5, y: 64, z: 2 } });
+    expect(t.manager.get('linux-2')?.placedIn).toBe('world-1');
+    // Node restarts: pcs.json still knows both desks stand in world-1, and a new world sees both as desk-less.
+    const again = await setup();
+    expect(again.manager.get('linux-1')?.placedIn).toBe('world-1');
+    expect(again.manager.get('linux-2')?.placedIn).toBe('world-1');
+    expect(again.manager.unplacedPc('linux', 'world-1')).toBeNull();
+    expect(again.manager.unplacedPc('linux', 'world-2')?.id).toBe('linux-1');
+    // linux-1's desk breaks, and the PC is decommissioned: until its record is gone, no new desk takes it.
+    await again.manager.setPlugged('linux-1', false);
+    const gone = again.manager.decommission('linux-1');
+    expect(again.manager.unplacedPc('linux', 'world-1')).toBeNull();
+    await gone;
+    expect(again.manager.get('linux-1')).toBeUndefined();
+  });
+
   it('pc.action create returns the new id at once and boots it in the background', async () => {
     const t = await setup();
     await t.bridge.call('pc.action', { action: 'create', type: 'linux', pos: { x: 0, y: 64, z: 0 } });

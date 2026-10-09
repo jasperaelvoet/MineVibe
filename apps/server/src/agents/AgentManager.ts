@@ -262,6 +262,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #office: { readonly worldId: string; readonly layout: OfficeLayout } | null = null;
   /** Set while an awakening ritual is being answered (one at a time). */
   #awakening = false;
+  /** Hire cards whose decision is being applied (`hire.pay` in flight): a second approve or decline waits its turn. */
+  #deciding = new Set<string>();
   /** The crew file load of the world being opened (settled once its records are in). */
   #loading: Promise<void> = Promise.resolve();
   #autonomyTimer: NodeJS.Timeout | null = null;
@@ -774,6 +776,15 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         `${ceo.name} is your CEO and hires the crew: approve a hire card to use a core.`,
       );
     }
+    // A living agent without a CEO is the successor of a CEO who just died (onAgentDied promotes them once the dead
+    // CEO's session has closed): a second CEO must not wake beside them.
+    const successor = this.#records.find((r) => r.status === 'alive');
+    if (successor) {
+      throw new ApiError(
+        ERROR_CODES.CEO_EXISTS,
+        `${successor.name} is about to become your CEO and hires the crew: approve a hire card to use a core.`,
+      );
+    }
     if (this.#awakening) throw new ApiError(ERROR_CODES.NOT_READY, 'An agent is already waking up.');
     const problem = this.#claudeProblem();
     if (problem) throw new ApiError(ERROR_CODES.NOT_READY, `The crew cannot think: ${problem}`);
@@ -1103,6 +1114,13 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   }
 
   #succession(previous: AgentRecord): void {
+    const sitting = this.#ceoRecord();
+    if (sitting) {
+      // A CEO already lives (one woke meanwhile): the dead CEO's hire cards are theirs now.
+      for (const c of this.pending.list(previous.agentId).filter((x) => x.kind === 'hire'))
+        this.pending.move(c.id, sitting.agentId);
+      return;
+    }
     const next = this.#records
       .filter((r) => r.status === 'alive')
       .sort((a, b) => a.seniority - b.seniority)[0];
@@ -1394,14 +1412,39 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     approve: boolean,
     note: string | null,
   ): Promise<string> {
-    const ceo = this.#records.find((r) => r.agentId === card.agentId);
+    // One decision per card at a time: approving charges a core (`hire.pay`) before the card resolves, so a second
+    // approval (the card, G and chat at once) or a decline must not slip in while that is in flight.
+    if (this.#deciding.has(card.id))
+      throw new ApiError(ERROR_CODES.NOT_READY, `The decision on hiring ${card.name} is already being made.`);
+    this.#deciding.add(card.id);
+    try {
+      return await this.#applyHireDecision(card, approve, note);
+    } finally {
+      this.#deciding.delete(card.id);
+    }
+  }
+
+  async #applyHireDecision(
+    card: Extract<Card, { kind: 'hire' }>,
+    approve: boolean,
+    note: string | null,
+  ): Promise<string> {
     const cap = this.#o.crewCap ?? CREW_CAP;
     if (approve && this.#records.filter((r) => r.status === 'alive').length >= cap) {
       // The card stays up (the player can still decline it) instead of vanishing with nobody told.
       throw new ApiError('CREW_CAP', 'The crew is already full.');
     }
     // A hire costs an Agent Core (PLAN §7.5): taken before the card resolves, so a refusal leaves the card up.
-    if (approve) await this.#payForHire(card);
+    if (approve) {
+      await this.#payForHire(card);
+      if (!this.pending.get(card.id)) {
+        // The card went while the core was taken (the CEO died, the world ended): the core goes back.
+        this.#refundHire(card);
+        throw new ApiError(ERROR_CODES.CARD_GONE, 'That card is no longer pending.');
+      }
+    }
+    // The card's CEO now (a dead CEO's card moves to the successor, also while the core was being taken).
+    const ceo = this.#records.find((r) => r.agentId === (this.pending.get(card.id)?.agentId ?? card.agentId));
     this.pending.resolve(card.id, approve ? { kind: 'approved' } : { kind: 'declined', note });
     const ceoBrain = ceo ? this.#brains.get(ceo.agentId) : undefined;
     if (!approve) {
@@ -1431,9 +1474,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         ...(await this.#spawnAt()),
       });
     } catch (err) {
-      void this.#o
-        .payHire?.({ pendingId: card.id, name: card.name, refund: true })
-        .catch((e: unknown) => this.#log.warn({ err: e }, 'the Agent Core could not be given back'));
+      this.#refundHire(card);
       ceoBrain?.enqueue({
         mode: 'wake',
         priority: 3,
@@ -1486,6 +1527,13 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     return `hire approved: ${record.name} (${record.role}), 1 Agent Core spent`;
   }
 
+  /** Gives back the Agent Core taken for `card`, if one was (`hire.pay{refund}` is idempotent on the mod's side). */
+  #refundHire(card: Extract<Card, { kind: 'hire' }>): void {
+    void this.#o
+      .payHire?.({ pendingId: card.id, name: card.name, refund: true })
+      .catch((e: unknown) => this.#log.warn({ err: e }, 'the Agent Core could not be given back'));
+  }
+
   /** Takes the Agent Core a hire costs, or refuses the approval with what to do (`NO_CORE`). */
   async #payForHire(card: Extract<Card, { kind: 'hire' }>): Promise<void> {
     const pay = this.#o.payHire;
@@ -1501,6 +1549,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         );
       }
       this.#log.warn({ err }, 'hire.pay failed');
+      // The take may have happened after all (a timeout): the mod gives back only a core it took for this card.
+      this.#refundHire(card);
       throw new ApiError(
         ERROR_CODES.NOT_READY,
         `The game could not take the Agent Core for ${card.name}; nothing was spent, try again.`,
