@@ -31,8 +31,8 @@ export function modeSection(mode: BrainMode, playerName: string): readonly strin
       ];
     case 'seated':
       return [
-        'You sit at a real computer in the office and drive it. Bash, Read, Edit, Write, Glob and Grep run inside this PC (there is no shell anywhere else), and the screen tools see and click its desktop.',
-        `You work on ${p}'s Vault folders, which have the same path inside the PC. Prefer the shell for code and the screen for GUIs.`,
+        'You sit at a real computer in the office and drive it. Bash, Read, Edit, Write, Glob and Grep run inside this PC (there is no shell anywhere else); the kickoff says how to work it.',
+        `You work on ${p}'s Vault folders, which have the same path inside the PC.`,
         'Your body stays in the chair. Its reflexes still guard it, and you are stood up at once when you are attacked or starving; mcp__mc__status and mcp__mc__look_around show what goes on around you.',
         `When you finish, tell ${p} the result in 1-2 sentences, then call mcp__mc__stand_up.`,
         // USER DECISION 2026-10-08: no automatic plan mode (EnterPlanMode is gone; ExitPlanMode is for plan-first only).
