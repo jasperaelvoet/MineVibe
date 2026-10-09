@@ -232,6 +232,27 @@ public final class NavBlocks {
 			|| stack.is(Items.GRANITE) || stack.is(Items.TUFF) || stack.is(Items.DEEPSLATE) || stack.is(Items.END_STONE);
 	}
 
+	/**
+	 * True if mining the block {@code stack} places gives the item back with what {@code inventory} holds: dirt always,
+	 * stone kinds (cobblestone, stone, deepslate...) only with a pickaxe that harvests them. Scaffold that is mined away
+	 * again is placed from these first: cobblestone mined by hand drops nothing (and takes 10 s a block).
+	 */
+	public static boolean minedBack(final Inventory inventory, final ItemStack stack) {
+		if (!(stack.getItem() instanceof BlockItem item)) {
+			return false;
+		}
+		BlockState state = item.getBlock().defaultBlockState();
+		if (!state.requiresCorrectToolForDrops()) {
+			return true;
+		}
+		for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+			if (inventory.getItem(slot).isCorrectToolForDrops(state)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static int scaffoldCount(final Inventory inventory) {
 		int n = 0;
 		for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {

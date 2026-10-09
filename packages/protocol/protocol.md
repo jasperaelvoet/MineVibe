@@ -680,7 +680,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
     to), the logs in reach first, each other log reached by digging natural ground, pillaring or bridging if needed;
     logs higher than that from a pillar beside the trunk or in the cut trunk (scaffold from the bag, or dirt dug nearby
     and put back afterwards; at most 12 blocks high at full health, less when hurt, never in water or by lava, down
-    again at 8 health or less). A log no walk reaches waits while the rest of the tree comes down, and gets one more
+    again at 8 health or less or when a hit leaves it too high; an agent a cancelled or failed job leaves up there
+    comes down by itself). A log no walk reaches waits while the rest of the tree comes down, and gets one more
     try; three failed walks in a row give the rest of that tree up. Every pillar is cleared afterwards; the tree's
     drops are picked up all over its crown (the leaf under a drop caught in the canopy is broken so it falls), and
     `collect{replant:true}` plants a sapling of the same kind on the stump. `result.trees` counts felled trees,

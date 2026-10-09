@@ -11,6 +11,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -529,21 +530,35 @@ final class DigPathExecutor {
 		return false;
 	}
 
-	/** One attempt to place scaffold at {@code at}, sneaking, against a solid neighbour. Null when there is none to place. */
+	/**
+	 * One attempt to place scaffold at {@code at}, sneaking, against a solid neighbour. Null when there is none to place.
+	 * Scaffold the agent mines back with its drop goes first ({@link NavBlocks#minedBack}: dirt before cobblestone when
+	 * there is no pickaxe), since a felling job clears its pillars again.
+	 */
 	private @Nullable InteractionResult placeScaffold(final AgentPlayer agent, final BlockPos at) {
 		Inventory inv = agent.getInventory();
-		if (!NavBlocks.isScaffoldItem(agent.getMainHandItem())) {
+		ItemStack hand = agent.getMainHandItem();
+		if (!NavBlocks.isScaffoldItem(hand) || !NavBlocks.minedBack(inv, hand)) {
 			int slot = -1;
+			int fallback = -1;
 			for (int i = 0; i < Inventory.INVENTORY_SIZE; i++) {
-				if (NavBlocks.isScaffoldItem(inv.getItem(i))) {
-					slot = i;
-					break;
+				ItemStack s = inv.getItem(i);
+				if (NavBlocks.isScaffoldItem(s)) {
+					if (NavBlocks.minedBack(inv, s)) {
+						slot = i;
+						break;
+					}
+					if (fallback < 0) {
+						fallback = i;
+					}
 				}
 			}
-			if (slot < 0) {
-				return null;
+			if (slot < 0 && !NavBlocks.isScaffoldItem(hand)) {
+				slot = fallback;
 			}
-			AgentInventory.equip(agent, slot);
+			if (slot >= 0) {
+				AgentInventory.equip(agent, slot);
+			}
 			if (!NavBlocks.isScaffoldItem(agent.getMainHandItem())) {
 				return null;
 			}

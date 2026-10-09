@@ -426,7 +426,14 @@ public final class Miner {
 		if (!this.pillarBacklogDropped) {
 			this.pillarBacklogDropped = true;
 		} else if (!placed.isEmpty()) {
-			this.pillar.addAll(placed);
+			if (this.cleaning) {
+				// Built to reach a pillar block being cleared (the top of a climb's pillar, high above the ground): cleared
+				// after the rest. It is under the feet now, and mining it at once dropped the body off before it got
+				// there, again and again.
+				this.pillar.addAll(0, placed);
+			} else {
+				this.pillar.addAll(placed);
+			}
 			this.pillarsBuilt += placed.size();
 		}
 		if (this.target != null && !this.match.test(level.getBlockState(this.target))) {
@@ -623,6 +630,13 @@ public final class Miner {
 			c.descend();
 			return Tick.WORKING;
 		}
+		if ("off_column".equals(why) || "hurt".equals(why)) {
+			// Knocked off its column, or hurt on the way up: no fault of the log's. It may get a new climb (from another
+			// column, as high as the health allows now), within the tree's climbs.
+			this.climbTried.remove(t);
+			this.target = null;
+			return Tick.WORKING;
+		}
 		this.leftHigh(t);
 		return Tick.WORKING;
 	}
@@ -782,8 +796,19 @@ public final class Miner {
 				}
 				return Tick.WORKING;
 			}
-			if (!Walk.inReach(agent, top) && this.walk.toBlock(agent, top) == Walk.State.MOVING) {
-				return Tick.WORKING;
+			if (!Walk.inReach(agent, top)) {
+				Walk.State w = this.walk.toBlock(agent, top);
+				if (w == Walk.State.MOVING) {
+					return Tick.WORKING;
+				}
+				if (w == Walk.State.FAILED) {
+					// No walk reaches its top: the column stays whole (scaffold, which navigation may break later), rather
+					// than a block hanging in the air over the part that was cleared from below.
+					debug(agent, "pillar_left", "at", top.toShortString(), "why", this.walk.failure());
+					this.pillar.removeIf(p -> p.getX() == top.getX() && p.getZ() == top.getZ() && p.getY() <= top.getY());
+					this.choreTicks = 0;
+					return Tick.WORKING;
+				}
 			}
 			boolean broke = BlockOps.mineTick(agent, top);
 			if (broke || ++this.choreTicks > 20 * 20) {
@@ -975,14 +1000,18 @@ public final class Miner {
 	}
 
 	/**
-	 * The nearest drop worth fetching: a log the miner takes, or the sapling it will plant. Sticks, apples and other
-	 * saplings are left to the pickup reflex (chasing them through a crown breaks more leaves, which drop more).
+	 * The nearest drop worth fetching: a log the miner takes, the sapling it will plant, or dirt while holes dug for
+	 * scaffold wait to be filled (a pillar block's drop that bounced past the 3 blocks looked at when it was mined left a
+	 * hole open). Sticks, apples and other saplings are left to the pickup reflex (chasing them through a crown breaks
+	 * more leaves, which drop more).
 	 */
 	private @Nullable ItemEntity nextSweepItem(final AgentPlayer agent, final AABB box) {
 		Item plant = this.replantAt != null ? this.sapling : null;
+		boolean fill = !this.dug.isEmpty();
 		List<ItemEntity> items = agent.level().getEntitiesOfClass(ItemEntity.class, box,
 			e -> e.isAlive() && !this.sweepIgnored.contains(e) && Tossed.pickableBy(e, agent) && Inv.hasRoomFor(agent, e.getItem()) && safeToFetch(e)
-				&& (e.getItem().getItem() instanceof BlockItem b && this.match.test(b.getBlock().defaultBlockState()) || plant != null && e.getItem().is(plant)));
+				&& (e.getItem().getItem() instanceof BlockItem b && this.match.test(b.getBlock().defaultBlockState()) || plant != null && e.getItem().is(plant)
+					|| fill && TreeClimb.isDirtItem(e.getItem())));
 		return items.stream().min(Comparator.comparingDouble(e -> e.distanceToSqr(agent))).orElse(null);
 	}
 

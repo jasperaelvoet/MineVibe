@@ -119,9 +119,14 @@ What the agents know about the world around them, and what they must leave alone
     dug within 8 blocks when there is too little (never the stump's ground; the holes are filled again afterwards),
     leaves over the head cut on the way up, every log that comes into reach felled; then down the way a player comes
     down, mining the pillar from the top. At most 12 blocks above the ground at full health (health minus 8, so a fall
-    from the top is survived), never in water, beside lava or fire, or into a protected zone; at 8 health or less it
-    stops and comes down. A log higher than any climb reaches (or than a Tier-2 pillar, base + 7, without one) is
-    left at once (`logsLeftHigh`), with no search.
+    from the top is survived; the ground is the column's own, under any scaffold, never leaves), never in water, beside
+    lava or fire, or into a protected zone; at 8 health or less, or once a hit leaves it higher than its health allows
+    now, it stops and comes down. Scaffold is only what it mines back with the drop (`NavBlocks.minedBack`: dirt;
+    cobblestone and stone only with a pickaxe), and dirt is dug only while the bag has room for it (three digs that
+    brought nothing end the digging). Knocked off its column, the log gets a new climb, never on top of the old pillar.
+    A log higher than any climb reaches (or than a Tier-2 pillar, base + 7, without one) is left at once
+    (`logsLeftHigh`), with no search. A job cancelled, timed out or failed up there leaves the agent to the PillarDown
+    reflex.
   - A log no walk reaches is tried from a climb, else waits while the rest of the tree comes down and gets one more
     try at the end (a face may be open by then); three failed walks in a row, or six on one tree, give up the rest of
     that tree (each failed search costs 20 000 nodes).
@@ -141,7 +146,8 @@ What the agents know about the world around them, and what they must leave alone
 Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, Protect 80, SelfDefense 70, Eat 60,
 **FeedPlayer 55** (player food ≤ 12: toss food, every 15 s at most), **ShareFood 50** (a teammate at food
 ≤ 6 with nothing to eat), **UnseatToSurvive 47** (seated, food ≤ 6, no food), **UnseatToFight 45**
-(seated, hit by a hostile, HP < 50%), **Approach 40**, **Attend 38**, Job 35, **Shelter 30** (dusk, a home
+(seated, hit by a hostile, HP < 50%), **PillarDown 41** (no job, standing on agent scaffold with more than a
+3-block drop on every side: mines the pillar away under its feet), **Approach 40**, **Attend 38**, Job 35, **Shelter 30** (dusk, a home
 set, not following the player), **Pickup 25** (loose items within 6 blocks in sight), idle 10.
 A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect,
 SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47) or to fight (45). Approach reports `agent.event approach_blocked{why}` (`combat`,
@@ -169,7 +175,9 @@ only (`NavBlocks.mayBreak`: never a crew build, never the office, never a block 
 `Protection.check` protects), pillars and bridges with dirt or cobblestone from the bag (into empty cells or
 replaceable plants nobody placed, never inside a protected zone), and never digs straight down, opens a block next to
 water or lava, or takes a drop whose landing went away since the plan. Felling a tree, the miner clears the pillars
-Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay) and its own climbs'. It plans within 1.5 ms
+Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay) and its own climbs'
+(Tier-2 blocks placed to reach a high pillar's top are cleared after it; a top no walk reaches leaves its column
+whole). Tier 2 places scaffold it mines back with the drop first (dirt before cobblestone without a pickaxe). It plans within 1.5 ms
 per tick per agent. Its plans
 are logged as `[agent <id>] nav.dig {steps, breaks, places, nodes, ms}`; `mine` and `collect` results carry
 `unreachable` (targets given up on). With `MINEVIBE_NAV_DEBUG=1` (or `-Dminevibe.navDebug=true`) every failed walk logs

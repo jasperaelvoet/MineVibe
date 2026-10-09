@@ -51,9 +51,11 @@ a cliff-side office porch with no stairs down.
   column under or beside them (`no_column`) are left (`logsLeftHigh`; 2 of 86 targets in the polish runs). Once a
   pillar block found nothing to rest on (`pillar_failed`, `NO_SUPPORT`, seed `3207449953`, a column beside a
   branch); not reproduced, and the climb then gives that log up rather than retry.
-- **A climb knocked off its column leaves its pillar.** A mob's hit or a reflex that moves the agent ends the climb
-  (`off_column`); the chores clear the pillar only as far as a walk reaches its top (20 s per block), so a pillar
-  higher than that stays (noted as scaffold, so navigation may break it later).
+- **A climb knocked off its column leaves its pillar when no walk reaches its top.** A mob's hit or a reflex that
+  moves the agent ends the climb (`off_column`); since the review, the log gets a new climb beside the old pillar and
+  the cleanup reaches the old top from a short Tier-2 pillar (cleared after it). A top higher than a Tier-2 pillar
+  reaches (about 8 above the ground) leaves the whole column standing (`pillar_left`; noted as scaffold, so
+  navigation may break it later).
 - **The ground around a felled tree comes back as dirt, not grass** (grass spreads back over time), and a hole whose
   refill times out or whose dirt was lost stays open (`hole_left` with `MINEVIBE_NAV_DEBUG=1`; 1 of 10 holes in the
   final polish runs).
@@ -74,6 +76,28 @@ a cliff-side office porch with no stairs down.
   `Goals.nightOutside` reads `isDarkOutside()`, whose sky darkness only follows a clock change on the next tick, while
   the test world's saved clock (it keeps running from run to run) can stand at night when the batch starts. **Fix:**
   read the clock in `nightOutside`, or let the tests wait a tick before the approach.
+
+## Found in the gathering polish review (2026-10-09)
+Fixed in the review (ACCEPTANCE.md, "Gathering polish", review): an agent left on its pillar by a cancelled, timed out
+or failed job (no walk comes down: Tier 1 drops 3 blocks, Tier 2 never digs straight down) now comes down by the
+PillarDown reflex; the climb's fall limit followed the health only when planned (now while climbing), and was measured
+from whatever the agent stood on (leaves too); cobblestone scaffold was mined back by hand (lost, 10 s a block); a
+full bag dug every dirt block around (the drop stayed on the ground, each hole open); a knocked-off climb gave its log
+up, planned the next climb on top of the old pillar, and the cleanup mined the Tier-2 block under its own feet.
+Still open:
+- **A stranded agent at low health cannot flee.** On a pillar with no job, Flee (85) wins over PillarDown (41) once
+  HP is 6 or less and a hostile is near, and Flee's walk finds no way off (Tier 1). Mid-climb the job is preempted
+  the same way before its own retreat (8 HP) runs. **Fix:** let PillarDown (or Flee) come down a remembered pillar
+  first when stranded.
+- **PillarDown knows only scaffold remembered in memory.** `NavBlocks`' scaffold set is not saved: after a restart an
+  agent stranded on its pillar stays up there.
+- **A cancelled felling leaves its holes open.** Filling the holes dug for scaffold is a chore of the job; cancelled,
+  the dirt stays in the bag and the holes in the ground.
+- **The miner still clears other walks' cobblestone pillars by hand** when it has no pickaxe (Tier 2 now places dirt
+  first, but uses cobblestone when that is all it carries): that cobblestone is lost.
+- **`nav_fells_big_spruce_keeping_the_drops` left one hole open once** in seven runs during the review (the first,
+  before the sweep fetched dirt; not reproduced with `MINEVIBE_NAV_DEBUG=1`): a refill that timed out, or a pillar
+  block's dirt that bounced away. The sweep now fetches dirt while holes wait; watch this test.
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
 - **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku

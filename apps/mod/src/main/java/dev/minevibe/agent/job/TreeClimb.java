@@ -31,8 +31,14 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>Safety.</b> The pillar rises at most {@value #MAX_HEIGHT} blocks above the ground at full health, less when
  * hurt (a fall from the top must leave the agent alive: health minus 8), never in water or lava, beside lava or fire,
- * or into a protected zone. Below {@value #RETREAT_HEALTH} health it stops and comes down. Logs no climb can reach
- * (higher than the limit allows) are never searched for at all.
+ * or into a protected zone. The limit follows the health while climbing: hurt on the way up (a mob, an arrow), the
+ * climb comes down as soon as it stands higher than the limit allows now, and at {@value #RETREAT_HEALTH} health or
+ * less it always does. The ground a fall ends on is the column's real ground, under any scaffold, never leaves or a
+ * log. Logs no climb can reach (higher than the limit allows) are never searched for at all.
+ *
+ * <p><b>Scaffold</b> is only what the agent can mine back with its drop ({@link #climbScaffold}): dirt always, stone
+ * kinds only with a pickaxe that harvests them (cobblestone from the bag mined by hand would be gone, at 10 s a
+ * block). Dirt is dug only while the bag has room for it, and three digs that brought nothing end the digging.
  */
 final class TreeClimb {
 	/** What one tick of the climb came to. */
@@ -75,6 +81,8 @@ final class TreeClimb {
 	private final int z;
 	/** The feet cell the column starts at (the ground, or the top of the agent's own pillar). */
 	private final int start;
+	/** The feet height a fall off the column ends at: its ground, under any scaffold. */
+	private final int ground;
 	/** Highest feet height of this climb. */
 	private final int top;
 	/** Scaffold blocks the climb expects to place. */
@@ -95,14 +103,17 @@ final class TreeClimb {
 	private int gatherTicks;
 	private int gatherFails;
 	private int dropTicks;
+	/** Scaffold in the bag when the dig under way started: a dig that brought none counts as a failed one. */
+	private int gatherBefore;
 	private final Set<BlockPos> badDirt = new HashSet<>();
 
-	private TreeClimb(final Trees.Tree tree, final int x, final int z, final int start, final int top, final int blocks, final Walk walk,
-		final List<BlockPos> pillar, final List<BlockPos> dug, final List<BlockPos> cleared, final Runnable onPlaced) {
+	private TreeClimb(final Trees.Tree tree, final int x, final int z, final int start, final int ground, final int top, final int blocks,
+		final Walk walk, final List<BlockPos> pillar, final List<BlockPos> dug, final List<BlockPos> cleared, final Runnable onPlaced) {
 		this.tree = tree;
 		this.x = x;
 		this.z = z;
 		this.start = start;
+		this.ground = ground;
 		this.top = top;
 		this.blocks = blocks;
 		this.walk = walk;
@@ -123,6 +134,25 @@ final class TreeClimb {
 	/** How high a felling pillar may rise at {@code health}: at most {@value #MAX_HEIGHT}, health minus 8. */
 	static int limit(final float health) {
 		return Math.clamp((int)health - 8, 0, MAX_HEIGHT);
+	}
+
+	/** True if feet {@code height} blocks over the column's ground stand higher than a fall at {@code health} allows. */
+	static boolean tooHigh(final int height, final float health) {
+		return height > limit(health);
+	}
+
+	/**
+	 * Scaffold a climb builds with: a scaffold item whose block the agent mines back with its drop (dirt always; stone,
+	 * cobblestone and the like only with a pickaxe that harvests them). The pillar is mined away again, by hand when
+	 * there is no tool: cobblestone so mined drops nothing, and takes 10 s a block.
+	 */
+	static boolean climbScaffold(final AgentPlayer agent, final ItemStack stack) {
+		return NavBlocks.isScaffoldItem(stack) && NavBlocks.minedBack(agent.getInventory(), stack);
+	}
+
+	/** How much {@link #climbScaffold} the bag holds. */
+	static int climbScaffoldCount(final AgentPlayer agent) {
+		return Inv.count(agent, s -> climbScaffold(agent, s));
 	}
 
 	/** The highest log a climb from {@code ground} with {@code limit} can reach (from the column right under it). */
@@ -146,7 +176,7 @@ final class TreeClimb {
 
 	/** A climb that ended for this reason is over: the climb comes down, and the tree gets no more climbs for some. */
 	static boolean fatal(final @Nullable String why) {
-		return "low_health".equals(why) || "hazard".equals(why) || "off_column".equals(why) || "no_way".equals(why);
+		return "low_health".equals(why) || "hurt".equals(why) || "hazard".equals(why) || "off_column".equals(why) || "no_way".equals(why);
 	}
 
 	// ---------------------------------------------------------------- planning
@@ -167,6 +197,7 @@ final class TreeClimb {
 		int bestX = 0;
 		int bestZ = 0;
 		int bestStart = NONE;
+		int bestGround = 0;
 		int bestTop = 0;
 		double bestScore = Double.MAX_VALUE;
 		for (int dx = -1; dx <= 1; dx++) {
@@ -174,14 +205,21 @@ final class TreeClimb {
 				int cx = log.getX() + dx;
 				int cz = log.getZ() + dz;
 				double h = Math.sqrt(dx * dx + dz * dz);
-				boolean here = feet.getX() == cx && feet.getZ() == cz && Walk.settled(agent) && feet.getY() < log.getY();
-				int from = here ? feet.getY() : standY(level, cx, cz, log.getY() - 1, tree.base().getY());
+				// The column starts where a body stands on ground in it: its own pillar's top counts, leaves, a log or a block
+				// nobody knows do not (a climb from the canopy would measure its fall from the leaves, and they decay).
+				int from = standY(level, cx, cz, log.getY() - 1, tree.base().getY());
 				if (from == NONE) {
 					continue;
 				}
+				boolean here = feet.getX() == cx && feet.getZ() == cz && Walk.settled(agent) && feet.getY() == from && feet.getY() < log.getY();
 				int ground = from;
-				while (ground > level.getMinY() && pillar.contains(new BlockPos(cx, ground - 1, cz))) {
+				while (ground > level.getMinY() && onScaffold(level, pillar, new BlockPos(cx, ground - 1, cz))) {
 					ground--;
+				}
+				if (!here && from - ground > 1) {
+					// The top of a pillar the agent does not stand on (one a climb knocked off its column left): no walk gets up
+					// there.
+					continue;
 				}
 				int colTop = ground + limit;
 				int need = Math.max(from, minFeet(log, h));
@@ -196,6 +234,7 @@ final class TreeClimb {
 					bestX = cx;
 					bestZ = cz;
 					bestStart = from;
+					bestGround = ground;
 					bestTop = colTop;
 				}
 			}
@@ -214,7 +253,12 @@ final class TreeClimb {
 				}
 			}
 		}
-		return new TreeClimb(tree, bestX, bestZ, bestStart, bestTop, highest - bestStart, walk, pillar, dug, cleared, onPlaced);
+		return new TreeClimb(tree, bestX, bestZ, bestStart, bestGround, bestTop, highest - bestStart, walk, pillar, dug, cleared, onPlaced);
+	}
+
+	/** True if {@code p} is a pillar block: this job's, or any agent's scaffold. */
+	private static boolean onScaffold(final ServerLevel level, final List<BlockPos> pillar, final BlockPos p) {
+		return pillar.contains(p) || NavBlocks.isScaffold(level, p, level.getBlockState(p));
 	}
 
 	/**
@@ -286,7 +330,7 @@ final class TreeClimb {
 
 	/** The column, where it starts, how high it may go and the scaffold it brings (logs). */
 	String describe() {
-		return this.x + "," + this.z + " from y " + this.start + " top " + this.top + " blocks " + this.blocks;
+		return this.x + "," + this.z + " from y " + this.start + " ground " + this.ground + " top " + this.top + " blocks " + this.blocks;
 	}
 
 	/** The log over the head after {@link Result#HEAD_LOG}. */
@@ -382,7 +426,7 @@ final class TreeClimb {
 
 	private void toPhase(final AgentPlayer agent, final Phase next) {
 		Miner.debug(agent, "climb_phase", "phase", next, "at", agent.blockPosition().toShortString(), "scaffold",
-			NavBlocks.scaffoldCount(agent.getInventory()), "dug", this.dug.size());
+			climbScaffoldCount(agent), "dug", this.dug.size());
 		this.phase = next;
 	}
 
@@ -400,11 +444,16 @@ final class TreeClimb {
 			if (this.dropTicks-- > 0 && Miner.collectNear(agent, this.walk, at, 2.5, NavBlocks::isScaffoldItem)) {
 				return Result.WORKING;
 			}
+			if (climbScaffoldCount(agent) <= this.gatherBefore) {
+				// Its dirt never reached the bag (it rolled away, someone took it): one more hole for nothing.
+				this.gatherFails++;
+			}
 			this.gatherAt = null;
 			at = null;
 		}
 		if (at == null) {
-			if (NavBlocks.scaffoldCount(agent.getInventory()) >= this.blocks || this.gatherFails >= MAX_GATHER_FAILS) {
+			// No room in the bag for dirt: every block dug would be one more hole left open, the dirt on the ground.
+			if (climbScaffoldCount(agent) >= this.blocks || this.gatherFails >= MAX_GATHER_FAILS || !Inv.hasRoomFor(agent, new ItemStack(Items.DIRT))) {
 				this.toWalk(agent);
 				return Result.WORKING;
 			}
@@ -416,6 +465,7 @@ final class TreeClimb {
 			}
 			this.gatherAt = at;
 			this.gatherTicks = 0;
+			this.gatherBefore = climbScaffoldCount(agent);
 		}
 		if (++this.gatherTicks > 20 * 15) {
 			this.giveUpDirt(agent, at);
@@ -574,12 +624,22 @@ final class TreeClimb {
 			this.pillarFrom = null;
 			return this.stop("low_health");
 		}
-		if (this.pillarFrom != null) {
-			return this.pillarStep(agent);
-		}
 		BlockPos feet = feetCell(agent);
 		if (feet.getX() != this.x || feet.getZ() != this.z) {
+			// Knocked off (a hit, a reflex that moved the body), mid-jump too: no jumping on the spot for the 6 s a pillar
+			// step waits, giving the log up as out of reach.
+			agent.controls().setJumping(false);
+			this.pillarFrom = null;
 			return this.stop("off_column");
+		}
+		if (tooHigh(feet.getY() - this.ground, agent.getHealth())) {
+			// Hurt on the way up: a fall from here would cost more than the health now allows.
+			agent.controls().setJumping(false);
+			this.pillarFrom = null;
+			return this.stop("hurt");
+		}
+		if (this.pillarFrom != null) {
+			return this.pillarStep(agent);
 		}
 		if (!Walk.settled(agent)) {
 			return ++this.ticks > 60 ? this.stop("off_column") : Result.WORKING;
@@ -592,7 +652,7 @@ final class TreeClimb {
 		if (minFeet(log, Math.hypot(log.getX() - this.x, log.getZ() - this.z)) < feet.getY()) {
 			return this.stop("below");
 		}
-		if (feet.getY() >= this.top) {
+		if (feet.getY() >= Math.min(this.top, this.ground + limit(agent))) {
 			return this.stop("limit");
 		}
 		BlockPos head = feet.above(2);
@@ -616,7 +676,7 @@ final class TreeClimb {
 		if (OfficeService.protects(level, feet) || Protection.checkZoneCell(level, feet, agent.agentId()) != null) {
 			return this.stop("blocked");
 		}
-		if (NavBlocks.scaffoldCount(agent.getInventory()) == 0) {
+		if (climbScaffoldCount(agent) == 0) {
 			return this.stop("no_scaffold");
 		}
 		agent.controls().stopMining();
@@ -641,7 +701,7 @@ final class TreeClimb {
 			return Result.WORKING;
 		}
 		agent.controls().setJumping(false);
-		BlockOps.Place r = BlockOps.placeTick(agent, at, NavBlocks::isScaffoldItem);
+		BlockOps.Place r = BlockOps.placeTick(agent, at, s -> climbScaffold(agent, s));
 		if (r == BlockOps.Place.PLACED) {
 			// Scaffold: if it is ever left standing, navigation may break it again (never a crew build).
 			NavBlocks.noteScaffold(agent.level(), at);

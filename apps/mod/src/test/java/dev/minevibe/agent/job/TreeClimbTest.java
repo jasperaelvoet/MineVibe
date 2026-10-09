@@ -51,7 +51,26 @@ class TreeClimbTest {
 	}
 
 	@Test
+	void hurtOnTheWayUpIsTooHigh() {
+		// Full health: up to the limit, not past it.
+		assertFalse(TreeClimb.tooHigh(TreeClimb.MAX_HEIGHT, 20.0F));
+		assertTrue(TreeClimb.tooHigh(TreeClimb.MAX_HEIGHT + 1, 20.0F));
+		// Hurt to 10 at 4 blocks up: a fall would leave 9, more than health minus 8 (2) allows.
+		assertTrue(TreeClimb.tooHigh(4, 10.0F));
+		assertFalse(TreeClimb.tooHigh(2, 10.0F));
+		// On the ground nothing is too high, even at the retreat health.
+		assertFalse(TreeClimb.tooHigh(0, TreeClimb.RETREAT_HEALTH));
+		for (float hp = 9.0F; hp <= 20.0F; hp += 0.5F) {
+			for (int h = 0; h <= TreeClimb.MAX_HEIGHT + 2; h++) {
+				// Not too high means the fall (h - 3, from a jump's top h + 1.25 at most) leaves the agent alive.
+				assertTrue(TreeClimb.tooHigh(h, hp) || hp - Math.max(0.0, Math.ceil(h + 1.25 - 3.0)) > 0.0F, "health " + hp + " height " + h);
+			}
+		}
+	}
+
+	@Test
 	void fatalReasonsEndTheClimb() {
+		assertTrue(TreeClimb.fatal("hurt"));
 		assertTrue(TreeClimb.fatal("low_health"));
 		assertTrue(TreeClimb.fatal("hazard"));
 		assertTrue(TreeClimb.fatal("no_way"));

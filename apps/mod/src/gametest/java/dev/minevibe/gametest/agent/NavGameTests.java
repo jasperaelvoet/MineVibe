@@ -847,7 +847,147 @@ public final class NavGameTests {
 		List<BlockPos> logs = column(helper, 20, 1, 16, 9);
 		AgentPlayer agent = spawnAgent(helper, "Feller", AgentRole.MINER, 12, 1, 16);
 		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
-		this.fellAndCheck(helper, agent, "oak_log", logs, Blocks.OAK_LOG, Items.OAK_LOG, "nav_tall_oak");
+		this.fellAndCheck(helper, agent, "oak_log", logs, Blocks.OAK_LOG, Items.OAK_LOG, "nav_tall_oak", null);
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 3000)
+	public void navClimbBuildsOnlyWithScaffoldItMinesBack(final GameTestHelper helper) {
+		// The 9-log oak with cobblestone in the bag but no pickaxe (gathering polish review): mined by hand, cobblestone
+		// drops nothing and takes 10 s a block, so the climb digs dirt for its pillar and the cobblestone stays in the bag.
+		tree(helper, 20, 1, 16, 9);
+		List<BlockPos> logs = column(helper, 20, 1, 16, 9);
+		AgentPlayer agent = spawnAgent(helper, "Cobbler", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		agent.getInventory().setItem(1, new ItemStack(Items.COBBLESTONE, 16));
+		this.fellAndCheck(helper, agent, "oak_log", logs, Blocks.OAK_LOG, Items.OAK_LOG, "nav_tall_oak_cobble",
+			() -> helper.assertValueEqual(agent.getInventory().countItem(Items.COBBLESTONE), 16, "cobblestone kept"));
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 3000)
+	public void navFullBagDigsNoHoles(final GameTestHelper helper) {
+		// The 9-log oak with a bag that has room for logs but none for dirt (gathering polish review): every block dug for
+		// scaffold would drop on the ground and leave a hole, and the climb kept digging all the dirt around. Now it digs
+		// none: the low logs are felled, the high ones left (no scaffold), and the ground is whole.
+		tree(helper, 20, 1, 16, 9);
+		AgentPlayer agent = spawnAgent(helper, "Fullbag", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		agent.getInventory().setItem(1, new ItemStack(Items.OAK_LOG));
+		for (int slot = 2; slot < net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE; slot++) {
+			agent.getInventory().setItem(slot, new ItemStack(Items.STICK));
+		}
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("fullbag"), "mine", "{\"block\":\"oak_log\",\"count\":9,\"radius\":16}", 120_000);
+		AtomicInteger reported = new AtomicInteger();
+		helper.succeedWhen(() -> {
+			String s = status(r);
+			helper.assertTrue("done".equals(s) || "failed".equals(s), "still mining (" + s + ") at " + agent.blockPosition().toShortString());
+			if (reported.getAndIncrement() == 0) {
+				new AgentTestSupport.Report("nav_full_bag").add("status", s).add("result", result(r)).print();
+			}
+			helper.assertTrue(result(r).get("mined").getAsInt() >= 5, "the low logs felled: " + result(r));
+			for (int x = 4; x <= 32; x++) {
+				for (int z = 4; z <= 28; z++) {
+					helper.assertFalse(helper.getBlockState(new BlockPos(x, 0, z)).isAir(), "a hole dug at " + helper.absolutePos(new BlockPos(x, 0, z)).toShortString());
+				}
+			}
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 3000)
+	public void navCancelledClimbComesDown(final GameTestHelper helper) {
+		// A 14-log oak, dirt in the bag. The job is cancelled while the agent stands on its pillar high in the cut trunk
+		// (gathering polish review): the job that would have come down is gone, and no walk comes down a pillar (Tier 1
+		// drops 3 blocks at most, Tier 2 never digs straight down). The PillarDown reflex mines it away under the feet:
+		// the agent ends on the ground, unhurt, and no scaffold is left.
+		tree(helper, 20, 1, 16, 14);
+		AgentPlayer agent = spawnAgent(helper, "Stranded", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 16));
+		int base = helper.absolutePos(BlockPos.ZERO).getY();
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("stranded"), "collect", "{\"item\":\"oak_log\",\"count\":14,\"radius\":16}",
+			120_000);
+		AtomicReference<Float> lowest = new AtomicReference<>(agent.getHealth());
+		helper.startSequence().thenExecuteFor(3000, () -> lowest.set(Math.min(lowest.get(), agent.getHealth())));
+		AtomicInteger cancelledAt = new AtomicInteger(-1);
+		helper.startSequence()
+			.thenWaitUntil(() -> {
+				helper.assertTrue(agent.onGround() && agent.getBlockY() - base >= 6, "climbing, at " + agent.blockPosition().toShortString());
+				BlockPos under = agent.blockPosition().below();
+				helper.assertTrue(NavBlocks.isScaffold(helper.getLevel(), under, helper.getLevel().getBlockState(under)), "on the pillar");
+			})
+			.thenExecute(() -> {
+				cancelledAt.set(agent.getBlockY() - base);
+				agent.jobs().cancel();
+			})
+			.thenWaitUntil(() -> {
+				helper.assertTrue(agent.onGround() && agent.getBlockY() - base == 1, "coming down, at " + agent.blockPosition().toShortString());
+				for (int y = 1; y <= 14; y++) {
+					helper.assertFalse(helper.getBlockState(new BlockPos(20, y, 16)).is(Blocks.DIRT), "scaffold left at y " + y);
+				}
+			})
+			.thenExecute(() -> {
+				new AgentTestSupport.Report("nav_cancelled_climb").add("cancelled_at", cancelledAt.get()).add("status", status(r))
+					.add("hp_min", lowest.get()).print();
+				helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "hurt: hp " + lowest.get());
+				helper.assertFalse(agent.jobs().hasJob(), "no job");
+			})
+			.thenSucceed();
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 3000)
+	public void navHurtClimbComesDown(final GameTestHelper helper) {
+		// The 14-log oak again; once the agent stands 4 blocks up its pillar its health drops to 10 (an arrow, say), and no
+		// food heals it. A fall from 4 would leave it at 9: more than the climb allows now (health minus 8 is 2). It must
+		// not climb any higher, and must come down to 2 blocks over the ground or less (gathering polish review: the limit
+		// was only checked when the climb was planned).
+		tree(helper, 20, 1, 16, 14);
+		AgentPlayer agent = spawnAgent(helper, "Hurtclimb", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 16));
+		int ground = helper.absolutePos(BlockPos.ZERO).getY() + 1;
+		run(helper, agent, jobId("hurtclimb"), "collect", "{\"item\":\"oak_log\",\"count\":14,\"radius\":16}", 120_000);
+		AtomicInteger hurtAt = new AtomicInteger(-1);
+		AtomicInteger highest = new AtomicInteger(Integer.MIN_VALUE);
+		AtomicInteger lowestAfter = new AtomicInteger(Integer.MAX_VALUE);
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(agent.onGround() && agent.getBlockY() - ground >= 4, "climbing, at " + agent.blockPosition().toShortString()))
+			.thenExecute(() -> {
+				hurtAt.set(agent.getBlockY() - ground);
+				agent.getFoodData().setFoodLevel(17);
+				agent.getFoodData().setSaturation(0.0F);
+				agent.setHealth(10.0F);
+			})
+			.thenExecuteFor(200, () -> {
+				int h = agent.getBlockY() - ground;
+				// A jump in flight still reads one block up.
+				highest.set(Math.max(highest.get(), agent.onGround() ? h : h - 1));
+				lowestAfter.set(Math.min(lowestAfter.get(), h));
+			})
+			.thenExecute(() -> {
+				new AgentTestSupport.Report("nav_hurt_climb").add("hurt_at", hurtAt.get()).add("highest_after", highest.get())
+					.add("lowest_after", lowestAfter.get()).add("hp", agent.getHealth()).print();
+				helper.assertTrue(agent.isAlive(), "alive");
+				helper.assertTrue(highest.get() <= hurtAt.get(), "climbed on after the hurt: " + highest.get() + " over " + hurtAt.get());
+				helper.assertTrue(lowestAfter.get() <= 2, "came down only to " + lowestAfter.get());
+			})
+			.thenSucceed();
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 4000)
+	public void navClimbKnockedOffItsColumn(final GameTestHelper helper) {
+		// The 14-log oak; with the agent 8 blocks up its pillar in the cut trunk, a hit knocks it off onto the ground
+		// (gathering polish review). The climb ends (no 6 s of jumping on the spot); the next climb is not planned on top
+		// of the old pillar, which no walk reaches, but beside the trunk; the rest of the tree comes down; and the old
+		// pillar, whose top is out of reach from the ground, is cleared from a short Tier-2 pillar beside it.
+		tree(helper, 20, 1, 16, 14);
+		List<BlockPos> logs = column(helper, 20, 1, 16, 14);
+		AgentPlayer agent = spawnAgent(helper, "Knocked", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		agent.getInventory().setItem(8, new ItemStack(Items.DIRT, 32));
+		int ground = helper.absolutePos(BlockPos.ZERO).getY() + 1;
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(agent.getBlockY() - ground >= 7, "climbing, at " + agent.blockPosition().toShortString()))
+			.thenExecute(() -> agent.teleportTo(agent.getX() - 6.0, ground, agent.getZ()));
+		this.fellAndCheck(helper, agent, "oak_log", logs, Blocks.OAK_LOG, Items.OAK_LOG, "nav_knocked_off", null);
 	}
 
 	@GameTest(environment = NAV, structure = FIELD, maxTicks = 6000)
@@ -874,7 +1014,7 @@ public final class NavGameTests {
 		}
 		AgentPlayer agent = spawnAgent(helper, "Spruce", AgentRole.MINER, 12, 1, 16);
 		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
-		this.fellAndCheck(helper, agent, "spruce_log", logs, Blocks.SPRUCE_LOG, Items.SPRUCE_LOG, "nav_big_spruce");
+		this.fellAndCheck(helper, agent, "spruce_log", logs, Blocks.SPRUCE_LOG, Items.SPRUCE_LOG, "nav_big_spruce", null);
 	}
 
 	@GameTest(environment = NAV, structure = FIELD, maxTicks = 4000)
@@ -919,10 +1059,10 @@ public final class NavGameTests {
 
 	/**
 	 * Fells the tree of {@code logs} with {@code collect} and checks the whole tree came down, at least 90% of the logs
-	 * were kept, the pillar and the holes dug for its scaffold are gone, and nobody got hurt.
+	 * were kept, the pillar and the holes dug for its scaffold are gone, and nobody got hurt; then {@code more}, if any.
 	 */
 	private void fellAndCheck(final GameTestHelper helper, final AgentPlayer agent, final String item, final List<BlockPos> logs, final Block logBlock,
-		final net.minecraft.world.item.Item logItem, final String name) {
+		final net.minecraft.world.item.Item logItem, final String name, final @org.jspecify.annotations.Nullable Runnable more) {
 		long start = helper.getTick();
 		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId(name), "collect",
 			"{\"item\":\"" + item + "\",\"count\":" + logs.size() + ",\"radius\":16}", 120_000);
@@ -971,6 +1111,9 @@ public final class NavGameTests {
 				}
 			}
 			helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "hurt: hp " + lowest.get());
+			if (more != null) {
+				more.run();
+			}
 		});
 	}
 

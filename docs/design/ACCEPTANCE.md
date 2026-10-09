@@ -296,7 +296,7 @@ node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripte
   solid ceiling. Dirt is now dug only at the surface, one block deep, on solid ground, never a hole's floor, and the
   sweep fetches no drop under the ground or in roofed water (the Tier-2 side is in DEBT).
 
-**GameTests** (`NavGameTests`, 33 now): a 9-log oak felled whole with nothing but an axe in the bag (dirt dug, 3
+**GameTests** (`NavGameTests`, 33 then, 38 after the review below): a 9-log oak felled whole with nothing but an axe in the bag (dirt dug, 3
 pillar blocks in the cut trunk, 9 of 9 kept, 350 ticks, holes filled, no scaffold left); a 2x2 spruce 12 high (48
 logs, 7 pillar blocks, 48 of 48 kept, about 1 140 ticks); an 8-log oak whose branch end over an obsidian block no walk
 reaches (the rest of the tree comes down, and the blocked log on the retry, with the dug dirt as a Tier-2 pillar: 15
@@ -306,3 +306,20 @@ up unhurt, the office unchanged). The regression suites pass: all 156 server Gam
 change does not touch: DEBT); `TreeClimbTest` (4 unit tests) for the climb's numbers.
 
 **Cleanup.** Every run removed its own PC instance; no game, node or VM process is left.
+
+**Review (same day).** An adversarial review of the polish found an agent left stranded on its pillar when the
+felling job ended up there (cancelled, replaced, timed out, failed: no walk comes down a pillar), the fall limit
+checked only when a climb was planned and measured from whatever the agent stood on, cobblestone scaffold mined back
+by hand (lost), a full bag digging every dirt block around, and a knocked-off climb giving its log up and planning
+the next climb on top of its old pillar. Fixed (DEBT, "Found in the gathering polish review", for what stays open),
+each with a GameTest that fails on the polish commit and passes now (`NavGameTests`, 38):
+
+| GameTest | What it shows | Numbers (4 full runs) |
+| --- | --- | --- |
+| `nav_cancelled_climb_comes_down` | 14-log oak, job cancelled 5 blocks up the pillar: the PillarDown reflex (41) mines it away | down to the ground, unhurt, no scaffold left |
+| `nav_hurt_climb_comes_down` | health set to 10 four blocks up (limit now 2) | never higher than 4, down to the ground |
+| `nav_climb_builds_only_with_scaffold_it_mines_back` | 9-log oak, 16 cobblestone and no pickaxe | dirt dug, 9 of 9 kept, 16 cobblestone kept, 351-378 ticks |
+| `nav_full_bag_digs_no_holes` | 9-log oak, bag with room for logs only | no hole dug; 6 low logs felled, 3 left high |
+| `nav_climb_knocked_off_its_column` | 14-log oak, agent moved off its pillar 7 up | new climb beside it, 14 of 14 kept, old pillar cleared from a 1-block Tier-2 pillar, 720-737 ticks |
+
+All 161 server GameTests passed in four full runs after the fixes, and the 423 unit tests (`TreeClimbTest`: 5).
