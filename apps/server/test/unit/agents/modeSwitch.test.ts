@@ -4,6 +4,9 @@
  * Kick, damage, survival, PC down, death, meetings, away-from-seat, the re-sit debounce and compaction.
  */
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { UnseatReason } from '@minevibe/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolObservation } from '../../../src/agents/AgentManager.js';
@@ -282,6 +285,38 @@ describe('mode switch at the turn boundary', () => {
       kind: 'denied',
       reason: expect.stringMatching(/mcp__mc__items is not available in PC mode.*only observe, say/),
     });
+  });
+
+  it('a reopened crew seated by the mod (worker restart): PC mode first, then Minecraft mode after standing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mv-modes-'));
+    try {
+      const first = await createHarness({ dir });
+      await first.manager.openWorld({ worldId: 'w1', gen: 1 });
+      await first.cleanup();
+      h = await createHarness({ dir, swapDebounceMs: 0 });
+      const w = h;
+      await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+      const id = w.manager.listAgents()[0]?.agentId ?? '';
+      const q = w.query(0);
+      q.init();
+      const log = recorder(q);
+      expect(w.texts(q).some((t) => t.includes('WELCOME'))).toBe(false);
+      w.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: 0 });
+      await w.until(() => log.includes('flags:claude-opus-5-5/medium'), 'upswap');
+      const nonce = w.manager.brain(id)?.record.nonce ?? '';
+      await wake(w, q, 'stand up when done');
+      expect(lastText(w, q).startsWith(modeLine(nonce, 'PC mode'))).toBe(true);
+      expect((await q.callTool('mcp__pc__bash', { command: 'ls' })).kind).toBe('allowed');
+      expect((await q.callTool('mcp__mc__stand_up', {})).kind).toBe('allowed');
+      q.result();
+      await w.until(() => log.includes('flags:claude-haiku-5-5/xhigh'), 'downswap');
+      await wake(w, q, 'back outside');
+      expect(lastText(w, q).startsWith(modeLine(nonce, 'Minecraft mode'))).toBe(true);
+    } finally {
+      await h?.cleanup();
+      h = null;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('a compaction makes the next turn announce the mode again', async () => {
