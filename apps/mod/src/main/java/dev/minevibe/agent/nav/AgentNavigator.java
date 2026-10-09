@@ -60,6 +60,8 @@ public final class AgentNavigator {
 	private static final int STUCK_TICKS = 30;
 	private static final int MAX_FRUITLESS_SEGMENTS = 4;
 	private static final int MAX_DIG_REPLANS = 8;
+	/** Ticks a "reach a block" arrival may spend stepping to the middle of its cell before it arrives anyway. */
+	private static final int MAX_SETTLE_TICKS = 30;
 
 	private final AgentPlayer agent;
 	private final WalkNodeEvaluator evaluator = new WalkNodeEvaluator();
@@ -84,6 +86,9 @@ public final class AgentNavigator {
 	private final DigPathExecutor digExecutor = new DigPathExecutor(this.digDoors, this.forbidden);
 	private int digReplans;
 	private int digWaitTicks;
+	/** "Reach a block": the goal cell the body steps to the middle of while its hands do not reach yet ({@link #settle}). */
+	private @Nullable BlockPos settleCell;
+	private int settleTicks;
 	private @Nullable DigPath lastDigPath;
 	private int digPlans;
 	private int digNodes;
@@ -253,6 +258,7 @@ public final class AgentNavigator {
 		}
 		this.planner = null;
 		this.digGoal = null;
+		this.settleCell = null;
 	}
 
 	/** True while Tier 2 (dig planner) drives the agent. */
@@ -424,7 +430,23 @@ public final class AgentNavigator {
 
 	// ---------------------------------------------------------------- tier 2
 
+	/**
+	 * True once the goal is met where the body stands. Goals are tested on the feet cell by its middle, but the body can
+	 * stand anywhere in its cell: it enters the last cell of a path on the side away from a block it walks toward. So a
+	 * "reach a block" goal also needs the block in hand reach; arriving half a block short left the miner's walk
+	 * {@code out_of_reach} (seed 1350113924: a tree on a 2-block bank given up whole, the next tree called unreachable
+	 * 4 blocks away).
+	 */
 	private boolean digArrived() {
+		DigGoal g = this.digGoal;
+		if (g == null || !this.digCellReached()) {
+			return false;
+		}
+		return !(g instanceof DigGoal.Block b) || this.inHandReach(b.target());
+	}
+
+	/** True if the body stands (or swims, climbs) in a cell that fulfils the goal, tested by the cell's middle. */
+	private boolean digCellReached() {
 		DigGoal g = this.digGoal;
 		if (g == null) {
 			return false;
@@ -433,9 +455,53 @@ public final class AgentNavigator {
 		return settled && g.satisfiedAt(this.agent.level(), this.agent.blockPosition());
 	}
 
+	/** The path is walked out (or there was none to walk): arrive, or step to the middle of the goal cell first. */
+	private void arriveOrSettle() {
+		if (this.digArrived() || !this.digCellReached()) {
+			this.arrive();
+			return;
+		}
+		this.settleCell = this.agent.blockPosition();
+		this.settleTicks = 0;
+	}
+
+	/**
+	 * Steps to the middle of the goal cell, crouched (never off its edge), until the block is in hand reach: from there
+	 * the eyes are within the plan's {@value #PLAN_REACH} of it. Arrives anyway after {@value #MAX_SETTLE_TICKS} ticks
+	 * (the caller checks the reach itself); a body pushed out of the cell (a current) plans again, which counts as a
+	 * re-plan ({@value #MAX_DIG_REPLANS} at most).
+	 */
+	private void settle() {
+		BlockPos cell = this.settleCell;
+		var controls = this.agent.controls();
+		if (cell == null || !this.agent.blockPosition().equals(cell)) {
+			this.settleCell = null;
+			controls.stopMovement();
+			this.digReplan("pushed_off_goal");
+			return;
+		}
+		Vec3 middle = Vec3.atBottomCenterOf(cell);
+		double hd = Math.hypot(middle.x - this.agent.getX(), middle.z - this.agent.getZ());
+		if (hd <= 0.1 || ++this.settleTicks > MAX_SETTLE_TICKS) {
+			this.arrive();
+			return;
+		}
+		controls.look(controls.yawTo(middle), 10.0F);
+		controls.setStrafe(0.0F);
+		controls.setSprinting(false);
+		if (!this.agent.isShiftKeyDown()) {
+			controls.setSneaking(true);
+		}
+		controls.setForward(hd > 0.3 ? 1.0F : 0.5F);
+	}
+
 	private void tickTier2() {
 		if (this.digArrived()) {
 			this.arrive();
+			return;
+		}
+		if (this.settleCell != null) {
+			this.settle();
 			return;
 		}
 		if (this.planner == null && !this.digExecutor.hasPath()) {
@@ -473,7 +539,7 @@ public final class AgentNavigator {
 			DigPath path = p.path();
 			this.lastDigPath = path;
 			if (path == null || path.isEmpty()) {
-				this.arrive();
+				this.arriveOrSettle();
 				return;
 			}
 			AgentEvents.emit(this.agent, "nav.dig", Map.of(
@@ -496,8 +562,8 @@ public final class AgentNavigator {
 			}
 			case DONE -> {
 				boolean settled = this.agent.onGround() || this.agent.isInWater() || this.agent.onClimbable();
-				if (this.digArrived()) {
-					this.arrive();
+				if (this.digCellReached()) {
+					this.arriveOrSettle();
 				} else if (settled || ++this.digWaitTicks >= 40) {
 					// Landed (or never will) somewhere that is not the goal after all: plan again from here.
 					this.digWaitTicks = 0;

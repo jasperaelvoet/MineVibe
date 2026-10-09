@@ -136,7 +136,7 @@ Jobs walk through `dev.minevibe.agent.job.Walk`, which drives `dev.minevibe.agen
 
 | Walk call | Used by | Navigation |
 |---|---|---|
-| `toMine(block)` | `mine`, `collect` (`Miner`) | Tier 2 straight away: a cell with the block in hand reach and a face open toward the eyes, beside, above or below it, never standing on it |
+| `toMine(block)` | `mine`, `collect` (`Miner`) | Tier 2 straight away: a cell with the block in hand reach and a face open toward the eyes, beside, above or below it, never standing on it. Cells are planned by their middle (3.75 blocks), so it arrives only once the eyes are within 4.0 of the block, stepping to the middle of the last cell (crouched) when it entered at the far edge |
 | `toTrunk(log)` | (for tree jobs) | Tier 2: any standable cell next to the trunk, at any height a pillar reaches |
 | `toBlock(block)` | `craft`, `place`, `use_block`, `build`, `farm`, menus | Tier 1, then Tier 2 if it finds no way |
 | `toDig(point)` | `goto` (`pos`, places) | Tier 1, then Tier 2 if it finds no way |

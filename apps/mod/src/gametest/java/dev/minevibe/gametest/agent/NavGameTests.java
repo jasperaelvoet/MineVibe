@@ -10,6 +10,7 @@ import static dev.minevibe.gametest.agent.SkillTestSupport.status;
 import dev.minevibe.agent.AgentEvents;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.AgentRole;
+import dev.minevibe.agent.job.Walk;
 import dev.minevibe.agent.nav.AgentNavigator;
 import dev.minevibe.agent.nav.DigGoal;
 import dev.minevibe.agent.nav.DigPath;
@@ -461,6 +462,39 @@ public final class NavGameTests {
 	}
 
 	@GameTest(environment = NAV, structure = FIELD, maxTicks = 400)
+	public void navReachBlockArrivesInHandReach(final GameTestHelper helper) {
+		// Seed 1350113924's tree on a bank, as a block: up a 1-wide glass corridor (z=16) toward a block 3 ahead, 2 to the
+		// side and 2 up. The first cell whose middle is in plan reach (x=17, 3.71 blocks) is entered on its far edge, 4.1
+		// blocks from the block: "reach a block" must not arrive there, but in hand reach.
+		corridor(helper);
+		BlockPos rel = new BlockPos(20, 3, 18);
+		helper.setBlock(rel, Blocks.OAK_LOG);
+		BlockPos block = helper.absolutePos(rel);
+		AgentPlayer agent = spawnAgent(helper, "Reacher", AgentRole.MINER, 4, 1, 16);
+		agent.brain().setEnabled(false);
+		agent.navigator().reachBlock(block);
+		helper.succeedWhen(() -> {
+			AgentNavigator nav = agent.navigator();
+			helper.assertTrue(nav.status() != AgentNavigator.Status.FAILED, "reach failed: " + nav.failureReason());
+			helper.assertTrue(nav.status() == AgentNavigator.Status.ARRIVED, "walking, at " + agent.blockPosition().toShortString());
+			double eyes = agent.getEyePosition().distanceTo(Vec3.atCenterOf(block));
+			helper.assertTrue(Walk.inReach(agent, block), String.format(Locale.ROOT, "arrived %.2f blocks from it (hand reach %.1f), at %.2f %.2f %.2f",
+				eyes, Walk.BLOCK_REACH, agent.getX(), agent.getY(), agent.getZ()));
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 1600)
+	public void navTreeOnLowBankMined(final GameTestHelper helper) {
+		// The same, as a tree: it stands on a 2-high dirt bank beyond the corridor's wall. An arrival short of its base log
+		// (walk out_of_reach) gave the whole tree up: no walk led there, so it counted as unreachable.
+		corridor(helper);
+		fill(helper, 0, 1, 18, 32, 2, 32, Blocks.DIRT);
+		tree(helper, 20, 3, 18, 5);
+		AgentPlayer agent = spawnAgent(helper, "Banker", AgentRole.MINER, 4, 1, 16);
+		this.mineAndCheck(helper, agent, 2, "nav_low_bank", nav -> true, "mined from the corridor");
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 400)
 	public void navUnreachableFailsCleanly(final GameTestHelper helper) {
 		// The tree is sealed in a box of planks, cobblestone and glass: nothing natural leads there, so Tier 2 must give up
 		// cleanly (nav.failed no_path) without breaking a single block of the box.
@@ -872,6 +906,12 @@ public final class NavGameTests {
 				}
 			}
 		}
+	}
+
+	/** A 1-wide corridor along x at z=16 (x 2..24): 2-high glass walls at z=15 and z=17, open at both ends. */
+	static void corridor(final GameTestHelper helper) {
+		fill(helper, 2, 1, 15, 24, 2, 15, Blocks.GLASS);
+		fill(helper, 2, 1, 17, 24, 2, 17, Blocks.GLASS);
 	}
 
 	/** An oak: a {@code height}-log trunk from {@code y}, a two-layer crown of natural leaves around its top. */
