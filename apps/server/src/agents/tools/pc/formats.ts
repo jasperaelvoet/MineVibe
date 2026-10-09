@@ -286,3 +286,29 @@ export const invalidZoom = (w: number, h: number) =>
 export const NOT_SEATED =
   'Not seated at a PC (or your seat changed). Walk to a PC and call mcp__mc__sit_at_pc.';
 export const MIRROR_KEEP = '(MineVibe shell mirror; leave it open)';
+
+/** What a host path in a PC error turns into: the agent's PC does not have it. */
+export const HOST_PATH = '<MineVibe host path>';
+
+/**
+ * Paths on MineVibe's host in a PC-layer error (a socket, a temp file, the app's own folders) become {@link HOST_PATH}:
+ * the seated agent would look for them in its PC. Paths inside `keep` (the PC's Vault folders, the same path in the
+ * guest) and the guest's own paths stay.
+ */
+export function redactHostPaths(text: string, roots: readonly string[], keep: readonly string[]): string {
+  const longestFirst = (list: readonly string[]) =>
+    [...new Set(list)].filter((p) => p.length > 1).sort((a, b) => b.length - a.length);
+  const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // The Vault folders stay: set aside first (a root such as the home folder may contain them).
+  const kept: string[] = [];
+  let out = text;
+  for (const k of longestFirst(keep)) out = out.split(k).join(`⟦vault ${kept.push(k) - 1}⟧`);
+  // Each root with the rest of its path, longest root first (one with a space, like Application Support, whole).
+  for (const r of longestFirst(roots)) {
+    out = out.replace(
+      new RegExp(`${literal(r)}(?![^/\\s'"\`,;()<>[\\]])[^\\s'"\`,;()<>[\\]]*`, 'g'),
+      HOST_PATH,
+    );
+  }
+  return out.replace(/⟦vault (\d+)⟧/g, (_, i: string) => kept[Number(i)] ?? '');
+}

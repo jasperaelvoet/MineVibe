@@ -23,6 +23,7 @@ import { PlanCapture } from '../../../src/agents/PlanCapture.js';
 import { HOST_PATHS_RULE, kickoffMessage, pcPrimer } from '../../../src/agents/prompts/kickoff.js';
 import { personaPrompt } from '../../../src/agents/prompts/persona.js';
 import { hintFor } from '../../../src/agents/tools/format.js';
+import { HOST_PATH, redactHostPaths } from '../../../src/agents/tools/pc/formats.js';
 import { IMAGE_NOTE } from '../../../src/agents/tools/pc/gui.js';
 import { pcToolDefinitions } from '../../../src/agents/tools/pcServer.js';
 import { FakePcApi } from '../../../src/contracts/FakePcApi.js';
@@ -216,6 +217,44 @@ describe('(c) host paths never reach the PC agent', () => {
       expect(defs.find((d) => d.name === name)?.description, name).toContain(IMAGE_NOTE);
     }
   }, 60_000);
+
+  it("a failure on MineVibe's side names no host path; the Vault folders (the same path in the guest) stay", async () => {
+    const vault = join(homedir(), 'Code', 'foo');
+    const socket = join(homedir(), 'Library', 'Application Support', 'MineVibe', 'run', 'spacesd.sock');
+    class BrokenPc extends FakePcApi {
+      override async info(pcId: string) {
+        return { ...(await super.info(pcId)), mounts: [{ hostPath: vault, mode: 'rw' as const }] };
+      }
+      override async exec(): Promise<never> {
+        throw new Error(
+          `connect ENOENT ${socket} (cwd ${vault}/src, scratch ${join(tmpdir(), 'mv-1', 'x')})`,
+        );
+      }
+    }
+    const defs = pcToolDefinitions({
+      agentId: 'ada',
+      pcs: new BrokenPc([{ pcId: 'linux-1' }]),
+      plans: new PlanCapture([]),
+      handoffs: new HandoffNotes(join(mkdtempSync(join(tmpdir(), 'mv-polish-')), 'h')),
+      access: () => ({ pcId: 'linux-1', epoch: 1 }),
+      authorName: () => 'Ada',
+    });
+    const bash = defs.find((d) => d.name === 'bash');
+    const res = (await bash?.handler({ command: 'ls' }, {})) as {
+      content: { text?: string }[];
+      isError?: boolean;
+    };
+    const text = res.content.map((b) => b.text ?? '').join('\n');
+    expect(res.isError).toBe(true);
+    expect(text).toBe(`Error: connect ENOENT ${HOST_PATH} (cwd ${vault}/src, scratch ${HOST_PATH})`);
+    expect(redactHostPaths('/home/cua/repo and /tmp/x', ['/tmp'], [])).toBe(
+      `/home/cua/repo and ${HOST_PATH}`,
+    );
+    // Only whole folders: another folder that starts with the same letters is not the root.
+    expect(redactHostPaths('/Users/janet/x, /Users/jan/y', ['/Users/jan'], [])).toBe(
+      `/Users/janet/x, ${HOST_PATH}`,
+    );
+  });
 });
 
 describe('(d) consent for right-clicks and menu clicks', () => {
