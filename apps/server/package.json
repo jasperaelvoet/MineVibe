@@ -18,7 +18,8 @@
     "dev": "node --conditions=source --import tsx src/main.ts dev",
     "doctor": "node --conditions=source --import tsx src/main.ts doctor",
     "play": "node --conditions=source --import tsx src/main.ts play",
-    "eval:world": "node --conditions=source --import tsx scripts/eval-world.ts"
+    "eval:world": "node --conditions=source --import tsx scripts/eval-world.ts",
+    "measure:mc-tools": "node --conditions=source --import tsx scripts/measure-mc-tools.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.293",

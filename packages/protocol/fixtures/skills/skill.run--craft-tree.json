@@ -1,0 +1,16 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-36",
+  "jobId": "job-42",
+  "agentId": "ada",
+  "skill": "craft",
+  "args": {
+    "item": "iron_pickaxe",
+    "count": 1,
+    "tree": true,
+    "gather_missing": true
+  },
+  "waitMs": 20000,
+  "replace": true
+}

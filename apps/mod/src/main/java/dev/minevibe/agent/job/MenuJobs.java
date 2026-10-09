@@ -67,13 +67,15 @@ public final class MenuJobs {
 
 	/** {@code container{pos, action: list|put|take, item?, count?}}: look into, fill or empty a chest (barrel, shulker...). */
 	public static final class Container extends SkillJob {
-		private final BlockPos pos;
+		/** {@code container} without {@code pos} (cap {@code container.nearest}): the nearest chest or barrel this close. */
+		public static final int NEAREST_RADIUS = 24;
+		private @Nullable BlockPos pos;
 		private final String action;
 		private final Refs.@Nullable ItemMatcher item;
 		private final int count;
 		private final Opener opener = new Opener();
 
-		public Container(final BlockPos pos, final String action, final Refs.@Nullable ItemMatcher item, final int count) {
+		public Container(final @Nullable BlockPos pos, final String action, final Refs.@Nullable ItemMatcher item, final int count) {
 			super("container");
 			this.pos = pos;
 			this.action = action;
@@ -100,6 +102,18 @@ public final class MenuJobs {
 
 		@Override
 		protected Status step(final AgentPlayer agent) {
+			if (this.pos == null) {
+				List<BlockPos> found = BlockScan.nearest(agent.level(), agent.blockPosition(), NEAREST_RADIUS,
+					st -> st.is(net.minecraft.world.level.block.Blocks.CHEST) || st.is(net.minecraft.world.level.block.Blocks.TRAPPED_CHEST)
+						|| st.is(net.minecraft.world.level.block.Blocks.BARREL), p -> true, 1);
+				if (found.isEmpty()) {
+					return this.fail("NOT_FOUND", "no chest or barrel within " + NEAREST_RADIUS + " blocks: give the container's position");
+				}
+				this.pos = found.getFirst();
+			}
+			if (!this.result.has("pos")) {
+				this.put("pos", this.pos);
+			}
 			if (agent.level().getBlockState(this.pos).isAir()) {
 				return this.fail("NOT_FOUND", "no container at " + this.pos.toShortString());
 			}

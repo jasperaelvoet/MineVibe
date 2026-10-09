@@ -149,6 +149,65 @@ public final class Recipes {
 		return o;
 	}
 
+	/**
+	 * The server's recipes as a {@link RecipeTree.Book} (cached per item: the planner asks for the same items many times
+	 * during its dry runs). One per plan; recipes do not change while a job plans.
+	 */
+	public static RecipeTree.Book book(final ServerLevel level) {
+		Map<Item, List<RecipeTree.CraftOption>> crafts = new java.util.HashMap<>();
+		Map<Item, List<RecipeTree.SmeltOption>> smelts = new java.util.HashMap<>();
+		return new RecipeTree.Book() {
+			@Override
+			public List<RecipeTree.CraftOption> crafting(final Item item) {
+				return crafts.computeIfAbsent(item, it -> {
+					List<RecipeTree.CraftOption> out = new ArrayList<>();
+					for (RecipeHolder<CraftingRecipe> h : Recipes.crafting(level, it)) {
+						List<List<Item>> slots = new ArrayList<>();
+						for (Ingredient ing : h.value().placementInfo().ingredients()) {
+							slots.add(ing.items().map(Holder::value).toList());
+						}
+						int makes = Math.max(1, result(level, h.value()).getCount());
+						out.add(new RecipeTree.CraftOption(h, it, makes, slots, fits2x2(h.value())));
+					}
+					return out;
+				});
+			}
+
+			@Override
+			public List<RecipeTree.SmeltOption> smelting(final Item item) {
+				return smelts.computeIfAbsent(item, it -> {
+					List<RecipeTree.SmeltOption> out = new ArrayList<>();
+					for (RecipeHolder<AbstractCookingRecipe> h : Recipes.smeltingTo(level, it)) {
+						out.add(new RecipeTree.SmeltOption(h, it, h.value().input().items().map(Holder::value).toList()));
+					}
+					return out;
+				});
+			}
+
+			@Override
+			public int burnTicks(final Item item) {
+				return Recipes.burnTicks(new ItemStack(item));
+			}
+		};
+	}
+
+	/** Item → count over the agent's main slots and offhand (what the recipe tree plans with). */
+	public static Map<Item, Integer> inventory(final AgentPlayer agent) {
+		Map<Item, Integer> out = new LinkedHashMap<>();
+		var inv = agent.getInventory();
+		for (int slot = 0; slot < net.minecraft.world.entity.player.Inventory.INVENTORY_SIZE; slot++) {
+			ItemStack s = inv.getItem(slot);
+			if (!s.isEmpty()) {
+				out.merge(s.getItem(), s.getCount(), Integer::sum);
+			}
+		}
+		ItemStack off = agent.getOffhandItem();
+		if (!off.isEmpty()) {
+			out.merge(off.getItem(), off.getCount(), Integer::sum);
+		}
+		return out;
+	}
+
 	/** Approximate furnace burn time of a fuel in ticks (200 smelts one item); 0 when it is no fuel. */
 	public static int burnTicks(final ItemStack stack) {
 		if (stack.isEmpty()) {

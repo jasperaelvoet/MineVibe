@@ -72,6 +72,8 @@ interface ScenarioBase {
   answer?(question: CardQuestion): string;
   /** A scripted good run (passes) and, where useful, the failure mode to catch (fails). */
   readonly replay: { readonly good: Replay; readonly bad?: Replay };
+  /** The same runs with the v2 `mc` tools (docs/design/tools-v2-mc.md), when the scenario has them. */
+  readonly replayV2?: { readonly good: Replay; readonly bad?: Replay };
 }
 
 export interface McScenario extends ScenarioBase {
@@ -98,6 +100,8 @@ export interface RunResult {
   readonly suite: Suite;
   readonly mode: Mode;
   readonly run: number;
+  /** The `mc` tool set of the run (v1 when absent: runs saved before v2). */
+  readonly tools?: 'v1' | 'v2' | undefined;
   readonly model: string | null;
   readonly effort: string | null;
   readonly success: boolean;

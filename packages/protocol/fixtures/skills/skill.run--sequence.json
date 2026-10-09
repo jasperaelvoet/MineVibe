@@ -1,0 +1,32 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-34",
+  "jobId": "job-40",
+  "agentId": "ada",
+  "skill": "sequence",
+  "args": {
+    "steps": [
+      {
+        "skill": "collect",
+        "args": {
+          "item": "oak_log",
+          "count": 10,
+          "radius": 48,
+          "make_tools": true
+        }
+      },
+      {
+        "skill": "craft",
+        "args": {
+          "item": "crafting_table",
+          "count": 1,
+          "tree": true
+        }
+      }
+    ],
+    "stop_on_fail": true
+  },
+  "waitMs": 20000,
+  "replace": true
+}

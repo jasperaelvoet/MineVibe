@@ -61,11 +61,13 @@ public final class Observations {
 	public static JsonObject query(final SkillService service, final AgentPlayer agent, final String query, final JsonObject args) {
 		JsonObject out = switch (query) {
 			case "status" -> status(service, agent);
-			case "look_around" -> Scene.lookAround(agent, intArg(args, "radius", 16, 1, 32), "full".equals(choiceArg(args, "detail", "brief", "brief", "full")));
+			// Up to 48 (cap obs.look_around.48, tools-v2-mc.md M7): the v2 observe scene radius.
+			case "look_around" -> Scene.lookAround(agent, intArg(args, "radius", 16, 1, 48), "full".equals(choiceArg(args, "detail", "brief", "brief", "full")));
 			case "inventory" -> inventory(agent);
 			case "find" -> find(agent, stringArg(args, "what"), intArg(args, "radius", 32, 1, 64), intArg(args, "limit", 5, 1, 10),
 				choiceArg(args, "filter", "any", "any", "natural", "built"));
-			case "recipe" -> recipe(agent, stringArg(args, "item"));
+			case "recipe" -> boolArg(args, "tree") ? recipeTree(agent, stringArg(args, "item"), intArg(args, "count", 1, 1, 2304))
+				: recipe(agent, stringArg(args, "item"));
 			case "recent_events" -> recentEvents(agent, intArg(args, "limit", 20, 1, 50));
 			case "crew" -> crew(service, agent);
 			case "list_pcs" -> listPcs(agent);
@@ -343,6 +345,20 @@ public final class Observations {
 
 	private static boolean isBlockTag(final Identifier id) {
 		return net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(TagKey.create(Registries.BLOCK, id)).isPresent();
+	}
+
+	/** {@code recipe{item, count?, tree:true}} (cap obs.recipe.tree, M5): the craft tree's plan, without acting. */
+	static JsonObject recipeTree(final AgentPlayer agent, final String itemRef, final int count) {
+		Refs.ItemMatcher m = Refs.item(itemRef);
+		if (m.item() == null) {
+			throw Refs.badArgs("recipe needs one item, not a tag");
+		}
+		return dev.minevibe.agent.job.CraftTreeJob.planJson(agent, m.item(), count);
+	}
+
+	private static boolean boolArg(final JsonObject args, final String key) {
+		JsonElement e = args.get(key);
+		return e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean() && e.getAsBoolean();
 	}
 
 	static JsonObject recipe(final AgentPlayer agent, final String itemRef) {

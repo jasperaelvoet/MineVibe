@@ -11,6 +11,7 @@ import {
   type BlockPos,
   ERROR_CODES,
   type IdleMode,
+  MOD_CAPS,
   type ObsQueryName,
   type PayloadOf,
   type SkillName,
@@ -29,6 +30,7 @@ import {
 import { TypedEmitter } from '../../src/util/TypedEmitter.js';
 import { buildJobLogic } from './jobs.js';
 import { observe } from './observe.js';
+import { SIM_V2_CAPS } from './v2.js';
 import { type SimJob, type SimWorld, TPS } from './world.js';
 
 /** Game ticks per real millisecond of waiting (20 tps). */
@@ -52,10 +54,16 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   readonly calls: SimCall[] = [];
   readonly #ended = new Map<string, JobEnd>();
 
-  constructor(world: SimWorld) {
+  constructor(world: SimWorld, options: { readonly mod?: 'v1' | 'v2' } = {}) {
     super();
     this.world = world;
+    if (options.mod) world.mod = options.mod;
     world.onJobEnd = (job) => this.#ended_(job);
+  }
+
+  /** The simulated mod's `hello.caps`: none for the v1 mod, every v2 cap for the v2 one. */
+  caps(): ReadonlySet<string> {
+    return new Set(this.world.mod === 'v2' ? SIM_V2_CAPS : []);
   }
 
   #check(agentId: string): void {
@@ -86,14 +94,22 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
     this.calls.push({ kind: 'skill', name: request.skill, args, at: this.world.clock });
     const w = this.world;
     if (w.current && !request.replace) throw new ApiError(ERROR_CODES.BUSY, `${request.agentId} is busy`);
+    // The v2 mod names the job its replace cancelled (cap run.replaced, M9).
+    const prev = w.current;
+    const replaced =
+      prev && this.caps().has(MOD_CAPS.RUN_REPLACED)
+        ? { jobId: prev.jobId, skill: prev.skill, ...(prev.text ? { text: prev.text.slice(0, 256) } : {}) }
+        : undefined;
     if (w.current) w.cancelJob('replaced by a new job');
     const jobId = request.jobId ?? newJobId();
     const logic = buildJobLogic(w, request.skill, args);
     const job = w.startJob(jobId, request.skill, args, logic);
     const waitMs = Math.min(request.waitMs ?? 20_000, MOD_WAIT_CAP_MS);
     w.advance(w.clock + msToTicks(waitMs), () => job.status !== 'running');
-    if (job.status === 'running') return { jobId, status: 'running' };
+    if (job.status === 'running')
+      return replaced ? { jobId, status: 'running', replaced } : { jobId, status: 'running' };
     const out: SkillRunResult = { jobId, status: job.status, result: this.#withFooter(job.result) };
+    if (replaced) out.replaced = replaced;
     if (job.error) out.error = { code: job.error.code, msg: job.error.msg };
     return out;
   }

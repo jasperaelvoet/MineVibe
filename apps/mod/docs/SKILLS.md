@@ -16,10 +16,11 @@ All run on the integrated server thread (`err NO_SERVER` without one).
 
 | Message | Handling |
 |---|---|
-| `skill.run` | Starts the job, then answers when it ends or when `waitMs` (capped at 120 000) passes. A job still going is answered `running`; its end follows as `skill.result`. Repeating a known `jobId` answers that job's state. A reply still waiting when the bridge reconnects is dropped and the outcome follows as `skill.result`; outcomes of jobs that end while Node is away go out on the next handshake. |
+| `hello` | Lists the optional skill features of this build in `caps` (`SkillCaps`): `skill.sequence`, `collect.gather`, `craft.tree`, `obs.recipe.tree`, `container.nearest`, `give.all`, `run.replaced`, `obs.look_around.48`. Node uses an additive argument only when its cap is there. |
+| `skill.run` | Starts the job, then answers when it ends or when `waitMs` (capped at 120 000) passes. With `replace` and a job running, the reply's `replaced` names the cancelled job. A job still going is answered `running`; its end follows as `skill.result`. Repeating a known `jobId` answers that job's state. A reply still waiting when the bridge reconnects is dropped and the outcome follows as `skill.result`; outcomes of jobs that end while Node is away go out on the next handshake. |
 | `skill.progress` | Sent while a job runs, at most once a second per job, when its text changes ("12/20 oak_log"). |
 | `skill.cancel` | Cancels the agent's current job (or only `jobId`); each cancelled job also gets `skill.result{cancelled}` unless its `skill.run` was still waiting, which then answers `cancelled`. |
-| `obs.query` | `status`, `look_around` (a scene, `detail` brief or full), `inventory`, `find` (with provenance, `filter` natural / built), `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`. |
+| `obs.query` | `status`, `look_around` (a scene, `detail` brief or full, radius up to 48), `inventory`, `find` (with provenance, `filter` natural / built), `recipe` (`tree:true`: the craft tree's plan), `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`. |
 | `agent.spawn` | Spawns or restores the body (idempotent). Without `at` it appears at the office door (the `door` slot of the world's starter office; next to the player in a world without one). Bodies follow the local player. `at`, or the door it appeared at, also becomes the agent's home. |
 | `agent.despawn` | `dismissed` removes the agent for good; `world_end` / `shutdown` save it. A seat is left first (`pc.unseat`). |
 | `agent.mode` | Idle mode `follow` / `stay` / `guard` / `wander`, around `anchor` (default: where it stands). |
@@ -31,6 +32,30 @@ All run on the integrated server thread (`err NO_SERVER` without one).
 
 Every skill result and observation carries `footer` (protocol §7.4); after the position it names the nearest
 protected zone (`in Base`, `12m from Base`).
+
+## Composite skills (tools v2)
+
+The v2 `mc` tools (docs/design/tools-v2-mc.md) send one request per intent; the mod runs it as one job. The wire
+contract is protocol §6.1 (caps) and §7.4.2.
+
+- **`sequence`** (`SequenceJob`): 2-8 skills as one job. `SkillFactory` builds every step first (a bad one rejects
+  the request: `BAD_ARGS: step i: …`); the steps then run through a `ChildRunner`, which gives each child the
+  lifecycle the `JobRunner` would (start, preempt, resume, cancel, `onEnd` once). `stop_on_fail` (default true) ends
+  it at the first failure with that step's code. Result: `{completed, steps:[{skill, status, code?, msg?, result}]}`.
+- **The craft tree** (`CraftTreeJob`, `RecipeTree`): `craft{tree:true}` plans from the inventory with the server's
+  recipes (`Recipes.book`), gathers what is missing when `gather_missing` (child `collect` jobs, natural only, logs
+  for fuel), then runs child `craft` / `smelt` jobs step by step. It crafts a table or furnace first when none is
+  within 24 blocks or carried, and walks out of a protected zone before one is put down. `RecipeTree` is pure (unit
+  tested with a hand-written book): fewest missing raw materials wins, 2x2 first, at most 4 levels, no recipe that
+  consumes an item being made higher up, no compressed form (iron block, nuggets) the agent does not carry, fuel
+  from what the plan leaves over. `recipe{tree:true}` answers the same plan without acting.
+- **`collect` for v2's gather**: `near` (search around a spot), `make_tools` (craft the tool a source needs from the
+  inventory, iron then stone then wooden tier, through `CraftTreeJob`), animals for drops (cows, pigs, sheep,
+  chickens, rabbits: never in a protected zone, never pets, named, leashed or young animals), and `result.sources`
+  (`Miner.Source`: felled trees by species and trunk, ores and stone by kind). Drops are picked up within 5 blocks for
+  up to 100 ticks after each break (was 3.5 and 40, which lost items).
+- **`container`** without `pos` takes the nearest chest or barrel within 24 blocks and says which (`result.pos`);
+  **`give`** without `count` gives everything of the item.
 
 ## World awareness and protection (W1)
 

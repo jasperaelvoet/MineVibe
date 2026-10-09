@@ -1,0 +1,9 @@
+{
+  "t": "hello",
+  "v": 1,
+  "id": "m-9",
+  "mod": "0.2.0",
+  "mc": "26.3",
+  "phase": "boot",
+  "caps": ["Skill Sequence"]
+}

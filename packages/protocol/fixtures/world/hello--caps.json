@@ -1,0 +1,18 @@
+{
+  "t": "hello",
+  "v": 1,
+  "id": "m-8",
+  "mod": "0.2.0",
+  "mc": "26.3",
+  "phase": "boot",
+  "caps": [
+    "skill.sequence",
+    "collect.gather",
+    "craft.tree",
+    "obs.recipe.tree",
+    "container.nearest",
+    "give.all",
+    "run.replaced",
+    "obs.look_around.48"
+  ]
+}

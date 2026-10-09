@@ -13,20 +13,21 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type {
-  AgentBody,
-  AgentRole,
-  Autonomy,
-  BrainStatus,
-  ModelTier,
-  PayloadOf,
-  Place,
+import {
+  type AgentBody,
+  type AgentRole,
+  type Autonomy,
+  type BrainStatus,
+  MOD_CAPS,
+  type ModelTier,
+  type PayloadOf,
+  type Place,
 } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { ApiError, agentActor } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { JobExit, PcApi } from '../contracts/PcApi.js';
-import type { SkillApi } from '../contracts/SkillApi.js';
+import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
 import type { BaseArea } from '../world/baseArea.js';
 import { AgentSession, type SwapResult } from './AgentSession.js';
 import type { BrainScheduler, Grant, WakePriority } from './BrainScheduler.js';
@@ -39,8 +40,10 @@ import {
   CONTEXT_GUARD_TIMEOUT_MS,
   HAIKU_CONTEXT_TOKENS,
   MAX_SEATED,
+  type McToolsVersion,
   MEETING_SWAP_DEBOUNCE_MS,
   MEETING_TURN_TIMEOUT_MS,
+  mcToolsVersion,
   SEATED_PROFILE,
   WANDERING_PROFILE,
 } from './constants.js';
@@ -68,9 +71,13 @@ import { createToolGateHook, type GateContext, type GateObservation } from './To
 import type { TranscriptStore } from './TranscriptStore.js';
 import { TurnText } from './TurnText.js';
 import { type PcToolName, pcToolName } from './tools/catalog.js';
-import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
+import { type CrewNames, renderOutcome, wakeText } from './tools/format.js';
+import { JobRegistry } from './tools/jobs.js';
+import { createMcServer, type McHost, splitFooter, ticksToGameTime } from './tools/mcServer.js';
 import { jobNotification } from './tools/pc/jobs.js';
 import { BatchBook, createPcServer, type PcHost, PcJobBook } from './tools/pcServer.js';
+import type { CrewRef } from './tools/targets.js';
+import { toolsUpdatedNote } from './tools/toolRefs.js';
 import type { UsageGovernor } from './UsageGovernor.js';
 import type { ConsentLedger } from './world/consent.js';
 import { PerceptionMemory, sceneLine, zoneOfBody } from './world/scene.js';
@@ -104,6 +111,11 @@ export interface AgentRecord {
   /** The PC the agent sat at when the app stopped (restart notice). */
   lastSeatedPc?: string | null | undefined;
   lastActiveAt?: number | undefined;
+  /**
+   * The `mc` tool set the session was started with (absent: v1). A resumed session whose transcript holds the other
+   * set's calls gets a one-time TOOLS UPDATED note (docs/design/tools-v2-mc.md N11).
+   */
+  mcTools?: McToolsVersion | undefined;
 }
 
 /** Crew-level services a brain needs (implemented by the AgentManager). */
@@ -156,6 +168,12 @@ export interface BrainEnv {
   authMode(): 'subscription' | 'api_key';
   /** Re-sit debounce override (tests, the live smoke); default 60 s. */
   readonly swapDebounceMs?: number | undefined;
+  /** The `mc` tool set (default: `MINEVIBE_MC_TOOLS`, tools-v2-mc.md §14). */
+  readonly mcTools?: McToolsVersion | undefined;
+  /** A crew member by `@handle`, name or agent id (v2 targets). */
+  crewMember?(ref: string): CrewRef | null;
+  /** Handle, name and role by agent id (v2 crew section). */
+  crewNames?(agentId: string): CrewNames | null;
   /** The record changed in a way that must reach `crew.json` now (e.g. the session was created). */
   recordChanged?(brain: AgentBrain): void;
   /**
@@ -362,6 +380,10 @@ export class AgentBrain {
   readonly digest = new Digest();
   /** What this agent's look_around / find showed (the scene line's trees). */
   readonly perception: PerceptionMemory;
+  /** The world jobs the v2 tools started (tools-v2-mc.md §7): results, `job{…}`, wakes, the replace notice. */
+  readonly toolJobs: JobRegistry;
+  /** The session's `mc` tool set. */
+  readonly mcTools: McToolsVersion;
   readonly #env: BrainEnv;
   readonly #seatMutex = new Mutex();
   readonly #log: Logger;
@@ -421,6 +443,8 @@ export class AgentBrain {
     this.record = record;
     this.#env = env;
     this.perception = new PerceptionMemory(() => env.now());
+    this.toolJobs = new JobRegistry(() => env.now());
+    this.mcTools = env.mcTools ?? mcToolsVersion();
     this.#log = env.log.child({ agentId: record.agentId });
     this.fsm = new SeatFSM({
       now: () => env.now(),
@@ -568,6 +592,7 @@ export class AgentBrain {
       ceo: this.record.ceo,
       playerName: env.playerName(),
       nonce: this.record.nonce,
+      mcTools: this.mcTools,
     });
     const resume = this.record.sessionStarted ? this.record.sessionId : null;
     // Only the new session's `pc` tool server hears compactions (each session builds its own).
@@ -582,7 +607,7 @@ export class AgentBrain {
           resume,
           sessionId: this.record.sessionId,
           persona,
-          mc: createMcServer(this.#mcHost()),
+          mc: createMcServer(this.#mcHost(), this.mcTools),
           pc: createPcServer(this.#pcHost()),
           // A restart (crash, Retry) of a seated agent resumes on the seat's model, not on Haiku until the next boundary.
           profile: options.profile ?? (this.fsm.wantsOpus(env.now()) ? SEATED_PROFILE : WANDERING_PROFILE),
@@ -648,6 +673,13 @@ export class AgentBrain {
     // A new or resumed session hears its mode again with its first turn.
     this.#announcedMode = null;
     session.start();
+    // N11: a resumed transcript full of the other tool set's calls is told the new names once.
+    const before = this.record.mcTools ?? 'v1';
+    if (before !== this.mcTools) {
+      if (resume) this.context(toolsUpdatedNote(this.record.nonce, before, this.mcTools));
+      this.record.mcTools = this.mcTools;
+      env.recordChanged?.(this);
+    }
     for (const text of options.contexts ?? []) this.context(text);
     for (const item of this.#contexts.splice(0)) session.send(item, { shouldQuery: false });
     for (const w of options.wakes ?? []) this.enqueue(w);
@@ -833,8 +865,11 @@ export class AgentBrain {
       );
       return;
     }
-    if (chatMode === 'task')
+    if (chatMode === 'task') {
+      // The player's new task wakes the agent anyway: the cancelled job needs no [JOB FAILED] of its own.
+      this.toolJobs.markCancelled('replace');
       void this.#env.skills.cancelSkill(this.agentId, { reason: 'new task' }).catch(() => {});
+    }
     this.enqueue({ mode: 'wake', priority: 0, kind: 'PLAYER', text, now: chatMode === 'interrupt' });
   }
 
@@ -845,6 +880,34 @@ export class AgentBrain {
 
   forgetJob(jobId: string): void {
     this.#jobs.delete(jobId);
+  }
+
+  /**
+   * v2 (tools-v2-mc.md §6.5, §7): renders a tracked job's end for its wake and records it in the job registry. Null
+   * when no wake is due: the agent itself stopped or replaced the job (its tool result said so), a player's new task
+   * cancelled it (the player's message wakes the agent), or the agent's `job{wait}` was waiting for it (that result
+   * carries the end).
+   */
+  toolJobEnded(end: JobEnd): { readonly ok: boolean; readonly text: string } | null {
+    const meta = this.toolJobs.meta(end.jobId);
+    if (!meta) return null;
+    const running = this.toolJobs.get(end.jobId);
+    const { result } = splitFooter(end.result);
+    const body = this.#env.body(this.agentId);
+    const rendered = renderOutcome(
+      meta,
+      { status: end.status, result, error: end.error, durationMs: end.durationMs },
+      {
+        here: body ? body.pos : null,
+        playerName: this.#env.playerName(),
+        craftTree: this.#env.skills.caps?.().has(MOD_CAPS.CRAFT_TREE) ?? false,
+      },
+    );
+    this.toolJobs.ended(end.jobId, end.status, rendered, end.error?.code);
+    if (end.status === 'cancelled' && running?.cancelledBy) return null;
+    // A job{wait} of this turn was waiting for it: that tool result already carries the end.
+    if (running?.awaited) return null;
+    return { ok: end.status === 'done', text: wakeText(end.jobId, rendered, meta.skill === 'sequence') };
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -861,6 +924,7 @@ export class AgentBrain {
       seat: this.fsm.snapshot,
       occupant: (pcId) => this.#env.occupant(pcId),
       trackedMode: this.#trackedMode,
+      mcTools: this.mcTools,
       plans: this.plans,
       turn: {
         calls: t.calls,
@@ -1851,6 +1915,7 @@ export class AgentBrain {
     const pcId = s.kind === 'pc' && this.fsm.holdsPcSeat ? s.pcId : null;
     const hadJobs = this.#jobs.size > 0;
     this.#jobs.clear();
+    this.toolJobs.clear();
     this.#meetingReturn = null;
     if (this.#awayTimer) clearTimeout(this.#awayTimer);
     this.#awayTimer = null;
@@ -1959,7 +2024,12 @@ export class AgentBrain {
       },
       noteTrees: (sighting) => this.perception.noteTrees(sighting, env.body(this.agentId)?.pos ?? null),
       takeConsent: () => env.consents?.take(this.agentId) ?? null,
+      hasConsent: () => (env.consents?.active(this.agentId) ?? null) !== null,
       noteRefusal: (refusal) => env.consents?.noteRefusal(this.agentId, refusal),
+      jobs: this.toolJobs,
+      crewMember: (ref) => env.crewMember?.(ref) ?? null,
+      crewNames: (agentId) => env.crewNames?.(agentId) ?? null,
+      body: () => env.body(this.agentId),
     };
   }
 

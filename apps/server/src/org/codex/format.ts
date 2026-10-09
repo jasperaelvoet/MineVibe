@@ -3,6 +3,7 @@
  * Node-stamped authors. Only player-written `rules` pages are presented as binding house rules.
  */
 
+import { mcRefs } from '../../contracts/mcRefs.js';
 import { type Author, escapeSharedText, singleLine, wrapHouseRules, wrapNote } from '../envelope.js';
 import { encodeRev } from './rev.js';
 import type { CodexPage, CodexPageMeta, CodexSearchHit, CodexWriteResult } from './types.js';
@@ -49,7 +50,7 @@ export function formatSearchForAgent(query: string, hits: readonly CodexSearchHi
     (h, i) =>
       `${i + 1}. [${h.id}] ${singleLine(h.title)} (${h.category}, ${h.scope}, by ${h.authorName}): ${h.snippet}`,
   );
-  return `${hits.length} Codex result(s) for "${singleLine(query, 60)}". Read one with codex_read{id}.\n${wrapNote(
+  return `${hits.length} Codex result(s) for "${singleLine(query, 60)}". Read one with ${mcRefs().codexRead}{id}.\n${wrapNote(
     { author: { kind: 'system', name: 'MineVibe' }, kind: 'search' },
     lines.join('\n'),
   )}`;

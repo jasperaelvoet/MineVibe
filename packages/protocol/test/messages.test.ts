@@ -14,6 +14,8 @@ import {
   LookAroundArgs,
   LookAroundResult,
   MESSAGE_TYPES,
+  MOD_CAPS,
+  ModCap,
   messageCatalog,
   NO_NATURAL_SOURCE,
   NoNaturalSourceDetail,
@@ -133,6 +135,88 @@ describe('skill args', () => {
   it('the skill.run fixture args satisfy the mine schema', () => {
     const args: SkillArgsOf<'mine'> = { block: '#minecraft:iron_ores', count: 12, radius: 32 };
     expect(SkillArgs.mine.parse(args)).toEqual(args);
+  });
+});
+
+describe('tools v2 additions (protocol §6.1 caps, §7.4 sequence and arguments)', () => {
+  const fixture = (name: string) =>
+    JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', name), 'utf8'),
+    ) as Record<string, unknown>;
+
+  it('sequence holds 2-8 steps of other skills, each validated against its own schema', () => {
+    const step = { skill: 'eat', args: {} };
+    expect(SkillArgs.sequence.safeParse({ steps: [step, step] }).success).toBe(true);
+    expect(SkillArgs.sequence.safeParse({ steps: [step] }).success).toBe(false);
+    expect(SkillArgs.sequence.safeParse({ steps: Array(9).fill(step) }).success).toBe(false);
+    expect(SkillArgs.sequence.safeParse({ steps: [step, { skill: 'sequence', args: {} }] }).success).toBe(
+      false,
+    );
+    expect(
+      SkillArgs.sequence.safeParse({ steps: [step, { skill: 'emote', args: { kind: 'wave' } }] }).success,
+    ).toBe(false);
+    const bad = SkillArgs.sequence.safeParse({
+      steps: [step, { skill: 'collect', args: { item: 'oak_log' } }],
+    });
+    expect(bad.success).toBe(false);
+    expect(bad.error?.issues[0]?.path).toEqual(['steps', 1, 'args', 'count']);
+    expect(bad.error?.issues[0]?.message).toMatch(/^collect: /);
+    expect(SkillArgs.sequence.parse(fixture('skills/skill.run--sequence.json').args)).toBeTruthy();
+  });
+
+  it('collect, craft, container and give take their additive arguments; v1 calls still parse', () => {
+    expect(SkillArgs.collect.parse(fixture('skills/skill.run--collect-gather.json').args)).toMatchObject({
+      near: { x: 6, y: 66, z: 24 },
+      make_tools: true,
+    });
+    expect(SkillArgs.collect.safeParse({ item: 'oak_log', count: 10 }).success).toBe(true);
+    expect(SkillArgs.craft.parse(fixture('skills/skill.run--craft-tree.json').args)).toMatchObject({
+      tree: true,
+      gather_missing: true,
+    });
+    expect(SkillArgs.craft.safeParse({ item: 'stick', count: 4, table: { x: 1, y: 2, z: 3 } }).success).toBe(
+      true,
+    );
+    // The tree's gathering can be refused PROTECTED: Node's consent retry sets allow_protected, which must survive.
+    expect(
+      SkillArgs.craft.parse({
+        item: 'furnace',
+        count: 1,
+        tree: true,
+        gather_missing: true,
+        allow_protected: true,
+      }),
+    ).toMatchObject({ allow_protected: true });
+    expect(SkillArgs.container.safeParse({ action: 'put', item: 'cobblestone' }).success).toBe(true);
+    expect(SkillArgs.container.safeParse({ action: 'take' }).success).toBe(false);
+    expect(SkillArgs.give.safeParse({ item: 'bread', to: 'player' }).success).toBe(true);
+    expect(SkillArgs.give.safeParse({ item: 'bread', count: 2, to: 'player' }).success).toBe(true);
+  });
+
+  it('hello lists mod caps (lowercase dotted words); a skill.run reply may say what it replaced', () => {
+    const hello = safeParseMessage(fixture('world/hello--caps.json'));
+    expect(hello.status).toBe('ok');
+    expect(safeParseMessage(fixture('world/hello.json')).status).toBe('ok');
+    expect(safeParseMessage(fixture('world/invalid/hello--bad-cap.json')).status).toBe('invalid');
+    for (const cap of Object.values(MOD_CAPS)) expect(ModCap.safeParse(cap).success, cap).toBe(true);
+    const { t: _t, v: _v, re: _re, ...reply } = fixture('reply/ok--skill-run-replaced.json');
+    expect(replySchemaOf('skill.run')?.parse(reply)).toMatchObject({
+      replaced: { jobId: 'job-41', skill: 'collect' },
+    });
+  });
+
+  it('protocol.md documents the caps, sequence and the new arguments', () => {
+    for (const word of [
+      'caps',
+      'skill.sequence',
+      'sequence',
+      'make_tools',
+      'gather_missing',
+      'container.nearest',
+      'replaced',
+    ]) {
+      expect(protocolMd, word).toContain(word);
+    }
   });
 });
 

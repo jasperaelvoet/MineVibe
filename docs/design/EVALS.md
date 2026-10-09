@@ -15,7 +15,7 @@ Node's own Base guard for explicit coordinates, the consent ledger and the Codex
 that the model now acts on them.
 
 **How it runs.** `apps/server/scripts/eval-world.ts` drives the real `AgentManager` (persona, Digest scene, ToolGate,
-InteractionBroker, `mc` tools) on Haiku 5.5 at xhigh effort, with the SDK-bundled `claude` (`MINEVIBE_CLAUDE=bundled`
+InteractionBroker, `mc` tools; `-- --tools v2` for the v2 tools of docs/design/tools-v2-mc.md) on Haiku 5.5 at xhigh effort, with the SDK-bundled `claude` (`MINEVIBE_CLAUDE=bundled`
 unless set). The body side is a fake mod, `scripts/eval/worldEval.ts`, built on the incident:
 
 - Ada stands in the office at (6, 65, 5), 4 m from Jasper, at D2 07:40. The office's 16 corner-pillar blocks are
@@ -154,7 +154,14 @@ perception, block provenance and protection) can be judged against numbers inste
 npm run eval:tools -- --suite mc|pc|all --mode replay           # no model calls; CI-safe
 MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite all --mode live --budget 40
 npm run eval:tools -- --report apps/server/eval/out/a.json,apps/server/eval/out/b.json
+npm run eval:tools -- --suite mc --tools v2 [--mod v1]          # the v2 mc tools; --mod v1: a mod without caps
 ```
+
+- `--tools v2` runs the mc scenarios with the v2 tools (docs/design/tools-v2-mc.md) and each scenario's v2 scripts
+  (`replayV2`) against the simulated v2 mod (`eval/sim/v2.ts`: caps, natural-only gathering, `PROTECTED`, the craft
+  tree, `sequence`); `--mod v1` keeps the old simulated mod so Node's fallbacks run. Scripted good runs take 1 call
+  per mc scenario with v2 (2 for `mc.unreachable_ask`: the failure, then the question) against 1-3 with v1; on
+  `--mod v1` the logs and iron scripts fail by design (an old mod crafts one level only, tools-v2-mc.md §16.5).
 
 - `--mode replay` (default) plays each scenario's scripted good run (must pass) and bad run (must fail) with a
   scripted model and exits 1 when a script does not behave. The unit tests (`test/unit/eval/`) run the same replays,

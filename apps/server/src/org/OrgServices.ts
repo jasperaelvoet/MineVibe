@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { PayloadOf, Place } from '@minevibe/protocol';
 import type { Logger } from 'pino';
 import { type MineVibePaths, worldDir } from '../config/paths.js';
+import { mcRefs } from '../contracts/mcRefs.js';
 import type { OrgToolResult } from '../contracts/OrgApi.js';
 import {
   type ApproachCard,
@@ -480,7 +481,7 @@ export class OrgServices {
       return {
         ok: false,
         code: 'NOT_FOUND',
-        text: `No Codex page "${singleLine(parsed.data.id, 64)}". Try codex_search.`,
+        text: `No Codex page "${singleLine(parsed.data.id, 64)}". Try ${mcRefs().codexSearch}.`,
       };
     }
     return { ok: true, text: formatPageForAgent(page) };

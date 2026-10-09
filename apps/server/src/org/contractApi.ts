@@ -251,7 +251,7 @@ export class OrgContractApi extends TypedEmitter<OrgEvents> implements OrgApi {
     if (actor.kind !== 'player') {
       throw new ApiError(
         ERROR_CODES.FORBIDDEN,
-        'agents call meetings with calendar_add (kind "meeting"); the player approves them',
+        'agents call meetings with the calendar tool (kind "meeting"); the player approves them',
       );
     }
     const event = request.eventId !== undefined ? s.calendar.get(request.eventId) : null;

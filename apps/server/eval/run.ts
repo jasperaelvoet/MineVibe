@@ -41,6 +41,9 @@ export interface CliOptions {
   readonly out: string | null;
   readonly firstRun: number;
   readonly report: readonly string[];
+  /** The `mc` tool set (`--tools`, default v1) and the simulated mod (`--mod`, default: the tool set's). */
+  readonly tools: 'v1' | 'v2';
+  readonly mod: 'v1' | 'v2';
 }
 
 export function parseCli(argv: readonly string[]): CliOptions {
@@ -57,6 +60,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
       out: { type: 'string' },
       'first-run': { type: 'string', default: '1' },
       report: { type: 'string' },
+      tools: { type: 'string', default: 'v1' },
+      mod: { type: 'string' },
     },
     allowPositionals: false,
     strict: true,
@@ -65,6 +70,10 @@ export function parseCli(argv: readonly string[]): CliOptions {
   if (!['mc', 'pc', 'all'].includes(suite)) throw new Error(`--suite must be mc, pc or all (got ${suite})`);
   const mode = values.mode as string;
   if (mode !== 'replay' && mode !== 'live') throw new Error(`--mode must be replay or live (got ${mode})`);
+  const tools = values.tools as string;
+  if (tools !== 'v1' && tools !== 'v2') throw new Error(`--tools must be v1 or v2 (got ${tools})`);
+  const mod = (values.mod as string | undefined) ?? tools;
+  if (mod !== 'v1' && mod !== 'v2') throw new Error(`--mod must be v1 or v2 (got ${mod})`);
   const int = (name: string, v: string | undefined, min: number): number => {
     const n = Number(v);
     if (!Number.isInteger(n) || n < min) throw new Error(`--${name} must be an integer >= ${min}`);
@@ -81,6 +90,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
     out: values.out ?? null,
     firstRun: int('first-run', values['first-run'], 1),
     report: values.report ? values.report.split(',').map((s) => s.trim()) : [],
+    tools,
+    mod,
   };
 }
 
@@ -121,12 +132,16 @@ export interface ReplayOutcome {
   readonly result: RunResult;
 }
 
-/** Runs the scripted good and bad runs of each scenario. */
-export async function runReplays(scenarios: readonly Scenario[]): Promise<ReplayOutcome[]> {
+/** Runs the scripted good and bad runs of each scenario (with the v1 or the v2 tools and their scripts). */
+export async function runReplays(
+  scenarios: readonly Scenario[],
+  options: { readonly tools?: 'v1' | 'v2'; readonly mod?: 'v1' | 'v2' } = {},
+): Promise<ReplayOutcome[]> {
   const out: ReplayOutcome[] = [];
+  const tools = options.tools ?? 'v1';
   for (const s of scenarios) {
     for (const variant of ['good', 'bad'] as const) {
-      const replay = s.replay[variant];
+      const replay = tools === 'v2' ? s.replayV2?.[variant] : s.replay[variant];
       if (!replay) continue;
       const result = await runScenario(s, {
         mode: 'replay',
@@ -138,6 +153,8 @@ export async function runReplays(scenarios: readonly Scenario[]): Promise<Replay
         maxRunTurns: replay.length,
         turnTimeoutMs: 30_000,
         requireSubscription: false,
+        tools,
+        mod: options.mod ?? tools,
       });
       out.push({ scenario: s.id, variant, expected: variant === 'good', result });
     }
@@ -197,6 +214,8 @@ export async function runLive(
         maxRunTurns: scenario.suite === 'pc' ? cli.pcTurns : cli.mcTurns,
         turnTimeoutMs: scenario.suite === 'pc' ? 12 * 60_000 : 6 * 60_000,
         requireSubscription: true,
+        tools: cli.tools,
+        mod: cli.mod,
         log,
       });
       results.push(r);
@@ -243,7 +262,7 @@ async function main(): Promise<number> {
   const outFile = cli.out ? userPath(cli.out) : join(outDir, `${cli.mode}-${cli.suite}-${stamp()}.json`);
 
   if (cli.mode === 'replay') {
-    const outcomes = await runReplays(scenarios);
+    const outcomes = await runReplays(scenarios, { tools: cli.tools, mod: cli.mod });
     const bad = outcomes.filter((o) => o.result.success !== o.expected);
     log('## Replay (scripted model)\n');
     log(
