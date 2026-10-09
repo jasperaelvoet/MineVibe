@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, readlink, rm, symlink, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Logger } from 'pino';
 import { writeFileAtomic } from '../../util/atomicFile.js';
 import { freeDiskBytes } from '../host.js';
@@ -57,6 +57,12 @@ export interface LumeMacDriverOptions {
   pullStallMs?: number;
   /** Free disk a pull needs beyond the image's disk size (default 10 GiB). */
   pullDiskMarginBytes?: number;
+  /**
+   * A pull running while free disk falls below this is cancelled (default 10 GiB, where PcManager stops every PC): how
+   * much a pull takes at its peak (downloaded chunks next to the disk they unpack into) was not measured, and it must
+   * never fill the Mac's disk.
+   */
+  pullAbortBelowBytes?: number;
   /** Free disk on the volume of the Lume root (tests). */
   freeDisk?: () => Promise<number>;
 }
@@ -131,7 +137,20 @@ export class LumeMacDriver implements MacPcDriver {
   }
 
   async engineAlive(): Promise<boolean> {
-    return this.#engineHeld && (await this.runtime.serveAlive());
+    return this.#engineHeld && (await this.runtime.serveRunning());
+  }
+
+  engineRunning(): Promise<boolean> {
+    return this.runtime.serveExists();
+  }
+
+  reapOrphans(keep: (vm: string) => boolean): Promise<string[]> {
+    return this.#engineHeld ? this.runtime.reapOrphans(keep) : Promise.resolve([]);
+  }
+
+  async hasVm(name: string): Promise<boolean> {
+    this.#assertName(name);
+    return existsSync(join(this.runtime.vmsDir, name));
   }
 
   async shutdownEngine(): Promise<boolean> {
@@ -202,6 +221,15 @@ export class LumeMacDriver implements MacPcDriver {
     return this.#pull;
   }
 
+  /** Deletes the base VM (a wrong or partial pull); best effort. */
+  async #deleteBase(): Promise<void> {
+    await this.runtime
+      .api('DELETE', `${this.#vmPath(this.baseName)}?storage=${LUME_STORAGE}`, undefined, 120_000)
+      .catch((err: unknown) =>
+        this.#log?.warn({ err: String(err) }, 'could not delete the macOS base image'),
+      );
+  }
+
   #progress(p: { fraction: number; bytes: number; total: number }): void {
     for (const l of this.#pullListeners) {
       try {
@@ -215,15 +243,11 @@ export class LumeMacDriver implements MacPcDriver {
     if (before.present) return;
     if (before.problem) {
       this.#log?.warn({ problem: before.problem }, 'replacing the macOS base image');
-      await this.runtime.api(
-        'DELETE',
-        `${this.#vmPath(this.baseName)}?storage=${LUME_STORAGE}`,
-        undefined,
-        120_000,
-      );
+      await this.#deleteBase();
     }
+    const freeDisk = () => (this.#o.freeDisk ? this.#o.freeDisk() : freeDiskBytes(this.runtime.root));
     if (!before.pulling) {
-      const free = this.#o.freeDisk ? await this.#o.freeDisk() : await freeDiskBytes(this.runtime.root);
+      const free = await freeDisk();
       // The download unpacks into a sparse 150 GiB disk of which about 29 GiB get allocated (S6).
       const need =
         Math.max(this.image.downloadBytes * 1.35, 30 * GiB) + (this.#o.pullDiskMarginBytes ?? 10 * GiB);
@@ -247,11 +271,21 @@ export class LumeMacDriver implements MacPcDriver {
       this.#log?.info({ image: img.ref }, 'pulling the macOS image');
     }
     const stall = this.#o.pullStallMs ?? 15 * 60_000;
+    const floor = this.#o.pullAbortBelowBytes ?? 10 * GiB;
     let lastBytes = -1;
     let lastMove = Date.now();
     let seenPulling = false;
     for (;;) {
       await sleep(this.#o.pollMs ?? 1000);
+      const left = await freeDisk().catch(() => Number.POSITIVE_INFINITY);
+      if (left < floor) {
+        await this.runtime.api('POST', '/lume/pull/cancel', { name: this.baseName }, 60_000).catch(() => {});
+        await this.#deleteBase();
+        throw new LumeError(
+          'API',
+          `the macOS image download was stopped: only ${Math.floor(left / GiB)} GiB of disk was left; free more space and start the PC again`,
+        );
+      }
       let r: LumeApiResult;
       try {
         r = await this.#get(this.baseName, 15_000);
@@ -294,6 +328,8 @@ export class LumeMacDriver implements MacPcDriver {
           return;
         }
         if (digest !== null) {
+          // Not the pinned image: it never counts, so its ~29 GiB go at once.
+          await this.#deleteBase();
           throw new LumeError(
             'VERIFY_FAILED',
             `the pulled macOS image has digest ${digest}, not the pinned ${this.image.digest}`,
@@ -425,6 +461,8 @@ export class LumeMacDriver implements MacPcDriver {
     const labels = await this.#labelsOf(spec.name);
     if (labels === null) throw new LumeError('API', `${spec.name} has no MineVibe sidecar; not starting it`);
     const sharedDirectories = await this.#prepareShares(spec.name, spec.token, spec.shares);
+    // This process owns the run before it begins: the reaper of another MineVibe never takes it for an orphan.
+    await this.runtime.claimVm(spec.name);
     await this.runtime.logEvents();
     const requested = Date.now();
     const r = await this.runtime.api('POST', `${this.#vmPath(spec.name)}/run`, {
@@ -516,6 +554,11 @@ export class LumeMacDriver implements MacPcDriver {
 
   async remove(name: string): Promise<void> {
     this.#assertName(name);
+    if (!existsSync(join(this.runtime.vmsDir, name))) {
+      // Never cloned (or already deleted): only its share folder may be left, and Lume is not needed for that.
+      await rm(this.#shareDir(name), { recursive: true, force: true });
+      return;
+    }
     const info = await this.inspect(name);
     if (info) {
       if (info.state !== 'stopped') await this.stop(name);
@@ -567,7 +610,17 @@ export class LumeMacDriver implements MacPcDriver {
     }
     if (info.state === 'running') {
       const session = await this.runtime.session(name);
-      if (session) info.shares = session.shares;
+      if (session) {
+        // Each Vault share is one of our links: what it points at is the folder the run shares.
+        const links = join(this.#shareDir(name), 'links');
+        info.shares = await Promise.all(
+          session.shares.map(async (s) => {
+            const target =
+              dirname(s.hostPath) === links ? await readlink(s.hostPath).catch(() => null) : null;
+            return { ...s, ...(target ? { target } : {}) };
+          }),
+        );
+      }
     }
     try {
       const token = (await readFile(join(this.#shareDir(name), 'setup', 'env-token'), 'utf8')).trim();

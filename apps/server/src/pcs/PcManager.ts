@@ -300,6 +300,9 @@ export function codexMountProblem(
   return null;
 }
 
+/** The monitor runs the Lume reaper every this many passes (about once a minute at the default 10 s). */
+const MAC_REAP_EVERY_PASSES = 6;
+
 /** Statuses during which a PC holds (or is about to hold) CPU and RAM. */
 const ACTIVE: ReadonlySet<PcStatus> = new Set([
   'downloading',
@@ -408,6 +411,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #imageWaits = new Map<string, AbortController>();
   /** Host edits of macOS PCs' Vault folders → a refreshed guest view before the next PcApi call (S6). */
   readonly #guestView: GuestViewSync;
+  /** The monitor's background run of the Lume reaper, while one runs. */
+  #macReaping: Promise<void> | null = null;
 
   constructor(options: PcManagerOptions) {
     super();
@@ -1157,16 +1162,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   // ------------------------------------------------------------------ macOS VMs (PLAN §8.7)
 
+  /** This instance's VMs: the reaper claims them for this process and leaves them to reconcile, boot and the monitor. */
+  readonly #macKeep = (vm: string): boolean => vm.startsWith(`mv-pc-${this.instanceId}-`);
+
   /** Starts (or joins) the Lume engine; this instance's own VMs are left for reconcile and boot to adopt or stop. */
   async #macEngineUp(): Promise<MacPcDriver> {
     const mac = this.#mac;
     if (!mac) throw new PcError('UNAVAILABLE', 'macOS PCs need Lume, which this MineVibe does not have');
-    // Held and answering; a serve that died meanwhile is started again (under the lease lock).
+    // Held and running (a busy serve included); a serve that died meanwhile is started again (under the lease lock).
     if (mac.engineHeld && (await mac.engineAlive())) return mac;
-    const prefix = `mv-pc-${this.instanceId}-`;
     this.#macEngine ??= mac
       .ensureEngine({
-        keep: (vm) => vm.startsWith(prefix),
+        keep: this.#macKeep,
         onProgress: (m) => this.#log?.info({ lume: m }, 'macOS PC engine'),
       })
       .finally(() => {
@@ -1239,6 +1246,12 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   async #removeMacVm(p: PcRecord): Promise<void> {
     const mac = this.#mac;
     if (!mac) return;
+    if (!mac.engineHeld && !(await mac.hasVm(this.containerNameOf(p.id)))) {
+      // Never cloned: nothing for Lume to delete, so a PC that never booted can go without Lume (offline, say).
+      await mac.remove(this.containerNameOf(p.id));
+      this.#macLive.delete(p.id);
+      return;
+    }
     const m = await this.#macEngineUp();
     const info = await this.#inspectMacOwned(p, m);
     if (info) await m.remove(info.name);
@@ -1591,6 +1604,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   async #reconcileMac(): Promise<{ adopted: string[]; orphans: string[]; mismatched: string[] }> {
     const out = { adopted: [] as string[], orphans: [] as string[], mismatched: [] as string[] };
     if (!this.#mac || !this.#file.pcs.some((p) => this.#isMac(p))) return out;
+    // VMs die with their serve: with none running there is nothing to adopt, and Lume starts with the first macOS PC.
+    if (!this.#mac.engineHeld && !(await this.#mac.engineRunning().catch(() => true))) return out;
     let mac: MacPcDriver;
     try {
       mac = await this.#macEngineUp();
@@ -1616,8 +1631,6 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.#serialize(rec.id, async () => {
         const token = await this.#readToken(rec.id);
         const display = PC_TYPE_SPECS[rec.type].display;
-        const want = ['setup', ...macShares(rec.mounts, this.#codex).map((l) => l.share.name)];
-        const got = (vm.shares ?? []).map((s) => s.hostPath.split('/').pop() ?? '');
         const ok =
           !!token &&
           !!vm.ip &&
@@ -1625,8 +1638,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           vm.cpus === rec.cpus &&
           vm.memoryBytes === rec.memMiB * 1024 * 1024 &&
           vm.display === `${display[0]}x${display[1]}` &&
-          want.length === got.length &&
-          want.every((n, i) => n === got[i]);
+          this.#macSharesMatch(rec, vm);
         if (ok && token && vm.ip) {
           try {
             await this.#recheckVault(rec);
@@ -1649,6 +1661,35 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       });
     }
     return out;
+  }
+
+  /**
+   * Whether a running VM shares exactly what the record says: `setup` read-only, then each Vault folder and the Codex by
+   * name, read-only flag and the folder its link points at. A run that kept an older, read-write share of a folder the
+   * record now mounts read-only (a mount change cut short by a crash) is never adopted.
+   */
+  #macSharesMatch(rec: PcRecord, vm: MacVmInfo): boolean {
+    const want = [
+      { name: 'setup', readOnly: true, target: undefined as string | undefined },
+      ...macShares(rec.mounts, this.#codex).map((l) => ({
+        name: l.share.name,
+        readOnly: l.share.readOnly,
+        target: l.share.hostPath as string | undefined,
+      })),
+    ];
+    const got = vm.shares ?? [];
+    return (
+      want.length === got.length &&
+      want.every((w, i) => {
+        const g = got[i];
+        return (
+          !!g &&
+          (g.hostPath.split('/').pop() ?? '') === w.name &&
+          g.readOnly === w.readOnly &&
+          (w.target === undefined || g.target === w.target)
+        );
+      })
+    );
   }
 
   #vaultOptions() {
@@ -2984,8 +3025,25 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#macLive = live;
     } catch (err) {
       this.#log?.debug({ err: errText(err) }, 'monitor: macOS VM list failed');
+      // Only a serve whose process is gone took its VMs with it; a busy one answers again later (S6).
       if (!(await mac.engineAlive().catch(() => true))) await this.#macEngineLost(epochs);
       return;
+    }
+    // About once a minute, VMs of MineVibe processes that died (in a serve another MineVibe keeps running) are stopped.
+    // In the background: the reaper takes the Lume lock, which another process may hold for a while.
+    if ((pass - 1) % MAC_REAP_EVERY_PASSES === 0 && !this.#macReaping) {
+      this.#macReaping = mac
+        .reapOrphans(this.#macKeep)
+        .then(
+          (stopped) => {
+            if (stopped.length)
+              this.#log?.warn({ stopped }, 'stopped macOS VMs of MineVibe processes that died');
+          },
+          (err: unknown) => this.#log?.warn({ err: errText(err) }, 'macOS VM reaper failed'),
+        )
+        .finally(() => {
+          this.#macReaping = null;
+        });
     }
     for (const p of [...this.#file.pcs]) {
       if (!this.#isMac(p)) continue;

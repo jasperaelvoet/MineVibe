@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { EngineLeases } from '../../src/pcs/drivers/EngineLeases.js';
 import { type ExecFn, execWithTimeout } from '../../src/pcs/drivers/exec.js';
 import {
   type LumeLocks,
@@ -302,6 +303,98 @@ describe('lume serve: leases, the reaper and the lifeline', () => {
     // The list takes no storage query (0.6.1 answers 404 to one).
     expect(fake.calls).toContain('GET /lume/vms');
     await rt.releaseAndStopIfUnused();
+  });
+
+  it("the reaper in a shared serve: a dead process's VMs stop, a live owner's stay, ours are claimed", async () => {
+    const { root, fake, files } = serveRoot();
+    const other = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });
+    const gone = spawn('/usr/bin/true', [], { stdio: 'ignore' });
+    await new Promise((r) => gone.once('exit', r));
+    try {
+      const rt = new LumeRuntime({
+        root,
+        locks: locksFor(files),
+        cacheDir: dir,
+        fetchImpl: fake.fetch as typeof fetch,
+      });
+      const otherStart = await rt.leases.processStart(other.pid as number);
+      const owners: Record<string, unknown> = {
+        'mv-pc-a-mac-1': { pid: gone.pid, started: 'Thu Jan  1 00:00:00 2026' },
+        'mv-pc-b-mac-1': { pid: other.pid, started: otherStart },
+        'mv-pc-c-mac-1': undefined,
+        'mv-pc-mine-mac-1': { pid: gone.pid, started: 'Thu Jan  1 00:00:00 2026' },
+      };
+      for (const [name, owner] of Object.entries(owners)) {
+        fake.addVm(name, { status: 'running', ip: '192.168.65.9' });
+        writeFileSync(
+          join(root, 'vms', name, 'minevibe.json'),
+          JSON.stringify({ labels: {}, ...(owner ? { owner } : {}) }),
+        );
+      }
+      // Another live MineVibe holds the serve: before owners, nothing was reaped while it lived.
+      await new EngineLeases({ dir: join(root, 'minevibe-leases'), pid: other.pid as number }).acquire();
+      const keep = (vm: string) => vm.startsWith('mv-pc-mine-');
+      await rt.startAndLease({ keep });
+      expect(fake.calls.filter((c) => c.endsWith('/stop'))).toEqual(['POST /lume/vms/mv-pc-a-mac-1/stop']);
+      const sidecar = (vm: string) =>
+        JSON.parse(readFileSync(join(root, 'vms', vm, 'minevibe.json'), 'utf8')) as {
+          owner?: { pid: number };
+        };
+      expect(sidecar('mv-pc-mine-mac-1').owner?.pid).toBe(process.pid);
+      // The other MineVibe dies: its VM and the one nobody owns go with the next pass of the reaper.
+      other.kill('SIGKILL');
+      await new Promise((r) => other.once('exit', r));
+      expect((await rt.reapOrphans(keep)).sort()).toEqual(['mv-pc-b-mac-1', 'mv-pc-c-mac-1']);
+      expect(fake.vms.get('mv-pc-mine-mac-1')?.status).toBe('running');
+      await rt.releaseAndStopIfUnused();
+    } finally {
+      other.kill();
+    }
+  });
+
+  it('a busy serve is not a dead one: never replaced under another MineVibe, never taken for crashed', async () => {
+    const { root, fake, files } = serveRoot();
+    const other = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });
+    try {
+      const mk = (pid?: number) =>
+        new LumeRuntime({
+          root,
+          locks: locksFor(files),
+          cacheDir: dir,
+          fetchImpl: fake.fetch as typeof fetch,
+          timeouts: { answer: 100, serveStart: 1_000 },
+          ...(pid ? { leases: { pid } } : {}),
+        });
+      const a = mk(other.pid as number);
+      await a.startAndLease();
+      const sup = supervisorOf(root);
+      fake.stalled = true;
+      // The process runs: alive, however slowly it answers.
+      expect(await a.serveRunning()).toBe(true);
+      const b = mk();
+      await expect(b.startAndLease()).rejects.toMatchObject({ code: 'SERVE_FAILED' });
+      expect(alive(sup)).toBe(true);
+      expect(supervisorOf(root)).toBe(sup);
+      // Answering again: the next join uses it.
+      fake.stalled = false;
+      await b.startAndLease();
+      expect(b.port).toBe(a.port);
+      await b.releaseAndStopIfUnused();
+      // Silent with nobody else on it: replaced.
+      other.kill('SIGKILL');
+      await new Promise((r) => other.once('exit', r));
+      fake.stalled = true;
+      const c = mk();
+      const started = c.startAndLease();
+      expect(await until(() => !alive(sup), 5_000)).toBe(true);
+      // The replacement answers.
+      fake.stalled = false;
+      await started;
+      expect(supervisorOf(root)).not.toBe(sup);
+      await c.releaseAndStopIfUnused();
+    } finally {
+      other.kill();
+    }
   });
 
   it('the lifeline: once no lease names a live process, the supervisor stops the serve by itself', async () => {

@@ -167,15 +167,14 @@ export function parseSetupOutput(stdout: string): { ok: boolean; warnings: strin
 /**
  * Refreshes the guest's view of host edits (S6: AppleVirtIOFS caches them). `purge` drops cached file data (in-place
  * rewrites); an unmount + `mount_virtiofs` also drops cached names (rename-replaced files), but only when nothing holds
- * the share busy. Prints `remounted`, `purged` or `MVERR …`.
+ * the share busy. Shares found unmounted (a remount that failed before) are mounted again, so one failure never leaves
+ * the Vault gone for the rest of the run. Prints `remounted`, `purged` or `MVERR …`.
  */
 export const MAC_REFRESH_SCRIPT = `M=${JSON.stringify(MAC_SHARE_ROOT)}
+mounted() { mount | grep -qF " on $M ("; }
 sudo -n purge 2>/dev/null
-if sudo -n umount "$M" 2>/dev/null; then
-  sudo -n mkdir -p "$M"
-  mount | grep -qF " on $M " || sudo -n mount_virtiofs -u "$(id -u)" -g "$(id -g)" com.apple.virtio-fs.automount "$M" 2>/dev/null
-  for i in 1 2 3 4 5 6 7 8 9 10; do [ -d "$M/setup" ] && break; sleep 0.2; done
-  if [ -d "$M/setup" ]; then echo remounted; else echo "MVERR the shares did not come back"; fi
-else
-  echo purged
-fi`;
+if mounted && ! sudo -n umount "$M" 2>/dev/null; then echo purged; exit 0; fi
+sudo -n mkdir -p "$M"
+mounted || sudo -n mount_virtiofs -u "$(id -u)" -g "$(id -g)" com.apple.virtio-fs.automount "$M" 2>/dev/null
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -d "$M/setup" ] && break; sleep 0.2; done
+if [ -d "$M/setup" ]; then echo remounted; else echo "MVERR the shares did not come back"; fi`;

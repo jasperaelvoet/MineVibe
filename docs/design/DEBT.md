@@ -67,6 +67,18 @@ was saved into the GameTest world, which is kept from run to run, so every later
   and Lume's `diskSize.allocated` counts the shared blocks, so what a PC really adds is not measured; the base itself
   is counted by the free disk.
 - **The Lume root is not excluded from Time Machine** (≥ 29 GiB base plus clones), like the `container` app root.
+- **`lume serve` has no authentication.** It binds 127.0.0.1 on a random port, so the guests cannot reach it (S6), but
+  any process of any local user can: on a Mac shared between accounts, another user could run a VM through it that
+  shares this user's folders (the serve runs as this user). Lume has no token option; a fix needs one upstream or a
+  socket only this user can open.
+- **Double and triple clicks on macOS PCs are not checked against the guest.** The InputRouter sends the first click at
+  once and the second as `click{count:2}`; if spacesd's macOS driver makes a count-2 click two clicks (as pynput
+  does), the app sees click, click, double-click (harmless in editors; Finder opens the file once).
+- **The serve log grows with every API call** (Lume logs request and response bodies: tens of MB a day with two
+  running PCs and the monitor) and is only rotated when the serve starts.
+- **The serve's lifeline checks lease pids with `kill -0` only.** A pid reused within its 10 s window keeps the serve
+  (and its VMs) alive until the next MineVibe takes the lock; comparing start times in `sh` was judged too fragile, a
+  wrong "dead" would kill live VMs.
 
 ## Found by navigation v2 (2026-10-09)
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars

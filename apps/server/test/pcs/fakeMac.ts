@@ -64,6 +64,21 @@ export class FakeMacDriver implements MacPcDriver {
   async engineAlive() {
     return this.engineHeld && !this.serveDead;
   }
+  /** A serve of the root runs (this process's or another's); set by hand for "another process kept it". */
+  serveRunsElsewhere = false;
+  async engineRunning() {
+    return (this.engineHeld && !this.serveDead) || this.serveRunsElsewhere;
+  }
+  /** What the reaper was called with, and the VMs it reports stopped. */
+  reaps: ((vm: string) => boolean)[] = [];
+  reapResult: string[] = [];
+  async reapOrphans(keep: (vm: string) => boolean) {
+    this.reaps.push(keep);
+    return this.reapResult;
+  }
+  async hasVm(name: string) {
+    return this.vms.has(name);
+  }
   /** Lume crashed: every VM stopped and the API is gone. */
   crashServe(): void {
     this.serveDead = true;
@@ -171,6 +186,7 @@ export class FakeMacDriver implements MacPcDriver {
               ...vm.shares.map((s) => ({
                 hostPath: `/lume/shares/${name}/links/${s.name}`,
                 readOnly: s.readOnly,
+                target: s.hostPath,
               })),
             ],
           }

@@ -55,8 +55,11 @@ export interface MacVmInfo {
   diskAllocatedBytes?: number;
   /** sha256 of the token in its setup share (the token itself never leaves the driver). */
   tokenSha256?: string;
-  /** The folders shared with the current run (Lume's `sessions.json`). */
-  shares?: { hostPath: string; readOnly: boolean }[];
+  /**
+   * The folders shared with the current run (Lume's `sessions.json`); `target` is the folder a share link points at
+   * (the Vault folder or the Codex), absent for `setup`.
+   */
+  shares?: { hostPath: string; readOnly: boolean; target?: string }[];
   /** The serve logged that the VM ended after its last start (Lume's status may still say running). */
   ended?: boolean;
 }
@@ -115,8 +118,20 @@ export interface MacPcDriver {
   shutdownEngine(): Promise<boolean>;
   /** Whether {@link ensureEngine} succeeded in this process (and the server was not let go since). */
   readonly engineHeld: boolean;
-  /** Whether the server this process holds still runs and answers (it may have crashed; its VMs die with it). */
+  /**
+   * Whether the server this process holds still runs (it may have crashed; its VMs die with it). A server that runs but
+   * answers slowly is alive: it is never given up for being busy.
+   */
   engineAlive(): Promise<boolean>;
+  /** Whether a server of this root runs at all, held or not (no VM can run without one). Starts nothing. */
+  engineRunning(): Promise<boolean>;
+  /**
+   * The reaper (while the engine is held): claims the running VMs `keep` names for this process and stops every other
+   * running MineVibe VM whose owner process died. Returns the VMs it stopped.
+   */
+  reapOrphans(keep: (vmName: string) => boolean): Promise<string[]>;
+  /** Whether the VM exists on disk (no engine needed): a PC that never booted has nothing to remove. */
+  hasVm(name: string): Promise<boolean>;
 
   baseImage(): Promise<MacBaseImage>;
   /** Pulls the base image (once; concurrent callers share the pull) and checks its digest. */
@@ -136,7 +151,7 @@ export interface MacPcDriver {
    * `timeoutMs` (default 30 s) to end before it is powered off.
    */
   stop(name: string, options?: { graceful?: () => Promise<void>; timeoutMs?: number }): Promise<void>;
-  /** Deletes the VM (stopping it first) and its shares folder. */
+  /** Deletes the VM (stopping it first) and its shares folder; a VM not on disk needs no engine. */
   remove(name: string): Promise<void>;
   inspect(name: string): Promise<MacVmInfo | null>;
   /** VMs whose labels carry every given label. */

@@ -38,8 +38,14 @@ import { type ExecFn, execWithTimeout } from './exec.js';
  *   only MineVibe, which stops its VMs gracefully first). The supervisor stops the serve, and with it every VM it runs,
  *   once no lease file has named a live process for about 10 s: VMs never outlive the MineVibe processes that use them,
  *   even after a `kill -9`.
- * - **Reaper.** The next process that takes the lock with no other live lease adopts a serve it finds running and stops
- *   every MineVibe VM in it except its own instance's (PcManager adopts or stops those).
+ * - **Owners and the reaper.** Every start records its process (pid and start time) as the VM's owner in its sidecar.
+ *   Under the lock, a process joining the serve (and every PcManager monitor about once a minute) claims its own
+ *   instance's VMs and stops every other running MineVibe VM whose owner died, so a crashed process's VMs never live on
+ *   in a serve that another MineVibe keeps running. A VM without an owner (made before owners) is stopped only when no
+ *   other live lease exists.
+ * - **A busy serve is not a dead one.** `GET` once took minutes after a guest shutdown (S6), so a serve whose process
+ *   runs is never taken for gone because it answers slowly: joining waits for it, and it is replaced only when it stays
+ *   silent and no other MineVibe uses it (its VMs would die with it).
  * - **The serve log is the truth** (S6): `GET` keeps saying `running` after a guest-side shutdown and never says why a
  *   start failed, so the serve writes to `<root>/serve/serve.log` (a file: a pipe Node stops draining blocks the serve)
  *   and this class reads the `VM lifecycle ended` and `Failed in VM.run` lines from it.
@@ -120,6 +126,14 @@ export const LUME_STORAGE = 'minevibe';
 
 /** MineVibe's labels next to a VM it made (`<vms>/<vm>/minevibe.json`): Lume has no labels of its own. */
 export const VM_SIDECAR = 'minevibe.json';
+
+/** What a VM's sidecar holds. */
+export interface VmSidecar {
+  labels?: Record<string, string>;
+  createdAt?: number;
+  /** The process that started (or adopted) the VM last: the reaper stops a running VM whose owner died. */
+  owner?: { pid: number; started: string | null; at?: number };
+}
 
 /** The serve log line of a VM that stopped (guest shutdown, crash or stop). */
 const ENDED_RE = /^\[([0-9T:.-]+Z)\] INFO: VM lifecycle ended\b(.*)$/;
@@ -207,7 +221,9 @@ interface ServeRecord {
 export interface LumeRuntimeTimeouts {
   /** Default deadline of one API call. */
   api: number;
-  /** Until a fresh serve answers. */
+  /** One "is this our serve" probe (`GET /lume/config/locations`). */
+  answer: number;
+  /** Until a fresh serve answers, and how long a joining process waits for a running one that is slow. */
   serveStart: number;
   /** SIGTERM → exit before SIGKILL. */
   serveStop: number;
@@ -217,6 +233,7 @@ export interface LumeRuntimeTimeouts {
 
 const DEFAULT_TIMEOUTS: LumeRuntimeTimeouts = {
   api: 15_000,
+  answer: 5_000,
   serveStart: 20_000,
   serveStop: 10_000,
   reapStop: 60_000,
@@ -528,8 +545,8 @@ export class LumeRuntime {
 
   /**
    * Takes this process's lease and makes sure a serve of this root runs, under the lock (so a quitting process cannot
-   * stop it in between). With no other live lease, MineVibe VMs left running by dead processes are stopped, except
-   * those `keep` names (the caller's own instance).
+   * stop it in between). Then the reaper: the VMs `keep` names (the caller's own instance) are claimed for this process,
+   * and every other running MineVibe VM whose owner died is stopped ({@link reapOrphans}).
    */
   startAndLease(
     options: { keep?: (vm: string) => boolean; onProgress?: (m: string) => void } = {},
@@ -537,8 +554,18 @@ export class LumeRuntime {
     return this.leases.withLock(async () => {
       await this.leases.acquire();
       await this.#ensureServe(options.onProgress);
-      if ((await this.leases.others()).length === 0) await this.#reap(options.keep ?? (() => false));
+      await this.#reap(options.keep ?? (() => false));
     });
+  }
+
+  /**
+   * The reaper on its own (PcManager's monitor runs it about once a minute): claims the VMs `keep` names and stops every
+   * other running MineVibe VM whose owner process died. Returns the VMs it stopped. Only while this process holds the
+   * serve.
+   */
+  reapOrphans(keep: (vm: string) => boolean): Promise<string[]> {
+    if (this.#port === null) return Promise.resolve([]);
+    return this.leases.withLock(() => this.#reap(keep));
   }
 
   /** Drops this process's lease and stops the serve only when no other live MineVibe holds one. */
@@ -558,12 +585,22 @@ export class LumeRuntime {
     });
   }
 
-  /** Whether the serve this process uses still runs and answers on its port. */
-  async serveAlive(): Promise<boolean> {
+  /**
+   * Whether the serve this process uses still runs (its process; answering slowly does not make it dead, S6). True
+   * while `ps` cannot tell: a serve is never given up on a guess, its VMs would be taken for crashed.
+   */
+  async serveRunning(): Promise<boolean> {
     const rec = await this.#readServe();
-    return (
-      !!rec && rec.port === this.#port && (await this.#isOurServe(rec)) && (await this.#answers(rec.port))
-    );
+    return !!rec && rec.port === this.#port && (await this.#serveState(rec)) !== 'gone';
+  }
+
+  /**
+   * Whether a serve of this root runs now, whoever started it (no lease taken): only then can a MineVibe VM be running
+   * (VMs die with their serve).
+   */
+  async serveExists(): Promise<boolean> {
+    const rec = await this.#readServe();
+    return !!rec && (await this.#serveState(rec)) !== 'gone';
   }
 
   async #readServe(): Promise<ServeRecord | null> {
@@ -575,22 +612,29 @@ export class LumeRuntime {
     }
   }
 
-  /** Whether the recorded serve is the one still running (same pid, start time and binary). */
-  async #isOurServe(rec: ServeRecord): Promise<boolean> {
+  /**
+   * Whether the recorded serve is the one still running: `ours` (same pid, start time and binary), `gone` (no such
+   * process, or another one under a reused pid), or `unknown` (`ps` did not answer). Only `ours` may be signalled.
+   */
+  async #serveState(rec: ServeRecord): Promise<'ours' | 'gone' | 'unknown'> {
     try {
       process.kill(rec.pid, 0);
-    } catch {
-      return false;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'gone';
     }
     const started = await this.leases.processStart(rec.pid);
-    if (started === 'gone' || (rec.started && started !== rec.started)) return false;
+    if (started === 'gone') return 'gone';
+    if (started === null) return 'unknown';
+    if (rec.started && started !== rec.started) return 'gone';
     const cmd = await this.#exec('/bin/ps', ['-o', 'command=', '-p', String(rec.pid)], { timeoutMs: 5000 });
-    return cmd.code === 0 && cmd.stdout.includes(rec.bin);
+    if (cmd.timedOut || cmd.error) return 'unknown';
+    if (cmd.code !== 0) return cmd.stdout.trim() ? 'unknown' : 'gone';
+    return cmd.stdout.includes(rec.bin) ? 'ours' : 'gone';
   }
 
   async #answers(port: number): Promise<boolean> {
     try {
-      const r = await this.#apiOn(port, 'GET', '/lume/config/locations', undefined, 5_000);
+      const r = await this.#apiOn(port, 'GET', '/lume/config/locations', undefined, this.#t.answer);
       if (r.status !== 200 || !Array.isArray(r.body)) return false;
       // The serve must be ours: its storage location points into this root.
       return (r.body as { name?: string; path?: string }[]).some(
@@ -604,14 +648,32 @@ export class LumeRuntime {
   async #ensureServe(onProgress?: (m: string) => void): Promise<void> {
     await this.writeConfig();
     const rec = await this.#readServe();
-    if (rec && (await this.#isOurServe(rec))) {
-      if (await this.#answers(rec.port)) {
-        this.#port = rec.port;
-        return;
+    const state = rec ? await this.#serveState(rec) : 'gone';
+    if (rec && state !== 'gone') {
+      // A running serve may just be busy (S6: a GET once took minutes): give it the start deadline to answer.
+      const deadline = Date.now() + this.#t.serveStart;
+      for (;;) {
+        if (await this.#answers(rec.port)) {
+          this.#port = rec.port;
+          return;
+        }
+        if (Date.now() >= deadline || (await this.#serveState(rec)) === 'gone') break;
+        await new Promise((r) => setTimeout(r, 500));
       }
-      // Ours but wedged: replace it (its VMs die with it).
-      this.#log?.warn({ pid: rec.pid }, 'lume serve does not answer; restarting it');
-      await this.#kill(rec);
+      const now = await this.#serveState(rec);
+      if (now !== 'gone') {
+        const others = await this.leases.others();
+        if (now !== 'ours' || others.length > 0) {
+          // Its VMs (another MineVibe's among them) would die with it: never replaced on a guess or under someone.
+          throw new LumeError(
+            'SERVE_FAILED',
+            `lume serve (pid ${rec.pid}) runs but does not answer${others.length > 0 ? ' and another MineVibe uses it' : ''}; try again, or quit every MineVibe to restart it`,
+          );
+        }
+        // Ours, wedged, and nobody else uses it: replace it (its VMs die with it).
+        this.#log?.warn({ pid: rec.pid }, 'lume serve does not answer; restarting it');
+        await this.#kill(rec);
+      }
     }
     onProgress?.('starting lume serve');
     await this.#rotateLog();
@@ -650,7 +712,7 @@ export class LumeRuntime {
 
   /** SIGTERM (then SIGKILL) the process group of a serve proven ours (supervisor and serve); its VMs die with it. */
   async #kill(rec: ServeRecord): Promise<void> {
-    if (!(await this.#isOurServe(rec))) return;
+    if ((await this.#serveState(rec)) !== 'ours') return;
     const signal = (sig: NodeJS.Signals | 0): boolean => {
       try {
         process.kill(-rec.pid, sig);
@@ -676,7 +738,16 @@ export class LumeRuntime {
 
   async #stopServe(): Promise<boolean> {
     const rec = await this.#readServe();
-    if (!rec || !(await this.#isOurServe(rec))) {
+    const state = rec ? await this.#serveState(rec) : 'gone';
+    if (state === 'unknown') {
+      // Not provably ours right now: left running (its supervisor stops it once no lease is left, the lifeline).
+      this.#log?.warn(
+        { pid: rec?.pid },
+        'cannot tell whether lume serve is still ours; leaving it to its lifeline',
+      );
+      return false;
+    }
+    if (!rec || state === 'gone') {
       await rm(this.#servePath, { force: true });
       return false;
     }
@@ -711,28 +782,79 @@ export class LumeRuntime {
     );
   }
 
-  /** Stops every running MineVibe VM of this root that `keep` does not claim (no other live MineVibe uses it). */
-  async #reap(keep: (vm: string) => boolean): Promise<void> {
+  /** A MineVibe VM's sidecar (`<vms>/<vm>/minevibe.json`), or null when the VM has none (not MineVibe's). */
+  async #readSidecar(vm: string): Promise<VmSidecar | null> {
+    try {
+      const s = JSON.parse(await readFile(join(this.vmsDir, vm, VM_SIDECAR), 'utf8')) as VmSidecar;
+      return s && typeof s === 'object' ? s : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Records this process as the owner of a MineVibe VM (its sidecar's `owner`): before every start, and for the VMs a
+   * joining process keeps. The reaper stops a running VM whose owner died. Throws when the VM has no sidecar.
+   */
+  async claimVm(vm: string): Promise<void> {
+    const path = join(this.vmsDir, vm, VM_SIDECAR);
+    const s = JSON.parse(await readFile(path, 'utf8')) as VmSidecar;
+    const me = await this.leases.self();
+    if (s.owner?.pid === me.pid && s.owner.started === me.started) return;
+    await writeFileAtomic(path, `${JSON.stringify({ ...s, owner: { ...me, at: Date.now() } }, null, 2)}\n`, {
+      mode: 0o644,
+    });
+  }
+
+  /**
+   * The reaper (under the lock): claims the running MineVibe VMs (`mv-pc-*` with a sidecar) that `keep` names, and stops
+   * every other one whose owner process died; one with no owner recorded only when no other live lease exists. A VM
+   * whose owner's liveness `ps` cannot tell is left alone. Returns the VMs it stopped.
+   */
+  async #reap(keep: (vm: string) => boolean): Promise<string[]> {
     let vms: { name?: string; status?: string }[];
     try {
       vms = (await this.listVms()) as typeof vms;
     } catch (err) {
       this.#log?.warn({ err: String(err) }, 'lume reaper: listing failed');
-      return;
+      return [];
     }
+    const stopped: string[] = [];
+    let othersLive: boolean | null = null;
     for (const vm of vms) {
       const name = vm.name ?? '';
-      if (vm.status !== 'running' || !/^mv-pc-[a-z0-9-]+$/.test(name) || keep(name)) continue;
-      // Only a VM MineVibe made (its sidecar, LumeMacDriver.create) is ever stopped.
-      if (!existsSync(join(this.vmsDir, name, VM_SIDECAR))) continue;
-      this.#log?.warn({ vm: name }, 'stopping a MineVibe VM nobody uses any more');
-      await this.api(
+      if (vm.status !== 'running' || !/^mv-pc-[a-z0-9-]+$/.test(name)) continue;
+      // Only a VM MineVibe made (its sidecar, LumeMacDriver.create) is ever touched.
+      const sidecar = await this.#readSidecar(name);
+      if (!sidecar) continue;
+      if (keep(name)) {
+        await this.claimVm(name).catch((err: unknown) =>
+          this.#log?.warn({ vm: name, err: String(err) }, 'lume reaper: could not claim a VM'),
+        );
+        continue;
+      }
+      const owner = sidecar.owner;
+      let orphan: boolean;
+      if (owner && Number.isInteger(owner.pid)) {
+        orphan = (await this.leases.liveness({ pid: owner.pid, started: owner.started ?? null })) === 'dead';
+      } else {
+        othersLive ??= (await this.leases.others()).length > 0;
+        orphan = !othersLive;
+      }
+      if (!orphan) continue;
+      this.#log?.warn({ vm: name, owner: owner?.pid }, 'stopping a MineVibe VM whose process is gone');
+      const r = await this.api(
         'POST',
         `/lume/vms/${encodeURIComponent(name)}/stop`,
         { storage: LUME_STORAGE },
         this.#t.reapStop,
-      ).catch((err: unknown) => this.#log?.warn({ vm: name, err: String(err) }, 'lume reaper: stop failed'));
+      ).catch((err: unknown) => {
+        this.#log?.warn({ vm: name, err: String(err) }, 'lume reaper: stop failed');
+        return null;
+      });
+      if (r) stopped.push(name);
     }
+    return stopped;
   }
 
   // ---------------------------------------------------------------- API

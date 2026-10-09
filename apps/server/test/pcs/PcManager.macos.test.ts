@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -163,7 +171,8 @@ describe('macOS PCs (PcManager + a Lume driver)', () => {
     await m.start('mac-1');
     await m.consent('mac-1', m.pendingConsent?.consentId as string, true);
     const starting = m.start('mac-1');
-    for (let i = 0; i < 50 && m.status('mac-1').status !== 'downloading'; i++)
+    // Until the first progress step (the status turns `downloading` at 0% first; under load that step comes later).
+    for (let i = 0; i < 1000 && m.status('mac-1').progress !== 10; i++)
       await new Promise((r) => setTimeout(r, 2));
     expect(m.status('mac-1')).toMatchObject({ status: 'downloading', progress: 10 });
     await m.stop('mac-1');
@@ -301,7 +310,9 @@ describe('macOS PCs (PcManager + a Lume driver)', () => {
     // mac-2's VM was resized behind MineVibe's back.
     (first.mac.vms.get(vmName('mac-2')) as { cpus: number }).cpus = 3;
     const next = setup({ mac: first.mac, stateDir: join(dir, 'state') });
+    // The first process died; another MineVibe kept the serve (and so these VMs) running.
     first.mac.engineHeld = false;
+    first.mac.serveRunsElsewhere = true;
     await next.m.init({ createDefault: false });
     const r = await next.m.reconcile();
     expect(r.adopted).toEqual(['mac-1']);
@@ -313,6 +324,72 @@ describe('macOS PCs (PcManager + a Lume driver)', () => {
     const token = readFileSync(join(dir, 'state', 'pc-tokens', 'mac-1.token'), 'utf8').trim();
     expect(first.mac.vms.get(vmName('mac-1'))?.token).toBe(token);
     expect(tokenFingerprint(token)).toHaveLength(64);
+  });
+
+  it('reconcile never adopts a run that shares a folder read-write that the record mounts read-only', async () => {
+    const first = setup();
+    await first.m.init({ createDefault: false });
+    await first.m.create({ type: 'macos', id: 'mac-1', mounts: [{ host: vault }], boot: true });
+    // The player made the folder read-only; MineVibe died before the VM restarted (another MineVibe kept the serve).
+    const file = JSON.parse(readFileSync(first.m.pcsFile, 'utf8')) as {
+      pcs: { mounts: { ro: boolean }[] }[];
+    };
+    (file.pcs[0] as { mounts: { ro: boolean }[] }).mounts[0] = { ...file.pcs[0]?.mounts[0], ro: true };
+    writeFileSync(first.m.pcsFile, JSON.stringify(file));
+    first.mac.engineHeld = false;
+    first.mac.serveRunsElsewhere = true;
+    const next = setup({ mac: first.mac, stateDir: join(dir, 'state') });
+    await next.m.init({ createDefault: false });
+    const r = await next.m.reconcile();
+    expect(r).toMatchObject({ adopted: [], mismatched: ['mac-1'] });
+    expect(first.mac.vms.get(vmName('mac-1'))?.state).toBe('stopped');
+    await next.m.start('mac-1');
+    expect(first.mac.log.at(-1)).toBe(`start ${vmName('mac-1')} foo:ro`);
+  });
+
+  it('with no lume serve running, reconcile starts nothing: Lume waits for the first macOS PC', async () => {
+    const { m, mac } = setup();
+    await m.init({ createDefault: false });
+    await m.create({ type: 'macos', id: 'mac-1' });
+    expect(await m.reconcile()).toMatchObject({ adopted: [], orphans: [], mismatched: [] });
+    expect(mac.log).not.toContain('engine');
+    expect(mac.engineHeld).toBe(false);
+  });
+
+  it('a macOS PC that never booted is decommissioned and reimaged without Lume (offline, say)', async () => {
+    const { m, mac } = setup();
+    await m.init({ createDefault: false });
+    await m.create({ type: 'macos', id: 'mac-1' });
+    await m.create({ type: 'macos', id: 'mac-2' });
+    mac.engineError = new Error('download https://github.com/…/lume.tgz: fetch failed');
+    await m.reimage('mac-2');
+    expect(m.status('mac-2').status).toBe('off');
+    await m.decommission('mac-1');
+    expect(m.get('mac-1')).toBeUndefined();
+    expect(mac.log).not.toContain('engine');
+    // A PC whose VM exists still needs Lume to delete it.
+    mac.engineError = null;
+    await m.start('mac-2');
+    await m.stop('mac-2');
+    await mac.shutdownEngine();
+    mac.engineError = new Error('offline');
+    await expect(m.decommission('mac-2')).rejects.toMatchObject({ code: 'ENGINE_DOWN' });
+    expect(mac.vms.has(vmName('mac-2'))).toBe(true);
+  });
+
+  it("the monitor runs Lume's reaper for VMs of dead MineVibe processes, keeping this instance's", async () => {
+    const { m, mac } = setup({ health: {} });
+    await m.init({ createDefault: false });
+    await m.create({ type: 'macos', id: 'mac-1', boot: true });
+    await m.monitorOnce();
+    for (let i = 0; i < 50 && mac.reaps.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(mac.reaps).toHaveLength(1);
+    expect(mac.reaps[0]?.(vmName('mac-1'))).toBe(true);
+    expect(mac.reaps[0]?.('mv-pc-other123-mac-1')).toBe(false);
+    // Not on every pass: about once a minute.
+    await m.monitorOnce();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(mac.reaps).toHaveLength(1);
   });
 
   it('a host edit of the Vault refreshes the guest view before the next PcApi call (macOS only)', async () => {

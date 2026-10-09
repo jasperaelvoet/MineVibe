@@ -11,6 +11,7 @@ import {
   MAC_EDIT_READ_SCRIPT,
   MAC_EDIT_WRITE_SCRIPT,
   MAC_OPEN_SCRIPT,
+  MAC_SHARE_ROOT,
   MAC_STAT_TARGET_SCRIPT,
   MAC_SWEEP_SCRIPT,
   MAC_TRIM_JOB_SCRIPT,
@@ -19,7 +20,13 @@ import {
   SCRIPT_EXIT,
   SWEEP_LAUNCH,
 } from '../../src/pcs/guest.js';
-import { macSetupArgs, macShares, parseSetupOutput, shareNameOf } from '../../src/pcs/macGuest.js';
+import {
+  MAC_REFRESH_SCRIPT,
+  macSetupArgs,
+  macShares,
+  parseSetupOutput,
+  shareNameOf,
+} from '../../src/pcs/macGuest.js';
 import { macMirrorScript, macMirrorTerminal } from '../../src/pcs/ShellMirror.js';
 
 describe('macOS shares', () => {
@@ -74,6 +81,69 @@ describe('macOS shares', () => {
       error: 'sudo needs a password',
     });
   });
+});
+
+describe('the guest view refresh', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mv-refresh-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /**
+   * MAC_REFRESH_SCRIPT with the share root in a temp folder and stand-ins for sudo, purge, mount, umount and
+   * mount_virtiofs: `state/mounted` says whether the shares are mounted, `state/busy` makes umount fail, and
+   * `state/mountfails` makes mount_virtiofs fail.
+   */
+  const refresh = (state: { mounted: boolean; busy?: boolean; mountFails?: boolean }) => {
+    const M = join(dir, 'My Shared Files');
+    const bin = join(dir, 'bin');
+    const st = join(dir, 'state');
+    execFileSync('/bin/mkdir', ['-p', bin, st, M]);
+    const stub = (name: string, body: string) => {
+      writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`);
+      execFileSync('/bin/chmod', ['+x', join(bin, name)]);
+    };
+    stub('sudo', '[ "$1" = -n ] && shift; exec "$@"');
+    stub('purge', 'exit 0');
+    stub(
+      'mount',
+      `[ -f "${st}/mounted" ] && echo "com.apple.virtio-fs.automount on ${M} (virtiofs, local)"; exit 0`,
+    );
+    // Like umount(8): a path that is not mounted fails, and so does a busy one.
+    stub(
+      'umount',
+      `[ -f "${st}/mounted" ] || exit 1; [ -f "${st}/busy" ] && exit 16; rm -f "${st}/mounted"; rmdir "$1/setup" 2>/dev/null; exit 0`,
+    );
+    stub(
+      'mount_virtiofs',
+      `[ -f "${st}/mountfails" ] && exit 1; touch "${st}/mounted"; mkdir -p "${M}/setup"; echo "$@" >> "${st}/mounts"`,
+    );
+    for (const [f, on] of [
+      ['mounted', state.mounted],
+      ['busy', state.busy],
+      ['mountfails', state.mountFails],
+    ] as const) {
+      if (on) writeFileSync(join(st, f), '');
+      else rmSync(join(st, f), { force: true });
+    }
+    if (state.mounted) execFileSync('/bin/mkdir', ['-p', join(M, 'setup')]);
+    else rmSync(join(M, 'setup'), { recursive: true, force: true });
+    const script = MAC_REFRESH_SCRIPT.replace(JSON.stringify(MAC_SHARE_ROOT), JSON.stringify(M));
+    return execFileSync('/bin/bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir },
+    }).trim();
+  };
+
+  it('remounts when it can, only purges while the share is busy, and mounts shares a failed remount left gone', () => {
+    expect(refresh({ mounted: true })).toBe('remounted');
+    expect(refresh({ mounted: true, busy: true })).toBe('purged');
+    // The remount failed: the shares are gone until a refresh mounts them again.
+    expect(refresh({ mounted: true, mountFails: true })).toBe('MVERR the shares did not come back');
+    expect(refresh({ mounted: false })).toBe('remounted');
+    expect(readFileSync(join(dir, 'state', 'mounts'), 'utf8')).toContain('com.apple.virtio-fs.automount');
+  }, 20_000);
 });
 
 describe('guest profiles', () => {

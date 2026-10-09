@@ -116,6 +116,16 @@ export class EngineLeases {
     return { pid: this.#pid, started: await this.#selfStart(), holder: this.#holder, at: Date.now() };
   }
 
+  /** This process as a lease names it (pid and start time): the owner of something it runs (a VM, LumeRuntime). */
+  async self(): Promise<Pick<LeaseRecord, 'pid' | 'started'>> {
+    return { pid: this.#pid, started: await this.#selfStart() };
+  }
+
+  /** Whether the process a record names still runs (same rules as a lease: pid plus start time). */
+  liveness(rec: Pick<LeaseRecord, 'pid' | 'started'>): Promise<Liveness> {
+    return this.#liveness({ holder: '', at: 0, ...rec });
+  }
+
   async #defaultLiveness(rec: LeaseRecord): Promise<Liveness> {
     if (!Number.isInteger(rec.pid) || rec.pid <= 0) return 'dead';
     try {

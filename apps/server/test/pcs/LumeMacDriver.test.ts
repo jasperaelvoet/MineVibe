@@ -97,10 +97,36 @@ describe('LumeMacDriver (against a fake lume serve)', () => {
     free = 500 * GiB;
     fake.pullDigest = `sha256:${'e'.repeat(64)}`;
     await expect(driver().pullBase()).rejects.toMatchObject({ code: 'VERIFY_FAILED' });
-    fake.vms.delete(BASE);
-    rmSync(join(dir, 'lume', 'vms', BASE), { recursive: true, force: true });
+    // An image that is not the pinned one never counts: its disk is given back at once.
+    expect(fake.calls).toContain(`DELETE /lume/vms/${BASE}`);
+    expect(fake.vms.has(BASE)).toBe(false);
+    expect(existsSync(join(dir, 'lume', 'vms', BASE))).toBe(false);
     fake.pullFails = true;
     await expect(driver().pullBase()).rejects.toThrow(/download failed: Async pull failed/);
+  });
+
+  it('a pull that runs the disk low is cancelled before it fills the Mac', async () => {
+    const d = driver();
+    let polls = 0;
+    const low = new LumeMacDriver(d.runtime, {
+      pollMs: 1,
+      // Plenty at the start; then the download eats the disk.
+      freeDisk: async () => (polls++ === 0 ? 500 * GiB : 9 * GiB),
+    });
+    await expect(low.pullBase()).rejects.toThrow(/download was stopped: only 9 GiB of disk was left/);
+    expect(fake.calls).toContain('POST /lume/pull/cancel');
+    expect(fake.calls).toContain(`DELETE /lume/vms/${BASE}`);
+    expect(fake.vms.has(BASE)).toBe(false);
+  });
+
+  it('remove of a VM that was never cloned needs no lume serve', async () => {
+    const d = driver();
+    const shares = join(dir, 'lume', 'shares', 'mv-pc-unit-mac-9');
+    mkdirSync(join(shares, 'setup'), { recursive: true });
+    expect(await d.hasVm('mv-pc-unit-mac-9')).toBe(false);
+    await d.remove('mv-pc-unit-mac-9');
+    expect(existsSync(shares)).toBe(false);
+    expect(fake.calls).toEqual([]);
   });
 
   it('create: a clone with CPUs, memory, display and the labels; another VM of that name is left alone', async () => {
@@ -190,7 +216,18 @@ describe('LumeMacDriver (against a fake lume serve)', () => {
     ]);
     const info = await d.inspect('mv-pc-unit-mac-1');
     expect(info).toMatchObject({ state: 'running', ip, tokenSha256: tokenFingerprint('t'.repeat(48)) });
-    expect(info?.shares).toEqual(session.sharedDirectories);
+    // Each Vault share names the folder its link points at (what adoption checks against the record).
+    expect(info?.shares).toEqual([
+      { hostPath: join(shares, 'setup'), readOnly: true },
+      { hostPath: join(shares, 'links', 'web-app'), readOnly: false, target: vault },
+      { hostPath: join(shares, 'links', 'codex'), readOnly: true, target: join(dir, 'codex') },
+    ]);
+    // The run is owned by this process (the reaper of another MineVibe stops it only once this process is gone).
+    const sidecar = JSON.parse(
+      readFileSync(join(dir, 'lume', 'vms', 'mv-pc-unit-mac-1', 'minevibe.json'), 'utf8'),
+    ) as { labels: Record<string, string>; owner?: { pid: number } };
+    expect(sidecar.labels).toEqual(LABELS);
+    expect(sidecar.owner?.pid).toBe(process.pid);
     // The token never reaches the API.
     expect(JSON.stringify(fake.calls)).not.toContain('t'.repeat(48));
     // A restart with fewer shares drops the stale link.

@@ -30,6 +30,8 @@ export class FakeLume {
   pullDigest = `sha256:${'a'.repeat(64)}`;
   /** Make the next pull fail (GET answers 400). */
   pullFails = false;
+  /** A busy serve: every request hangs until its caller gives up (S6 once saw a GET take minutes). */
+  stalled = false;
   #ip = 2;
 
   constructor(root: string) {
@@ -87,6 +89,15 @@ export class FakeLume {
     const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     const path = decodeURIComponent(url.pathname);
     this.calls.push(`${method} ${path}`);
+    if (this.stalled) {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init.signal;
+        const fail = () =>
+          reject(Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' }));
+        if (signal?.aborted) fail();
+        signal?.addEventListener('abort', fail, { once: true });
+      });
+    }
     const m = /^\/lume\/vms\/([^/]+)(\/run|\/stop)?$/.exec(path);
     if (method === 'GET' && path === '/lume/vms') {
       // 0.6.1 does not route the list with a query string.
