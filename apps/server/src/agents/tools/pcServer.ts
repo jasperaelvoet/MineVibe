@@ -9,6 +9,7 @@ export {
   clipOutput,
   createPcServer,
   isPcToolUse,
+  jobNotification,
   numberLines,
   ownJobKey,
   PC_TOOLS,

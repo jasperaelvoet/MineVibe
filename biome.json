@@ -16,7 +16,7 @@
       "!**/.astro",
       "!scripts/e2e/out",
       "!**/out",
-      "!!**/.claude"
+      "!!.claude"
     ]
   },
   "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },

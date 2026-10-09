@@ -39,7 +39,7 @@ function body(agentId: string): AgentBody {
     hasFood: true,
     inCombat: false,
     playerDistance: 4.2,
-    zone: { kind: 'base', name: 'Base (office)' },
+    zone: 'in Base',
   };
 }
 
@@ -62,6 +62,22 @@ async function officeWorld() {
 async function wake(w: Harness, q: FakeQuery, text: string) {
   await w.manager.deliverChat({ to: 'all', text: `@ada ${text}` });
   await w.until(() => w.texts(q).some((t) => t.includes(text)), `wake ${text}`);
+}
+
+const TOKEN = '3f9c2a7be41d08c65a9e0b7d21c4f8e1';
+
+/** The mod's `result.protected` for the pillar (protocol §7.4.1). */
+function protectedDetail() {
+  return {
+    pos: PILLAR,
+    what: 'base',
+    owner: 'Jasper',
+    block: 'minecraft:stripped_spruce_log',
+    zone: 'Base',
+    count: 1,
+    consentId: TOKEN,
+    hint: "That's part of Jasper's base — ask Jasper before changing it.",
+  };
 }
 
 /** The agent's mine of the house is refused PROTECTED. */
@@ -109,10 +125,8 @@ describe('world context on the agent runtime', () => {
       status: 'failed',
       code: 'PROTECTED',
       msg: 'part of the Base',
-      result: {
-        protected: [{ pos: PILLAR, block: 'minecraft:stripped_spruce_log', why: 'base' }],
-        zone: 'base',
-      },
+      // The mod's ProtectedDetail (protocol §7.4.1), with its consent token.
+      result: { protected: protectedDetail() },
     });
     // The [JOB FAILED] wake (next turn) teaches the same hard stop.
     q.result();
@@ -148,9 +162,9 @@ describe('world context on the agent runtime', () => {
     const nonce = w.manager.brain(id)?.record.nonce ?? '';
     await w.until(() => w.texts(q).some((t) => t.includes(`[MV:${nonce} CONSENT]`)), 'consent notice');
     w.skills.skillHandler = () => ({ status: 'done', result: { summary: 'mined 1 stripped_spruce_log' } });
-    await q.callTool('mcp__mc__mine', { block: 'stripped_spruce_log', count: 1 });
-    expect(w.skills.runs.at(-1)?.consent).toMatchObject({ agentId: id, positions: [PILLAR] });
-    expect(w.skills.runs.at(-1)?.consent?.consentId).toMatch(/^consent-[0-9a-f]{16}$/);
+    await q.callTool('mcp__mc__mine', { block: 'stripped_spruce_log', count: 1, allow_protected: true });
+    expect(w.skills.runs.at(-1)?.consent).toEqual({ token: TOKEN });
+    expect(w.manager.consents.active(id)).toBeNull();
   });
 
   it('a card answered with anything else, or a bare chat "yes", grants nothing', async () => {
@@ -234,7 +248,7 @@ describe('world context on the agent runtime', () => {
       status: 'failed',
       code: 'PROTECTED',
       msg: 'part of the Base',
-      result: { protected: [{ pos: PILLAR, block: 'minecraft:stripped_spruce_log' }] },
+      result: { protected: protectedDetail() },
     });
     await q.callTool('mcp__mc__mine', { block: 'stripped_spruce_log', count: 1 });
     const broadcast = await w.manager.deliverChat({ to: 'all', text: 'yes, take them from the house' });

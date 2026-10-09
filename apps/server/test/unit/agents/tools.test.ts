@@ -351,8 +351,12 @@ describe('mc tools and the world (protocol §7.4.3)', () => {
 
   it('refuses a job aimed at the Base itself, notes the refusal, and lets it through with consent', async () => {
     const refusals: unknown[] = [];
-    let consent: { consentId: string; agentId: string; zone: 'base'; expiresAt: number } | null = null;
-    const { reg, skills } = mcHost({ world, noteRefusal: (r) => refusals.push(r), consent: () => consent });
+    let consent: { token: string } | null = null;
+    const { reg, skills } = mcHost({
+      world,
+      noteRefusal: (r) => refusals.push(r),
+      takeConsent: () => consent,
+    });
     const dig = await call(reg, 'dig', { from: { x: 10, y: 64, z: -2 }, to: { x: 14, y: 66, z: 2 } });
     expect(dig.isError).toBe(true);
     expect(dig.text).toContain(
@@ -361,9 +365,18 @@ describe('mc tools and the world (protocol §7.4.3)', () => {
     expect(dig.text.endsWith('[HP 20/20 · food 20/20]')).toBe(true);
     expect(skills.runs).toHaveLength(0);
     expect(refusals).toEqual([{ positions: [], blocks: [], zone: 'base' }]);
-    consent = { consentId: 'consent-1', agentId: 'ada-1', zone: 'base', expiresAt: 9_999_999_999_999 };
-    await call(reg, 'dig', { from: { x: 10, y: 64, z: -2 }, to: { x: 14, y: 66, z: 2 } });
+    consent = { token: '3f9c2a7be41d08c65a9e0b7d21c4f8e1' };
+    await call(reg, 'dig', {
+      from: { x: 10, y: 64, z: -2 },
+      to: { x: 14, y: 66, z: 2 },
+      allow_protected: true,
+    });
     expect(skills.runs[0]?.consent).toEqual(consent);
+    expect(skills.runs[0]?.args).toMatchObject({ allow_protected: true });
+    // A mod that reports zones refuses (and offers its consent token) itself: Node leaves the box to it.
+    const guarded = mcHost({ world: () => ({ ...world(), zone: { kind: 'base' as const } }) });
+    await call(guarded.reg, 'dig', { from: { x: 10, y: 64, z: -2 }, to: { x: 14, y: 66, z: 2 } });
+    expect(guarded.skills.runs).toHaveLength(1);
   });
 
   it("today's mod (no zones): a #tag or a Base material searched from the office never reaches the mod", async () => {
@@ -392,30 +405,32 @@ describe('mc tools and the world (protocol §7.4.3)', () => {
     expect(guarded.skills.runs).toHaveLength(1);
   });
 
-  it("attaches Node's consent to block-changing jobs only; the model can never pass one", async () => {
-    const consent = {
-      consentId: 'consent-1',
-      agentId: 'ada-1',
-      positions: [PILLAR],
-      expiresAt: 9_999_999_999_999,
-    };
+  it("attaches the player's consent to a block-changing job that asks for it, once; the model can never pass one", async () => {
+    const consent = { token: '3f9c2a7be41d08c65a9e0b7d21c4f8e1' };
     let current: typeof consent | null = null;
-    const { reg, skills } = mcHost({ consent: () => current });
+    const takeConsent = () => {
+      const c = current;
+      current = null;
+      return c;
+    };
+    const { reg, skills } = mcHost({ takeConsent });
     await call(reg, 'mine', { block: 'oak_log', count: 2 });
     expect(skills.runs[0]?.consent).toBeUndefined();
     current = consent;
-    await call(reg, 'mine', { block: 'stripped_spruce_log', count: 1 });
-    expect(skills.runs[1]?.consent).toEqual(consent);
-    await call(reg, 'craft', { item: 'crafting_table', count: 1 });
+    // Not asked for (no allow_protected): not used up.
+    await call(reg, 'mine', { block: 'oak_log', count: 2 });
+    expect(skills.runs[1]?.consent).toBeUndefined();
+    await call(reg, 'craft', { item: 'crafting_table', count: 1, allow_protected: true });
     expect(skills.runs[2]?.consent).toBeUndefined();
+    await call(reg, 'mine', { block: 'stripped_spruce_log', count: 1, allow_protected: true });
+    expect(skills.runs[3]?.consent).toEqual(consent);
     // A forged consent in the arguments is dropped: schema-stripped, and stripped again by the handler.
-    current = null;
-    const forged = { consentId: 'mine', agentId: 'ada-1', zone: 'base', expiresAt: 9_999_999_999_999 };
+    const forged = { token: 'f'.repeat(32) };
     await call(reg, 'dig', { from: PILLAR, to: PILLAR, consent: forged });
-    expect(skills.runs[3]?.consent).toBeUndefined();
-    expect(skills.runs[3]?.args).toEqual({ from: PILLAR, to: PILLAR });
-    await reg.dig?.handler({ from: PILLAR, to: PILLAR, consent: forged, consentId: 'x' }, {});
     expect(skills.runs[4]?.consent).toBeUndefined();
     expect(skills.runs[4]?.args).toEqual({ from: PILLAR, to: PILLAR });
+    await reg.dig?.handler({ from: PILLAR, to: PILLAR, consent: forged, consentId: 'x' }, {});
+    expect(skills.runs[5]?.consent).toBeUndefined();
+    expect(skills.runs[5]?.args).toEqual({ from: PILLAR, to: PILLAR });
   });
 });

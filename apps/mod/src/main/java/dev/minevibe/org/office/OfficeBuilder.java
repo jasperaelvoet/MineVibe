@@ -10,6 +10,9 @@ import dev.minevibe.org.office.OfficePlan.Kind;
 import dev.minevibe.org.office.OfficePlan.Piece;
 import dev.minevibe.world.MvWorldContent;
 import dev.minevibe.world.seat.OfficeChairBlock;
+import dev.minevibe.world.provenance.Owner;
+import dev.minevibe.world.provenance.Provenance;
+import dev.minevibe.world.provenance.Zones;
 import dev.minevibe.world.seat.SeatKind;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -158,6 +161,11 @@ public final class OfficeBuilder {
 	 * installed one. GameTests that run side by side use it, so no test swaps the global placer under another.
 	 */
 	public static OfficeLayout build(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
+		// Every block the office sets (workstation and Codex included) is recorded as the Base's own (W1 provenance).
+		return Provenance.placingAs(Owner.base(Zones.BASE), () -> buildMarked(level, origin, placer));
+	}
+
+	private static OfficeLayout buildMarked(final ServerLevel level, final BlockPos origin, final @Nullable WorkstationPlacer placer) {
 		// 0. Desks in the footprint go first, through the placer (overwriting a desk part would break it uncontrolled).
 		clearDesks(level, origin, placer);
 		// 1. Foundation, floor, walls, roof. The roof goes on before the room is cleared, so nothing falls in.

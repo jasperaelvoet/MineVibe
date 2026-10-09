@@ -21,6 +21,11 @@ Commands:
             --scripted-crew  run a scripted, zero-token crew (Ada, Bram) to exercise the in-game UI
             --no-crew        no crew at all (chat is routed against an empty roster)
   doctor    Print versions and paths
+            --clean-orphans  list the PC instances (containers, networks, volumes, relocated Codex exports) of
+                             MineVibe homes that no longer exist in the dev container engine; never touches a home
+                             that exists or a process that runs (dry run)
+              --apply          remove them
+              --instance <id>  only this instance (repeatable); also one with no record of its home
   play      Install or verify Java, Minecraft, Fabric and the mods, start the same server, then launch the game
             (data under MINEVIBE_HOME, default <repo>/.minevibe-dev/play; bridge on a random port)
   help      Show this help
@@ -139,6 +144,33 @@ async function runPlay(): Promise<number> {
   }
 }
 
+async function runDoctor(args: readonly string[]): Promise<number> {
+  if (!args.includes('--clean-orphans')) {
+    process.stdout.write(`${(await doctorReport()).join('\n')}\n`);
+    return 0;
+  }
+  const instances: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '--instance') continue;
+    const id = args[i + 1] ?? '';
+    // A container name prefix (`mv-pc-0fa3430b-`) works too.
+    const m = /^(?:mv-pc-)?([0-9a-f]{8})-?$/.exec(id);
+    if (!m) {
+      process.stderr.write(`--instance needs an 8-hex-digit instance id, got "${id}"\n`);
+      return 2;
+    }
+    instances.push(m[1] as string);
+    i++;
+  }
+  const { runOrphanCleanup } = await import('./pcs/orphanCleanup.js');
+  const { report, lines } = await runOrphanCleanup({
+    apply: args.includes('--apply'),
+    ...(instances.length ? { instances } : {}),
+  });
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return report.failed.length > 0 ? 1 : 0;
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [command = 'help'] = argv;
   switch (command) {
@@ -147,8 +179,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     case 'dev':
       return runDev(argv.slice(1));
     case 'doctor':
-      process.stdout.write(`${(await doctorReport()).join('\n')}\n`);
-      return 0;
+      return runDoctor(argv.slice(1));
     case 'play':
       return runPlay();
     case 'version':

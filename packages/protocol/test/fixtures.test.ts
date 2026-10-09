@@ -125,11 +125,13 @@ describe('reply fixtures', () => {
   /** `reply/ok--<slug>.json` -> the request type whose `ok` result it shows. */
   const okFixtures: Record<string, MessageType> = {
     'ok--skill-run': 'skill.run',
+    'ok--obs-look-around': 'obs.query',
     'ok--agent-spawn': 'agent.spawn',
     'ok--codex-search': 'codex.search',
     'ok--meeting-start': 'meeting.start',
     'ok--pick-folder': 'host.pick_folder',
     'ok--debug-state': 'debug.state',
+    'ok--debug-state-crew': 'debug.state',
     ok: 'chat.send',
   };
 

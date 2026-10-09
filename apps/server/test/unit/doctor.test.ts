@@ -21,6 +21,7 @@ describe('doctor', () => {
     expect(text).toContain('subprotocol minevibe.v1');
     expect(text).toContain(`paths (MINEVIBE_HOME=${home})`);
     expect(text).toContain(join(home, 'Caches'));
+    expect(text).toMatch(new RegExp(`codex export +${join(home, 'codex-export')}\\n`));
     expect(text).toContain(`port 47800, pid ${process.pid} (running)`);
     expect(text).not.toContain(token);
   });

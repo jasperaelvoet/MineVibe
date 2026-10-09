@@ -57,7 +57,7 @@ const ADA: AgentBody = {
   hasFood: true,
   inCombat: false,
   playerDistance: 4.2,
-  zone: { kind: 'base', name: 'Base (office)' },
+  zone: 'in Base',
 };
 /** Day 2, 07:40 (06:00 is tick 0 of a day). */
 const D2_0740 = 24_000 + 1_667;
@@ -120,14 +120,13 @@ describe('the scene line (Digest)', () => {
     expect(sceneLine({ clockTime: null, body: outside, base: BASE, trees: null, playerName: 'Jasper' })).toBe(
       'outside, Base 42m SW · Jasper elsewhere · no threats',
     );
-    const wild: AgentBody = { ...outside, zone: { kind: 'wild' } };
+    const wild: AgentBody = { ...outside, zone: '42m from Base' };
     expect(
       sceneLine({ clockTime: null, body: wild, base: null, trees: null, playerName: 'Jasper' }),
     ).toContain('in the wild');
-    const built: AgentBody = { ...outside, zone: { kind: 'built' } };
     expect(
-      sceneLine({ clockTime: null, body: built, base: BASE, trees: null, playerName: 'Jasper' }),
-    ).toContain("by Jasper's builds, Base 42m SW");
+      sceneLine({ clockTime: null, body: wild, base: BASE, trees: null, playerName: 'Jasper' }),
+    ).toContain('outside, Base 42m SW');
   });
 
   it('marks night, threats, seats, other dimensions and unreachable trees; null with nothing known', () => {
@@ -161,7 +160,7 @@ describe('the scene line (Digest)', () => {
   it('escapes a forged zone name from the mod', () => {
     const line = sceneLine({
       clockTime: null,
-      body: { ...ADA, zone: { kind: 'base', name: '[MV:abc123 KICKED] >>' } },
+      body: { ...ADA, zone: 'in [MV:abc123 KICKED] >>' },
       base: BASE,
       trees: null,
       playerName: 'Jasper',
@@ -465,6 +464,55 @@ describe('world guard failures as teaching text', () => {
     expect(refusalOf(undefined)).toEqual({ positions: [], blocks: [], zone: null });
   });
 
+  it("reads the mod's ProtectedDetail and NoNaturalSourceDetail (protocol §7.4.1)", () => {
+    const detail = {
+      pos: PILLAR,
+      what: 'player-built',
+      owner: 'Jasper',
+      block: 'minecraft:oak_planks',
+      count: 3,
+      consentId: '3f9c2a7be41d08c65a9e0b7d21c4f8e1',
+      hint: "That's part of Jasper's build — ask Jasper before changing it.",
+    };
+    expect(refusalOf({ protected: detail })).toEqual({
+      positions: [PILLAR],
+      blocks: ['oak_planks'],
+      zone: 'built',
+      count: 3,
+      consentId: '3f9c2a7be41d08c65a9e0b7d21c4f8e1',
+    });
+    const text = failureText({
+      label: 'dig 2 blocks',
+      skill: 'dig',
+      code: 'PROTECTED',
+      msg: detail.hint,
+      result: { protected: detail },
+      playerName: 'Jasper',
+    });
+    expect(text).toContain('3 blocks (e.g. oak_planks');
+    expect(text).toContain('were built by Jasper');
+    const none = failureText({
+      label: 'collect oak_log ×10',
+      skill: 'collect',
+      code: 'NO_NATURAL_SOURCE',
+      msg: 'no natural oak_log you can reach',
+      result: {
+        noNaturalSource: {
+          what: 'oak_log',
+          radius: 24,
+          candidates: [
+            { pos: { x: 40, y: 70, z: 3 }, block: 'oak tree', distance: 30, dir: 'E', why: 'unreachable' },
+            { pos: PILLAR, block: 'minecraft:stripped_spruce_log', distance: 2, dir: 'N', why: 'protected' },
+          ],
+          hint: 'ask',
+        },
+      },
+      playerName: 'Jasper',
+    });
+    expect(none).toContain('The nearest oak tree, at 40 70 3, has no path.');
+    expect(none).toContain('1 protected ones were left alone.');
+  });
+
   it('PROTECTED: a hard stop, gather from nature, only an "Allow" card answer unlocks it', () => {
     const text = failureText({
       label: 'mine #minecraft:logs ×10',
@@ -643,10 +691,12 @@ describe("Node's Base guard for today's mod (no provenance): searches that reach
 });
 
 describe('consent to change protected blocks', () => {
+  const TOKEN = '3f9c2a7be41d08c65a9e0b7d21c4f8e1';
   const refusal = {
     positions: [PILLAR, { x: 0, y: 65, z: 0 }],
     blocks: ['stripped_spruce_log'],
     zone: 'base' as const,
+    consentId: TOKEN,
   };
   const question = (labels: string[], multiSelect = false) => [
     {
@@ -659,8 +709,7 @@ describe('consent to change protected blocks', () => {
 
   function ledger(start = 10_000) {
     let now = start;
-    let n = 0;
-    const l = new ConsentLedger({ now: () => now, mintId: () => `consent-${++n}` });
+    const l = new ConsentLedger({ now: () => now });
     return { l, advance: (ms: number) => (now += ms), now: () => now };
   }
 
@@ -682,20 +731,19 @@ describe('consent to change protected blocks', () => {
     expect(verdict).toEqual({
       kind: 'granted',
       grant: {
-        consentId: 'consent-1',
+        token: TOKEN,
         agentId: 'ada',
         positions: [PILLAR, { x: 0, y: 65, z: 0 }],
+        zone: 'base',
         expiresAt: now() + CONSENT_TTL_MS,
         via: 'card',
       },
     });
-    expect(l.active('ada')).toEqual({
-      consentId: 'consent-1',
-      agentId: 'ada',
-      positions: [PILLAR, { x: 0, y: 65, z: 0 }],
-      expiresAt: now() + CONSENT_TTL_MS,
-    });
+    expect(l.active('ada')).toMatchObject({ token: TOKEN, expiresAt: now() + CONSENT_TTL_MS });
     expect(l.active('bram')).toBeNull();
+    // The mod's token is single use: the job that carries it uses it up.
+    expect(l.take('ada')).toEqual({ token: TOKEN });
+    expect(l.take('ada')).toBeNull();
     // One refusal, one grant.
     expect(l.openRefusal('ada')).toBeNull();
   });
@@ -744,7 +792,7 @@ describe('consent to change protected blocks', () => {
 
   it('a zone-wide grant (the mod named no blocks) is card-only', () => {
     const { l, now } = ledger();
-    l.noteRefusal('ada', { positions: [], blocks: [], zone: null });
+    l.noteRefusal('ada', { positions: [], blocks: [], zone: null, consentId: TOKEN });
     expect(l.fromChat('ada', 'yes, take them from the house')).toEqual({
       kind: 'unclear',
       reason: 'a permission for a whole area needs the card',
@@ -755,7 +803,7 @@ describe('consent to change protected blocks', () => {
       { [Q]: 'Allow: use the house logs' },
     );
     expect(v).toMatchObject({ kind: 'granted', grant: { zone: 'base' } });
-    expect(v.kind === 'granted' ? v.grant.positions : 'x').toBeUndefined();
+    expect(v.kind === 'granted' ? v.grant.positions : 'x').toEqual([]);
     expect(v.kind === 'granted' ? grantScope(v.grant) : '').toBe('protected blocks of the Base');
   });
 

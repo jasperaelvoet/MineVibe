@@ -239,10 +239,27 @@ export class FakeQuery implements QueryLike {
     input: Record<string, unknown>,
     id = `toolu_${randomUUID().slice(0, 8)}`,
   ): string {
+    const messageId = `msg_${randomUUID().slice(0, 12)}`;
+    if (this.options.includePartialMessages) {
+      // What the CLI streams with includePartialMessages: the message starts, the tool_use block starts, it stops.
+      for (const event of [
+        { type: 'message_start', message: { id: messageId } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name, input: {} } },
+        { type: 'message_stop' },
+      ]) {
+        this.emit({
+          type: 'stream_event',
+          event,
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: this.sessionId,
+        } as never);
+      }
+    }
     this.emit({
       type: 'assistant',
       message: {
-        id: randomUUID(),
+        id: messageId,
         model: this.model,
         role: 'assistant',
         content: [{ type: 'tool_use', id, name, input }],
@@ -358,9 +375,12 @@ export class FakeQuery implements QueryLike {
   async callTool(
     toolName: string,
     input: Record<string, unknown>,
-    options: { signal?: AbortSignal; extra?: Record<string, unknown> } = {},
+    options: { signal?: AbortSignal; extra?: Record<string, unknown>; toolUseId?: string } = {},
   ): Promise<ToolCallOutcome> {
-    const hook = await this.preToolUse(toolName, input, options.extra);
+    const hook = await this.preToolUse(toolName, input, {
+      ...(options.toolUseId ? { tool_use_id: options.toolUseId } : {}),
+      ...options.extra,
+    });
     const decision = hook.hookSpecificOutput?.permissionDecision;
     let finalInput = input;
     if (decision === 'deny')
@@ -401,7 +421,11 @@ export class FakeQuery implements QueryLike {
       ? tool.inputSchema.safeParse(finalInput)
       : { success: true, data: finalInput };
     if (!parsed.success) return { kind: 'invalid', error: parsed.error?.message ?? 'invalid' };
-    const result = await tool.handler(parsed.data, {});
+    // Claude Code passes the call's tool_use id in the MCP request's `_meta` (2.1.293).
+    const result = await tool.handler(
+      parsed.data,
+      options.toolUseId ? { _meta: { 'claudecode/toolUseId': options.toolUseId } } : {},
+    );
     const context = hook.hookSpecificOutput?.additionalContext;
     return context
       ? { kind: 'allowed', input: finalInput, result, context }

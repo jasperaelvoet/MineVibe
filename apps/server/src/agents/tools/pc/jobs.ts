@@ -4,6 +4,10 @@
  * one book per agent, so a session restart keeps it, and turns {@link PcApi.onJobExit} into notification wakes.
  */
 
+import type { JobExit } from '../../../contracts/PcApi.js';
+import { singleLine } from '../../envelope.js';
+import { jobSummary, taskNotification } from './formats.js';
+
 export interface PcJob {
   readonly pcId: string;
   readonly jobId: string;
@@ -19,6 +23,28 @@ export interface PcJob {
 
 /** Jobs remembered per agent. */
 const KEEP = 200;
+
+/**
+ * The `<task-notification>` of a job that ended (Claude Code 2.x), or null when the agent needs none: it stopped
+ * the job itself, or the job's seat ended (the agent is no longer at that PC).
+ */
+export function jobNotification(job: PcJob, exit: Pick<JobExit, 'exitCode' | 'reason'>): string | null {
+  if (exit.reason === 'stopped' || exit.reason === 'seat') return null;
+  const status = exit.reason === 'exited' ? (exit.exitCode === 0 ? 'completed' : 'failed') : 'killed';
+  const why =
+    exit.reason === 'lifetime' ? 'it ran past its time limit' : exit.reason === 'lost' ? 'MineVibe lost track of it' : undefined;
+  return taskNotification({
+    taskId: job.jobId,
+    toolUseId: job.toolUseId,
+    outputFile: job.outputPath,
+    status,
+    summary: jobSummary(singleLine(job.description, 160), {
+      status,
+      exitCode: exit.exitCode,
+      ...(why ? { why } : {}),
+    }),
+  });
+}
 
 /** The key of a background job: the PC and its job id (ids repeat across PCs). */
 export function ownJobKey(pcId: string, jobId: string): string {

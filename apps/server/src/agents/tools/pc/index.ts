@@ -30,7 +30,7 @@ import { uiTools } from './ui.js';
 export { BatchBook, isPcToolUse } from './batch.js';
 export { PcToolContext } from './context.js';
 export { catN, numberLines, READ_DEFAULT_LIMIT, READ_LINE_MAX } from './files.js';
-export { ownJobKey, type PcJob, PcJobBook } from './jobs.js';
+export { jobNotification, ownJobKey, type PcJob, PcJobBook } from './jobs.js';
 export { parseKeyText } from './keys.js';
 export { clipOutput, stripPwdMarker, wrapBash } from './shell.js';
 export type { PcHost } from './types.js';

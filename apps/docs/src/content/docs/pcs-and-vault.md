@@ -117,7 +117,9 @@ projects. Add folders in a PC's config screen with **Browse...** (a native folde
 - **Refused folders:** your home folder itself, `/`, `~/Library`, any folder that is or contains `~/.ssh`,
   `~/.aws`, `~/.config`, `~/.claude`, `~/.gnupg` or `~/.docker`, and dotfile-config folders. Git repositories
   are recommended.
-- The shared Codex is mounted read-only at `/mnt/codex` in every PC.
+- The shared Codex is mounted read-only at `/mnt/codex` in every Linux PC, with a `~/codex` link to it:
+  `lasting/` (pages that survive world death) and `world/` (this world only). Agents write pages with their Codex
+  tools, never in the folder; a new world replaces `world/` as a whole.
 - The Vault survives world death. The Game Over screen shows how many commits each folder got in that world.
 
 ## Security model

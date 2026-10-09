@@ -103,6 +103,14 @@ class SkillLogicTest {
 		assertInstanceOf(MenuJobs.MenuClick.class, SkillFactory.create("menu_click", json("{\"slot\":-3,\"button\":0,\"type\":\"pickup\"}")));
 		assertInstanceOf(WorldJobs.Equip.class, SkillFactory.create("equip", json("{\"item\":\"minecraft:iron_helmet\",\"slot\":\"head\"}")));
 		assertInstanceOf(BuildJob.class, SkillFactory.create("build", json("{\"blueprint\":\"Shelter\",\"origin\":{\"x\":0,\"y\":0,\"z\":0},\"rotation\":90}")));
+		// W1 arguments: building a mine or collect job needs no server (tree mode is decided when it runs).
+		assertInstanceOf(dev.minevibe.agent.job.GatherJobs.Mine.class, SkillFactory.create("mine", json(
+			"{\"block\":\"oak_log\",\"count\":3,\"allow_protected\":true}")));
+		assertInstanceOf(dev.minevibe.agent.job.GatherJobs.Collect.class, SkillFactory.create("collect", json(
+			"{\"item\":\"oak_log\",\"count\":3,\"replant\":true}")));
+		assertTrue(SkillService.allowProtected(json("{\"allow_protected\":true}")));
+		assertTrue(!SkillService.allowProtected(json("{\"allow_protected\":\"true\"}")), "only a real boolean asks");
+		assertTrue(!SkillService.allowProtected(json("{}")));
 		for (String skill : Skills.SKILL_NAMES) {
 			// Every skill the protocol names is known here (no UNKNOWN_SKILL), even if these args are wrong.
 			try {

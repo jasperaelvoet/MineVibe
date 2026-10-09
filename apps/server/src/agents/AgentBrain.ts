@@ -62,13 +62,14 @@ import type {
 import { buildSessionOptions } from './sessionOptions.js';
 import { createToolGateHook, type GateContext, type GateObservation } from './ToolGate.js';
 import type { TranscriptStore } from './TranscriptStore.js';
+import { TurnText } from './TurnText.js';
 import { type PcToolName, pcToolName } from './tools/catalog.js';
 import { createMcServer, type McHost, ticksToGameTime } from './tools/mcServer.js';
-import { jobSummary, taskNotification } from './tools/pc/formats.js';
+import { jobNotification } from './tools/pc/jobs.js';
 import { BatchBook, createPcServer, type PcHost, PcJobBook } from './tools/pcServer.js';
 import type { UsageGovernor } from './UsageGovernor.js';
 import type { ConsentLedger } from './world/consent.js';
-import { PerceptionMemory, sceneLine } from './world/scene.js';
+import { PerceptionMemory, sceneLine, zoneOfBody } from './world/scene.js';
 
 /** The persisted crew record of one agent (`worlds/<w>/crew.json`). */
 export interface AgentRecord {
@@ -339,6 +340,8 @@ export class AgentBrain {
   readonly record: AgentRecord;
   readonly fsm: SeatFSM;
   readonly plans: PlanCapture;
+  /** What the agent last said in the current turn: the plan card's fallback (InteractionBroker). */
+  readonly turnText: TurnText;
   readonly digest = new Digest();
   /** What this agent's look_around / find showed (the scene line's trees). */
   readonly perception: PerceptionMemory;
@@ -406,6 +409,7 @@ export class AgentBrain {
       [home, '/home/cua'].filter((h) => h.length > 0),
       { now: () => env.now() },
     );
+    this.turnText = new TurnText(() => env.now());
     this.#unsubscribeJobs = env.pcs.onJobExit((exit) => this.#onPcJobExit(exit));
   }
 
@@ -555,6 +559,7 @@ export class AgentBrain {
           agentId: this.agentId,
           store: env.pending,
           plans: this.plans,
+          turnText: () => this.turnText.latest(),
           seatEpoch: () => this.fsm.epoch,
           playerName: () => env.playerName(),
           now: () => env.now(),
@@ -879,26 +884,9 @@ export class AgentBrain {
     if (!job) return;
     this.#pcJobs.delete(exit.pcId, exit.jobId);
     const s = this.fsm.snapshot;
-    if (this.#stopped || exit.reason === 'stopped' || exit.reason === 'seat') return;
-    if (s.pcId !== exit.pcId || s.epoch !== job.epoch || !this.fsm.hasPcAccess) return;
-    const status = exit.reason === 'exited' ? (exit.exitCode === 0 ? 'completed' : 'failed') : 'killed';
-    const why =
-      exit.reason === 'lifetime'
-        ? 'it ran past its time limit'
-        : exit.reason === 'lost'
-          ? 'MineVibe lost track of it'
-          : undefined;
-    const block = taskNotification({
-      taskId: job.jobId,
-      toolUseId: job.toolUseId,
-      outputFile: job.outputPath,
-      status,
-      summary: jobSummary(singleLine(job.description, 160), {
-        status,
-        exitCode: exit.exitCode,
-        ...(why ? { why } : {}),
-      }),
-    });
+    if (this.#stopped || s.pcId !== exit.pcId || s.epoch !== job.epoch || !this.fsm.hasPcAccess) return;
+    const block = jobNotification(job, exit);
+    if (!block) return;
     this.enqueue({
       mode: 'wake',
       priority: 3,
@@ -1012,6 +1000,7 @@ export class AgentBrain {
   }
 
   #onTurnEnd(result: SDKResultMessage): void {
+    this.turnText.reset();
     this.#env.turnEnded(this, result);
     for (const w of this.#turnEndWaiters.splice(0)) w(result);
     this.#finishCollectors([]);
@@ -1135,6 +1124,7 @@ export class AgentBrain {
     const trimmed = text.trim();
     this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed });
     if (/^\(?silent\)?\.?$/i.test(trimmed)) return;
+    this.turnText.text(trimmed);
     for (const c of this.#collectors) c.texts.push(trimmed);
     const bubble = bubbleText(trimmed);
     if (bubble.length === 0) return;
@@ -1147,6 +1137,7 @@ export class AgentBrain {
   }
 
   #onToolUse(name: string, input: unknown): void {
+    this.turnText.toolUse(name);
     const line = describeTool(name, input);
     this.#activity = line;
     this.#env.transcripts.append(this.agentId, { kind: 'activity', text: line });
@@ -1154,6 +1145,7 @@ export class AgentBrain {
   }
 
   #onExit(error: Error | null): void {
+    this.turnText.reset();
     this.#grant?.release();
     this.#grant = null;
     this.#acquiring = null;
@@ -1905,12 +1897,12 @@ export class AgentBrain {
         return {
           here: body ? body.pos : null,
           base: env.base?.() ?? null,
-          zone: body?.zone ?? null,
+          zone: zoneOfBody(body?.zone),
           playerName: env.playerName(),
         };
       },
       noteTrees: (sighting) => this.perception.noteTrees(sighting, env.body(this.agentId)?.pos ?? null),
-      consent: () => env.consents?.active(this.agentId) ?? null,
+      takeConsent: () => env.consents?.take(this.agentId) ?? null,
       noteRefusal: (refusal) => env.consents?.noteRefusal(this.agentId, refusal),
     };
   }
@@ -1965,6 +1957,7 @@ export function statusFooter(body: AgentBody | null, clockTime: number | null): 
   if (clockTime !== null) parts.push(ticksToGameTime(clockTime).replace(/^Day/, 'day'));
   const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;
   parts.push(`${Math.floor(body.pos.x)} ${Math.floor(body.pos.y)} ${Math.floor(body.pos.z)} ${dim}`);
+  if (body.zone) parts.push(body.zone);
   let activity: string;
   if (body.reflex) activity = body.job ? `${body.reflex} (${body.job.skill} paused)` : body.reflex;
   else if (body.job)

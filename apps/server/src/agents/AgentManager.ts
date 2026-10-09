@@ -73,6 +73,7 @@ import { TranscriptStore } from './TranscriptStore.js';
 import { UsageGovernor } from './UsageGovernor.js';
 import { ConsentLedger, type GrantVerdict, grantScope } from './world/consent.js';
 import { PROTECTED, refusalOf } from './world/guard.js';
+import { zoneOfBody } from './world/scene.js';
 
 /** First names for agents (handles derive from them). */
 export const AGENT_NAMES = [
@@ -896,7 +897,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     const scope = grantScope(grant);
     const minutes = Math.max(1, Math.round((grant.expiresAt - this.#now()) / 60_000));
     this.#log.info(
-      { agentId, consentId: grant.consentId, via: grant.via, positions: grant.positions?.length ?? 0 },
+      { agentId, via: grant.via, positions: grant.positions.length, count: grant.count ?? null },
       'consent issued',
     );
     this.emit('toast', {
@@ -909,7 +910,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         control(
           brain.record.nonce,
           'CONSENT',
-          `${this.#o.playerName()} allowed you to change the ${scope} you were refused, for ${minutes} min. Retry that same job now; nothing else protected is unlocked.`,
+          `${this.#o.playerName()} allowed you to change the ${scope} you were refused, for ${minutes} min. Retry that same job now with allow_protected:true (once); nothing else protected is unlocked.`,
         ),
       );
     }
@@ -1015,7 +1016,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     if (!brain) return;
     if (end.status === 'failed' && end.error?.code === PROTECTED) {
       const refusal = refusalOf(end.result);
-      const zone = this.#bodies.get(end.agentId)?.zone?.kind;
+      const zone = zoneOfBody(this.#bodies.get(end.agentId)?.zone)?.kind;
       this.consents.noteRefusal(end.agentId, {
         ...refusal,
         zone: refusal.zone ?? (zone === 'base' || zone === 'built' ? zone : null),

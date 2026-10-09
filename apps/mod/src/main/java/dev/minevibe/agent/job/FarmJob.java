@@ -2,6 +2,7 @@ package dev.minevibe.agent.job;
 
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.skill.Refs;
+import dev.minevibe.world.provenance.Protection;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -49,6 +50,8 @@ public final class FarmJob extends SkillJob {
 	private int planted;
 	private int bonemealed;
 	private int passes;
+	private Protection.@Nullable Verdict refusal;
+	private final List<BlockPos> refusedAt = new ArrayList<>();
 
 	public FarmJob(final BlockPos a, final BlockPos b, final Refs.@Nullable ItemMatcher crop) {
 		super("farm");
@@ -85,7 +88,13 @@ public final class FarmJob extends SkillJob {
 		}
 		if (this.current == null) {
 			if (this.tasks.isEmpty()) {
-				if (++this.passes > 4 || !this.plan(agent)) {
+				boolean more = ++this.passes <= 4 && this.plan(agent);
+				if (this.passes == 1 && this.refusal != null) {
+					// The first look found protected blocks in the field: change nothing, ask the player.
+					this.tasks.clear();
+					return this.refuseProtected(agent, this.refusal, this.refusedAt);
+				}
+				if (!more) {
 					return this.finish();
 				}
 			}
@@ -195,6 +204,21 @@ public final class FarmJob extends SkillJob {
 					}
 				}
 			}
+		}
+		// W1: harvesting, tilling and bone-mealing change the block; never on player-built soil or in the Base.
+		for (List<Task> work : List.of(harvest, till, meal)) {
+			work.removeIf(t -> {
+				Protection.Verdict v = Protection.check(level, t.pos(), agent.agentId());
+				if (v == null) {
+					return false;
+				}
+				if (this.refusal == null || t.pos().distSqr(agent.blockPosition()) < this.refusal.pos().distSqr(agent.blockPosition())) {
+					this.refusal = v;
+				}
+				this.refusedAt.add(t.pos());
+				this.skipped.add(t.pos());
+				return true;
+			});
 		}
 		this.tasks.addAll(harvest);
 		this.tasks.addAll(till);

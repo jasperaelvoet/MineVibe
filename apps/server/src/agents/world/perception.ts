@@ -24,7 +24,7 @@ import {
 } from '../../world/baseArea.js';
 import { singleLine } from '../envelope.js';
 import { compactJson } from '../tools/results.js';
-import type { TreeSighting } from './scene.js';
+import { type TreeSighting, zoneOfBody } from './scene.js';
 
 export interface PerceptionContext {
   /** The agent's position (for distance and direction), or null when unknown. */
@@ -102,7 +102,15 @@ function zoneOf(value: unknown): AgentZone | null {
     const name = typeof z.name === 'string' ? z.name : undefined;
     return name ? { kind: z.kind, name } : { kind: z.kind };
   }
+  // The mod's look_around zone (protocol §7.4.2): `{ name, inside, distance, owner }`.
+  if (z && typeof z.inside === 'boolean') {
+    if (!z.inside) return { kind: 'wild' };
+    return typeof z.name === 'string' && z.name !== 'Base'
+      ? { kind: 'base', name: z.name }
+      : { kind: 'base' };
+  }
   if (value === 'base' || value === 'built' || value === 'wild') return { kind: value };
+  if (typeof value === 'string') return zoneOfBody(value);
   return null;
 }
 
@@ -253,21 +261,46 @@ interface BlockMatch {
   readonly reachable: boolean | null;
   readonly exposed: boolean | null;
   readonly inBase: boolean;
+  /** Placed by the crew: theirs to take back. */
+  readonly crewBuilt: boolean;
+  /** The natural tree a log belongs to (the mod's `tree`), e.g. "oak tree, 6 logs". */
+  readonly tree: string | null;
 }
 
 function classifyBlock(m: Record<string, unknown>, ctx: PerceptionContext): BlockMatch | null {
   const pos = asPos(m.pos);
   if (!pos) return null;
-  const base = inBuilding(ctx, pos);
-  const natural = typeof m.natural === 'boolean' ? m.natural : null;
+  // The mod's provenance label (protocol §7.4.2), or the older `natural` / `protected` flags.
+  const provenance = typeof m.provenance === 'string' ? m.provenance : null;
+  const base = inBuilding(ctx, pos) || provenance === 'base';
+  const crewBuilt = provenance === 'agent-built';
+  const natural =
+    provenance !== null ? provenance === 'natural' : typeof m.natural === 'boolean' ? m.natural : null;
+  const isProtected =
+    provenance !== null
+      ? provenance === 'base' || provenance === 'player-built'
+      : m.protected === true || natural === false || (base && m.protected !== false);
+  const reachable =
+    typeof m.reachable === 'boolean'
+      ? m.reachable
+      : m.reachable === 'reachable'
+        ? true
+        : m.reachable === 'unreachable'
+          ? false
+          : null;
+  const t = obj(m.tree);
+  const species = t ? str(t.species, 24) : null;
+  const logs = t ? num(t.logs) : null;
   return {
     pos,
     block: short(str(m.block, 48) ?? 'block'),
-    protected: m.protected === true || natural === false || (base && m.protected !== false),
+    protected: isProtected,
     natural,
-    reachable: typeof m.reachable === 'boolean' ? m.reachable : null,
+    reachable,
     exposed: typeof m.exposed === 'boolean' ? m.exposed : null,
     inBase: base,
+    crewBuilt,
+    tree: species ? `${short(species)} tree${logs !== null ? `, ${logs} logs` : ''}` : null,
   };
 }
 
@@ -278,7 +311,7 @@ export function perceiveFind(result: Record<string, unknown>, ctx: PerceptionCon
   const kind = typeof result.kind === 'string' ? result.kind : 'block';
   const raw = Array.isArray(result.matches) ? result.matches : [];
   const lines: string[] = [];
-  const known = new Set(['what', 'kind', 'matches', 'note', 'inInventory']);
+  const known = new Set(['what', 'kind', 'matches', 'note', 'inInventory', 'filter', 'protectedNote']);
   let trees: TreeSighting | null = null;
 
   if (kind === 'block') {
@@ -298,7 +331,8 @@ export function perceiveFind(result: Record<string, unknown>, ctx: PerceptionCon
         marks.push(m.inBase ? 'in the Base: use it, never break it' : 'use it, never break it');
       else if (m.protected)
         marks.push(m.inBase ? 'PROTECTED (part of the Base)' : `PROTECTED (built by ${p})`);
-      else if (m.natural === true) marks.push('natural');
+      else if (m.crewBuilt) marks.push('built by the crew (yours to take back)');
+      else if (m.natural === true) marks.push(m.tree ? `natural (${m.tree})` : 'natural');
       if (!m.protected) {
         if (m.reachable === true) marks.push('reachable');
         if (m.reachable === false) marks.push('UNREACHABLE (no path)');
@@ -331,7 +365,10 @@ export function perceiveFind(result: Record<string, unknown>, ctx: PerceptionCon
     const variant = (id: string) => /^stripped_|_wood$/.test(id);
     const kindOf = what.replace(/^#?minecraft:/, '');
     if (LOG_RE.test(kindOf) && !variant(kindOf)) {
-      const tree = reachable.find((m) => !variant(m.block)) ?? free.find((m) => !variant(m.block));
+      // A natural log (the mod names its tree), never one the crew placed.
+      const log = (m: BlockMatch) => !variant(m.block) && !m.crewBuilt && m.natural !== false;
+      const named = (list: BlockMatch[]) => list.find((m) => log(m) && m.tree !== null);
+      const tree = named(reachable) ?? named(free) ?? reachable.find(log) ?? free.find(log);
       if (tree) trees = { pos: tree.pos, reachable: tree.reachable };
     }
   } else {

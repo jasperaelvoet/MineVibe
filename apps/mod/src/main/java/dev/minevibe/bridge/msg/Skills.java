@@ -49,8 +49,19 @@ public final class Skills {
 	// Records
 	// -----------------------------------------------------------------------------------------
 
-	/** N→M request. Reply: {@link SkillRunResult}. */
-	public record SkillRun(String jobId, String agentId, String skill, JsonObject args, int waitMs, boolean replace) {}
+	/**
+	 * N→M request. Reply: {@link SkillRunResult}. {@code consent} (W1) is the player's consent for changing protected
+	 * blocks: Node attaches it, outside {@code args}, only after the player agreed; it counts only together with
+	 * {@code args.allow_protected}.
+	 */
+	public record SkillRun(String jobId, String agentId, String skill, JsonObject args, int waitMs, boolean replace, @Nullable Consent consent) {
+		public SkillRun(String jobId, String agentId, String skill, JsonObject args, int waitMs, boolean replace) {
+			this(jobId, agentId, skill, args, waitMs, replace, null);
+		}
+	}
+
+	/** A consent token the mod offered with a {@code PROTECTED} failure ({@code result.protected.consentId}). */
+	public record Consent(String token) {}
 
 	/** {@code status}: running, done, failed, cancelled. */
 	public record SkillRunResult(String jobId, String status, @Nullable JsonObject result, Types.@Nullable Failure error) {}
@@ -79,21 +90,23 @@ public final class Skills {
 		/** Exactly one of {@code pos} / {@code entity}. */
 		public record Goto(@Nullable BlockPos pos, @Nullable String entity, @Nullable Double range) {}
 
-		public record Mine(String block, int count, @Nullable BlockPos near, @Nullable Integer radius) {}
+		/** {@code allow_protected} (W1) counts only with Node's {@code consent} on the {@code skill.run}. */
+		public record Mine(String block, int count, @Nullable BlockPos near, @Nullable Integer radius, @Nullable Boolean allow_protected) {}
 
-		public record Collect(String item, int count, @Nullable Integer radius) {}
+		/** {@code replant}: plant a sapling on each stump of a felled tree (when the agent has one). */
+		public record Collect(String item, int count, @Nullable Integer radius, @Nullable Boolean replant, @Nullable Boolean allow_protected) {}
 
 		public record Hunt(String entity, int count, @Nullable Integer radius) {}
 
-		public record Dig(BlockPos from, BlockPos to) {}
+		public record Dig(BlockPos from, BlockPos to, @Nullable Boolean allow_protected) {}
 
-		public record Place(String block, BlockPos pos) {}
+		public record Place(String block, BlockPos pos, @Nullable Boolean allow_protected) {}
 
 		public record UseBlock(BlockPos pos) {}
 
-		public record UseItem(@Nullable String item, @Nullable BlockPos pos, @Nullable String entity) {}
+		public record UseItem(@Nullable String item, @Nullable BlockPos pos, @Nullable String entity, @Nullable Boolean allow_protected) {}
 
-		public record Attack(String entity) {}
+		public record Attack(String entity, @Nullable Boolean allow_protected) {}
 
 		/** {@code slot}: mainhand, offhand, head, chest, legs, feet. */
 		public record Equip(String item, @Nullable String slot) {}
@@ -113,7 +126,7 @@ public final class Skills {
 		public record Smelt(String item, int count, @Nullable String fuel, @Nullable BlockPos furnace) {}
 
 		/** {@code action}: list, put, take ({@code item} needed for put and take). */
-		public record Container(BlockPos pos, String action, @Nullable String item, @Nullable Integer count) {}
+		public record Container(BlockPos pos, String action, @Nullable String item, @Nullable Integer count, @Nullable Boolean allow_protected) {}
 
 		/** Exactly one of {@code pos} / {@code entity}. */
 		public record OpenMenu(@Nullable BlockPos pos, @Nullable String entity) {}
@@ -124,9 +137,9 @@ public final class Skills {
 		public record MenuClose() {}
 
 		/** {@code rotation}: 0, 90, 180 or 270. */
-		public record Build(String blueprint, BlockPos origin, @Nullable Integer rotation) {}
+		public record Build(String blueprint, BlockPos origin, @Nullable Integer rotation, @Nullable Boolean allow_protected) {}
 
-		public record Farm(BlockPos from, BlockPos to, @Nullable String crop) {}
+		public record Farm(BlockPos from, BlockPos to, @Nullable String crop, @Nullable Boolean allow_protected) {}
 
 		public record Ride(String entity) {}
 
@@ -143,13 +156,17 @@ public final class Skills {
 	static final Schema.Node SKILL_NAME = oneOf(SKILL_NAMES.toArray(String[]::new));
 	static final Schema.Obj FAILURE = object().req("code", ERROR_CODE).req("msg", string(0, 2000));
 
+	/** 32 lowercase hex characters, minted by the mod ({@code Consents}). */
+	public static final Schema.Node CONSENT_TOKEN = string(32, 32, "[0-9a-f]{32}", "consent token: 32 hex");
+
 	public static final MessageType<SkillRun> SKILL_RUN = type("skill.run", Direction.NODE_TO_MOD, SkillRun.class, object()
 			.req("jobId", JOB_ID)
 			.req("agentId", AGENT_ID)
 			.req("skill", SKILL_NAME)
 			.req("args", JSON_OBJECT)
 			.req("waitMs", integer(0, 600_000))
-			.req("replace", bool()));
+			.req("replace", bool())
+			.opt("consent", object().req("token", CONSENT_TOKEN)));
 
 	public static final MessageType<SkillProgress> SKILL_PROGRESS = type("skill.progress", Direction.MOD_TO_NODE, SkillProgress.class, object()
 			.req("jobId", JOB_ID)
@@ -174,6 +191,67 @@ public final class Skills {
 			.req("agentId", AGENT_ID)
 			.req("query", oneOf(OBS_QUERIES.toArray(String[]::new)))
 			.req("args", JSON_OBJECT));
+
+	// -----------------------------------------------------------------------------------------
+	// W1: world awareness and protection (additive; inside the free-form `result` objects)
+	// -----------------------------------------------------------------------------------------
+
+	/** {@code result.protected} of a job that failed with {@code PROTECTED}. {@code what}: player-built, base. */
+	public record ProtectedDetail(
+			BlockPos pos, String what, String owner, String block, @Nullable String zone, int count, @Nullable String consentId, String hint) {}
+
+	/** One source a job saw but could not use. {@code why}: unreachable, too_far, protected, not_natural. */
+	public record SourceCandidate(BlockPos pos, String block, int distance, String dir, String why, @Nullable String owner) {}
+
+	/** {@code result.noNaturalSource} of a job that failed with {@code NO_NATURAL_SOURCE}. */
+	public record NoNaturalSource(String what, int radius, List<SourceCandidate> candidates, String hint) {}
+
+	/** The {@code result} of {@code obs.query look_around}: the scene text plus a few machine-readable facts. */
+	public record LookAround(String scene, String detail, @Nullable ZoneFact zone, @Nullable List<TreeFact> trees) {}
+
+	/** Where the agent is relative to a protected zone ({@code distance} 0 = inside). */
+	public record ZoneFact(String name, boolean inside, int distance, String owner) {}
+
+	/** A natural tree seen by {@code look_around}. {@code reachable}: reachable, unreachable, far. */
+	public record TreeFact(String species, BlockPos trunk, int distance, String dir, String reachable, int logs) {}
+
+	public static final Schema.Node COMPASS_DIR = oneOf("N", "NE", "E", "SE", "S", "SW", "W", "NW", "here", "above", "below");
+
+	public static final Schema.Obj PROTECTED_DETAIL = object()
+			.req("pos", Types.BLOCK_POS)
+			.req("what", oneOf("player-built", "base"))
+			.req("owner", string(1, 48))
+			.req("block", string(1, 128))
+			.opt("zone", string(1, 48))
+			.req("count", integer(1, 1_000_000))
+			.opt("consentId", CONSENT_TOKEN)
+			.req("hint", string(1, 400));
+
+	public static final Schema.Obj SOURCE_CANDIDATE = object()
+			.req("pos", Types.BLOCK_POS)
+			.req("block", string(1, 128))
+			.req("distance", integer(0, 100_000))
+			.req("dir", COMPASS_DIR)
+			.req("why", oneOf("unreachable", "too_far", "protected", "not_natural"))
+			.opt("owner", string(1, 48));
+
+	public static final Schema.Obj NO_NATURAL_SOURCE = object()
+			.req("what", string(1, 160))
+			.req("radius", integer(1, 64))
+			.req("candidates", array(SOURCE_CANDIDATE, 0, 8))
+			.req("hint", string(1, 400));
+
+	public static final Schema.Obj LOOK_AROUND = object()
+			.req("scene", string(1, 2500))
+			.req("detail", oneOf("brief", "full"))
+			.opt("zone", object().req("name", string(1, 48)).req("inside", bool()).req("distance", integer(0, 100_000_000)).req("owner", string(1, 48)))
+			.opt("trees", array(object()
+					.req("species", string(1, 64))
+					.req("trunk", Types.BLOCK_POS)
+					.req("distance", integer(0, 100_000))
+					.req("dir", COMPASS_DIR)
+					.req("reachable", oneOf("reachable", "unreachable", "far"))
+					.req("logs", integer(1, 1000)), 0, 8));
 
 	/** Schemas of the {@code ok} results, for tests and for checking replies. */
 	public static final Schema.Obj SKILL_RUN_RESULT = object()
