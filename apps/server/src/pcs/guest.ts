@@ -108,6 +108,13 @@ export const ZOOM_SCRIPT = `command -v import >/dev/null 2>&1 || exit 127
 exec import -silent -window root -crop "$1" +repage -filter Lanczos -resize "$2" -quality "$3" jpg:-`;
 
 /**
+ * `stat` of what a symlink (`$1`) points at: prints `<file type>|<size>|<mtime in seconds>`; NOT_FOUND for a dangling
+ * link. (spacesd's Stat describes the link itself, whose size and time never change with the file behind it.)
+ */
+export const STAT_TARGET_SCRIPT = `[ -e "$1" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
+exec stat -L -c '%F|%s|%Y' -- "$1"`;
+
+/**
  * Cuts a running job's output file (`$1`) back to its last half when it is over `$2` bytes. The job appends with
  * `tee -a` (O_APPEND), so writes after the cut still land at the end.
  */

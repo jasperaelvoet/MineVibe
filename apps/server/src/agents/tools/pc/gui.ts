@@ -7,9 +7,10 @@
 
 import { z } from 'zod';
 import type { PointerAction } from '../../../contracts/PcApi.js';
+import { MAX_BATCH_EVENTS } from '../../../pcs/InputRouter.js';
 import type { PcToolName } from '../catalog.js';
 import { type CallToolResult, errorResult, textResult } from '../results.js';
-import { type Def, defs, finishAction, imageResult, tool } from './common.js';
+import { type Def, defs, finishAction, imageResult, isResult, tool } from './common.js';
 import { type PcToolContext, type Seat, windowLabel } from './context.js';
 import { invalidZoom, OK, outOfBounds } from './formats.js';
 import { checkPoint, regionToScreen, toImage, toScreen } from './geometry.js';
@@ -40,9 +41,6 @@ async function screenPoint(
   if (!p.ok) return errorResult(outOfBounds(p.x, p.y, g.imgW, g.imgH));
   return toScreen(g, p.x, p.y);
 }
-
-const isResult = (v: unknown): v is CallToolResult =>
-  typeof v === 'object' && v !== null && Array.isArray((v as { content?: unknown }).content);
 
 type ClickKind = 'left' | 'right' | 'middle' | 'double' | 'triple';
 
@@ -351,6 +349,12 @@ export function guiTools(ctx: PcToolContext): Def[] {
             const parsed = parseKeyText(args.text);
             if (!parsed.ok) return errorResult(parsed.error);
             const repeat = args.repeat ?? 1;
+            // Several keys repeated are one input event per key press, and one input batch holds at most so many.
+            if (parsed.chords.length > 1 && parsed.chords.length * repeat > MAX_BATCH_EVENTS) {
+              return errorResult(
+                `Too many key presses in one call (${parsed.chords.length} keys x ${repeat}); at most ${MAX_BATCH_EVENTS}. Lower repeat or split the keys over several key calls.`,
+              );
+            }
             if (parsed.chords.length === 1) {
               await ctx.host.pcs.keyboard(seat.pcId, {
                 action: 'press',

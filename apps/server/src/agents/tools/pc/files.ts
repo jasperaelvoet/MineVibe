@@ -62,6 +62,19 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
 /** The largest image read returns (the API's per-image limit). */
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * An image's type from its first bytes, or null when it is none of the types read shows. The extension is not
+ * trusted: the API refuses an image whose bytes do not match the media type sent with it.
+ */
+export function sniffImage(data: Uint8Array): string | null {
+  const at = (i: number, ...bytes: number[]) => bytes.every((b, k) => data[i + k] === b);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
+  return null;
+}
+
 /** `<n>\t<line>` numbering, as the built-in Read answers (unpadded; long lines cut). */
 export function numberLines(lines: readonly string[], startLine: number): string[] {
   return lines.map((line, i) => {
@@ -133,11 +146,17 @@ async function readFile(
     if (st.size > IMAGE_MAX_BYTES)
       return errorResult(`${path} is ${st.size} bytes; images over 5 MB cannot be shown.`);
     const data = await ctx.host.pcs.readBytes(pcId, path, IMAGE_MAX_BYTES);
+    const mimeType = sniffImage(data);
+    if (!mimeType) {
+      return errorResult(
+        `${path} is not a PNG, JPEG, GIF or WebP image (its content does not match its .${ext} name).`,
+      );
+    }
     ctx.readState.set(pcId, path, { mtimeMs: st.mtimeMs, size: st.size });
     return {
       content: [
         { type: 'text', text: path },
-        { type: 'image', data: Buffer.from(data).toString('base64'), mimeType: imageType },
+        { type: 'image', data: Buffer.from(data).toString('base64'), mimeType },
       ],
     };
   }

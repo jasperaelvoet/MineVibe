@@ -129,6 +129,11 @@ async function holds(
   return { found: false, where: null };
 }
 
+/** Seconds as people read them: "0.4", "1.5", "10", "120". */
+export function seconds(ms: number): string {
+  return ms < 10_000 ? (ms / 1000).toFixed(1).replace(/\.0$/, '') : String(Math.round(ms / 1000));
+}
+
 async function waitFor(ctx: PcToolContext, seat: Seat, args: WaitArgs): Promise<CallToolResult> {
   const timeout = Math.max(100, Math.min(120_000, args.timeout_ms ?? 10_000));
   const start = Date.now();
@@ -154,9 +159,10 @@ async function waitFor(ctx: PcToolContext, seat: Seat, args: WaitArgs): Promise<
         return finishAction(ctx, seat, `The screen is still after ${secs()} s.`, { forceImage: true });
       }
     }
-    return finishAction(ctx, seat, `The screen kept changing for ${Math.round(timeout / 1000)} s.`, {
+    // A timeout stops the rest of the batch, and still shows the screen (see finishAction's `failed`).
+    return finishAction(ctx, seat, `The screen kept changing for ${seconds(timeout)} s.`, {
       forceImage: true,
-      isError: true,
+      failed: true,
     });
   }
   if (!args.text && !args.role && !args.name && !args.window) {
@@ -183,9 +189,9 @@ async function waitFor(ctx: PcToolContext, seat: Seat, args: WaitArgs): Promise<
     (w) => w.focused,
   );
   const text = args.gone
-    ? `${what} was still there after ${Math.round(timeout / 1000)} s.`
-    : `${what} did not appear within ${Math.round(timeout / 1000)} s.${focused ? ` Focused: "${windowLabel(focused)}".` : ''}`;
-  return finishAction(ctx, seat, text, { forceImage: true, isError: true, windowNote: false });
+    ? `${what} was still there after ${seconds(timeout)} s.`
+    : `${what} did not appear within ${seconds(timeout)} s.${focused ? ` Focused: "${windowLabel(focused)}".` : ''}`;
+  return finishAction(ctx, seat, text, { forceImage: true, failed: true, windowNote: false });
 }
 
 export function helperTools(ctx: PcToolContext): Def[] {
@@ -201,7 +207,7 @@ export function helperTools(ctx: PcToolContext): Def[] {
     ),
     tool(
       'wait_for',
-      "Wait until the screen shows something, instead of guessing with wait: text (in the windows' accessible text or titles), an element (role and/or name), a window (title or part of it), or stable (the screen stops changing). gone: true waits for it to disappear. Returns as soon as it holds, with a screenshot; an error after timeout_ms (default 10000, max 120000).",
+      "Wait until the screen shows something, instead of guessing with wait: text (in the windows' accessible text or titles), an element (role and/or name), a window (title or part of it), or stable (the screen stops changing). gone: true waits for it to disappear. Returns as soon as it holds, with a screenshot; after timeout_ms (default 10000, max 120000) it says so, with a screenshot, and the GUI steps after it in your turn do not run.",
       {
         text: z.string().max(200).optional(),
         role: z.string().max(40).optional(),

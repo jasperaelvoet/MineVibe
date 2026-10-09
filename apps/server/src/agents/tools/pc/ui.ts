@@ -16,7 +16,7 @@ import {
   type UiSnapshot,
 } from '../../../contracts/PcApi.js';
 import { type CallToolResult, errorResult, textResult } from '../results.js';
-import { type Def, defs, finishAction, tool } from './common.js';
+import { type Def, defs, finishAction, isResult, tool } from './common.js';
 import { isMirror, type PcToolContext, type Seat, windowLabel } from './context.js';
 import { a11yEmpty, staleRef, unknownRef, windowNotFound } from './formats.js';
 import { centreOf, type ScreenGeometry } from './geometry.js';
@@ -284,8 +284,9 @@ export async function act(
 }
 
 /**
- * Where a ref is on screen (screen pixels): its box's centre, or, for an element out of view, scrolled into view and
- * found again by role and name.
+ * Where a ref is on screen now (screen pixels): its box's centre, or, for an element out of view, scrolled into view
+ * and found again by role and name. A named element is looked up again first: a scroll, a moved window or a new
+ * dialog since `ui find` would otherwise send the click to whatever is at its old place now.
  */
 export async function refPoint(
   ctx: PcToolContext,
@@ -293,6 +294,19 @@ export async function refPoint(
   entry: RefEntry,
 ): Promise<{ x: number; y: number } | CallToolResult> {
   const centre = (b: Rect) => ({ x: Math.round(b.x + b.w / 2), y: Math.round(b.y + b.h / 2) });
+  if (entry.bounds && entry.name && entry.windowId) {
+    let fresh: RefEntry | null | undefined;
+    try {
+      fresh = await refreshRef(ctx, seat, entry);
+    } catch {
+      fresh = undefined; // the tree cannot be read now: the box it had
+    }
+    if (fresh === null) return errorResult(staleRef(entry.ref, entry.windowTitle));
+    if (fresh) {
+      if (fresh.bounds) return centre(fresh.bounds);
+      entry = fresh; // still there, but out of view now
+    }
+  }
   if (entry.bounds) return centre(entry.bounds);
   const failed = await act(ctx, seat, entry, 'scroll_into_view').catch(() => null);
   if (failed) return failed;
@@ -423,6 +437,9 @@ async function uiFind(
   return textResult(out.join('\n'));
 }
 
+/** Most elements one `ui tree` / `ui text` reads of a window. */
+const TREE_MAX_NODES = 1_500;
+
 /** The nodes of `ref`'s element and its descendants in a fresh snapshot (found again by role and name). */
 function subtree(nodes: readonly UiNode[], entry: RefEntry): UiNode[] | null {
   const i = nodes.findIndex(
@@ -443,12 +460,17 @@ function subtree(nodes: readonly UiNode[], entry: RefEntry): UiNode[] | null {
   return out;
 }
 
+/**
+ * The elements of a window (or of a ref's subtree). `cut`: the window has more than one read covers and these nodes
+ * run to the end of what was read, so the agent must not take them for all of it.
+ */
 async function treeOf(
   ctx: PcToolContext,
   seat: Seat,
   args: { window?: string | undefined; ref?: string | undefined },
 ): Promise<
-  { ok: true; w: GuestWindow; snap: UiSnapshot; nodes: UiNode[] } | { ok: false; error: CallToolResult }
+  | { ok: true; w: GuestWindow; snap: UiSnapshot; nodes: UiNode[]; cut: boolean }
+  | { ok: false; error: CallToolResult }
 > {
   let entry: RefEntry | undefined;
   let w: GuestWindow;
@@ -465,7 +487,11 @@ async function treeOf(
     if (!p.ok) return p;
     w = p.window;
   }
-  const snap = await ctx.host.pcs.uiTree(seat.pcId, { windowId: w.id, maxNodes: 1_500, maxDepth: 40 });
+  const snap = await ctx.host.pcs.uiTree(seat.pcId, {
+    windowId: w.id,
+    maxNodes: TREE_MAX_NODES,
+    maxDepth: 40,
+  });
   if (snap.nodes.length <= 1) {
     const why = /chrom/i.test(`${w.app} ${w.title}`)
       ? 'Chromium starts without one; open pages with open, which uses Firefox'
@@ -473,12 +499,13 @@ async function treeOf(
     return { ok: false, error: errorResult(a11yEmpty(windowLabel(w), why)) };
   }
   let nodes = [...snap.nodes];
+  const full = snap.nodes.length >= TREE_MAX_NODES;
   if (entry) {
     const sub = subtree(nodes, entry);
     if (!sub) return { ok: false, error: errorResult(staleRef(entry.ref, entry.windowTitle)) };
     nodes = sub;
   }
-  return { ok: true, w, snap, nodes };
+  return { ok: true, w, snap, nodes, cut: full && nodes.at(-1) === snap.nodes.at(-1) };
 }
 
 async function uiTree(
@@ -515,6 +542,11 @@ async function uiTree(
     size += line.length + 1;
   }
   if (cut > 0) lines.push(`(… ${cut} more nodes; narrow with window/ref or use find)`);
+  else if (t.cut) {
+    lines.push(
+      `(… the window has more than ${TREE_MAX_NODES} elements and the rest were not read; narrow with ref or use find)`,
+    );
+  }
   if (kept.length === 0) lines.push(' (no interactive elements; try filter "all" or ui text)');
   return textResult(lines.join('\n'));
 }
@@ -546,6 +578,7 @@ async function uiText(
   let last = '';
   let size = 0;
   let terminal = false;
+  let full = false;
   for (const n of t.nodes) {
     const role = norm(n.role);
     if (role === 'terminal') terminal = true;
@@ -556,10 +589,16 @@ async function uiText(
     last = text;
     if (size + line.length > max) {
       out.push('(… cut; narrow with ref or raise max_chars)');
+      full = true;
       break;
     }
     out.push(line);
     size += line.length + 1;
+  }
+  if (t.cut && !full) {
+    out.push(
+      `(… the window has more than ${TREE_MAX_NODES} elements and the text after this was not read; narrow with ref, or use find or zoom)`,
+    );
   }
   if (terminal) out.push('(A terminal does not expose its text: run commands with bash, or zoom into it.)');
   if (out.length === 0)
@@ -655,11 +694,9 @@ async function uiAct(
     if (failed) return failed;
   } catch (err) {
     if (args.op !== 'set_value' || !isApiError(err) || !entry.bounds) throw err;
-    // An editable that refuses SET_VALUE: click into it, select all, type.
-    const c = {
-      x: Math.round(entry.bounds.x + entry.bounds.w / 2),
-      y: Math.round(entry.bounds.y + entry.bounds.h / 2),
-    };
+    // An editable that refuses SET_VALUE: click into it (where it is now), select all, type.
+    const c = await refPoint(ctx, seat, ctx.refs.get(entry.ref) ?? entry);
+    if (isResult(c)) return c;
     await ctx.host.pcs.pointer(seat.pcId, { action: 'click', x: c.x, y: c.y });
     await ctx.host.pcs.keyboard(seat.pcId, { action: 'press', keys: ['KEY_CONTROL', 'a'] });
     await ctx.host.pcs.type(seat.pcId, args.value ?? '');

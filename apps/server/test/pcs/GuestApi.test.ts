@@ -13,6 +13,7 @@ import {
   GREP_SCRIPT,
   OPEN_SCRIPT,
   READ_SCRIPT,
+  STAT_TARGET_SCRIPT,
   SWEEP_LAUNCH,
   WRITE_SCRIPT,
   ZOOM_SCRIPT,
@@ -910,6 +911,28 @@ describe('PC tools V2: files', () => {
     expect([...(await api.readBytes('linux-1', '/w/a.png', 10))]).toEqual([1, 2, 3]);
     expect(await codeOf(api.readBytes('linux-1', '/w/a.png', 2))).toBe('DENIED');
     expect(await codeOf(api.readBytes('linux-1', '/w/none', 2))).toBe('NOT_FOUND');
+  });
+
+  it('a symlink is described by the file it points at, so read-state sees that file change (review fix)', async () => {
+    guest.files.set('/w/notes.md', { data: new Uint8Array([1]), mtime: 5 });
+    guest.files.set('/w/gone.md', { data: new Uint8Array([1]), mtime: 5 });
+    const plain = guest.client.stat;
+    guest.client.stat = async (path: string) => ({ ...(await plain(path)), kind: 'symlink', size: 9n });
+    guest.scripts.set(STAT_TARGET_SCRIPT, ([path]) =>
+      path === '/w/notes.md' ? { code: 0, stdout: 'regular file|4096|1700000000\n' } : { code: 3 },
+    );
+    expect(await api.stat('linux-1', '/w/notes.md')).toEqual({
+      exists: true,
+      kind: 'file',
+      size: 4096,
+      mtimeMs: 1_700_000_000_000,
+    });
+    // A dangling link: nothing to read.
+    expect(await api.stat('linux-1', '/w/gone.md')).toEqual({ exists: false, size: 0, mtimeMs: 0 });
+    expect(guest.runs.filter((r) => r.script === STAT_TARGET_SCRIPT).map((r) => r.args)).toEqual([
+      ['/w/notes.md'],
+      ['/w/gone.md'],
+    ]);
   });
 
   it('a final newline makes one more, empty line (as Claude Code reads it)', async () => {

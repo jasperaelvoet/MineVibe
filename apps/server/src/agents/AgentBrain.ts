@@ -551,6 +551,8 @@ export class AgentBrain {
       nonce: this.record.nonce,
     });
     const resume = this.record.sessionStarted ? this.record.sessionId : null;
+    // Only the new session's `pc` tool server hears compactions (each session builds its own).
+    this.#compactionListeners.length = 0;
     const session = new AgentSession(
       {
         agentId: this.agentId,

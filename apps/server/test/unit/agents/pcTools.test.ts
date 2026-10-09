@@ -257,9 +257,28 @@ describe('read (Claude Code 2.1.293 Read)', () => {
   });
 
   it('shows images as images', async () => {
-    const { reg } = setup({ init: { files: { [`${VAULT}/shot.png`]: '\u0089PNG' } } });
+    const { reg } = setup({ init: { files: { [`${VAULT}/shot.png`]: '\u0089PNG\r\n\u001a\nrest' } } });
     const r = await call(reg, 'read', { file_path: `${VAULT}/shot.png` });
     expect(r.image).toMatchObject({ type: 'image', mimeType: 'image/png' });
+  });
+
+  it('an image is sent as what its bytes are, never as what its name says (review fix)', async () => {
+    const { reg } = setup({
+      init: {
+        files: {
+          [`${VAULT}/photo.png`]: '\u00ff\u00d8\u00ff\u00e0jpeg',
+          [`${VAULT}/notes.png`]: 'not an image at all',
+        },
+      },
+    });
+    const jpeg = await call(reg, 'read', { file_path: `${VAULT}/photo.png` });
+    expect(jpeg.image).toMatchObject({ type: 'image', mimeType: 'image/jpeg' });
+    const text = await call(reg, 'read', { file_path: `${VAULT}/notes.png` });
+    expect(text).toMatchObject({
+      isError: true,
+      image: undefined,
+      text: `${VAULT}/notes.png is not a PNG, JPEG, GIF or WebP image (its content does not match its .png name).`,
+    });
   });
 });
 
@@ -547,6 +566,13 @@ describe('computer tools (the trained members)', () => {
       { action: 'press', keys: ['KEY_NUMPAD_ENTER'] },
       { action: 'hold', keys: ['KEY_SHIFT'], ms: 500 },
     ]);
+    // More presses than one input batch holds teach instead of failing in the input router (review fix).
+    const n = pcs.input.length;
+    expect((await call(reg, 'key', { text: 'Down Down Down', repeat: 100 })).text).toBe(
+      'Too many key presses in one call (3 keys x 100); at most 256. Lower repeat or split the keys over several key calls.',
+    );
+    expect(pcs.input).toHaveLength(n);
+    expect((await call(reg, 'key', { text: 'ctrl+Tab', repeat: 100 })).isError).toBe(false);
     expect((await call(reg, 'key', { text: 'Ctrl-S' })).text).toBe(
       'Unknown key "Ctrl-S". Use xdotool names joined by +, e.g. "ctrl+s", "Return", "alt+Tab", "Page_Down".',
     );
@@ -761,6 +787,55 @@ describe('ui and ui_act (accessibility)', () => {
     );
   });
 
+  it('a pixel action on a ref goes to where the element is now, not where ui find saw it (review fix)', async () => {
+    const { reg, pcs } = withEditor();
+    await call(reg, 'ui', { action: 'find', role: 'text field' });
+    // The window scrolled (or moved) since: the field is 200 pixels lower now.
+    const ed = pcs.desktop('linux-1').find((w) => w.id === 'w-ed') as FakeWindow;
+    const field = ed.nodes.find((n) => n.name === 'Search') as {
+      bounds?: { x: number; y: number; w: number; h: number };
+    };
+    field.bounds = { x: 200, y: 260, w: 300, h: 24 };
+    await call(reg, 'left_click', { ref: 'ref_1' });
+    expect(pcs.input.at(-1)?.value).toEqual({ action: 'click', x: 350, y: 272, button: 'left' });
+    await call(reg, 'double_click', { ref: 'ref_1' });
+    expect(pcs.input.at(-1)?.value).toEqual({ action: 'double_click', x: 350, y: 272 });
+    // Gone from the window: no click at its old place.
+    ed.nodes = ed.nodes.filter((n) => n.name !== 'Search');
+    const n = pcs.input.length;
+    expect((await call(reg, 'right_click', { ref: 'ref_1' })).text).toBe(
+      'ref_1 is from an older view of "notes.md - Mousepad" (the window changed). Call ui find or ui tree again.',
+    );
+    expect(pcs.input).toHaveLength(n);
+  });
+
+  it('a window larger than one read says its tree and text were cut (review fix)', async () => {
+    const { reg, pcs } = setup();
+    pcs.addWindow('linux-1', {
+      id: 'w-big',
+      title: 'Big page - Firefox',
+      app: 'Firefox',
+      nodes: Array.from({ length: 1_600 }, (_, i) => ({
+        elementId: String(i),
+        depth: 1,
+        role: i % 2 ? 'link' : 'paragraph',
+        name: `item ${i}`,
+        bounds: { x: 10, y: 10, w: 20, h: 10 },
+        states: ['enabled'],
+        actions: i % 2 ? ['press'] : [],
+      })),
+    });
+    const tree = await call(reg, 'ui', { action: 'tree', max_chars: 30_000 });
+    expect(tree.text.split('\n').at(-1)).toBe(
+      '(… the window has more than 1500 elements and the rest were not read; narrow with ref or use find)',
+    );
+    const text = await call(reg, 'ui', { action: 'text', max_chars: 30_000 });
+    expect(text.text).toContain('item 1499');
+    expect(text.text.split('\n').at(-1)).toBe(
+      '(… the window has more than 1500 elements and the text after this was not read; narrow with ref, or use find or zoom)',
+    );
+  });
+
   it('tree shows interactive elements indented, with refs; text reads what a window shows', async () => {
     const { reg } = withEditor();
     const tree = await call(reg, 'ui', { action: 'tree' });
@@ -850,16 +925,46 @@ describe('open, wait_for, clipboard', () => {
     const found = await call(reg, 'wait_for', { text: 'Hello', timeout_ms: 1_000 });
     expect(found.text).toMatch(/^Found "Hello" after \d+\.\d s in "notes\.md - Mousepad"\./);
     expect(found.image).toBeDefined();
+    // A timeout is no MCP error: Claude Code drops the images of those, and the agent should see the screen.
     const missing = await call(reg, 'wait_for', { text: 'Build succeeded', timeout_ms: 400 });
-    expect(missing.isError).toBe(true);
-    expect(missing.text).toBe('"Build succeeded" did not appear within 0 s. Focused: "notes.md - Mousepad".');
+    expect(missing.isError).toBe(false);
+    expect(missing.text).toBe(
+      '"Build succeeded" did not appear within 0.4 s. Focused: "notes.md - Mousepad".',
+    );
     expect(missing.image).toBeDefined();
     const win = await call(reg, 'wait_for', { window: 'Terminal', timeout_ms: 500 });
     expect(win.text).toMatch(/^Found window "Terminal"/);
     const gone = await call(reg, 'wait_for', { text: 'Hello', gone: true, timeout_ms: 300 });
-    expect(gone.text).toBe('"Hello" was still there after 0 s.');
+    expect(gone.text).toBe('"Hello" was still there after 0.3 s.');
     const still = await call(reg, 'wait_for', { stable: true, timeout_ms: 2_000 });
     expect(still.text).toMatch(/^The screen is still after/);
+  });
+
+  it('a wait_for that times out stops the GUI steps after it and still shows the screen (review fix)', async () => {
+    const batch = new BatchBook();
+    const { reg, pcs } = setup({ batch });
+    message(batch, 'm1', [
+      ['t1', 'mcp__pc__wait_for'],
+      ['t2', 'mcp__pc__left_click'],
+      ['t3', 'mcp__pc__bash'],
+    ]);
+    const waited = await call(reg, 'wait_for', { text: 'Save complete', timeout_ms: 200 }, 't1');
+    expect(waited).toMatchObject({
+      isError: false,
+      text: expect.stringMatching(/did not appear within 0\.2 s/),
+    });
+    expect(waited.content.map((c) => c.type)).toEqual(['text', 'image']);
+    expect(await call(reg, 'left_click', { coordinate: [5, 5] }, 't2')).toMatchObject({
+      isError: true,
+      text: 'Not executed: an earlier computer action in this turn failed.',
+    });
+    expect(pcs.input).toHaveLength(0);
+    expect((await call(reg, 'bash', { command: 'true' }, 't3')).isError).toBe(false);
+    // The screen it showed counts as seen: the next look at the same screen is one line.
+    message(batch, 'm2', [['t4', 'mcp__pc__wait']]);
+    expect((await call(reg, 'wait', { duration: 0 }, 't4')).text).toBe(
+      'OK\n(Screen unchanged since your last screenshot.)',
+    );
   });
 
   it('clipboard reads and sets', async () => {

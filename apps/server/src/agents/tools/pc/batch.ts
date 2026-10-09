@@ -43,6 +43,8 @@ export class BatchBook {
   readonly #byTool = new Map<string, MessageEntry>();
   /** Calls asked about before their tool_use block was seen (the stream may lag the call a little). */
   readonly #pending = new Map<string, (() => void)[]>();
+  /** Computer actions that failed before their tool_use block was seen: applied when it is. */
+  readonly #failedEarly = new Set<string>();
   #current: MessageEntry | null = null;
 
   #entry(id: string): MessageEntry {
@@ -72,6 +74,7 @@ export class BatchBook {
     if (!m) return;
     m.calls.push(toolUseId);
     this.#byTool.set(toolUseId, m);
+    if (this.#failedEarly.delete(toolUseId)) m.failedAt = Math.min(m.failedAt, m.calls.length - 1);
     const waiting = this.#pending.get(toolUseId);
     if (waiting) {
       this.#pending.delete(toolUseId);
@@ -145,7 +148,14 @@ export class BatchBook {
   fail(toolUseId: string | undefined): void {
     if (!toolUseId) return;
     const m = this.#byTool.get(toolUseId);
-    if (!m) return;
+    if (!m) {
+      // The stream has not shown this call yet: the failure applies once it does.
+      this.#failedEarly.add(toolUseId);
+      while (this.#failedEarly.size > KEEP) {
+        this.#failedEarly.delete(this.#failedEarly.values().next().value as string);
+      }
+      return;
+    }
     m.failedAt = Math.min(m.failedAt, m.calls.indexOf(toolUseId));
   }
 
@@ -154,6 +164,7 @@ export class BatchBook {
     for (const m of this.#messages.values()) for (const w of m.waiters.splice(0)) w();
     this.#messages.clear();
     this.#byTool.clear();
+    this.#failedEarly.clear();
     this.#current = null;
   }
 }

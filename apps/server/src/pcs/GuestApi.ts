@@ -62,6 +62,7 @@ import {
   READ_MAX_BYTES,
   READ_SCRIPT,
   SCRIPT_EXIT,
+  STAT_TARGET_SCRIPT,
   SWEEP_LAUNCH,
   SWEEP_SCRIPT,
   splitGlob,
@@ -1420,6 +1421,8 @@ export class PcGuestApi implements PcApi {
     const c = await this.#running(pcId);
     try {
       const e = await withDeadline(this.#callTimeoutMs, 'stat', (signal) => c.stat(path, { signal }));
+      // A symlink is described by what it points at: read-state compares the file the agent reads and edits.
+      if (/link/i.test(e.kind)) return await this.#statTarget(pcId, path);
       const kind = /dir/i.test(e.kind) ? 'dir' : /file|regular/i.test(e.kind) ? 'file' : 'other';
       return {
         exists: true,
@@ -1435,6 +1438,20 @@ export class PcGuestApi implements PcApi {
       if (e instanceof DeadlineError) throw err(PC_ERROR_CODES.TIMEOUT, `stat ${path} timed out`);
       throw err(PC_ERROR_CODES.GUEST_ERROR, `stat ${path} failed: ${msg.slice(0, 200)}`);
     }
+  }
+
+  /** {@link stat} of a symlink's target (a dangling link does not exist). */
+  async #statTarget(pcId: string, path: string): Promise<FileStat> {
+    const r = await this.#script(pcId, STAT_TARGET_SCRIPT, [path], { timeoutMs: 10_000 });
+    if (r.code === SCRIPT_EXIT.NOT_FOUND) return { exists: false, size: 0, mtimeMs: 0 };
+    if (r.code !== 0) throw err(PC_ERROR_CODES.GUEST_ERROR, `stat ${path} failed: ${tail(r.stderr)}`);
+    const [type = '', size = '0', mtime = '0'] = r.stdout.toString('utf8').trim().split('|');
+    return {
+      exists: true,
+      kind: /directory/i.test(type) ? 'dir' : /regular/i.test(type) ? 'file' : 'other',
+      size: Number(size) || 0,
+      mtimeMs: (Number(mtime) || 0) * 1000,
+    };
   }
 
   async readBytes(pcId: string, path: string, maxBytes: number): Promise<Uint8Array> {

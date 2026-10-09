@@ -46,6 +46,16 @@ describe('BatchBook', () => {
     expect([b.halted('a'), b.halted('b'), b.halted('c'), b.halted('d')]).toEqual([false, false, true, false]);
   });
 
+  it('a failure reported before its block streamed still halts the rest of its message (review fix)', () => {
+    const b = new BatchBook();
+    b.fail('a');
+    b.assistantMessage('m1', [
+      { id: 'a', name: 'mcp__pc__wait_for' },
+      { id: 'b', name: 'mcp__pc__left_click' },
+    ]);
+    expect([b.halted('a'), b.halted('b')]).toEqual([false, true]);
+  });
+
   it('a call asked about before its block streamed is waited for briefly', async () => {
     const b = new BatchBook();
     b.messageStart('m1');

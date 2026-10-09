@@ -177,7 +177,8 @@ export function parseUiSnapshot(answer: {
       ...(value ? { value } : {}),
       ...(description ? { description } : {}),
       ...(b && b.w > 0 && b.h > 0 ? { bounds: b } : {}),
-      states: (n.states ?? []).map((s) => s.toLowerCase()),
+      // `enabled`, `focused`, … (an enum spelling, `ACCESSIBILITY_STATE_ENABLED`, reads the same).
+      states: (n.states ?? []).map((s) => s.toLowerCase().replace(/^accessibility_state_/, '')),
       actions: (n.actions ?? []).map(actionName),
     });
   }
