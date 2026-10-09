@@ -8,6 +8,7 @@ import type { HostDialogs } from '../app/StubChannel.js';
 import { findRepoRoot } from '../config/paths.js';
 import type { CreatePcModule, PcModule, RuntimeContext } from '../orchestrator/modules.js';
 import { tccProtectedReason } from '../util/hostPaths.js';
+import { androidKitFor, readAndroidHelper } from './android/index.js';
 import { settleWithin } from './deadline.js';
 import { AppleContainerDriver } from './drivers/AppleContainerDriver.js';
 import {
@@ -179,6 +180,7 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
   let driver: PcDriver;
   let diskPath: string;
   let registryDir: string | null = null;
+  let appRoot: string | null = null;
   if (opts.runtime === 'docker') {
     driver = new DockerDriver();
     diskPath = ctx.paths.state;
@@ -208,6 +210,7 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     driver = new AppleContainerDriver(runtime, { logger: log });
     diskPath = roots.appRoot;
     registryDir = registryDirFor(roots.appRoot);
+    appRoot = roots.appRoot;
   }
   const context = repo ? join(repo, 'images', 'linux-pc') : null;
   const imageBuild =
@@ -219,7 +222,11 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     ...(repo ? [join(repo, 'packaging', 'vendor.lock.json')] : []),
   ];
   const macDriver = buildMacDriver(ctx, opts, loadLumeLocks(lockFiles), log);
-  const manager = new PcManager({
+  // The Android phone and nested virtualization (PLAN §8.8): Apple container only.
+  const android = appRoot
+    ? androidKitFor({ appRoot, driver, stateDir: ctx.paths.state, manager: () => manager, logger: log })
+    : null;
+  const manager: PcManager = new PcManager({
     stateDir: ctx.paths.state,
     driver,
     macDriver,
@@ -227,6 +234,8 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     logger: log,
     diskPath,
     ...(imageBuild ? { imageBuild } : {}),
+    android,
+    androidHelper: readAndroidHelper(context),
     // The org module's Codex export (CodexStore), read-only at /mnt/codex (PLAN §6.6).
     codexExport: ctx.paths.codexExport,
     registryDir,

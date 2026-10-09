@@ -4,16 +4,19 @@ import type { Logger } from 'pino';
 import type { ContainerRuntime } from './ContainerRuntime.js';
 import { CliError, type ExecResult, parseCliJson } from './exec.js';
 import {
+  type AndroidDriverOps,
   assertRunSpec,
   type BindMount,
   type ContainerState,
   hasLabels,
   mountProblems,
   type NetworkInfo,
+  type OneShotSpec,
   orderedMounts,
   type PcContainerInfo,
   type PcDriver,
   type PcRunSpec,
+  type PhoneRunSpec,
   type Progress,
   portProblems,
   SPACESD_GUEST_PORT,
@@ -34,6 +37,10 @@ import {
  *   and mounted with `--mount type=volume,…`.
  * - spacesd is published on loopback only: `-p 127.0.0.1:<port>:3211`.
  * - The token travels as `-e CUA_ENV_TOKEN` (name only) with the value in the CLI's environment.
+ * - Nested virtualization is `--virtualization` plus `--kernel` (a kernel with KVM; the stock one has none). Neither
+ *   flag is ever set engine-wide (`system kernel set` would change every container, the user's PCs included).
+ * - The Android phone (PLAN §8.8) is its own container on the PC's network with MineVibe's Android kernel, all
+ *   capabilities and no masked or read-only paths (Android init mounts its own); it publishes no port.
  */
 
 export interface AppleContainerTimeouts {
@@ -61,6 +68,8 @@ function commonArgs(spec: PcRunSpec): string[] {
   const { binds, volumes } = orderedMounts(spec);
   const args = ['--name', spec.name, '--cpus', String(spec.cpus), '--memory', `${spec.memoryMiB}M`];
   if (spec.shmMiB > 0) args.push('--shm-size', `${spec.shmMiB}M`);
+  if (spec.kernel) args.push('--kernel', spec.kernel);
+  if (spec.virtualization) args.push('--virtualization');
   for (const k of Object.keys(spec.secretEnv)) args.push('-e', k);
   for (const [k, v] of Object.entries(spec.env)) args.push('-e', `${k}=${v}`);
   if (spec.network) args.push('--network', spec.network);
@@ -80,6 +89,57 @@ export function buildAppleRunArgs(spec: PcRunSpec): string[] {
 /** Builds `container create` arguments (pure; unit-tested). */
 export function buildAppleCreateArgs(spec: PcRunSpec): string[] {
   return ['create', ...commonArgs(spec)];
+}
+
+const NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+const pathOk = (p: string) => p.startsWith('/') && !/[,=:\n\r\0]/.test(p);
+
+/** Builds the phone's `container create` arguments (pure; unit-tested). */
+export function buildPhoneCreateArgs(spec: PhoneRunSpec): string[] {
+  const fail = (m: string) => {
+    throw new Error(`invalid phone spec: ${m}`);
+  };
+  if (!NAME_RE.test(spec.name)) fail(`name ${spec.name}`);
+  if (!NAME_RE.test(spec.network)) fail(`network ${spec.network}`);
+  if (!pathOk(spec.kernel)) fail(`kernel ${spec.kernel}`);
+  if (!Number.isInteger(spec.cpus) || spec.cpus < 1) fail(`cpus ${spec.cpus}`);
+  if (!Number.isInteger(spec.memoryMiB) || spec.memoryMiB < 1024) fail(`memoryMiB ${spec.memoryMiB}`);
+  if (spec.data && !NAME_RE.test(spec.data.name)) fail(`volume ${spec.data.name}`);
+  for (const a of spec.initArgs) if (!/^[a-z0-9_.]+=[A-Za-z0-9_.,-]+$/.test(a)) fail(`init arg ${a}`);
+  const args = ['create', '--name', spec.name, '--cpus', String(spec.cpus), '--memory', `${spec.memoryMiB}M`];
+  args.push('--network', spec.network, '--kernel', spec.kernel);
+  // Android init mounts /proc, /sys and its cgroups itself; the default masks and read-only paths break it.
+  args.push('--cap-add', 'ALL', '--masked-path', 'NONE', '--read-only-path', 'NONE');
+  if (spec.data) args.push('--mount', `type=volume,source=${spec.data.name},target=/data`);
+  for (const [k, v] of Object.entries(spec.labels)) {
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(k) || /[\n\r\0=,]/.test(v)) fail(`label ${k}`);
+    args.push('-l', `${k}=${v}`);
+  }
+  args.push(spec.image, ...spec.initArgs);
+  return args;
+}
+
+/** Builds `container run --rm` arguments of a one-shot container (pure; unit-tested). */
+export function buildOneShotArgs(spec: OneShotSpec): string[] {
+  if (!NAME_RE.test(spec.name)) throw new Error(`invalid one-shot spec: name ${spec.name}`);
+  const args = [
+    'run',
+    '--rm',
+    '--name',
+    spec.name,
+    '--cpus',
+    String(spec.cpus),
+    '--memory',
+    `${spec.memoryMiB}M`,
+  ];
+  args.push('--entrypoint', spec.entrypoint);
+  for (const b of spec.binds) {
+    if (!pathOk(b.source) || !pathOk(b.target)) throw new Error(`invalid one-shot spec: bind ${b.source}`);
+    args.push('--mount', bindMountArg(b));
+  }
+  for (const [k, v] of Object.entries(spec.labels)) args.push('-l', `${k}=${v}`);
+  args.push(spec.image, ...spec.args);
+  return args;
 }
 
 /** `type=bind,source=…,target=…[,readonly]` */
@@ -121,6 +181,7 @@ interface AppleContainerJson {
     resources?: { cpus?: number; cpuOverhead?: number; memoryInBytes?: number };
     shmSize?: number;
     networks?: { network?: string }[];
+    virtualization?: boolean;
   };
   status?: { state?: string; networks?: { ipv4Address?: string }[] } | string;
 }
@@ -166,6 +227,7 @@ export function parseAppleContainer(j: AppleContainerJson): PcContainerInfo {
     ...(c.networks ? { networks: c.networks.map((n) => n.network ?? '').filter(Boolean) } : {}),
     ...(ip ? { ipv4: ip.split('/')[0] } : {}),
     ...(tokenSha256 ? { tokenSha256 } : {}),
+    ...(typeof c.virtualization === 'boolean' ? { virtualization: c.virtualization } : {}),
   };
 }
 
@@ -182,10 +244,34 @@ interface AppleNetworkJson {
 
 const isNotFound = (r: ExecResult) => r.code !== 0 && /not ?found/i.test(r.stderr + r.stdout);
 
-export class AppleContainerDriver implements PcDriver {
+/**
+ * Splits a streamed output into whole, trimmed, non-empty lines: a line cut across two chunks is held back until its
+ * end arrives (call with `flush` at the end).
+ */
+export function lineSplitter(onLine: (line: string) => void): { push(chunk: string): void; flush(): void } {
+  let rest = '';
+  const emit = (l: string) => {
+    const t = l.trim();
+    if (t) onLine(t);
+  };
+  return {
+    push(chunk) {
+      const parts = (rest + chunk).split(/\r?\n|\r/);
+      rest = parts.pop() ?? '';
+      for (const l of parts) emit(l);
+    },
+    flush() {
+      emit(rest);
+      rest = '';
+    },
+  };
+}
+
+export class AppleContainerDriver implements PcDriver, AndroidDriverOps {
   readonly kind = 'apple-container' as const;
   readonly cpuOverhead = 1;
   readonly capsVolumes = true;
+  readonly android: AndroidDriverOps = this;
   readonly runtime: ContainerRuntime;
   readonly #t: AppleContainerTimeouts;
   readonly #log: Logger | undefined;
@@ -371,16 +457,24 @@ export class AppleContainerDriver implements PcDriver {
     await this.runtime.execOk(['start', name], { timeoutMs: this.#t.start });
   }
 
+  /**
+   * Stops a container. One that is still running after a failed stop gets a second `stop`: after Docker ran inside a
+   * PC, the first one fails with errno 95 on `cgroup.kill` and the second succeeds (spike S9-android).
+   */
   async stop(name: string, timeoutSeconds = this.#t.stopGraceSeconds): Promise<void> {
-    const r = await this.runtime.exec(['stop', '-t', String(timeoutSeconds), name], {
-      timeoutMs: (timeoutSeconds + 30) * 1000,
-    });
-    if (r.code === 0 && !r.timedOut) return;
-    if (isNotFound(r)) return;
-    // Already stopped containers report an error on stop; accept that.
-    const info = await this.inspect(name);
-    if (info && info.state !== 'running') return;
-    throw new CliError('container stop', r);
+    let r: ExecResult | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      r = await this.runtime.exec(['stop', '-t', String(timeoutSeconds), name], {
+        timeoutMs: (timeoutSeconds + 30) * 1000,
+      });
+      if (r.code === 0 && !r.timedOut) return;
+      if (isNotFound(r)) return;
+      // Already stopped containers report an error on stop; accept that.
+      const info = await this.inspect(name);
+      if (info?.state !== 'running') return;
+      this.#log?.warn({ name, attempt, err: r.stderr.trim().slice(0, 300) }, 'container stop failed');
+    }
+    throw new CliError('container stop', r as ExecResult);
   }
 
   async remove(name: string): Promise<void> {
@@ -440,5 +534,79 @@ export class AppleContainerDriver implements PcDriver {
     if (options.user) args.push('--user', options.user);
     args.push(name, ...argv);
     return this.runtime.exec(args, { timeoutMs: options.timeoutMs ?? this.#t.default });
+  }
+
+  // ------------------------------------------------------------------ Android phone, kernels (PLAN §8.8)
+
+  async saveImage(ref: string, file: string): Promise<void> {
+    await this.runtime.execOk(['image', 'save', '--platform', this.#platform, '-o', file, ref], {
+      timeoutMs: this.#t.pull,
+    });
+  }
+
+  async loadImage(file: string): Promise<void> {
+    await this.runtime.execOk(['image', 'load', '-i', file], { timeoutMs: this.#t.pull });
+  }
+
+  async removeImage(ref: string): Promise<void> {
+    const r = await this.runtime.exec(['image', 'delete', ref], { timeoutMs: this.#t.default });
+    if (r.code !== 0 && !isNotFound(r)) throw new CliError('container image delete', r);
+  }
+
+  async imageDigest(ref: string): Promise<string | null> {
+    const r = await this.runtime.exec(['image', 'inspect', ref], { timeoutMs: this.#t.default });
+    if (r.code !== 0 || r.timedOut) return null;
+    const rows = parseCliJson<{ id?: string; configuration?: { descriptor?: { digest?: string } } }[]>(
+      'container image inspect',
+      r.stdout.trim() || '[]',
+    );
+    const row = rows[0];
+    const digest = row?.configuration?.descriptor?.digest ?? (row?.id ? `sha256:${row.id}` : undefined);
+    return digest ?? null;
+  }
+
+  async runOnce(spec: OneShotSpec, onOutput?: Progress): Promise<void> {
+    // One splitter per stream: their chunks interleave.
+    const out = onOutput ? lineSplitter(onOutput) : null;
+    const err = onOutput ? lineSplitter(onOutput) : null;
+    const r = await this.runtime.exec(buildOneShotArgs(spec), {
+      timeoutMs: spec.timeoutMs,
+      ...(out && err ? { onStdout: (d: string) => out.push(d), onStderr: (d: string) => err.push(d) } : {}),
+    });
+    out?.flush();
+    err?.flush();
+    if (r.code === 0 && !r.timedOut) return;
+    // A one-shot the timeout killed may still run in the engine.
+    await this.remove(spec.name).catch(() => {});
+    throw new CliError(`container run ${spec.name}`, r);
+  }
+
+  /** `container create` of the phone, then verify: on the PC's network, `/data` mounted, no published port. */
+  async createPhone(spec: PhoneRunSpec): Promise<PcContainerInfo> {
+    const args = buildPhoneCreateArgs(spec);
+    if (spec.data) await this.ensureVolume(spec.data, spec.ownerLabels);
+    const r = await this.runtime.exec(args, { timeoutMs: this.#t.run });
+    if (r.code !== 0 || r.timedOut) {
+      await this.remove(spec.name).catch(() => {});
+      throw new CliError('container create (phone)', r);
+    }
+    const info = await this.inspect(spec.name);
+    const problems: string[] = [];
+    if (!info) problems.push('container vanished after create');
+    else {
+      if (!(info.networks ?? []).includes(spec.network))
+        problems.push(`not attached to network ${spec.network}`);
+      if (spec.data && !info.volumes.some((v) => v.name === spec.data?.name && v.target === '/data')) {
+        problems.push('/data is not its volume');
+      }
+      if (info.hostPort !== undefined || info.binds.length > 0)
+        problems.push('it publishes a port or binds a folder');
+    }
+    if (!info || problems.length > 0) {
+      await this.remove(spec.name).catch(() => {});
+      throw new Error(`phone create produced the wrong container: ${problems.join('; ')}`);
+    }
+    this.#log?.info({ name: spec.name, ms: r.ms }, 'phone container created');
+    return info;
   }
 }

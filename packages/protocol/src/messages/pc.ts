@@ -36,7 +36,7 @@ export const VaultMount = z.object({
 });
 export type VaultMount = z.infer<typeof VaultMount>;
 
-/** A download the player must approve (macOS image, ~24 GB). */
+/** A download the player must approve (macOS image, ~24 GB; a Linux PC's Android phone or KVM the first time). */
 export const PcConsentPrompt = z.object({
   consentId: ConsentId,
   /** What will be downloaded ("macOS 26 image"). */
@@ -46,6 +46,32 @@ export const PcConsentPrompt = z.object({
   freeBytes: NonNegInt,
 });
 export type PcConsentPrompt = z.infer<typeof PcConsentPrompt>;
+
+/** The Android phone of a PC (PLAN §8.8). */
+export const PhoneStatus = z.enum(['off', 'preparing', 'starting', 'running', 'error']);
+export type PhoneStatus = z.infer<typeof PhoneStatus>;
+
+/**
+ * What a Linux PC can do beyond the stock container (PLAN §8.8), and whether this Mac allows it: `unavailable` is
+ * null when it can, else why not ("needs an M3 or newer Mac").
+ */
+export const PcCapabilities = z.object({
+  /** Nested virtualization: KVM inside the PC (M3 or newer). Changing it recreates the PC. */
+  virtualization: z.object({
+    enabled: z.boolean(),
+    unavailable: z.string().min(1).max(200).nullable(),
+  }),
+  /** The Android phone: a Redroid container on the PC's network (`android-phone`), 4 vCPUs and 4 GiB. */
+  android: z.object({
+    enabled: z.boolean(),
+    unavailable: z.string().min(1).max(200).nullable(),
+    status: PhoneStatus,
+    /** `preparing` progress (first use downloads the image and builds the kernel), null otherwise. */
+    progress: Fraction.nullable(),
+    detail: z.string().min(1).max(256).nullable(),
+  }),
+});
+export type PcCapabilities = z.infer<typeof PcCapabilities>;
 
 /** Everything the mod shows about one PC (monitor, LED, PcConfigScreen, PCs & Resources). */
 export const PcInfo = z.object({
@@ -80,8 +106,13 @@ export const PcInfo = z.object({
   screen: z
     .object({ w: z.number().int().min(1).max(65_535), h: z.number().int().min(1).max(65_535) })
     .nullable(),
-  /** Set while `status` is `awaiting_consent`. */
+  /**
+   * A download that waits for the player's OK: a macOS image while `status` is `awaiting_consent`, or what turning on
+   * a Linux PC's Android phone or nested virtualization needs the first time (the PC keeps its status; PLAN §8.8).
+   */
   consent: PcConsentPrompt.nullable(),
+  /** Linux PCs only (absent for macOS). */
+  capabilities: PcCapabilities.optional(),
 });
 export type PcInfo = z.infer<typeof PcInfo>;
 
@@ -201,8 +232,10 @@ export const PcCursor = defineMessage('pc.cursor', {
 }).describe("The seated agent's cursor position on a PC.");
 
 /**
- * M→N request (PcConfigScreen). Absent keys are unchanged. Changing `type`, `cpus` or `memoryMiB` recreates the
- * PC (keeping the home volume and the Vault). Errors: `OVER_BUDGET`, `BAD_MOUNT`, `PC_UNKNOWN`.
+ * M→N request (PcConfigScreen). Absent keys are unchanged. Changing `type`, `cpus`, `memoryMiB`, `mounts` or
+ * `virtualization` recreates the PC (keeping the home volume and the Vault); `android` starts or removes the PC's
+ * phone without touching the PC (off deletes the phone's apps and data). Errors: `OVER_BUDGET`, `BAD_MOUNT`,
+ * `PC_UNKNOWN`, `BAD_MESSAGE` (a capability this Mac cannot have).
  */
 export const PcConfig = defineMessage('pc.config', {
   pcId: PcId,
@@ -213,6 +246,10 @@ export const PcConfig = defineMessage('pc.config', {
   mounts: z.array(VaultMount).max(16).optional(),
   pinned: z.boolean().optional(),
   wipeOnDeath: z.boolean().optional(),
+  /** Nested virtualization (Linux, M3 or newer). */
+  virtualization: z.boolean().optional(),
+  /** The Android phone (Linux). */
+  android: z.boolean().optional(),
 }).describe('Changes a PC configuration.');
 
 export const PcConfigResult = z.object({
@@ -310,7 +347,8 @@ export const pcMessages = {
     schema: PcConfig,
     direction: 'mod_to_node',
     group: 'pc',
-    summary: 'Request: change a PC (resources, type, mounts, flags); may recreate it.',
+    summary:
+      'Request: change a PC (resources, type, mounts, flags, virtualization, Android phone); may recreate it.',
     reply: PcConfigResult,
   },
   'pc.action': {

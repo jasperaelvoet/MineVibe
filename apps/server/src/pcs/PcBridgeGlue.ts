@@ -492,9 +492,16 @@ export class PcBridgeGlue {
     } catch (err) {
       throw toBridgeError(err, 'config');
     }
-    const wantsRecreate =
-      m.type !== undefined || m.cpus !== undefined || m.memoryMiB !== undefined || m.mounts !== undefined;
-    if (!wantsRecreate) {
+    // Everything that defines the PC's containers goes through one reconfigure (an Android phone alone recreates
+    // nothing; PcManager tells).
+    const wantsReconfigure =
+      m.type !== undefined ||
+      m.cpus !== undefined ||
+      m.memoryMiB !== undefined ||
+      m.mounts !== undefined ||
+      m.virtualization !== undefined ||
+      m.android !== undefined;
+    if (!wantsReconfigure) {
       this.pushStates();
       return { recreate: false };
     }
@@ -518,6 +525,8 @@ export class PcBridgeGlue {
       ...(m.cpus !== undefined ? { cpus: m.cpus } : {}),
       ...(m.memoryMiB !== undefined ? { memMiB: m.memoryMiB } : {}),
       ...(mounts !== undefined ? { mounts } : {}),
+      ...(m.virtualization !== undefined ? { virtualization: m.virtualization } : {}),
+      ...(m.android !== undefined ? { android: m.android } : {}),
     });
     const done = (await this.#settle(op, 'config', `configure ${pcId}`)) as
       | Awaited<ReturnType<PcManager['reconfigure']>>
@@ -599,21 +608,30 @@ export class PcBridgeGlue {
   }
 
   /**
-   * The player's answer to a download prompt (the macOS image, PLAN §8.7): accepting starts every PC that waited for it
-   * (in the background: the download takes minutes, its progress shows as `downloading`); declining turns them off.
+   * The player's answer to a download prompt (`PcInfo.consent`): the macOS image (accepting starts every PC that
+   * waited for it, in the background: the download takes minutes, its progress shows as `downloading`; declining turns
+   * them off), or the first use of a Linux PC's Android phone or nested virtualization (PLAN §8.8: "Download" applies
+   * the switch that waited for it, which may recreate the PC, so like `pc.config` the reply comes once that has run
+   * for a while).
    */
   async #onConsent(m: MessageOf<'pc.consent'>): Promise<HandlerResult> {
+    const { manager } = this.#o;
     const pcId = this.#known(m.pcId);
+    if (manager.consentOf(pcId)?.consentId === m.consentId) {
+      await this.#settle(manager.answerConsent(pcId, m.consentId, m.accept), 'config', `consent ${pcId}`);
+      this.pushStates();
+      return {};
+    }
     let start: string[];
     try {
-      ({ start } = await this.#o.manager.consent(pcId, m.consentId, m.accept));
+      ({ start } = await manager.consent(pcId, m.consentId, m.accept));
     } catch (err) {
       throw new BridgeError(
         ERROR_CODES.NOT_READY,
         (err instanceof Error ? err.message : String(err)).slice(0, 300),
       );
     }
-    for (const id of start) this.#background(`start ${id}`, () => this.#o.manager.start(id));
+    for (const id of start) this.#background(`start ${id}`, () => manager.start(id));
     this.pushStates();
     return {};
   }

@@ -179,6 +179,31 @@ export function overlayVolumePrefix(pcId: string, instance: string): string {
 }
 
 /**
+ * The container of a PC's Android phone (PLAN §8.8): a Redroid container on the PC's own network. It keeps the PC's
+ * `mv-pc-<instance>-` prefix, so `doctor --clean-orphans` finds it with the rest of the instance.
+ */
+export function phoneContainerName(pcId: string, instance: string): string {
+  return `${scope(instance, pcId)}-phone`;
+}
+
+/** The phone's `/data` volume (installed apps and their saves survive a PC restart). */
+export function phoneDataVolumeName(pcId: string, instance: string): string {
+  return `${scope(instance, pcId)}-phone-data`;
+}
+
+/**
+ * The Android phone a Linux PC can have (PLAN §8.8, spike S9-android): 4 vCPUs and 4 GiB are what a game needed at
+ * 60 fps (~300 % CPU, 2.4 GiB); `/data` gets its own capped volume.
+ */
+export const PHONE_RESOURCES = { cpus: 4, memMiB: 4096, dataGiB: 8 } as const;
+
+/**
+ * Host memory a PC with nested virtualization is charged beyond its limit (PLAN §8.8): the hypervisor's shadow
+ * stage-2 tables and the nested guests' exits cost the host more than a plain VM. An estimate, not a measurement.
+ */
+export const VIRTUALIZATION_OVERHEAD_MIB = 512;
+
+/**
  * Images a PC may run: the type's own image, the local dev tag, or the published MineVibe Linux PC image
  * (by tag or digest). Anything else is refused (L4), so a crafted `pcs.json` or API call cannot point a
  * PC at an arbitrary image.

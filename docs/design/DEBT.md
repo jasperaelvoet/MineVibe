@@ -34,6 +34,45 @@ in a water pocket under the ground drowns" and the live report behind it (the CE
 stood a block over the water, brains 0/3): water exits in both tiers, no digging while swimming, the WaterEscape
 reflex, `STUCK_IN_WATER`, and stuck agents speaking up; also a GameTest's office (`OfficeService.overrideLayout`) that
 was saved into the GameTest world, which is kept from run to run, so every later player stand-in was welcomed into it.
+PC capabilities (2026-10-09, PLAN §8.8) fixed "an agent asked to run an Android game declares it impossible" (the live
+report: Ada installed sdkmanager, port-scanned the PC's isolated subnet for the player's Mac, asked "WHAT???"-grade
+questions and gave up): Linux PCs get an Android phone and nested virtualization, `pc__info` and the KICKOFF say what
+the PC can do, and the desk persona says to verify, try alternatives, never scan, and ask plainly. The same change
+fixed the packaged Linux PC build context missing `sudoers-minevibe` (`packaging/build-app.ts` `LINUX_PC_CONTEXT`;
+the Containerfile copies it, so a bundled image build would have failed) and made `AppleContainerDriver.stop` try
+twice (errno 95 on `cgroup.kill` after Docker ran in a PC). The Reimage confirmation no longer says the home folder is
+kept (PcManager deletes it, as the troubleshooting page says; with the phone's data too). Its review added the
+download consent (the first Android/KVM switch on a Mac waits for the Download / Not now modal, `PcInfo.consent`,
+`pc.consent`, which until then had no server side), a ToolGate `net_scan` backstop for the scan rule, the isolation
+notes for KVM and the phone (docs and PLAN §8.8), the runtime downloads in THIRD_PARTY_NOTICES.md, and a budget fix
+(a `pcs.json` switch this Mac cannot run no longer holds the phone's share or KVM's overhead).
+
+## Found by PC capabilities (2026-10-09)
+- **The Android kernel is built on each Mac** (3.3 min at 4 vCPUs, once per engine app root, from the pinned
+  kernel.org source and the engine's own `/proc/config.gz`). A prebuilt kernel pinned in `packaging/vendor.lock.json`
+  would skip that, but needs somewhere to publish it. The base config follows the engine's stock kernel: a `container`
+  release with another default kernel changes it under the same id (`6.18.35-mv-android2`); bump the id with the pin.
+- **The source Redroid image stays loaded** next to `minevibe/android-phone` after the image is prepared (about
+  1.4 GB unpacked; their big layer is shared). Deleting it after the load was not tried.
+- **The phone's adb is open to everything in the PC** (Redroid's adb has no authentication). Only the PC can reach it
+  (no published port, the PC's own network), which is the trust boundary of the PC itself.
+- **scrcpy is built inside the PC** on first `android open` (~250 MB of apt build tools in the PC's root filesystem,
+  about a minute). The binary lives in `~/.local` and survives a recreate; its runtime libraries are reinstalled
+  (~15 s) after one. A published arm64 build, or building it into the image, would remove this.
+- **PcConfigScreen's sliders do not reserve the phone's share for a stopped PC:** a size that fits on its own may then
+  start as `no_capacity` once the phone (4 vCPUs, 4 GiB) is counted. A running PC's sliders are right (its phone is
+  already in the budget's `used`).
+- **Measured only on an M5 Pro** (macOS 27.0.1, `container` 1.5.0). The phone needs no nested virtualization, so it
+  should run on M1/M2 too; nested virtualization is refused there by the chip check.
+- **The download consent covers the first opt-in only.** A MineVibe update that bumps the kernel id or the image pin,
+  or an engine that lost the image, rebuilds or re-downloads at the next boot of a PC that has the switch on, without
+  asking (the player opted in). A kernel id bump also recreates a KVM PC at its next start (its container no longer
+  matches), losing changes outside `/home/cua` like an image update does, with only a log line. An OK lives in
+  memory: after a restart, turning the switch on for another PC asks again if that download never finished.
+- **The `net_scan` gate reads the command line.** A scan from a script file, a language runtime (`python -c`) or a
+  renamed binary passes. The PC's network is the isolation; the gate only stops the honest mistake.
+- **Phone restarts have no backoff:** the monitor starts a stopped phone again at once, at most 3 times per PC boot,
+  then shows the error.
 
 ## Found in M9, macOS PCs (2026-10-09, PLAN §8.7, spikes/s6-lume/result.md)
 - **MineVibe.app does not bundle `lume.app` yet.** PLAN §9.1 puts the notarized app in `Contents/Helpers/lume.app`

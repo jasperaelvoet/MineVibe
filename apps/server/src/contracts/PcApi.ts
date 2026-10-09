@@ -87,6 +87,43 @@ export interface PcGuestInfo {
   readonly memoryMiB?: number;
   /** The guest OS ("Ubuntu 24.04"), when the PC runs. */
   readonly osVersion?: string;
+  /** What the PC can run (PLAN §8.8): measured in the guest when it runs, plus its capability settings. */
+  readonly capabilities?: PcGuestCapabilities;
+}
+
+/** One capability's setting and whether this Mac allows it (`unavailable` null) or why not. */
+export interface PcCapabilitySetting {
+  readonly enabled: boolean;
+  readonly unavailable: string | null;
+}
+
+/**
+ * What a PC can run (PLAN §8.8, `pc__info`, the KICKOFF's capability line). The guest facts are null while the PC
+ * does not run or could not be asked.
+ */
+export interface PcGuestCapabilities {
+  /** `uname -m` (`aarch64`): Apple silicon, so arm64 binaries only. */
+  readonly arch: string | null;
+  /** `uname -r`. */
+  readonly kernel: string | null;
+  /** `/dev/kvm` is there and usable by the guest user (needs nested virtualization). */
+  readonly kvm: boolean | null;
+  readonly cpus: number | null;
+  readonly memoryMiB: number | null;
+  /** Free space in the home folder. */
+  readonly diskFreeGiB: number | null;
+  /** Internet yes (NAT); the Mac, other PCs and the LAN are off-limits: every PC has its own isolated network. */
+  readonly network: { readonly internet: true; readonly hostAndLan: false };
+  /** Toolchains found on PATH, with versions ("node 24.4.1", "python3 3.12.3", "adb 34.0.4"). */
+  readonly toolchains: readonly string[];
+  /** Nested virtualization (KVM inside the PC). */
+  readonly virtualization: PcCapabilitySetting;
+  /** The Android phone: its state and, when it runs, the host name the PC reaches it by. */
+  readonly android: PcCapabilitySetting & {
+    readonly status: 'off' | 'preparing' | 'starting' | 'running' | 'error';
+    readonly detail: string | null;
+    readonly host: string | null;
+  };
 }
 
 /** A rectangle in guest pixels. */

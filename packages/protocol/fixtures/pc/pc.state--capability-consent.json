@@ -1,0 +1,49 @@
+{
+  "t": "pc.state",
+  "v": 1,
+  "pcId": "linux-1",
+  "type": "linux",
+  "name": "linux-1",
+  "status": "running",
+  "progress": null,
+  "detail": null,
+  "slot": 1,
+  "cpus": 2,
+  "memoryMiB": 4096,
+  "diskGiB": 64,
+  "plugged": true,
+  "pinned": true,
+  "wipeOnDeath": false,
+  "mounts": [
+    {
+      "hostPath": "/Users/jasper/Code/foo",
+      "mode": "rw"
+    }
+  ],
+  "occupant": null,
+  "reservation": null,
+  "banner": null,
+  "screen": {
+    "w": 1280,
+    "h": 800
+  },
+  "consent": {
+    "consentId": "dl-3f9a1c2b7d4e5f60",
+    "what": "Linux kernel source + Android 15 for linux-1",
+    "bytes": 908124059,
+    "freeBytes": 214748364800
+  },
+  "capabilities": {
+    "virtualization": {
+      "enabled": false,
+      "unavailable": null
+    },
+    "android": {
+      "enabled": false,
+      "unavailable": null,
+      "status": "off",
+      "progress": null,
+      "detail": null
+    }
+  }
+}

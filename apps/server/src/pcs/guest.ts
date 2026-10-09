@@ -15,6 +15,79 @@ export const GUEST_DISPLAY = ':1';
 /** The shell log every `pc__bash` call appends to and ShellMirror tails (PLAN §6.2). */
 export const SHELL_LOG = '~/.mv/shell.log';
 
+/**
+ * What a PC can run (PLAN §8.8, `pc__info`): `key=value` lines, one `tool=<name> <version>` per toolchain found. Runs
+ * as the guest user in well under a second.
+ */
+export const CAPS_SCRIPT = `printf 'arch=%s\\nkernel=%s\\n' "$(uname -m)" "$(uname -r)"
+if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then echo kvm=usable; elif [ -e /dev/kvm ]; then echo kvm=present; else echo kvm=no; fi
+echo "cpus=$(nproc 2>/dev/null)"
+awk '/^MemTotal:/ { printf "mem=%d\\n", $2 / 1024 }' /proc/meminfo 2>/dev/null
+df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { printf "disk=%.1f\\n", $4 / 1048576 }'
+ver() { "$@" 2>&1 | grep -oE '[0-9]+(\\.[0-9]+)+' | head -n 1; }
+for t in node python3 go rustc java gcc make git docker qemu-system-aarch64 adb scrcpy; do
+  p="$(command -v "$t" 2>/dev/null)" || continue
+  case "$t" in
+    go) v="$(ver go version)" ;;
+    java) v="$(ver java -version)" ;;
+    adb) v="$(ver adb version)" ;;
+    *) v="$(ver "$t" --version)" ;;
+  esac
+  echo "tool=$t \${v:-?}"
+done
+command -v android >/dev/null 2>&1 && echo "tool=android helper"
+getent hosts android-phone >/dev/null 2>&1 && echo "phone=android-phone"
+exit 0`;
+
+/** The guest facts of {@link CAPS_SCRIPT}'s output. */
+export interface GuestCapsProbe {
+  arch: string | null;
+  kernel: string | null;
+  kvm: boolean | null;
+  cpus: number | null;
+  memoryMiB: number | null;
+  diskFreeGiB: number | null;
+  toolchains: string[];
+  phoneHost: string | null;
+}
+
+/** Parses {@link CAPS_SCRIPT}'s output (unknown lines are ignored). */
+export function parseCapsProbe(text: string): GuestCapsProbe {
+  const out: GuestCapsProbe = {
+    arch: null,
+    kernel: null,
+    kvm: null,
+    cpus: null,
+    memoryMiB: null,
+    diskFreeGiB: null,
+    toolchains: [],
+    phoneHost: null,
+  };
+  const num = (v: string) => {
+    const n = Number(v);
+    return v !== '' && Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const k = line.slice(0, eq);
+    const v = line
+      .slice(eq + 1)
+      .trim()
+      .slice(0, 120);
+    if (k === 'arch') out.arch = v || null;
+    else if (k === 'kernel') out.kernel = v || null;
+    else if (k === 'kvm') out.kvm = v === 'usable';
+    else if (k === 'cpus') out.cpus = num(v);
+    else if (k === 'mem') out.memoryMiB = num(v);
+    else if (k === 'disk') out.diskFreeGiB = num(v);
+    else if (k === 'tool' && v && out.toolchains.length < 24) out.toolchains.push(v);
+    else if (k === 'phone') out.phoneHost = v || null;
+  }
+  return out;
+}
+
 /** Exit codes of the guest scripts below. */
 export const SCRIPT_EXIT = {
   NOT_FOUND: 3,

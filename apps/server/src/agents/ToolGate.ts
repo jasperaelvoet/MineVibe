@@ -17,6 +17,10 @@
  *   mode's, so most refusals never happen. The gate stays the backstop: a desk session whose seat ended (stood up,
  *   kicked, …) may call nothing more (`desk_closed`: end the turn), and the body session may call nothing while its
  *   desk session owns the agent (`desk_active`).
+ * - Network scans from a PC (PLAN §8.8): `pc__bash` running a scanner (nmap, masscan, …) at a private address, a
+ *   LAN-only scanner (arp-scan, netdiscover), `nc -z` over a port range at one, or a sweep (`192.168.65.$i`) is denied
+ *   (`net_scan`). A live desk agent port-scanned its PC's network for the player's Mac; the persona says not to, and
+ *   this is the backstop. Scanning loopback or a public host stays allowed.
  * - Mode profiles (agents/modes.ts): after the seat rules, a tool outside the mode of the current seat (Minecraft, PC
  *   or Meeting mode) is denied with teaching text (`mode`). That includes the broker's ExitPlanMode: only PC mode hands
  *   it to the broker, even while the CLI is still in plan mode.
@@ -70,6 +74,8 @@ export type GateDenyCode =
   | 'self_only'
   | 'web_wandering'
   | 'web_private'
+  /** A network scan from a PC aimed at the PC's own network, the Mac or the LAN (PLAN §8.8). */
+  | 'net_scan'
   | 'turn_cap'
   | 'halted'
   /** A tool outside the agent's current mode (agents/modes.ts). */
@@ -277,6 +283,16 @@ function decidePc(tool: PcToolName, input: Record<string, unknown>, ctx: GateCon
     return deny('not_occupant', `${seat.pcId} is not yours right now; stand up (mcp__mc__stand_up).`);
   }
 
+  if (tool === 'bash' && typeof input.command === 'string') {
+    const scan = networkScanIn(input.command);
+    if (scan) {
+      return deny(
+        'net_scan',
+        `Refused: ${scan}. Network scans are off at MineVibe PCs: this PC's own network holds only this PC (and its Android phone, android-phone), and other PCs, ${ctx.playerName}'s Mac and the local network are off-limits by design. Use what mcp__pc__info lists, or ask ${ctx.playerName}.`,
+      );
+    }
+  }
+
   const planMode = ctx.trackedMode === 'plan';
   if (planMode) {
     if (PC_PLAN_FILE_MUTATORS.has(tool)) {
@@ -354,6 +370,90 @@ export function isPrivateAddress(address: string): boolean {
 }
 
 const PRIVATE_HOST_RE = /(^|\.)(localhost|local|internal|home\.arpa|lan|intranet)$/i;
+
+/** Port and host scanners: refused when aimed at a private address (the PC's network, the Mac, the LAN). */
+const SCANNERS: ReadonlySet<string> = new Set([
+  'nmap',
+  'masscan',
+  'zmap',
+  'rustscan',
+  'naabu',
+  'unicornscan',
+  'hping3',
+  'fping',
+  'nbtscan',
+]);
+/** Scanners that only ever scan the local network. */
+const LAN_SCANNERS: ReadonlySet<string> = new Set(['arp-scan', 'netdiscover']);
+const NETCAT: ReadonlySet<string> = new Set(['nc', 'ncat', 'netcat']);
+/** Words before the command itself (`sudo -n nmap …`, `for …; do nmap …`). */
+const PREFIX_WORDS: ReadonlySet<string> = new Set([
+  'sudo',
+  'env',
+  'timeout',
+  'nice',
+  'nohup',
+  'exec',
+  'command',
+  'time',
+  'do',
+  'then',
+  'else',
+  'if',
+  'while',
+  'until',
+  '!',
+]);
+
+/** A private, non-loopback target: an IPv4 address (also `a.b.c.0/24`, `a.b.c.1-254`, `a.b.*.*`) or a LAN name. */
+function lanTarget(token: string): boolean {
+  const t = token.replace(/^['"]|['"]$/g, '');
+  const m =
+    /^(\d{1,3}|\*)\.(\d{1,3}(?:-\d{1,3})?|\*)\.(\d{1,3}(?:-\d{1,3})?|\*)\.(\d{1,3}(?:-\d{1,3})?|\*)(?:\/\d{1,2})?$/.exec(
+      t,
+    );
+  if (m) {
+    const ip = m
+      .slice(1, 5)
+      .map((o) => (o === '*' ? '0' : (o as string).split('-')[0]))
+      .join('.');
+    return !ip.startsWith('127.') && isPrivateAddress(ip);
+  }
+  return /^[a-z0-9.-]+$/i.test(t) && t.toLowerCase() !== 'localhost' && PRIVATE_HOST_RE.test(t);
+}
+
+/**
+ * What network scan a shell command runs at the local network (null: none): a scanner at a private address, a
+ * LAN-only scanner, `nc -z` over a port range at one, or a sweep whose last octet is a shell expansion. A heuristic
+ * backstop for the persona rule, not a sandbox: the PC's network itself is what isolates it.
+ */
+export function networkScanIn(command: string): string | null {
+  const sweep = /(?:^|[^\d.])(\d{1,3}\.\d{1,3}\.\d{1,3})\.(?:\$|\{\d)/.exec(command);
+  if (sweep?.[1] && lanTarget(`${sweep[1]}.1`)) return `a sweep of ${sweep[1]}.x`;
+  for (const segment of command.split(/\|\||&&|\$\(|[;&|\n`(){}]/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < words.length) {
+      const w = words[i] as string;
+      if (PREFIX_WORDS.has(w) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || /^-/.test(w) || /^\d+[smhd]?$/.test(w))
+        i++;
+      else break;
+    }
+    const name = (words[i] ?? '').split('/').pop() ?? '';
+    const args = words.slice(i + 1);
+    if (LAN_SCANNERS.has(name)) return `${name} scans the local network`;
+    if (SCANNERS.has(name) && args.some(lanTarget)) return `${name} at the local network`;
+    if (
+      NETCAT.has(name) &&
+      args.some((a) => /^-[A-Za-z]*z/.test(a)) &&
+      args.some((a) => /^\d+-\d+$/.test(a)) &&
+      args.some(lanTarget)
+    ) {
+      return `${name} -z over a port range at the local network`;
+    }
+  }
+  return null;
+}
 
 /**
  * Whether a WebFetch URL may be fetched: http(s) only, and no loopback, RFC 1918 or link-local target, by literal IP or

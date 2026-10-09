@@ -21,6 +21,7 @@ import {
   PC_ERROR_CODES,
   PC_LIMITS,
   type PcApi,
+  type PcGuestCapabilities,
   type PcGuestInfo,
   type PointerAction,
   type ReadRequest,
@@ -38,11 +39,13 @@ import {
   absolutePaths,
   anchorGlob,
   applyEdit,
+  CAPS_SCRIPT,
   EDIT_MAX_BYTES,
   exitCodeOf,
   formatRgJson,
   GLOB_COUNT_CAP,
   GLOB_LIMIT,
+  type GuestCapsProbe,
   type GuestProfile,
   grepArgs,
   guestProfile,
@@ -50,6 +53,7 @@ import {
   JobBuffer,
   mirrorPrompt,
   OutputCapture,
+  parseCapsProbe,
   parseRgCount,
   READ_MAX_BYTES,
   SCRIPT_EXIT,
@@ -64,7 +68,7 @@ import {
   normalizeKeyName,
   type RouterEvent,
 } from './InputRouter.js';
-import type { PcRecord, PcStatusInfo } from './PcManager.js';
+import type { PcCapabilities, PcRecord, PcStatusInfo } from './PcManager.js';
 import { PC_TYPE_SPECS } from './PcTypes.js';
 import {
   parseUiSnapshot,
@@ -103,6 +107,8 @@ export interface PcGuestApiOptions {
      * ends it (PcManager.guestIo: a macOS guest whose Vault the host changed is refreshed first, S6).
      */
     guestIo?(id: string, writes?: readonly string[]): Promise<() => void>;
+    /** A Linux PC's capabilities: nested virtualization and its Android phone (PcManager.capabilitiesOf). */
+    capabilitiesOf?(id: string): PcCapabilities;
   };
   /** The connected spacesd client of a running PC (SpacesdPool.client). */
   readonly client: (pcId: string) => Promise<SpacesdClientLike>;
@@ -244,6 +250,8 @@ export class PcGuestApi implements PcApi {
   readonly #foreground = new Map<string, Foreground>();
   readonly #screens = new Map<string, { w: number; h: number }>();
   readonly #osVersions = new Map<string, string>();
+  /** The guest's capability probe per PC, with when it was taken (toolchains change, so it is redone after a minute). */
+  readonly #probes = new Map<string, { at: number; probe: GuestCapsProbe }>();
   /** spacesd's supported features per PC (`a11y`, `windows`, …), measured once per boot. */
   readonly #features = new Map<string, ReadonlySet<string>>();
   readonly #jobListeners = new Set<(exit: JobExit) => void>();
@@ -353,7 +361,54 @@ export class PcGuestApi implements PcApi {
       cpus: rec.cpus,
       memoryMiB: rec.memMiB,
       ...(osVersion ? { osVersion } : {}),
+      ...(PC_TYPE_SPECS[rec.type].family === 'linux'
+        ? { capabilities: await this.#capabilitiesOf(pcId, status === 'running') }
+        : {}),
     };
+  }
+
+  /** What a Linux PC can run (PLAN §8.8): the PC manager's settings plus a probe of the guest when it runs. */
+  async #capabilitiesOf(pcId: string, running: boolean): Promise<PcGuestCapabilities> {
+    const settings = this.#o.pcs.capabilitiesOf?.(pcId);
+    const probe = running ? await this.#probe(pcId) : null;
+    const phone = settings?.android.phone;
+    return {
+      arch: probe?.arch ?? null,
+      kernel: probe?.kernel ?? null,
+      kvm: probe?.kvm ?? null,
+      cpus: probe?.cpus ?? null,
+      memoryMiB: probe?.memoryMiB ?? null,
+      diskFreeGiB: probe?.diskFreeGiB ?? null,
+      network: { internet: true, hostAndLan: false },
+      toolchains: probe?.toolchains ?? [],
+      // Without the PC manager's settings (tests, an old host), neither can be told: say so rather than "available".
+      virtualization: {
+        enabled: settings?.virtualization.enabled ?? false,
+        unavailable: settings ? settings.virtualization.unavailable : 'unknown on this PC',
+      },
+      android: {
+        enabled: settings?.android.enabled ?? false,
+        unavailable: settings ? settings.android.unavailable : 'unknown on this PC',
+        status: phone?.status ?? 'off',
+        detail: phone?.detail ?? null,
+        host: phone?.status === 'running' ? (probe?.phoneHost ?? 'android-phone') : null,
+      },
+    };
+  }
+
+  /** The guest probe of a running PC, at most a minute old; null when the guest cannot be asked. Never throws. */
+  async #probe(pcId: string): Promise<GuestCapsProbe | null> {
+    const known = this.#probes.get(pcId);
+    if (known && Date.now() - known.at < 60_000) return known.probe;
+    try {
+      const r = await this.#script(pcId, CAPS_SCRIPT, [], { timeoutMs: 10_000 });
+      const probe = parseCapsProbe(r.stdout.toString('utf8'));
+      this.#probes.set(pcId, { at: Date.now(), probe });
+      return probe;
+    } catch (e) {
+      this.#log?.debug({ pcId, err: String(e) }, 'capability probe failed');
+      return known?.probe ?? null;
+    }
   }
 
   /** The guest display size: measured once per boot (spacesd `displays`), else the type's default. */
@@ -434,6 +489,7 @@ export class PcGuestApi implements PcApi {
     this.#screens.delete(pcId);
     this.#osVersions.delete(pcId);
     this.#features.delete(pcId);
+    this.#probes.delete(pcId);
   }
 
   // ------------------------------------------------------------------------------------------- screen and input

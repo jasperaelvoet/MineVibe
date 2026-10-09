@@ -8,6 +8,7 @@ import { type BaseArea, posText } from '../../world/baseArea.js';
 import { control, escapeShared, wrapNote } from '../envelope.js';
 import type { HandoffNote } from '../memory.js';
 import { geometryFor } from '../tools/pc/geometry.js';
+import { capabilityLine } from './capabilities.js';
 
 /** Largest CLAUDE.md excerpt in a kickoff (≈2k tokens). */
 export const CLAUDE_MD_EXCERPT_CHARS = 8_000;
@@ -62,6 +63,8 @@ export function kickoffMessage(input: KickoffInput): string {
       'This PC runs macOS (BSD command-line tools, no Homebrew): Cmd is "cmd" in key names ("cmd+s" saves, "cmd+q" quits an app), and the open tool starts apps by name.',
     );
   }
+  const caps = capabilityLine(pc, input.playerName);
+  if (caps) lines.push(caps);
   if (pc.mounts.length > 0) {
     lines.push(`${input.playerName}'s Vault folders (same absolute path inside the PC):`);
     for (const m of pc.mounts)

@@ -2,6 +2,7 @@ package dev.minevibe.client.pc;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -10,6 +11,7 @@ import dev.minevibe.bridge.msg.Pc;
 import dev.minevibe.bridge.msg.Types;
 import dev.minevibe.client.pc.render.MonitorGeometry;
 import dev.minevibe.client.pc.screen.PcBudgetMath;
+import dev.minevibe.client.pc.screen.PcCapabilityText;
 import dev.minevibe.client.pc.screen.PcLayout;
 import java.util.HashMap;
 import java.util.List;
@@ -116,5 +118,23 @@ class PcClientLogicTest {
 			"linux-1", "linux", "Linux 1", "running", null, null, 1, 2, 4096, 64, true, false, false, List.of(), Types.Occupant.agent("bram"), null, "BRB", null, null
 		);
 		assertNull(PcStatusText.of("linux-1", false, null, away, true, true));
+	}
+
+	@Test
+	void capabilityTogglesAndThePhoneLine() {
+		Pc.PcInfo plain = pc("running", 2, 4096);
+		assertFalse(PcCapabilityText.virtualizationOn(plain));
+		assertFalse(PcCapabilityText.androidOn(plain));
+		Pc.Capabilities caps = new Pc.Capabilities(
+			new Pc.VirtualizationCapability(true, null),
+			new Pc.AndroidCapability(true, null, "preparing", 0.42, "downloading the Android image (45%)"));
+		Pc.PcInfo on = new Pc.PcInfo(
+			"linux-1", "linux", "Linux 1", "running", null, null, 1, 2, 4096, 64, true, false, false, List.of(), null, null, null, null, null, caps
+		);
+		assertTrue(PcCapabilityText.virtualizationOn(on));
+		assertTrue(PcCapabilityText.androidOn(on));
+		assertEquals("preparing 42% · downloading the Android image (45%)", PcCapabilityText.phoneStatus(caps.android()));
+		assertEquals("running · android-phone", PcCapabilityText.phoneStatus(new Pc.AndroidCapability(true, null, "running", null, "x")));
+		assertEquals("failed · no room", PcCapabilityText.phoneStatus(new Pc.AndroidCapability(true, null, "error", null, "no room")));
 	}
 }

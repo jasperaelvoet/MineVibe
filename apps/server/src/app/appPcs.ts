@@ -3,6 +3,7 @@ import { appendFile, lstat, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Logger } from 'pino';
 import type { MineVibePaths } from '../config/paths.js';
+import { androidKitFor, readAndroidHelper } from '../pcs/android/index.js';
 import { settleWithin } from '../pcs/deadline.js';
 import { AppleContainerDriver } from '../pcs/drivers/AppleContainerDriver.js';
 import {
@@ -550,13 +551,23 @@ export async function createAppPcs(options: AppPcsOptions): Promise<AppPcs | nul
   });
   const driver = new AppContainerDriver(runtime, { mayProvision: !insideBundle, logger: pcLog });
   const pool = options.pool ?? new SpacesdPool({ cachesDir: paths.caches, logger: pcLog });
-  const manager = new PcManager({
+  const manager: PcManager = new PcManager({
     stateDir: paths.state,
     driver,
     pool,
     logger: pcLog,
     diskPath: roots.appRoot,
     imageBuild: { contextDir: imageContext, file: join(imageContext, 'Containerfile') },
+    // The Android phone and nested virtualization (PLAN §8.8).
+    android: androidKitFor({
+      appRoot: roots.appRoot,
+      driver,
+      stateDir: paths.state,
+      manager: () => manager,
+      env,
+      logger: pcLog,
+    }),
+    androidHelper: readAndroidHelper(imageContext),
     // The org module's Codex export, read-only at /mnt/codex (PLAN §6.6), and the instance registry.
     codexExport: paths.codexExport,
     registryDir: registryDirFor(roots.appRoot),

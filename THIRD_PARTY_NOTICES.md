@@ -90,6 +90,17 @@ way and are only downloaded when enabled.
 FSL-1.1-MIT permits use and redistribution for any purpose other than a competing commercial product, and
 each release converts to MIT two years after it is published.
 
+### The Android phone and nested virtualization (opt-in, per PC)
+
+Fetched only after the player turns on a Linux PC's Android phone or KVM and accepts the download prompt.
+
+| Component | License | How MineVibe gets it |
+| --- | --- | --- |
+| Linux kernel 6.18.35 source | GPL-2.0 (with the syscall note) | Downloaded from cdn.kernel.org (sha256-pinned) and built on the user's Mac into MineVibe's Android kernel; neither the source nor the kernel is redistributed |
+| Redroid 15 image (`redroid/redroid`, pinned by digest) | AOSP: Apache-2.0 and the licenses of its other components; Redroid: Apache-2.0 | Pulled from Docker Hub, patched locally (one layer that makes `/etc` a relative link) and loaded as `minevibe/android-phone` |
+| scrcpy 3.3.4 | Apache-2.0 | Source and server release from GitHub (sha256-pinned), built inside the PC by the `android` helper |
+| adb and the build tools of the kernel and scrcpy | Ubuntu packages, each under its own license | Installed with apt inside the PC or the kernel build container |
+
 ## 5. Claude Code
 
 MineVibe **never redistributes Claude Code**. Each user installs and logs into their own `claude` CLI, and

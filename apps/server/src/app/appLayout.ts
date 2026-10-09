@@ -47,7 +47,7 @@ export interface AppBundleLayout {
   readonly buildInfo: string;
   /** The bundled copy of `packaging/vendor.lock.json`. */
   readonly vendorLock: string;
-  /** The Linux PC image's build context (`Containerfile`, `minevibe-entrypoint.sh`). */
+  /** The Linux PC image's build context (`Containerfile`, `minevibe-entrypoint.sh`, `sudoers-minevibe`, `android`). */
   readonly linuxPcContext: string;
 }
 

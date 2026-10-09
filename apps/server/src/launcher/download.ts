@@ -10,7 +10,7 @@ import { SERVER_VERSION } from '../version.js';
 /** Descriptive User-Agent for every launcher request (Modrinth asks for one; Mojang and Fabric get it too). */
 export const USER_AGENT = `MineVibe/${SERVER_VERSION} (+https://github.com/jasperaelvoet/MineVibe)`;
 
-export type HashAlgorithm = 'sha1' | 'sha512';
+export type HashAlgorithm = 'sha1' | 'sha256' | 'sha512';
 
 export interface ExpectedHash {
   readonly algorithm: HashAlgorithm;
@@ -119,6 +119,8 @@ export interface DownloadOptions {
   readonly attempts?: number;
   /** Abort a transfer when no bytes arrive for this long. Default 60 s. */
   readonly idleTimeoutMs?: number;
+  /** Bytes received so far in the current attempt (progress). */
+  readonly onBytes?: (bytes: number) => void;
 }
 
 /**
@@ -175,6 +177,7 @@ async function downloadOnce(spec: DownloadSpec, options: DownloadOptions): Promi
           return;
         }
         hash?.update(chunk);
+        options.onBytes?.(bytes);
         callback(null, chunk);
       },
     });

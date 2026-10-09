@@ -2,6 +2,7 @@
 
 import { z } from 'zod';
 import { ApiError } from '../../../contracts/common.js';
+import { capabilityDetails } from '../../prompts/capabilities.js';
 import { textResult } from '../results.js';
 import { type Def, defs, tool } from './common.js';
 import type { PcToolContext } from './context.js';
@@ -12,7 +13,7 @@ export function metaTools(ctx: PcToolContext): Def[] {
   return defs(
     tool(
       'info',
-      'About this PC: OS, screen and screenshot size, user, Vault folders (same path as on the host), your working directory and your background commands.',
+      'About this PC: OS, screen and screenshot size, user, Vault folders (same path as on the host), what it can run (CPU, RAM, disk, network, KVM, the Android phone, toolchains), your working directory and your background commands.',
       {},
       (_args, extra) =>
         ctx.run('info', extra, async (seat) => {
@@ -34,6 +35,7 @@ export function metaTools(ctx: PcToolContext): Def[] {
             `user ${i.user}, home ${i.home}`,
             `Vault: ${mounts}`,
             `Codex: ${i.codexPath ?? 'not mounted'}`,
+            ...capabilityDetails(i, ctx.host.playerName?.() ?? 'the player'),
             `cwd: ${await ctx.cwdOf(seat.pcId)}`,
             jobs.length > 0 ? `Background commands:\n${jobLines.join('\n')}` : 'Background commands: none',
           ];

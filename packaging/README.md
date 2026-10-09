@@ -40,7 +40,7 @@ verified, and only then moved to `dist/MineVibe.app`, so a failed build never le
 | `Resources/server/` | `dist/main.mjs` (+ source map and legal notices), a `package.json`, and the server's production `node_modules` copied byte for byte from the installed workspace (`npm ls --omit=dev`). |
 | `Resources/mod/` | `minevibe-<version>.jar`, `mods.lock.json`, `seed-configs/*.json` (this folder is `MINEVIBE_RESOURCES` for the launcher). |
 | `Resources/vendor.lock.json` | A copy of `packaging/vendor.lock.json`: the pins the running app checks `Runtime/container` against. |
-| `Resources/linux-pc/` | `images/linux-pc` (`Containerfile`, `minevibe-entrypoint.sh`): the build context of the Linux PC image, built on first run with `container build` until the GHCR image is published (PLAN §9.3). |
+| `Resources/linux-pc/` | `images/linux-pc` (`Containerfile`, `minevibe-entrypoint.sh`, `sudoers-minevibe`, `android`): the build context of the Linux PC image, built on first run with `container build` until the GHCR image is published (PLAN §9.3); `android` is also installed into PCs with an Android phone (PLAN §8.8). |
 | `Resources/MineVibe.icns` | Placeholder icon, generated (`lib/icon.ts`). |
 | `Resources/build-info.json` | Version, build number, commit, channel (`dev`/`release`), vendor versions. |
 | `Resources/legal/` | LICENSE, NOTICE, THIRD_PARTY_NOTICES.md. |

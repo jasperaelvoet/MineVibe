@@ -1,8 +1,15 @@
-import { type Budget, ERROR_CODES, type PcInfo, type PcStatus, type VaultMount } from '@minevibe/protocol';
+import {
+  type Budget,
+  ERROR_CODES,
+  type PcInfo,
+  type PcStatus,
+  type VaultMount,
+  type PcCapabilities as WireCapabilities,
+} from '@minevibe/protocol';
 import { BridgeError } from '../bridge/BridgeServer.js';
 import { type BudgetState, GiB, MiB } from './Budget.js';
 import { EngineError } from './drivers/ContainerRuntime.js';
-import { PcError, type PcRecord, type PcView } from './PcManager.js';
+import { type PcCapabilities, PcError, type PcRecord, type PcView } from './PcManager.js';
 import type { SeatState } from './SeatBook.js';
 
 /**
@@ -87,15 +94,38 @@ export function toPcInfo(view: PcView, rec: PcRecord, extras: PcInfoExtras): PcI
     screen: extras.screen
       ? { w: clampInt(extras.screen.w, 1, 65_535), h: clampInt(extras.screen.h, 1, 65_535) }
       : { w: clampInt(w, 1, 65_535), h: clampInt(h, 1, 65_535) },
+    // A macOS image prompt only while the PC waits for it; a Linux capability prompt whatever the PC's status.
     consent:
-      view.status === 'awaiting_consent' && view.consent
+      view.consent && (view.type !== 'macos' || view.status === 'awaiting_consent')
         ? {
             consentId: view.consent.consentId,
-            what: clip(view.consent.what, 200) ?? 'download',
+            what: clip(view.consent.what, 200) ?? 'a download',
             bytes: nonNeg(view.consent.bytes),
             freeBytes: nonNeg(view.consent.freeBytes),
           }
         : null,
+    ...(view.capabilities ? { capabilities: toWireCapabilities(view.capabilities) } : {}),
+  };
+}
+
+/** A Linux PC's capabilities as `PcInfo.capabilities` (PLAN §8.8). */
+export function toWireCapabilities(c: PcCapabilities): WireCapabilities {
+  const phone = c.android.phone;
+  return {
+    virtualization: {
+      enabled: c.virtualization.enabled,
+      unavailable: clip(c.virtualization.unavailable ?? undefined, 200),
+    },
+    android: {
+      enabled: c.android.enabled,
+      unavailable: clip(c.android.unavailable ?? undefined, 200),
+      status: phone.status,
+      progress:
+        phone.status === 'preparing' && phone.progress !== undefined
+          ? Math.min(1, Math.max(0, phone.progress / 100))
+          : null,
+      detail: clip(phone.detail, 256),
+    },
   };
 }
 

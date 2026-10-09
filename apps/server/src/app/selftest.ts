@@ -137,6 +137,12 @@ export async function runSelftestChecks(options: SelftestOptions): Promise<Selft
         throw new Error(`Containerfile base is not pinned by digest (${from ?? 'no FROM'})`);
       if (!(await isExecutable(join(context, 'minevibe-entrypoint.sh'))))
         throw new Error('minevibe-entrypoint.sh is missing or not executable');
+      // The Containerfile copies these too; `android` is also installed into PCs with a phone (PLAN §8.8).
+      for (const name of ['sudoers-minevibe', 'android']) {
+        await readFile(join(context, name), 'utf8').catch(() => {
+          throw new Error(`${name} is missing from the image build context`);
+        });
+      }
       return `built on first run from ${from.split('@')[0]}`;
     }),
     check('data', async () => resolvePaths({ env }).appSupport),

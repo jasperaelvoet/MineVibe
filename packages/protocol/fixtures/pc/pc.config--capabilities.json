@@ -1,0 +1,8 @@
+{
+  "t": "pc.config",
+  "v": 1,
+  "id": "m-91",
+  "pcId": "linux-1",
+  "virtualization": true,
+  "android": true
+}

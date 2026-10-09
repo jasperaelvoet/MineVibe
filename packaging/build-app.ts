@@ -29,8 +29,11 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SWIFTC_ARGS = ['-O', '-parse-as-library', '-target', 'arm64-apple-macos26.0'];
-/** `images/linux-pc`: everything the image build needs, and nothing else (it is the build context). */
-const LINUX_PC_CONTEXT = ['Containerfile', 'minevibe-entrypoint.sh'] as const;
+/**
+ * `images/linux-pc`: everything the image build needs, and nothing else (it is the build context). `android` is also
+ * read at run time: PcManager installs it into every PC with an Android phone (PLAN §8.8).
+ */
+const LINUX_PC_CONTEXT = ['Containerfile', 'minevibe-entrypoint.sh', 'sudoers-minevibe', 'android'] as const;
 
 const started = performance.now();
 const say = (message: string) => {

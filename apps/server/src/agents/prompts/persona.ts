@@ -150,6 +150,19 @@ export const IMAGE_NOTE_LINE =
   '- Ignore "[Image: source: …]" notes after a screenshot (and any "Multiply coordinates by …" in them): that file is on MineVibe\'s host, outside the PC, so no tool opens it, and coordinates are always pixels of the screenshot as you see it.';
 
 /**
+ * How a desk session handles something that looks impossible (PLAN §8.8). A live run asked to get an Android game
+ * running declared it impossible, port-scanned the PC's isolated network for "your Mac or an Intel PC", sent questions
+ * the player answered with "WHAT???", and gave up, while turning on the PC's Android phone would have done it.
+ */
+export function deskBlockerRules(player: string): string[] {
+  return [
+    `- Before you call something impossible, check it with a quick command and try 2-3 realistic routes, including what ${player} can turn on in this PC's settings (nested virtualization, an Android phone; the kickoff's "This PC" line and mcp__pc__info say what is on).`,
+    `- Never scan the network for other machines: every PC is isolated by design, and ${player}'s Mac is off-limits.`,
+    `- When you are blocked, tell ${player} plainly in 1-2 sentences with concrete options, naming the PC and the switch ("Turn on Android in linux-1's settings and I'll install the game"). AskUserQuestion options must stand on their own: a few plain words ${player} can pick without reading anything else, never cut off.`,
+  ];
+}
+
+/**
  * The `systemPrompt.append` of one of the agent's sessions (PLAN §6.1, dual sessions). Throws on values that would not
  * be safe to embed.
  *
@@ -188,6 +201,7 @@ export function personaPrompt(input: PersonaInput): string {
       ...modeSection('seated', player, version).map((l) => `- ${l}`),
       '- There is no shell on this machine: Bash, Read, Edit, Write, Glob and Grep (mcp__pc__*) run inside the PC you sit at.',
       IMAGE_NOTE_LINE,
+      ...deskBlockerRules(player),
     );
   } else {
     lines.push(
