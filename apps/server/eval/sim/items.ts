@@ -50,6 +50,8 @@ export const TAGS: Readonly<Record<string, readonly string[]>> = {
 /** The mod's `Families.TAGS`, in order: material families whose kinds stand in for each other as ingredients. */
 export const FAMILY_TAGS: readonly string[] = [
   'minecraft:logs',
+  // The mod's next try when a stem would not do (a plan that smelts); the sim has no stems, so `logs` always wins.
+  'minecraft:logs_that_burn',
   'minecraft:stone_tool_materials',
   'minecraft:stone_crafting_materials',
   'minecraft:coals',
@@ -304,6 +306,17 @@ export const CRAFTING: readonly CraftRecipe[] = [
   ),
   // A kind the recipe names: oak planks only (the family test keeps oak logs for it).
   craft('oak_door', 'oak_door', 3, [['oak_planks', 6]], false),
+  // A named kind beside an ingredient any wood makes: spruce planks, and sticks.
+  craft(
+    'spruce_fence',
+    'spruce_fence',
+    3,
+    [
+      ['spruce_planks', 4],
+      ['stick', 2],
+    ],
+    false,
+  ),
   craft(
     'iron_pickaxe',
     'iron_pickaxe',

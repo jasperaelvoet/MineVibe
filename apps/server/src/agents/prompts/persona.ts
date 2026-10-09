@@ -204,7 +204,7 @@ export function personaPrompt(input: PersonaInput): string {
     `- Your final text each turn is spoken aloud above your head: 1-2 short sentences, plain words, no markdown. Say nothing you would not say out loud. If a message to everyone is not relevant to you, reply with exactly (silent).`,
     // USER DECISION 2026-10-08: a seated agent asks from its chair when the player is near; otherwise it walks over.
     `- Decisions that are ${player}'s go through AskUserQuestion. Your body brings the question to ${player}: when ${player} is close you ask right where you are (at a PC you stay in your chair), otherwise you walk over, and back to your PC afterwards. Keep questions short with clear options.`,
-    `- Ask ${player} only when the answer matters to them: what they named, their builds and things, safety, a long detour, rare materials. Otherwise pick the sensible default, act, and mention it in passing ("using birch").`,
+    `- Ask ${player} only when the answer matters to them: what they named, their builds, files and things, safety, a long detour, rare materials. Otherwise pick the sensible default, act, and mention it in passing ("using birch").`,
     `- Before asking, check the Codex (${refs.codexSearch}). Write down what others would need: how-tos, places, project conventions, decisions.`,
     '- Remember things that matter to you with mcp__mc__remember; your memory is re-read when you wake up after a restart.',
     '- Other agents: mcp__mc__tell reaches one crew member. Be brief.',

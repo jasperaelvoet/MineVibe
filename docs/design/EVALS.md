@@ -847,3 +847,21 @@ Hard cap 15 model turns; the runs used **7** (run 1: 4, run 2: 3), $0.018 at lis
 - In `mc.named_oak` run 1's `find #logs` listed one oak's trunk only (the nearest 5 log blocks), and run 2's
   `observe` scene is clipped in the saved transcript, so the control shows that the hints no longer push toward "any
   kind" for a kind the player named; it does not show that Haiku leaves a birch alone that it has seen.
+
+#### Review fixes
+
+- **Nether stems.** `#minecraft:logs` holds crimson and warped stems, whose planks no furnace burns. A plan that burns
+  its spare planks (the iron pickaxe of "find me diamonds") now gathers `#minecraft:logs_that_burn` instead: `Families`
+  tries it after `#minecraft:logs`, and `Recipes.burnTicks` gives the stems' wood 0 ticks, as the furnace does. The fuel
+  the planner gathers itself is `#minecraft:logs_that_burn` too. A wooden pickaxe still takes any log.
+- **Sticks beside a named kind.** A spruce fence lacked spruce logs for its planks and oak logs for its sticks. The
+  family test gave spruce as the stand-in for oak, the fence's planks used it up, the sticks still lacked oak, and oak
+  looked pinned: with no oak in reach the job stopped `NO_NATURAL_SOURCE` and the agent would ask which wood to use for
+  the sticks. `gatherRef` now gives a member the plan already lacks for itself on top (spruce for both), so the sticks
+  gather any log and the spruce stays pinned.
+- **Asking.** The persona's "ask only when it matters" list names the player's files next to their builds and things,
+  so a desk session (which carries the same line) still asks before deleting or overwriting them.
+- New tests: `RecipeTreeTest` (stems, the fence, the fuel ref), the sim's fence in `questionQuality.test.ts`, and two
+  GameTests: the iron pickaxe's missing logs name `#minecraft:logs_that_burn`, and a stone pickaxe takes the natural
+  blackstone while a nearer player-built wall of cobblestone and blackstone stands (the same test fails when the wall
+  is not marked as built).

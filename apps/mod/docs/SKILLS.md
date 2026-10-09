@@ -44,9 +44,9 @@ contract is protocol §6.1 (caps) and §7.4.2.
   it at the first failure with that step's code. Result: `{completed, steps:[{skill, status, code?, msg?, result}]}`.
 - **The craft tree** (`CraftTreeJob`, `RecipeTree`): `craft{tree:true}` plans from the inventory with the server's
   recipes (`Recipes.book`), gathers what is missing when `gather_missing` (child `collect` jobs, natural only, logs
-  for fuel; a material any kind of its family would replace as the whole family, `RecipeTree.gatherRef` over
-  `Families`: the nearest log of any kind for planks, any of cobblestone, blackstone or cobbled deepslate for stone
-  tools), then runs child `craft` / `smelt` jobs step by step. It crafts a table or furnace first when none is
+  that burn for fuel; a material any kind of its family would replace as the whole family, `RecipeTree.gatherRef` over
+  `Families`: the nearest log of any kind for planks, a log that burns when the plan burns its spare planks, any of
+  cobblestone, blackstone or cobbled deepslate for stone tools), then runs child `craft` / `smelt` jobs step by step. It crafts a table or furnace first when none is
   within 24 blocks or carried, and walks out of a protected zone before one is put down. `RecipeTree` is pure (unit
   tested with a hand-written book): fewest missing raw materials wins, 2x2 first, at most 4 levels, no recipe that
   consumes an item being made higher up, no compressed form (iron block, nuggets) the agent does not carry, fuel

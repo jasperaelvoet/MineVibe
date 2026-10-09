@@ -23,11 +23,15 @@ import org.jspecify.annotations.Nullable;
  * whole family instead of the one member it planned with when every member would do ({@link RecipeTree#gatherRef});
  * a member the recipe pins (the oak planks of an oak door, the white wool of a white bed) stays itself. Building
  * variants (stripped logs, wood) are left out: they are made, not found.
+ *
+ * <p>{@code #minecraft:logs} holds the nether stems too, whose planks do not burn: a plan that smelts (an iron
+ * pickaxe, with the spare planks as fuel) or takes burnable logs (a campfire, charcoal) fails with a stem, so
+ * {@code #minecraft:logs_that_burn} comes next and every tree log still serves there.
  */
 public final class Families {
 	/** In the order they are tried: the first family whose every member serves wins. */
-	public static final List<String> TAGS = List.of("#minecraft:logs", "#minecraft:stone_tool_materials", "#minecraft:stone_crafting_materials",
-		"#minecraft:coals", "#minecraft:wool");
+	public static final List<String> TAGS = List.of("#minecraft:logs", "#minecraft:logs_that_burn", "#minecraft:stone_tool_materials",
+		"#minecraft:stone_crafting_materials", "#minecraft:coals", "#minecraft:wool");
 
 	private Families() {
 	}

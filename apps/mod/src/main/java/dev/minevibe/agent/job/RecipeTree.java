@@ -2,6 +2,7 @@ package dev.minevibe.agent.job;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,7 +33,7 @@ import org.jspecify.annotations.Nullable;
  *       then the most basic kinds.</li>
  *   <li>A 3x3 recipe needs a crafting table and smelting a furnace: when none is near and none is carried, making one is
  *       planned first (a furnace needs a table too). Smelting needs fuel: carried fuel the plan does not use, else
- *       logs to gather.</li>
+ *       logs that burn to gather (no nether stems).</li>
  * </ul>
  *
  * <p>The planner is pure: recipes come from a {@link Book} (the server's RecipeManager in game, a table in tests).
@@ -45,8 +46,11 @@ public final class RecipeTree {
 	private static final int MAX_COMBOS = 8;
 	/** Furnace ticks per smelted item. */
 	public static final int SMELT_TICKS = 200;
-	/** Fuel gathered when the inventory has none: any natural log (300 ticks each). */
-	public static final String FUEL_REF = "#minecraft:logs";
+	/**
+	 * Fuel gathered when the inventory has none: any natural log that burns (300 ticks each). Not {@code #minecraft:logs},
+	 * which holds the crimson and warped stems too: no furnace takes those.
+	 */
+	public static final String FUEL_REF = "#minecraft:logs_that_burn";
 	private static final int LOG_BURN_TICKS = 300;
 
 	/** A crafting recipe as the planner sees it: what it makes, how many, and the item choices of each grid slot. */
@@ -165,7 +169,9 @@ public final class RecipeTree {
 	 * as well, else the item itself. With nothing carried the plan names one kind (oak logs for planks); it is only the
 	 * planner's pick when the same plan, given that much of every other natural member of a family instead, lacks
 	 * neither. A kind the recipe pins (oak planks for an oak door, white wool for a white bed) keeps the plan short with
-	 * any other member, so it stays. {@code families}: tag → natural members ({@link Families#members()} in game).
+	 * any other member, so it stays. A member the plan already lacks for a kind of its own (the spruce logs of a spruce
+	 * fence, whose sticks named oak) is given for both. {@code families}: tag → natural members ({@link Families#members()}
+	 * in game).
 	 */
 	public static String gatherRef(final Book book, final Plan plan, final Missing m, final Map<Item, Integer> inventory, final Stations stations,
 		final Map<String, List<Item>> families) {
@@ -173,8 +179,12 @@ public final class RecipeTree {
 			return m.ref();
 		}
 		int lacking = 0;
+		Map<Item, Integer> lacks = new HashMap<>();
 		for (Missing x : plan.missing()) {
 			lacking += x.need();
+			if (x.item() != null) {
+				lacks.merge(x.item(), x.need(), Integer::sum);
+			}
 		}
 		for (Map.Entry<String, List<Item>> f : families.entrySet()) {
 			if (!f.getValue().contains(m.item())) {
@@ -185,8 +195,11 @@ public final class RecipeTree {
 				if (other == m.item()) {
 					continue;
 				}
+				// What the plan already lacks of `other` itself comes on top: else that need eats the stand-in (spruce
+				// logs for a spruce fence's planks), the sticks still lack oak, and oak looks pinned when it is not.
+				int own = lacks.getOrDefault(other, 0);
 				Map<Item, Integer> inv = new LinkedHashMap<>(inventory);
-				inv.merge(other, m.need(), Integer::sum);
+				inv.merge(other, m.need() + own, Integer::sum);
 				Plan p = plan(book, plan.item(), plan.count(), inv, stations);
 				int left = 0;
 				boolean stillShort = false;
@@ -194,7 +207,7 @@ public final class RecipeTree {
 					left += x.need();
 					stillShort |= x.ref().equals(m.ref()) || x.item() == other;
 				}
-				if (stillShort || left > lacking - m.need()) {
+				if (stillShort || left > lacking - m.need() - own) {
 					all = false;
 					break;
 				}
@@ -488,7 +501,7 @@ public final class RecipeTree {
 		}
 	}
 
-	/** Fuel for every planned smelt: carried fuel the plan does not use up, else logs to gather. */
+	/** Fuel for every planned smelt: carried fuel the plan does not use up, else logs that burn to gather ({@link #FUEL_REF}). */
 	private void fuel() {
 		int ticks = this.smelts * SMELT_TICKS;
 		if (ticks <= 0) {

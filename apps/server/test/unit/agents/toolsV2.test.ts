@@ -203,6 +203,14 @@ describe('v2 world tools (§5)', () => {
     const { reg, fake } = v2Host({}, []);
     await call(reg, 'gather', { item: 'oak_log', count: 3, near: '9 67 -12' });
     expect(fake.runs[0]?.args).toEqual({ item: 'oak_log', count: 3, radius: 48, replant: true });
+    // The logs families fell trees too (a plan that burns its planks names #logs_that_burn); stone has no stumps.
+    for (const item of ['#logs', '#minecraft:logs_that_burn', '#stone_tool_materials'])
+      await call(reg, 'gather', { item, count: 2 });
+    expect(fake.runs.slice(1).map((r) => (r.args as { replant?: boolean }).replant === true)).toEqual([
+      true,
+      true,
+      false,
+    ]);
   });
 
   it('gather of a block that drops something else asks for the drop (never breaks every stone in reach)', async () => {

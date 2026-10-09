@@ -553,7 +553,8 @@ export function planTree(
     inv.set(id, n - use);
     ticks -= use * burn;
   }
-  if (ticks > 0) lack('#minecraft:logs', Math.ceil(ticks / 300), null);
+  // `RecipeTree.FUEL_REF`: any log that burns (no stems).
+  if (ticks > 0) lack('#minecraft:logs_that_burn', Math.ceil(ticks / 300), null);
   for (const m of missing.values()) m.have = world.count((i) => i === normId(m.item));
   return { steps, missing: [...missing.values()], needsTable, needsFurnace };
 }
@@ -561,7 +562,8 @@ export function planTree(
 /**
  * `RecipeTree.gatherRef`: what to gather for a missing material. Its family (`#minecraft:logs`) when the same plan,
  * given that much of every other natural kind of the family instead, lacks neither (the plan named oak only because
- * nothing was carried); else the item itself (a kind the recipe names, such as the oak planks of an oak door).
+ * nothing was carried); else the item itself (a kind the recipe names, such as the oak planks of an oak door). A kind
+ * the plan already lacks for itself (the spruce logs of a spruce fence) is given on top of that.
  */
 export function gatherRefOf(
   world: SimWorld,
@@ -577,12 +579,13 @@ export function gatherRefOf(
     if (!members.includes(id)) continue;
     const all = members.every((other) => {
       if (other === id) return true;
+      const own = plan.missing.find((x) => normId(x.item) === other)?.need ?? 0;
       const inv = new Map(world.agent.inventory);
-      inv.set(other, (inv.get(other) ?? 0) + m.need);
+      inv.set(other, (inv.get(other) ?? 0) + m.need + own);
       const p = planTree(world, item, count, inv);
       const left = p.missing.reduce((n, x) => n + x.need, 0);
       const short = p.missing.some((x) => normId(x.item) === id || normId(x.item) === other);
-      return !short && left <= lacking - m.need;
+      return !short && left <= lacking - m.need - own;
     });
     if (all) return tag;
   }

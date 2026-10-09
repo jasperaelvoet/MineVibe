@@ -166,8 +166,9 @@ export function translateGather(a: Record<string, unknown>, host: TranslateHost)
     if (near) args.near = near;
     args.make_tools = true;
   }
-  // W1: plant a sapling on each stump of a felled tree (when one is carried); logs only.
-  if (/(^|[:#_])logs?$|_log$/.test(item)) args.replant = true;
+  // W1: plant a sapling on each stump of a felled tree (when one is carried); logs only (#logs_that_burn too: the craft
+  // tree names that family for a plan that burns its spare planks).
+  if (/(^|[:#_])logs?(_that_burn)?$|_log$/.test(item)) args.replant = true;
   return {
     skill: 'collect',
     args,

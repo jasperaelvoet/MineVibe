@@ -62,17 +62,28 @@ describe('the craft tree resolves interchangeable ingredients by family (sim of 
     expect(refFor(sticks, 'stone_pickaxe')).toBe('#minecraft:stone_tool_materials');
   });
 
-  it('a kind the recipe names stays that kind (oak planks, an oak door), and fuel is any log already', () => {
+  it('a kind the recipe names stays that kind (oak planks, an oak door), and fuel is any log that burns already', () => {
     const birchOnly = buildWorld({ unreachableWoods: ['oak'] });
     expect(refFor(birchOnly, 'oak_planks', 4)).toBe('oak_log');
     expect(refFor(birchOnly, 'oak_door', 3)).toBe('oak_log');
     const ore = buildWorld({ inventory: [[`${NS}raw_iron`, 3]] });
     const plan = planTree(ore, `${NS}iron_ingot`, 3);
-    const fuel = plan.missing.find((m) => m.item === '#minecraft:logs');
+    const fuel = plan.missing.find((m) => m.item === '#minecraft:logs_that_burn');
     expect(fuel).toBeDefined();
     expect(gatherRefOf(ore, `${NS}iron_ingot`, 3, plan, fuel as (typeof plan.missing)[number])).toBe(
-      '#minecraft:logs',
+      '#minecraft:logs_that_burn',
     );
+  });
+
+  it('the sticks beside a kind the recipe names take any wood (a spruce fence: spruce planks, any sticks)', () => {
+    // Before, the spruce stand-in went to the fence's own planks, the sticks still lacked oak, and oak looked pinned:
+    // with no oak in reach the job stopped NO_NATURAL_SOURCE and the agent asked about the wood for the sticks.
+    const world = buildWorld({ unreachableWoods: ['oak'] });
+    const plan = planTree(world, `${NS}spruce_fence`, 3);
+    const refs = Object.fromEntries(
+      plan.missing.map((m) => [m.item, gatherRefOf(world, `${NS}spruce_fence`, 3, plan, m)]),
+    );
+    expect(refs).toEqual({ spruce_log: 'spruce_log', oak_log: '#minecraft:logs' });
   });
 
   it('a carried kind is used (birch logs make birch planks); the plan and its MISSING_INGREDIENTS name the family', async () => {
@@ -194,7 +205,7 @@ describe('the rule in the prompts', () => {
       for (const s of ['body', 'desk'] as const) {
         const p = persona(v, s);
         expect(p).toContain(
-          '- Ask Jordan only when the answer matters to them: what they named, their builds and things, safety, a long detour, rare materials. Otherwise pick the sensible default, act, and mention it in passing ("using birch").',
+          '- Ask Jordan only when the answer matters to them: what they named, their builds, files and things, safety, a long detour, rare materials. Otherwise pick the sensible default, act, and mention it in passing ("using birch").',
         );
         // The rules that protect the player stay.
         expect(p).toContain("Decisions that are Jordan's go through AskUserQuestion.");

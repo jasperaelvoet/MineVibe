@@ -165,8 +165,7 @@ public final class CraftTreeJob extends SkillJob {
 				// As the v2 gather does: replant felled trees, and make the tool a source needs (a wooden pickaxe for
 				// the cobblestone of a furnace) from what is carried instead of failing NEEDS_TOOL. A family is
 				// gathered as a whole: the nearest log of any kind for planks, so a missing oak tree is no dead end.
-				boolean logs = g.getKey().endsWith("_log") || g.getKey().equals(RecipeTree.FUEL_REF);
-				SkillJob collect = new GatherJobs.Collect(Refs.item(g.getKey()), g.getValue(), GATHER_RADIUS, logs, null, true);
+				SkillJob collect = new GatherJobs.Collect(Refs.item(g.getKey()), g.getValue(), GATHER_RADIUS, replants(g.getKey()), null, true);
 				// An item (no family) is one the recipe names, or of no family at all: none of its kin would do.
 				this.queue.add(g.getKey().startsWith("#") ? collect : collect.pinKind());
 			}
@@ -291,6 +290,14 @@ public final class CraftTreeJob extends SkillJob {
 		if (!this.gathered.isEmpty()) {
 			this.put("gathered", this.gathered);
 		}
+	}
+
+	/**
+	 * Whether gathering {@code ref} fells trees, so their stumps get a sapling: one kind of log, the logs family, or the
+	 * logs that burn (the fuel, and the family of a plan that smelts).
+	 */
+	static boolean replants(final String ref) {
+		return ref.endsWith("_log") || ref.equals("#minecraft:logs") || ref.equals(RecipeTree.FUEL_REF);
 	}
 
 	private void putMissing(final RecipeTree.Plan p, final Map<String, String> gather) {

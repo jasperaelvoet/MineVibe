@@ -663,15 +663,17 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   furnace, recipes picked by what the inventory fits, at most 4 levels deep, never a recipe that consumes an item
   being made higher up, never a compressed form such as a block of iron unless it is carried; a carried kind first,
   then what the inventory makes in one step), gathers missing raw materials from nature with child
-  `collect{make_tools:true}` jobs when `gather_missing` (fuel: logs; felled trees replanted), plans again, then crafts and
+  `collect{make_tools:true}` jobs when `gather_missing` (fuel: `#minecraft:logs_that_burn`, no nether stems; felled trees
+  replanted), plans again, then crafts and
   smelts step by step. A table or furnace within 24 blocks (the Base's are fine to use) or the given `table` is used;
   else the agent's own is put down, crafted first if needed; never inside a protected zone (the agent walks out, at
   most 16 blocks, else `NO_ROOM`). **Material families**: a raw material the plan names only because nothing was
   carried (oak logs for the planks of a wooden pickaxe) is gathered as its family, the nearest natural kind
-  (`#minecraft:logs`; `#minecraft:stone_tool_materials` / `stone_crafting_materials`: cobblestone, blackstone or
-  cobbled deepslate; `#minecraft:coals`; `#minecraft:wool`), when the same plan would complete with any other member
-  instead; a kind the recipe names (the oak logs of oak planks or an oak door) stays that kind, and its
-  `NO_NATURAL_SOURCE` offers no family. Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
+  (`#minecraft:logs`, or `#minecraft:logs_that_burn` when a stem would not do, as in a plan that burns its spare planks;
+  `#minecraft:stone_tool_materials` / `stone_crafting_materials`: cobblestone, blackstone or cobbled deepslate;
+  `#minecraft:coals`; `#minecraft:wool`), when the same plan would complete with any other member instead (a member
+  the plan already lacks for itself, the spruce logs of a spruce fence, counted on top); a kind the recipe names (the
+  oak logs of oak planks or an oak door) stays that kind, and its `NO_NATURAL_SOURCE` offers no family. Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
   `result.missing: [{ item, need, have, for, any? }]` (`any`: the family that would do as well), before anything is
   crafted. `result: { item, crafted, have, steps:
   ["oak_log 1 → oak_planks 4", …], station?: { kind, pos, placed }, gathered?: { item: n } }`. Without `tree`,
