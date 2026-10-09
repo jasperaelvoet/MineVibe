@@ -1072,24 +1072,24 @@ Spike S6 (`spikes/s6-lume/result.md`) measured Lume and the image; this is what 
 - **ShellMirror** opens a `.terminal` settings document with `open` (no Apple events, so no Automation consent): a Terminal window titled `Shell: <agent>` runs the tail with `MV_MIRROR` set, and the sweep's kill closes it. Terminal keeps a closed window as `WINDOW_STATE_HIDDEN` in spacesd's list; PcApi counts hidden windows as off the screen.
 - **Budget.** 4 vCPU / 8 GiB by default (at least 2 / 4 GiB), no vCPU overhead, the usual 256 MiB per running VM, at most 2 running (`MACOS_SLOTS` → `macos_slots_full`; Apple's own refusal of a third VM, which other apps' VMs cause too, maps to the same status), 40 GB free disk to create one, and a 40 GiB disk allowance per PC (clones share the base's 29 GiB; the base is counted by the free disk).
 - **Monitor and reconcile.** Each pass lists the VMs: a `running` PC whose VM ended (the serve log) becomes `error`/`crashed`, a running one is health-probed like a container (`unresponsive` after 3 misses), and a VM running for an inactive PC is stopped. Reconcile adopts a running VM of this instance when its token fingerprint, CPUs, memory, display and shares match the record, else stops it.
-- **Measured** (`MINEVIBE_TEST_MACOS=1 npm run test:pcs`, `macPc.int.ts`; MacBook Pro M5 Pro, 48 GiB, macOS 27.0.1):
+- **Measured** (`MINEVIBE_TEST_MACOS=1 npm run test:pcs`, `macPc.int.ts`, two runs, the second with the Linux suites; MacBook Pro M5 Pro, 48 GiB, macOS 27.0.1):
 
   | Step | Result |
   |---|---|
   | Lume provisioned and verified (cached) / serve started | 0.35 s / 0.27 s |
-  | Create (clone + guest setup + display switch) to `running`, 4 vCPU / 8 GiB | 20.4 s |
-  | The same, second PC with 2 vCPU / 4 GiB | 32.3 s |
-  | Warm start to `running` / restart after a crash | 21.7 s / 18.5 s |
-  | Graceful stop | 9.1 s |
-  | Resize (stop, `PATCH`, start) | 33.2 s |
-  | Reimage (fresh clone) to `running` | 31.0 s |
+  | Create (clone + guest setup + display switch) to `running`, 4 vCPU / 8 GiB | 20.2–20.4 s |
+  | The same, second PC with 2 vCPU / 4 GiB | 29.3–32.3 s |
+  | Warm start to `running` / restart after a crash | 21.7–28.3 s / 18.5 s |
+  | Graceful stop | 8.1–9.1 s |
+  | Resize (stop, `PATCH`, start) | 33.2–33.4 s |
+  | Reimage (fresh clone) to `running` | 29.1–31.0 s |
   | Adoption of a running VM by a restarted MineVibe | 1.0 s, no reboot |
-  | Shutdown inside the guest seen as `crashed` | 27.7 s (incl. the guest's ~12 s shutdown and 2 s monitor passes) |
+  | Shutdown inside the guest seen as `crashed` | 26.0–27.7 s (incl. the guest's ~12 s shutdown and 2 s monitor passes) |
   | First `bash` / `read` through the pc tools | 32 ms / 25 ms |
   | Host rename-replace, then refresh + read | 0.7 s |
   | `open` TextEdit (window up) | 4.7 s; killed with the seat |
-  | JPEG 1280 p50 / BGRA focus stream | 276 ms / 21.6 fps, 106 MB/s |
-  | Player's text (48 characters incl. `é à #$%`) + Enter typed and run | 2.1 s |
+  | JPEG 1280 p50 / BGRA focus stream | 276–281 ms / 21.6–22.5 fps, about 106 MB/s |
+  | Player's text (48 characters incl. `é à #$%`) + Enter typed and run | 2.1–2.3 s |
   | Third PC | `macos_slots_full` from the budget; a raw third VM fails with Apple's limit, read from the serve log |
   | Decommission | 6.5–8.0 s |
   | Disk used by the run (two clones booted, resized, reimaged) | 1.6 GiB |

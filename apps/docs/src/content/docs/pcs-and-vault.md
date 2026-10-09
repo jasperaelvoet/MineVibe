@@ -54,7 +54,7 @@ downloading, awaiting consent, booting, `running`, stopping, remounting, reimagi
   size and your free disk space). The monitor then shows the download's progress, and every macOS PC you make later
   starts from the same image without asking again. **Not now** leaves the PC off; starting it asks again.
 - **Fast after the download.** A new macOS PC is a copy-on-write clone of the image: it is ready 20 to 30 seconds
-  after you place it, and a stopped one starts again in about 20 seconds.
+  after you place it, and a stopped one starts again in 20 to 30 seconds.
 - **Apple's limit.** macOS allows two macOS virtual machines at a time on one Mac. A third shows "Apple allows 2
   macOS VMs" (`macos_slots_full`), also when another app (another VM tool, a second MineVibe) runs one.
 - **Inside**, the user is `lume` (home `/Users/lume`), with the command-line developer tools (git, Python, Swift,
