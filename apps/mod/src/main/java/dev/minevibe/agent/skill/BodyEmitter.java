@@ -34,9 +34,20 @@ import org.jspecify.annotations.Nullable;
  * The body side of the bridge (protocol §7.3): {@code agent.state} once a second (one coalesced message for the whole
  * crew), {@code agent.event} for what Node's Digest and wake rules need (hurt, hp_critical, starving, ate, killed,
  * reflex, stuck, dimension_changed, player_low_hp), and {@code agent.died} (re-sent until acknowledged).
+ *
+ * <p>Stuck is said out loud (PLAN 7.3): a walk that fails over and over from the same spot ({@code nav.loop}) and an
+ * agent that cannot get out of water ({@code nav.stuck_in_water}, the WaterEscape reflex) send an urgency-2
+ * {@code stuck} event, whose {@code data.bark} Node says at once while the event wakes the body's brain. A single
+ * Tier-1 "stuck" is only notable (the Digest).
  */
 final class BodyEmitter {
 	private static final int STATE_INTERVAL = 20;
+	/** The bark key of a stuck walk ("I'm stuck. Can you help?"). */
+	static final String STUCK_BARK = "stuck";
+	/** Ticks between two urgency-2 {@code stuck} events of one agent for a walk loop (each wakes the brain). */
+	private static final int STUCK_LOOP_COOLDOWN = 2400;
+	/** The same for water the agent cannot get out of. */
+	private static final int STUCK_WATER_COOLDOWN = 600;
 
 	private final SkillService service;
 	private final Map<String, Track> tracks = new HashMap<>();
@@ -196,7 +207,7 @@ final class BodyEmitter {
 			case "reflex" -> {
 				String reflex = e.data().getOrDefault("reflex", "?");
 				int urgency = switch (reflex) {
-					case "hazard", "creeper_backoff", "flee", "critical_heal" -> BodyEvents.NOTABLE;
+					case "hazard", "water_escape", "creeper_backoff", "flee", "critical_heal" -> BodyEvents.NOTABLE;
 					default -> BodyEvents.INFO;
 				};
 				BodyEvents.emit(agent, "reflex", urgency, reflex.replace('_', ' '), Map.of("reflex", reflex, "priority", e.data().getOrDefault("priority", "0")), 40);
@@ -205,6 +216,27 @@ final class BodyEmitter {
 				if ("stuck".equals(e.data().get("reason"))) {
 					BodyEvents.emit(agent, "stuck", BodyEvents.NOTABLE, "stuck at " + agent.blockPosition().toShortString(), Map.of("pos", agent.blockPosition()), 200);
 				}
+			}
+			case "nav.loop" -> {
+				String goal = e.data().getOrDefault("goal", "");
+				String reason = e.data().getOrDefault("reason", "no_path");
+				Map<String, Object> data = new LinkedHashMap<>();
+				data.put("why", "nav");
+				data.put("reason", reason);
+				data.put("pos", agent.blockPosition());
+				data.put("tries", e.data().getOrDefault("fails", "0"));
+				data.put("bark", STUCK_BARK);
+				String text = "I'm stuck at " + agent.blockPosition().toShortString() + ": " + e.data().getOrDefault("fails", "several")
+					+ " walks in a row toward " + (goal.isEmpty() ? "my goal" : goal) + " failed (" + reason + "). Ask the player for help, or try another way.";
+				BodyEvents.emit(agent, "stuck", BodyEvents.CRITICAL, text, data, STUCK_LOOP_COOLDOWN);
+			}
+			case "nav.stuck_in_water" -> {
+				Map<String, Object> data = new LinkedHashMap<>();
+				data.put("why", "water");
+				data.put("reason", e.data().getOrDefault("reason", "no_path"));
+				data.put("pos", agent.blockPosition());
+				data.put("bark", e.data().getOrDefault("bark", "stuck_in_water"));
+				BodyEvents.emit(agent, "stuck", BodyEvents.CRITICAL, e.data().getOrDefault("text", "I'm stuck in water."), data, STUCK_WATER_COOLDOWN);
 			}
 			case "died" -> this.reportDeath(agent, e.data());
 			default -> {

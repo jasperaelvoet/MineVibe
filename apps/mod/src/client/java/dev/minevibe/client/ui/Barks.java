@@ -35,6 +35,9 @@ public final class Barks {
 			Map.entry("stood_up", "Standing up."),
 			Map.entry("brb", "BRB, asking " + PLAYER + "."),
 			Map.entry("night", "It's getting dark, let's head inside."),
+			// Said by Node when the body sends an urgency-2 "stuck" event (WaterEscape, a walk that keeps failing).
+			Map.entry("stuck_in_water", "I'm stuck in water — can you help or should I dig out?"),
+			Map.entry("stuck", "I'm stuck, I can't find a way there. Can you help?"),
 			Map.entry("goodbye", "Goodbye!"),
 			Map.entry("last_words", "Tell them… I tried."),
 			Map.entry("asleep", "Zzz… out of energy for now."));

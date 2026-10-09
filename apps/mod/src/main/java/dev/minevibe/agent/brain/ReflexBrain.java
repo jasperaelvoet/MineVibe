@@ -20,10 +20,10 @@ import org.jspecify.annotations.Nullable;
  * above {@link #JOB_PRIORITY} preempts the current job, which resumes when the reflex lets go. When no
  * reflex above the job wants control and there is no job, the idle mode runs (priority 10).
  *
- * <p>Priorities: Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, ProtectPlayer 80, SelfDefense 70, Eat 60,
+ * <p>Priorities: Hazard 100, WaterEscape 98, CreeperBackoff 95, CriticalHeal 90, Flee 85, ProtectPlayer 80, SelfDefense 70, Eat 60,
  * FeedPlayer 55, ShareFood 50, UnseatToSurvive 47, UnseatToFight 45, PillarDown 41 (only without a job), Approach 40
- * (walking; SeatedPresent 40 from the chair), Attend 38, Job 35, Shelter 30,
- * Pickup 25, idle mode 10 (follow, stay, guard, wander).
+ * (walking; SeatedPresent 40 from the chair), Attend 38, Job 35, stranded in water 33 (treading water), Shelter 30,
+ * Pickup 25, idle mode 10 (follow, stay, guard, wander), afloat 5 (treading water when nothing else steers a swimmer).
  *
  * <p>While the agent sits (a PC or meeting chair, or any vehicle) only reflexes at 45 and above may run, and the ones
  * that would only protect or feed others or fight back at good health ({@link Reflex#allowedWhileSeated}) wait: a seated agent
@@ -76,6 +76,9 @@ public final class ReflexBrain {
 	public ReflexBrain(final AgentPlayer agent) {
 		this.agent = agent;
 		this.reflexes.add(new HazardReflex());
+		WaterEscapeReflex waterEscape = new WaterEscapeReflex();
+		this.reflexes.add(waterEscape);
+		this.reflexes.add(TreadWaterReflex.stranded(waterEscape));
 		this.reflexes.add(new CreeperBackoffReflex());
 		this.reflexes.add(EatReflex.critical());
 		this.reflexes.add(new FleeReflex());
@@ -94,6 +97,7 @@ public final class ReflexBrain {
 		this.reflexes.add(new PickupReflex());
 		this.reflexes.add(new IdleFollowReflex());
 		this.reflexes.add(new IdleModeReflex());
+		this.reflexes.add(TreadWaterReflex.afloat());
 		this.reflexes.sort(Comparator.comparingInt(Reflex::priority).reversed());
 	}
 

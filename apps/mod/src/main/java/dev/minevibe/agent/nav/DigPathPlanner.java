@@ -1,9 +1,10 @@
 package dev.minevibe.agent.nav;
 
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ShortOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.LongSets;
 import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -20,11 +21,19 @@ import org.jspecify.annotations.Nullable;
  * with scaffold, after mineflayer-pathfinder's and Baritone's cost model (ticks of game time).
  *
  * <p>Nodes are feet cells. Moves: walk (and through wooden doors), diagonal walk, step up, a staircase step down
- * through dug blocks, drop (3 blocks, 2 at low health, deeper into water), swim, climb ladders and vines, pillar up
- * (jump and place a block under the feet) and bridge (place a block under the next cell). Breaking costs the time the
- * best tool in the inventory takes; leaves are cheap. What may be broken is {@link NavBlocks#mayBreak}; never the
- * block under the feet (no digging straight down), never a block next to water or lava, never one with sand or gravel
- * on top.
+ * through dug blocks, drop (3 blocks, 2 at low health, deeper into water), swim, climb out of water, climb ladders and
+ * vines, pillar up (jump and place a block under the feet) and bridge (place a block under the next cell). Breaking
+ * costs the time the best tool in the inventory takes; leaves are cheap. What may be broken is
+ * {@link NavBlocks#mayBreak}; never the block under the feet (no digging straight down), never a block next to water
+ * or lava, never one with sand or gravel on top.
+ *
+ * <p><b>Water</b> (PLAN 7.2, water exits). A swimmer leaves the water only onto a bank whose top is level with the
+ * water line ({@link DigStep.Kind#EXIT_WATER}; vanilla lifts nobody higher, see {@link WaterMoves}), or onto a block it
+ * puts in the water first where no bank is that low (a step: scaffold, or any plain full block in the bag). Nothing is
+ * ever broken while swimming: digging (a step into a bank, a way up through a roof) starts only from a standing cell,
+ * in water only from the bottom of water at most one deep with the head above it. Water under a low roof (a ceiling
+ * within 3 blocks of its surface) costs extra, and water with no air above it more, at most {@value #MAX_NO_AIR} such
+ * cells in a row: routes stay out of enclosed pockets when there is another way.
  *
  * <p>The search is incremental: {@link #step} expands nodes until its time budget for the tick is spent
  * ({@link #TICK_BUDGET_NANOS}, 1.5 ms) and goes on next tick. It ends {@link State#FOUND} or {@link State#FAILED}
@@ -42,15 +51,25 @@ public final class DigPathPlanner {
 	 * Search limits and abilities. {@code agentId} is whose consents count when a block is protected (null: no
 	 * agent's, as perception sees it).
 	 */
-	public record Config(int maxNodes, int radius, int maxDrop, int scaffold, int maxPillar, boolean dig, boolean build, @Nullable String agentId) {
+	public record Config(int maxNodes, int radius, int maxDrop, int scaffold, int maxPillar, boolean dig, boolean build, @Nullable String agentId,
+		int steps) {
 		/** The defaults for {@code agentHealth} and {@code scaffold} blocks in the inventory. */
 		public static Config standard(final float agentHealth, final int scaffold) {
 			int drop = agentHealth <= LOW_HEALTH ? 2 : 3;
-			return new Config(MAX_NODES, RADIUS, drop, scaffold, drop, true, true, null);
+			return new Config(MAX_NODES, RADIUS, drop, scaffold, drop, true, true, null, scaffold);
 		}
 
 		public Config withAgent(final @Nullable String id) {
-			return new Config(this.maxNodes, this.radius, this.maxDrop, this.scaffold, this.maxPillar, this.dig, this.build, id);
+			return new Config(this.maxNodes, this.radius, this.maxDrop, this.scaffold, this.maxPillar, this.dig, this.build, id, this.steps);
+		}
+
+		/**
+		 * With {@code steps} blocks in the bag to step out of water on ({@link NavBlocks#stepCount}: scaffold and other
+		 * plain full blocks; never fewer than the scaffold).
+		 */
+		public Config withSteps(final int steps) {
+			return new Config(this.maxNodes, this.radius, this.maxDrop, this.scaffold, this.maxPillar, this.dig, this.build, this.agentId,
+				Math.max(this.scaffold, steps));
 		}
 	}
 
@@ -70,6 +89,16 @@ public final class DigPathPlanner {
 	/** Scaffold is spent: keep it for when it pays. */
 	static final double SCAFFOLD = 8.0;
 	static final double NEAR_LAVA = 40.0;
+	/** Climbing out onto a bank: pressing against it until the water lifts the body. */
+	static final double EXIT = 6.0;
+	/** Putting a block in the water to step out on, aimed from a bobbing body (on top of {@link #SCAFFOLD}). */
+	static final double STEP = 10.0;
+	/** Per water cell under a low roof (a ceiling within 3 blocks of the water's surface): a pocket to stay out of. */
+	static final double ROOFED = 20.0;
+	/** Per water cell with no air over it at all (the water touches the roof): held breath. */
+	static final double NO_AIR = 40.0;
+	/** Water cells with no air over them a path may cross in a row (a body holds its breath 15 s). */
+	static final int MAX_NO_AIR = 5;
 	/** Weighted A*: a little greed keeps searches short. */
 	static final double GREED = 1.25;
 
@@ -108,6 +137,9 @@ public final class DigPathPlanner {
 	private final Long2ShortOpenHashMap cells = new Long2ShortOpenHashMap();
 	private final Reference2IntOpenHashMap<BlockState> breakTicks = new Reference2IntOpenHashMap<>();
 	private final LongSet forbidden;
+	private final LongSet noExit;
+	/** {@link #waterRoof} per water cell. */
+	private final Long2ByteOpenHashMap roofs = new Long2ByteOpenHashMap();
 	private final Node start;
 	private final BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
 
@@ -126,16 +158,27 @@ public final class DigPathPlanner {
 	 */
 	public DigPathPlanner(final ServerLevel level, final Inventory inventory, final BlockPos from, final DigGoal goal, final Config config,
 		final LongSet forbidden) {
+		this(level, inventory, from, goal, config, forbidden, LongSets.EMPTY_SET);
+	}
+
+	/**
+	 * Like the other constructor; {@code noExit} lists feet cells on a bank the executor failed to climb out of the water
+	 * onto (no {@link DigStep.Kind#EXIT_WATER} ends there again).
+	 */
+	public DigPathPlanner(final ServerLevel level, final Inventory inventory, final BlockPos from, final DigGoal goal, final Config config,
+		final LongSet forbidden, final LongSet noExit) {
 		this.level = level;
 		this.view = new NavView(level);
 		this.inventory = inventory;
 		this.goal = goal;
 		this.config = config;
 		this.forbidden = forbidden;
+		this.noExit = noExit;
 		this.sx = from.getX();
 		this.sy = from.getY();
 		this.sz = from.getZ();
 		this.cells.defaultReturnValue((short)0);
+		this.roofs.defaultReturnValue((byte)0);
 		this.breakTicks.defaultReturnValue(-1);
 		this.start = this.node(this.sx, this.sy, this.sz, false);
 		this.start.g = 0.0;
@@ -254,11 +297,17 @@ public final class DigPathPlanner {
 		short here = this.cell(x, y, z);
 		boolean inWater = (here & WATER) != 0;
 		boolean onClimb = (here & CLIMB) != 0;
-		boolean grounded = n.placedFloor || (this.cell(x, y - 1, z) & FLOOR) != 0 || n.startNode && !inWater && !onClimb;
+		boolean floorBelow = (this.cell(x, y - 1, z) & FLOOR) != 0;
+		boolean grounded = n.placedFloor || floorBelow || n.startNode && !inWater && !onClimb;
 		boolean canAct = grounded || inWater || onClimb;
 		if (!canAct) {
 			return;
 		}
+		// Nothing is broken while swimming (mining there takes 5 to 25 times as long, and a swimmer cannot hold still): in
+		// water only from its bottom, at most one deep with the head above it (the feet on the ground and the eyes dry:
+		// full speed).
+		boolean mayDig = !inWater || floorBelow && (this.cell(x, y + 1, z) & WATER) == 0;
+		boolean surface = inWater && (this.cell(x, y + 1, z) & WATER) == 0;
 		for (int dir = 0; dir < 4; dir++) {
 			int dx = DX[dir];
 			int dz = DZ[dir];
@@ -269,14 +318,23 @@ public final class DigPathPlanner {
 			}
 			// Sideways at the same height: walk / swim, or off an edge (drop), or onto a block placed there (bridge).
 			double body = this.bodyCost(tx, y, tz);
+			if (body > 0 && !mayDig) {
+				body = INF;
+			}
 			if (body < INF) {
 				short dest = this.cell(tx, y, tz);
 				if (this.supported(tx, y, tz)) {
-					double c = (dest & WATER) == 0 ? WALK : (this.cell(tx, y + 1, tz) & WATER) != 0 ? SWIM + SUBMERGED : SWIM;
+					boolean destWater = (dest & WATER) != 0;
+					double c = !destWater ? WALK : (this.cell(tx, y + 1, tz) & WATER) != 0 ? SWIM + SUBMERGED : SWIM;
 					if ((dest & DOOR_CELL) != 0 || (this.cell(tx, y + 1, tz) & DOOR_CELL) != 0) {
 						c += DOOR;
 					}
-					this.offer(n, tx, y, tz, false, 0, n.scaffoldUsed, c + body + this.danger(tx, y, tz), (dest & WATER) != 0 ? DigStep.Kind.SWIM : DigStep.Kind.WALK,
+					// Out of shallow water onto level ground is a water exit too (the executor presses on until the feet are dry).
+					DigStep.Kind kind = destWater ? DigStep.Kind.SWIM : inWater ? DigStep.Kind.EXIT_WATER : DigStep.Kind.WALK;
+					if (kind == DigStep.Kind.EXIT_WATER) {
+						c += EXIT;
+					}
+					this.offer(n, tx, y, tz, false, 0, n.scaffoldUsed, c + body + this.danger(tx, y, tz), kind,
 						body > 0 ? this.breaksOf(tx, y + 1, tz, tx, y, tz) : List.of(), null);
 				} else if (!inWater || grounded) {
 					this.offerDrop(n, tx, y, tz, body);
@@ -288,16 +346,36 @@ public final class DigPathPlanner {
 					}
 				}
 			}
-			// One up: jump onto the next block.
+			// One up: jump onto the next block, or (from water) climb out onto a bank level with the water line.
 			if (y + 2 <= this.level.getMaxY() && Math.abs(y + 1 - this.sy) <= MAX_DY && (grounded || inWater || onClimb)) {
 				double head = this.cellCost(x, y + 2, z);
 				short floor = this.cell(tx, y, tz);
 				if (head < INF && (floor & FLOOR) != 0) {
 					double body2 = this.bodyCost(tx, y + 1, tz);
-					if (body2 < INF) {
+					if (body2 < INF && (head + body2 == 0 || mayDig)) {
 						List<BlockPos> breaks = head + body2 > 0 ? this.breaksOf(x, y + 2, z, tx, y + 2, tz, tx, y + 1, tz) : List.of();
-						this.offer(n, tx, y + 1, tz, false, 0, n.scaffoldUsed, WALK + JUMP + head + body2 + this.danger(tx, y + 1, tz), DigStep.Kind.ASCEND, breaks, null);
+						boolean destWater = (this.cell(tx, y + 1, tz) & WATER) != 0;
+						if (!inWater) {
+							this.offer(n, tx, y + 1, tz, false, 0, n.scaffoldUsed, WALK + JUMP + head + body2 + this.danger(tx, y + 1, tz), DigStep.Kind.ASCEND,
+								breaks, null);
+						} else if (destWater) {
+							// Up a slope under water.
+							this.offer(n, tx, y + 1, tz, false, 0, n.scaffoldUsed, SWIM + head + body2 + this.danger(tx, y + 1, tz), DigStep.Kind.SWIM, breaks, null);
+						} else if (this.canClimbOut(x, y, z) && !this.noExit.contains(BlockPos.asLong(tx, y + 1, tz))) {
+							this.offer(n, tx, y + 1, tz, false, 0, n.scaffoldUsed, SWIM + EXIT + head + body2 + this.danger(tx, y + 1, tz),
+								DigStep.Kind.EXIT_WATER, breaks, null);
+						}
 					}
+				}
+			}
+			// Out of water where no bank is low enough: put a block in the water beside the body, at the surface, and climb
+			// onto it (from there the bank is a step up, or a place to dig from).
+			if (surface && this.config.build() && n.scaffoldUsed < this.config.steps() && y + 2 <= this.level.getMaxY()
+				&& (this.cell(x, y + 2, z) & PASS) != 0 && this.canClimbOut(x, y, z) && !this.noExit.contains(BlockPos.asLong(tx, y + 1, tz))) {
+				short over = this.cell(tx, y + 1, tz);
+				if ((over & (PASS | WATER)) == PASS && (this.cell(tx, y + 2, tz) & PASS) != 0 && this.stepPlaceable(tx, y, tz)) {
+					this.offer(n, tx, y + 1, tz, true, 0, n.scaffoldUsed + 1, SWIM + STEP + SCAFFOLD + EXIT + this.danger(tx, y + 1, tz), DigStep.Kind.EXIT_WATER,
+						List.of(), new BlockPos(tx, y, tz));
 				}
 			}
 			// One down through blocks to dig out (a staircase, never straight down).
@@ -399,12 +477,30 @@ public final class DigPathPlanner {
 		}
 	}
 
+	/**
+	 * Offers the move to feet cell (x, y, z). A water cell costs extra under a low roof ({@link #ROOFED}) and more with no
+	 * air over it ({@link #NO_AIR}, at most {@value #MAX_NO_AIR} in a row).
+	 */
 	private void offer(final Node from, final int x, final int y, final int z, final boolean placedFloor, final int pillar, final int scaffoldUsed,
 		final double cost, final DigStep.Kind kind, final List<BlockPos> breaks, final @Nullable BlockPos place) {
 		if (cost >= INF || y <= this.level.getMinY() || y >= this.level.getMaxY()) {
 			return;
 		}
-		double g = from.g + cost;
+		double extra = 0.0;
+		int noAir = 0;
+		if (!placedFloor && (this.cell(x, y, z) & WATER) != 0) {
+			byte roof = this.waterRoof(x, y, z);
+			if (roof == ROOF_NO_AIR) {
+				noAir = from.noAir + 1;
+				if (noAir > MAX_NO_AIR) {
+					return;
+				}
+				extra = NO_AIR;
+			} else if (roof == ROOF_LOW) {
+				extra = ROOFED;
+			}
+		}
+		double g = from.g + cost + extra;
 		Node to = this.node(x, y, z, placedFloor);
 		if (to.closed || g >= to.g) {
 			return;
@@ -414,12 +510,88 @@ public final class DigPathPlanner {
 		to.parent = from;
 		to.pillar = pillar;
 		to.scaffoldUsed = scaffoldUsed;
+		to.noAir = noAir;
 		to.via = new DigStep(kind, new BlockPos(from.x, from.y, from.z), new BlockPos(x, y, z), breaks, place);
 		if (to.heapIndex >= 0) {
 			this.open.update(to);
 		} else {
 			this.open.insert(to);
 		}
+	}
+
+	// ---------------------------------------------------------------- water
+
+	private static final byte ROOF_OPEN = 1;
+	private static final byte ROOF_LOW = 2;
+	private static final byte ROOF_NO_AIR = 3;
+
+	/**
+	 * What is over the water cell (x, y, z): up through the water to its surface, then {@link #ROOF_NO_AIR} when a block
+	 * sits right on the water (no air to breathe in that column), {@link #ROOF_LOW} when a ceiling is within 3 blocks of
+	 * the surface (an enclosed pocket, a cave pool), else {@link #ROOF_OPEN}. Water deeper than 24 counts as open.
+	 */
+	private byte waterRoof(final int x, final int y, final int z) {
+		long key = BlockPos.asLong(x, y, z);
+		byte r = this.roofs.get(key);
+		if (r != 0) {
+			return r;
+		}
+		int top = y;
+		for (int i = 0; i < 24 && (this.cell(x, top + 1, z) & WATER) != 0; i++) {
+			top++;
+		}
+		short over = this.cell(x, top + 1, z);
+		if ((over & WATER) != 0) {
+			r = ROOF_OPEN;
+		} else if ((over & PASS) == 0) {
+			r = ROOF_NO_AIR;
+		} else if ((this.cell(x, top + 2, z) & PASS) == 0 || (this.cell(x, top + 3, z) & PASS) == 0) {
+			r = ROOF_LOW;
+		} else {
+			r = ROOF_OPEN;
+		}
+		this.roofs.put(key, r);
+		return r;
+	}
+
+	/**
+	 * True if a body swimming in water cell (x, y, z) gets its feet high enough to climb onto a floor whose top is level
+	 * with the water line, (x, y + 1): the water goes on above it (it rises), it stands on the bottom (a jump, or the rise,
+	 * does), or the water is deep enough there that the feet bob up near its top ({@link WaterMoves#MIN_EXIT_WATER}; a
+	 * thin layer of flowing water is not).
+	 */
+	private boolean canClimbOut(final int x, final int y, final int z) {
+		if ((this.cell(x, y + 1, z) & WATER) != 0 || (this.cell(x, y - 1, z) & FLOOR) != 0) {
+			return true;
+		}
+		this.scratch.set(x, y, z);
+		return this.view.getFluidState(this.scratch).getHeight(this.view, this.scratch) >= WaterMoves.MIN_EXIT_WATER;
+	}
+
+	/**
+	 * A water cell a step block may be put into to climb out on: plain water (or a plant in it that gives way), no ladder
+	 * or door, not a cell a placement failed in, not the office or a protected zone, and a solid face beside or under it
+	 * to put the block against.
+	 */
+	private boolean stepPlaceable(final int x, final int y, final int z) {
+		short c = this.cell(x, y, z);
+		if ((c & (PASS | WATER | PLACE)) != (PASS | WATER | PLACE) || (c & (CLIMB | DOOR_CELL | HAZARD | UNLOADED)) != 0 || this.isProtected(x, y, z)) {
+			return false;
+		}
+		if (this.solid(x, y - 1, z)) {
+			return true;
+		}
+		for (int dir = 0; dir < 4; dir++) {
+			if (this.solid(x + DX[dir], y, z + DZ[dir])) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** A block a placement can be aimed against: not passable, loaded, no hazard. */
+	private boolean solid(final int x, final int y, final int z) {
+		return (this.cell(x, y, z) & (PASS | HAZARD | UNLOADED)) == 0;
 	}
 
 	// ---------------------------------------------------------------- cells
@@ -606,6 +778,8 @@ public final class DigPathPlanner {
 		boolean startNode;
 		int pillar;
 		int scaffoldUsed;
+		/** Water cells with no air over them crossed in a row to get here. */
+		int noAir;
 		double g = INF;
 		double f;
 		@Nullable Node parent;

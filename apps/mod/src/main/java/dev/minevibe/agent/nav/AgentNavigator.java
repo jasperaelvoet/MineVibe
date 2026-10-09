@@ -37,6 +37,15 @@ import org.jspecify.annotations.Nullable;
  * {@link #approachBlock}), and straight away for "reach a block to mine" ({@link #reachBlock}) and "reach a tree trunk"
  * ({@link #reachTrunk}). A step that turns out unsafe or blocked re-plans (at most {@value #MAX_DIG_REPLANS} times).
  * Being stuck behind an entity (a Tier-1 "stuck") never falls back to digging.
+ *
+ * <p><b>Water</b> (both tiers): {@link WaterMoves} swims and climbs out; Tier 2 plans exits onto banks level with the
+ * water line, steps placed in the water, and digging only from a standing cell (never while swimming). A body that
+ * cannot get out at all is the WaterEscape reflex's (PLAN 7.3).
+ *
+ * <p><b>Loops.</b> {@value #LOOP_FAILS} failed walks in a row toward about the same goal from about the same spot (a
+ * reflex re-issuing a walk that cannot work, such as following the player up a cliff) send one {@code nav.loop} event,
+ * which the skill layer turns into an urgency-2 {@code stuck} event (a wake for the brain, and a bark): an agent never
+ * sits silently stuck. In water the WaterEscape reflex speaks up instead.
  */
 public final class AgentNavigator {
 	public enum Status {
@@ -83,7 +92,9 @@ public final class AgentNavigator {
 	private @Nullable DigPathPlanner planner;
 	private final NavDoors digDoors = new NavDoors();
 	private final LongSet forbidden = new LongOpenHashSet();
-	private final DigPathExecutor digExecutor = new DigPathExecutor(this.digDoors, this.forbidden);
+	/** Banks a Tier-2 water exit failed to climb onto (the planner leaves them out). */
+	private final LongSet noExit = new LongOpenHashSet();
+	private final DigPathExecutor digExecutor = new DigPathExecutor(this.digDoors, this.forbidden, this.noExit);
 	private int digReplans;
 	private int digWaitTicks;
 	/** "Reach a block": the goal cell the body steps to the middle of while its hands do not reach yet ({@link #settle}). */
@@ -112,6 +123,14 @@ public final class AgentNavigator {
 	private int stuckRung;
 	private int forcedJumpTicks;
 	private @Nullable String failureReason;
+
+	// failure loops
+	/** Failed walks in a row toward about the same goal from about the same spot that make a {@code nav.loop}. */
+	public static final int LOOP_FAILS = 5;
+	private int loopFails;
+	private @Nullable Vec3 loopGoal;
+	private @Nullable Vec3 loopFrom;
+	private boolean loopReported;
 
 	// stats (S1 numbers)
 	private int plans;
@@ -243,6 +262,7 @@ public final class AgentNavigator {
 		this.digReplans = 0;
 		this.digWaitTicks = 0;
 		this.forbidden.clear();
+		this.noExit.clear();
 		if (NavDebug.ENABLED) {
 			// Every mine target starts one: worth a line only when diagnosing (failures are always logged).
 			NavDebug.log(this.agent.agentId(), "tier2", "why", why, "goal", goal.describe(), "from", this.agent.blockPosition().toShortString());
@@ -264,6 +284,16 @@ public final class AgentNavigator {
 	/** True while Tier 2 (dig planner) drives the agent. */
 	public boolean isTier2() {
 		return this.digGoal != null;
+	}
+
+	/** True while a Tier-2 search runs (over several ticks; the body stands still meanwhile). */
+	public boolean isPlanning() {
+		return this.planner != null;
+	}
+
+	/** Failed walks in a row toward about the same goal from about the same spot ({@link #LOOP_FAILS} make a loop). */
+	public int loopFails() {
+		return this.loopFails;
 	}
 
 	/** The last path Tier 2 found (tests, logs). */
@@ -385,7 +415,7 @@ public final class AgentNavigator {
 			if (this.finalSegment && !this.executor.isBlocked() && this.executor.path() != null && this.horizontalDistanceToGoal() <= this.reach + 1.5
 				&& Math.abs(this.goal.y - this.agent.getY()) <= 1.5) {
 				// The path ends next to the goal (A* stops within reach of the target block): walk the last bit straight.
-				if (++this.finalApproachTicks > 40) {
+				if (++this.finalApproachTicks > 40 || this.wadesIntoDeadEndWater(this.goal)) {
 					this.tier1Failed("unreachable");
 					return;
 				}
@@ -515,7 +545,12 @@ public final class AgentNavigator {
 		}
 		DigPathPlanner p = this.planner;
 		if (p != null) {
-			this.agent.controls().stopMovement();
+			if (this.agent.isInWater() && !WaterMoves.standingInWater(this.agent)) {
+				// The body waits while the search runs: a swimmer keeps its head above the water meanwhile.
+				WaterMoves.treadWater(this.agent);
+			} else {
+				this.agent.controls().stopMovement();
+			}
 			DigPathPlanner.State s = p.step(DigPathPlanner.TICK_BUDGET_NANOS);
 			this.digPlanTicks++;
 			long tickNanos = p.lastStepNanos();
@@ -589,8 +624,10 @@ public final class AgentNavigator {
 		}
 		ServerLevel level = this.agent.level();
 		DigPathPlanner.Config config = DigPathPlanner.Config.standard(this.agent.getHealth(), NavBlocks.scaffoldCount(this.agent.getInventory()))
-			.withAgent(this.agent.agentId());
-		this.planner = new DigPathPlanner(level, this.agent.getInventory(), this.agent.blockPosition(), g, config, this.forbidden);
+			.withAgent(this.agent.agentId())
+			.withSteps(NavBlocks.stepCount(this.agent.getInventory()));
+		// A swimmer bobbing with its feet just over the surface plans from the water cell it swims in.
+		this.planner = new DigPathPlanner(level, this.agent.getInventory(), WaterMoves.swimCell(this.agent), g, config, this.forbidden, this.noExit);
 		this.digPlans++;
 	}
 
@@ -598,6 +635,22 @@ public final class AgentNavigator {
 		double dx = this.goal.x - this.agent.getX();
 		double dz = this.goal.z - this.agent.getZ();
 		return Math.sqrt(dx * dx + dz * dz);
+	}
+
+	/**
+	 * True if walking straight at {@code target} from dry ground would step into water while the goal is not in the water:
+	 * the last metre of a path that stopped short at a bank ({@link #keepOutOfDeadEndWater}) never wades in after all.
+	 */
+	private boolean wadesIntoDeadEndWater(final Vec3 target) {
+		if (this.agent.isInWater()) {
+			return false;
+		}
+		BlockPos goalCell = BlockPos.containing(target);
+		ServerLevel level = this.agent.level();
+		if (WaterMoves.isWater(level, goalCell) || WaterMoves.isWater(level, goalCell.below())) {
+			return false;
+		}
+		return Steering.waterAhead(this.agent, this.agent.controls().yawTo(target));
 	}
 
 	/** Walks straight at {@code target}. Returns false (and stands still) if the step ahead is unsafe. */
@@ -617,6 +670,9 @@ public final class AgentNavigator {
 	}
 
 	private void arrive() {
+		this.loopFails = 0;
+		this.loopGoal = null;
+		this.loopReported = false;
 		this.status = Status.ARRIVED;
 		this.executor.clear(this.agent);
 		this.endTier2();
@@ -640,6 +696,29 @@ public final class AgentNavigator {
 		this.endTier2();
 		this.agent.controls().stopMovement();
 		AgentEvents.emit(this.agent, "nav.failed", Map.of("reason", reason, "tier", tier, "kind", kind, "goal", this.goal == null ? "" : this.goal.toString()));
+		this.noteFailure(reason);
+	}
+
+	/**
+	 * Counts failed walks toward about the same goal (within 4 blocks) from about the same spot (within 3); the
+	 * {@value #LOOP_FAILS}th sends one {@code nav.loop} (on land: in water the WaterEscape reflex speaks up).
+	 */
+	private void noteFailure(final String reason) {
+		Vec3 here = this.agent.position();
+		Vec3 g = this.goal;
+		if (g != null && this.loopGoal != null && this.loopFrom != null && g.distanceTo(this.loopGoal) <= 4.0 && here.distanceTo(this.loopFrom) <= 3.0) {
+			this.loopFails++;
+		} else {
+			this.loopFails = 1;
+			this.loopGoal = g;
+			this.loopFrom = here;
+			this.loopReported = false;
+		}
+		if (this.loopFails >= LOOP_FAILS && !this.loopReported && !this.agent.isInWater()) {
+			this.loopReported = true;
+			AgentEvents.emit(this.agent, "nav.loop", Map.of("reason", reason, "fails", Integer.toString(this.loopFails),
+				"goal", g == null ? "" : BlockPos.containing(g).toShortString(), "pos", this.agent.blockPosition().toShortString()));
+		}
 	}
 
 	// ---------------------------------------------------------------- planning
@@ -678,6 +757,9 @@ public final class AgentNavigator {
 			this.finalSegment = false;
 		}
 		Path path = this.findPath(target, reachRange);
+		if (path != null) {
+			this.keepOutOfDeadEndWater(path);
+		}
 		if (path == null || path.getNodeCount() == 0) {
 			this.tier1Failed("no_path");
 			return false;
@@ -712,6 +794,33 @@ public final class AgentNavigator {
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * A path that does not reach its goal and ends in water (the node nearest a goal across a pool, at the foot of a
+	 * ledge) leads the body into water and plans no way out of it: vanilla's A* plans a climb out only onto a bank level
+	 * with the water line, and this path has none ahead. Such a path ends at the bank instead, before its last stretch of
+	 * water, unless the goal itself is in the water (following a swimming player). A body already in that water keeps no
+	 * path at all (the walk fails, and the WaterEscape reflex takes over).
+	 */
+	private void keepOutOfDeadEndWater(final Path path) {
+		Node end = path.getEndNode();
+		ServerLevel level = this.agent.level();
+		if (path.canReach() || end == null || !WaterMoves.isWater(level, end.asBlockPos())) {
+			return;
+		}
+		BlockPos goalCell = BlockPos.containing(this.goal);
+		if (WaterMoves.isWater(level, goalCell) || WaterMoves.isWater(level, goalCell.below())) {
+			return;
+		}
+		int keep = path.getNodeCount();
+		while (keep > 0 && WaterMoves.isWater(level, path.getNode(keep - 1).asBlockPos())) {
+			keep--;
+		}
+		if (NavDebug.ENABLED) {
+			NavDebug.log(this.agent.agentId(), "dead_end_water", "end", end.asBlockPos().toShortString(), "nodes", path.getNodeCount(), "kept", keep);
+		}
+		path.truncateNodes(keep);
 	}
 
 	/** Runs vanilla A* with the proxy mob standing in for the agent. */

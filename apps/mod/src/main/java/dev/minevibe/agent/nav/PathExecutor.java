@@ -12,6 +12,10 @@ import org.jspecify.annotations.Nullable;
  * Follows one {@link Path} with player controls: look at the next node, walk forward, jump on step-ups
  * and collisions, swim, open (and close behind) wooden doors, and sprint on long straight runs when
  * food allows. It never steers into a drop deeper than 3 blocks; it reports that as {@link #isBlocked()}.
+ *
+ * <p>In water it steers through {@link WaterMoves}, as Tier 2 does: a node in water is swum to (no sprinting, upstream
+ * of a current), and a dry node after water is a water exit (rise, press against the bank until the water lifts the
+ * body out), which counts as reached only once the body is out.
  */
 public final class PathExecutor {
 	private static final double REACH_XZ = 0.45;
@@ -111,6 +115,16 @@ public final class PathExecutor {
 			this.doors.openIfClosed(agent, new BlockPos(n.x, n.y, n.z));
 		}
 
+		if (WaterMoves.swimming(agent) && !agent.isInLava()) {
+			// Swimming (or bobbing just over the surface between two strokes).
+			BlockPos np = new BlockPos(node.x, node.y, node.z);
+			if (WaterMoves.isWater(agent.level(), np)) {
+				WaterMoves.swim(agent, target);
+			} else {
+				WaterMoves.exit(agent, np);
+			}
+			return;
+		}
 		controls.look(controls.yawTo(target), agent.isInWater() ? -10.0F : 10.0F);
 		controls.setStrafe(0.0F);
 		controls.setForward(hd > 0.05 ? 1.0F : 0.0F);
@@ -118,7 +132,7 @@ public final class PathExecutor {
 		boolean inFluid = agent.isInWater() || agent.isInLava();
 		boolean jump;
 		if (inFluid) {
-			// Swim: keep the head up, and climb out at the far bank.
+			// Lava: keep moving, head up.
 			jump = node.y >= pos.y - 0.2 || agent.horizontalCollision;
 		} else {
 			boolean stepUp = node.y > pos.y + 0.6 && hd < 1.8;
@@ -132,12 +146,14 @@ public final class PathExecutor {
 	}
 
 	private void advance(final AgentPlayer agent, final Vec3 pos) {
-		boolean swimming = agent.isInWater();
+		boolean swimming = WaterMoves.swimming(agent);
 		while (this.index < this.path.getNodeCount()) {
 			Node n = this.path.getNode(this.index);
 			double hd = horizontalDistance(pos, n);
 			double dy = n.y - pos.y;
-			boolean reached = swimming ? hd < 0.7 && Math.abs(dy) < 1.6 : hd < REACH_XZ && dy > -1.25 && dy < 0.75;
+			// A dry node after water (the bank) is reached once the body is out on it, not while it swims beside it.
+			boolean exit = swimming && !WaterMoves.isWater(agent.level(), new BlockPos(n.x, n.y, n.z));
+			boolean reached = exit ? false : swimming ? hd < 0.7 && Math.abs(dy) < 1.6 : hd < REACH_XZ && dy > -1.25 && dy < 0.75;
 			if (!reached && this.index + 1 < this.path.getNodeCount()) {
 				// Overshot: closer to the following node than this node is to it (cut corners on flat ground).
 				Node m = this.path.getNode(this.index + 1);

@@ -53,7 +53,7 @@ import {
   mcToolsVersion,
   type SessionKind,
 } from './constants.js';
-import { Digest, type Routed } from './EventRouter.js';
+import { Digest, type Routed, STUCK_WAKE_KEY } from './EventRouter.js';
 import { type ControlKind, control, escapeShared, singleLine } from './envelope.js';
 import { createInteractionBroker } from './InteractionBroker.js';
 import type { HandoffNotes, MemoryStore } from './memory.js';
@@ -1397,7 +1397,8 @@ export class AgentBrain {
       this.#log.info({ from: this.#announcedMode, to: mode }, 'mode switched');
       this.#announcedMode = mode;
     }
-    this.bark(BARKS.wake);
+    // A stuck body already said so (its bark came with the event): "one sec" would talk over it.
+    if (!items.some((q) => q.key === STUCK_WAKE_KEY)) this.bark(BARKS.wake);
     this.#setStatus();
   }
 

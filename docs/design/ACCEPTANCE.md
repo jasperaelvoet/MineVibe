@@ -409,3 +409,58 @@ each with a GameTest that fails on the polish commit and passes now (`NavGameTes
 | `nav_climb_knocked_off_its_column` | 14-log oak, agent moved off its pillar 7 up | new climb beside it, 14 of 14 kept, old pillar cleared from a 1-block Tier-2 pillar, 720-737 ticks |
 
 All 161 server GameTests passed in four full runs after the fixes, and the 423 unit tests (`TreeClimbTest`: 5).
+
+## Water navigation (2026-10-09)
+
+The fix for the live report of Ada (CEO) sitting silent in a small cave pool, its ledge a block over the water, with
+no brain running (PLAN §7.2 "Water", §7.3 WaterEscape; DEBT "An agent in a water pocket under the ground drowns").
+Vanilla lifts a swimmer only onto a bank level with the water line, so every walk toward the player on the ledge
+failed, the follow reflex issued it again, and nothing ever said so.
+
+**GameTests** (`WaterNavGameTests`, 13, a batch of their own on the 33x33 `nav_field`; numbers from the last full run;
+every test also checks that the agent never mined while swimming, never lost health, and, but the flooded tunnel,
+never had less than 200 of its 300 air):
+
+| GameTest | What it shows | Numbers |
+| --- | --- | --- |
+| `water_pool_ledge_exit` | the live report: a stone cave, a pool one deep, the ledge a block over the water, ceiling 3 over it, nothing in the bag, the player on the ledge | WaterEscape digs a step into the ledge from the pool's bottom (head dry) and climbs out, then follows: 343 ticks, 1 block broken |
+| `water_pocket_two_high_step` | an enclosed pocket two deep, walls two over the water line, 8 dirt | a block in the water, a pillar block, up: 120 ticks, 2 placed |
+| `water_sealed_pocket_digs_out` | water two deep sealed in dirt (glass around), 2 dirt | a step, then a staircase up 8 blocks to the grass, from standing cells only: 408 ticks, 13 broken, 6 placed (with dirt it dug), air never below 300 |
+| `water_flooded_tunnel_swims_to_air` | a tunnel flooded to its stone ceiling (no air over the agent), a cave pool 3 blocks on | no wait to surface where there is no air: swims under the stone and climbs out, 160 ticks, air 176 (Hazard takes over at 100) |
+| `water_follows_player_through_lake` | the player wades into a lake and out on the far side | follows in, treads water beside the player (no escape: it is where it means to be), follows out; air 300 |
+| `water_crosses_flowing_river` | `goto` across a stream one deep, flowing along the crossing | 105 ticks, 0.01 blocks off its line (0.34 without the upstream aim) |
+| `water_goto_across_pond_high_bank` | `goto` across a pond two deep whose far bank is a block over the water line, 8 dirt | Tier 1 stops at the near bank (no dead-end swim), Tier 2 swims and puts a step in the water: 166 ticks, 1 placed |
+| `water_pickup_across_pond` / `water_collect_tree_across_pond_high_bank` | a log across a pond; an oak across a pond with a high far bank | 141 ticks; 2 logs kept, 495 ticks, 1 step placed |
+| `water_job_loop_fails_stuck_in_water` | a job that swims out into a moat again after every escape (a regression for the resume loop) | three escapes, then `STUCK_IN_WATER`, an urgency-2 `stuck` event with the stuck-in-water bark, and out of the water: 618 ticks |
+| `water_stranded_treads_water_and_speaks_up` | a well three deep, walls three over the water, nothing in the bag | stranded: treads water at the surface (the `stranded_in_water` reflex), speaks up once, looks again silently; handed 2 dirt, out on the next look: 726 ticks, air 267 |
+| `water_follow_stays_out_of_dead_end_pool` | the player on a ledge across a pool, out of every walk's reach | never sets foot in the water (Tier 1 cuts the path at the bank), speaks up after 5 failed walks (urgency 2, the stuck bark) |
+| `water_planner_never_breaks_while_swimming` | the planner alone in DEBT's pocket under a dirt roof | no plan from water two deep (breaking the roof while swimming is gone); from water one deep only from the bottom with the head dry |
+
+Tier-2 searches stayed within the budget (largest tick 1.60 ms in `water_sealed_pocket`; `nav_perf` 1.51 ms per agent
+tick, 0 ticks over). All 175 server GameTests passed in the last full run, and the 174 before the flooded-tunnel test
+in the two runs before it. Earlier full runs found a GameTest's office override saved into the GameTest world (every
+later player stand-in was welcomed into it, away from where its test put it; fixed in `OfficeService`, DEBT), and one
+hung for 10 minutes after a light-engine crash in vanilla's worker thread (DEBT; the re-run passed). The 1621 server
+unit tests pass, `stuckWake.test.ts` among them (an urgency-2 `stuck` wakes the body's brain at P2 and Node says its
+bark at once, with no "one sec" over it; `STUCK_IN_WATER` hints to ask, not retry), and so do typecheck and lint.
+
+**Scripted runs at zero tokens** on three seeds with water near the office (`waterNearest`, new in the harness: the
+nearest water blocks from the CEO before step 3; `waterEscapes`, `stuckInWater`, `navLoops` count the WaterEscape
+takeovers and the stuck events during step 3):
+
+```sh
+node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripted --steps 1,2,3,8 --seed 42
+```
+
+| Seed | Water | 1 Cold boot | 2 CEO | 3: mined, kept, given up, time | Escapes, stuck | 8 Hardcore | 9 Quit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `42` | 5.7 m | PASS, world 13.6 s | PASS | PASS, 11, 11, 0, 49.1 s | 0, 0 | PASS, 2.8 s | PASS |
+| `2368183124` | 17.2 m | PASS, world 13.4 s | PASS | PASS, 17, 14 (+ Bram), 0, 63.4 s | 0, 0 | PASS, 2.7 s | PASS |
+| `3207449953` | 25.4 m | PASS, world 43.7 s | PASS | PASS, 27, 27, 2 (high), 172.1 s | 0, 0 | PASS, 2.7 s | PASS |
+
+The three ran on the build before the last two changes (no surfacing wait where no air is above; the ashore goal
+asks each dry region once); `42` again on the final build: PASS throughout, water 8.2 m, 12 mined, 12 kept, 54.0 s,
+no escape. No regression against the gathering polish runs above (the same reach and kept rates; `3207449953` felled
+its 29-log oak). No walk led into water it could not leave, so no escape was needed and nothing was said. The worktree
+reused the main checkout's game downloads through a link to `.minevibe-dev/play` (the harness seeds its home from
+there). Every run removed its own PC instance; no game, node or VM process is left.

@@ -265,6 +265,45 @@ public final class NavBlocks {
 	}
 
 	/**
+	 * A block an agent stuck in water may put down as a step to climb out on (water exits, PLAN 7.2): scaffold first, else
+	 * a plain building block from the bag (logs, planks, dirt and stone kinds, stone bricks, terracotta, wool), a full
+	 * cube. Never a block with a block entity (a chest, a furnace), a falling block (it would sink), one that is not a
+	 * full cube (slabs, stairs, fences: no step to stand on), one that hurts (magma), nor anything precious (ores, metal
+	 * and gem blocks). Getting out of the water is worth a log.
+	 */
+	public static boolean isStepItem(final ItemStack stack) {
+		if (isScaffoldItem(stack)) {
+			return true;
+		}
+		if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem item)) {
+			return false;
+		}
+		Block block = item.getBlock();
+		BlockState state = block.defaultBlockState();
+		if (state.hasBlockEntity() || block instanceof FallingBlock || isHazard(state) || block instanceof LeavesBlock || block instanceof MagmaBlock) {
+			return false;
+		}
+		if (!(state.is(BlockTags.LOGS) || state.is(BlockTags.PLANKS) || state.is(BlockTags.DIRT) || state.is(BlockTags.BASE_STONE_OVERWORLD)
+			|| state.is(BlockTags.BASE_STONE_NETHER) || state.is(BlockTags.STONE_BRICKS) || state.is(BlockTags.TERRACOTTA) || state.is(BlockTags.WOOL))) {
+			return false;
+		}
+		return state.isCollisionShapeFullBlock(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO)
+			&& state.isRedstoneConductor(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+	}
+
+	/** Blocks in the bag an agent may step out of water on ({@link #isStepItem}): scaffold and other plain full cubes. */
+	public static int stepCount(final Inventory inventory) {
+		int n = 0;
+		for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+			ItemStack stack = inventory.getItem(slot);
+			if (isStepItem(stack)) {
+				n += stack.getCount();
+			}
+		}
+		return n;
+	}
+
+	/**
 	 * A block a scaffold item places, or a dirt block grass has grown over since: what a pillar or bridge is made of. The
 	 * pillar a job clears is checked against it, so a position that holds something else by now is left alone.
 	 */

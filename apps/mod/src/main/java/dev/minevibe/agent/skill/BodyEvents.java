@@ -25,7 +25,10 @@ public final class BodyEvents {
 	private BodyEvents() {
 	}
 
-	/** Emits unless the same agent emitted the same kind less than {@code cooldownTicks} ago. Returns true when sent. */
+	/**
+	 * Emits unless the same agent emitted the same kind less than {@code cooldownTicks} ago. Returns true when sent. A
+	 * critical event is throttled apart from lesser ones of its kind (a notable "stuck" never holds back the critical one).
+	 */
 	public static boolean emit(
 		final AgentPlayer agent, final String kind, final int urgency, final String text, final @Nullable Map<String, ?> data, final int cooldownTicks
 	) {
@@ -33,7 +36,7 @@ public final class BodyEvents {
 			throw new IllegalArgumentException("unknown agent.event kind " + kind);
 		}
 		long now = agent.level().getGameTime();
-		String key = agent.agentId() + "/" + kind;
+		String key = agent.agentId() + "/" + kind + (urgency >= CRITICAL ? "/critical" : "");
 		synchronized (LAST) {
 			Long last = LAST.get(key);
 			if (cooldownTicks > 0 && last != null && now - last < cooldownTicks && now >= last) {

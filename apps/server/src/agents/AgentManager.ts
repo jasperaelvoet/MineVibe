@@ -60,7 +60,7 @@ import { type ChatContext, ChatInbox, ChatRouter, type Delivery } from './chat/C
 import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
 import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID, type SessionKind } from './constants.js';
-import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
+import { EventRouter, type RoutedFor, type RouterAgent, stuckBark } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
 import type { BrainMode } from './modes.js';
@@ -993,6 +993,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   }
 
   onAgentEvent(msg: PayloadOf<'agent.event'>): void {
+    // Stuck (PLAN §7.3): the body says so at once (a bark), and the critical event wakes its brain.
+    const bark = stuckBark(msg);
+    if (bark) this.#brains.get(msg.agentId)?.bark(bark);
     for (const r of this.router.agentEvent(msg, this.#crewView())) this.#deliver(r);
   }
 
