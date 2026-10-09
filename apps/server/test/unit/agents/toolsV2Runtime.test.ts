@@ -227,7 +227,7 @@ describe('v2 texts and gate', () => {
       handle: 'ada',
       role: 'ceo',
       ceo: true,
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       nonce: 'abcdef',
       mcTools: 'v2',
     });
@@ -276,7 +276,7 @@ describe('v2 texts and gate', () => {
       trackedMode: 'bypassPermissions',
       plans: { isPlanPath: () => false } as never,
       turn: { calls: 0, activeMs: 0 },
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       mcTools: 'v2',
       ...over,
     });

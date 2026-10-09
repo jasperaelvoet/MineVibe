@@ -54,7 +54,7 @@ describe('dev server with --scripted-crew', () => {
     mod.ws.on('message', (data, isBinary) => {
       if (!isBinary) order.push((JSON.parse(String(data)) as Received).t);
     });
-    mod.send({ t: 'hello', v: 1, id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jasper' });
+    mod.send({ t: 'hello', v: 1, id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jordan' });
     await mod.next('hello.ok');
     const crew = valid(await mod.next('crew.state'));
     expect((crew.crew as Array<{ handle: string }>).map((c) => c.handle)).toEqual(['ada', 'bram']);

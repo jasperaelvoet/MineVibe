@@ -137,7 +137,7 @@ class ClientSessionTest {
 		assertNull(s.helloWorldId(), "no level yet: boot");
 		s.publishLevelLoaded(true);
 		assertEquals("world-5", s.helloWorldId());
-		s.publishPlayerName("Jasper");
-		assertEquals("Jasper", s.playerName());
+		s.publishPlayerName("Jordan");
+		assertEquals("Jordan", s.playerName());
 	}
 }

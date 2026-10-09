@@ -46,12 +46,12 @@ describe('SimWorld observations (mod formats)', () => {
       { count: number; nearest: { x: number; y: number; z: number } }
     >;
     expect(blocks.logs?.count).toBeGreaterThan(40);
-    // The nearest "log" is a wall of Jasper's house, not a tree.
+    // The nearest "log" is a wall of Jordan's house, not a tree.
     expect(blocks.logs?.nearest.x).toBeGreaterThanOrEqual(3);
     expect(blocks.chest?.nearest).toEqual(HOUSE_CHEST);
     expect((look.entities as { type: string; name?: string }[])[0]).toMatchObject({
       type: 'player',
-      name: 'Jasper',
+      name: 'Jordan',
     });
     await rejectsCode(api.obsQuery(A, 'look_around', { radius: 40 }), 'BAD_ARGS');
   });
@@ -375,7 +375,7 @@ describe('SimWorld jobs', () => {
     expect(noTorches.error).toEqual({ code: 'NO_MATERIAL', msg: 'torch_ring needs 8 torches, have 2' });
   });
 
-  it("a shelter clears its inside first, even when that is Jasper's wall", async () => {
+  it("a shelter clears its inside first, even when that is Jordan's wall", async () => {
     const { world, api } = setup({ inventory: [[`${NS}dirt`, 80]] });
     await api.runSkill({
       agentId: A,
@@ -408,7 +408,7 @@ describe('SimWorld jobs', () => {
 describe('SimWorld night', () => {
   it('a zombie walks to an unguarded player and hurts them', () => {
     const { world } = setup({ clock: 12_900, zombieAt: 13_000 });
-    // Far away and told to stay there (in follow mode the body would walk back to Jasper).
+    // Far away and told to stay there (in follow mode the body would walk back to Jordan).
     world.agent.pos = { x: 30, y: 64, z: 30 };
     world.agent.mode = 'stay';
     world.agent.anchor = world.agent.pos;
@@ -427,7 +427,7 @@ describe('SimWorld night', () => {
   });
 
   it('idle modes move the body like the mod: follow comes back after a fight, guard returns to its anchor', async () => {
-    // Follow (the default): Protect walks the body to the zombie; afterwards it is back by Jasper.
+    // Follow (the default): Protect walks the body to the zombie; afterwards it is back by Jordan.
     const follow = setup({ clock: 12_900, zombieAt: 13_000 });
     follow.world.advance(follow.world.clock + 60 * TPS);
     expect(follow.world.mobs[0]?.alive).toBe(false);
@@ -445,7 +445,7 @@ describe('SimWorld night', () => {
     guard.world.advance(guard.world.clock + 10 * TPS);
     expect(guard.world.agent.pos).toEqual({ x: 0, y: 64, z: -3 });
 
-    // Guard far from Jasper still fights what comes near its anchor.
+    // Guard far from Jordan still fights what comes near its anchor.
     const post = setup({ clock: 12_900, zombieAt: 13_000 });
     await post.api.setMode(A, 'guard', { x: -10, y: 64, z: -10 });
     post.world.agent.pos = { x: -10, y: 64, z: -10 };
@@ -471,7 +471,7 @@ describe('SimWorld night', () => {
     expect(job.status).toBe('running');
     const at = busy.world.agent.pos;
     busy.world.advance(busy.world.clock + 2 * TPS);
-    expect(busy.world.agent.pos).toEqual(at); // still walking to the first tree, not to Jasper
+    expect(busy.world.agent.pos).toEqual(at); // still walking to the first tree, not to Jordan
   });
 
   it('a player inside a shelter is safe; the zombie spawn is where the layout says', () => {

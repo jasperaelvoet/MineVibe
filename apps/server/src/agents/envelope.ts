@@ -133,7 +133,7 @@ export type NoteKind =
   | 'session';
 
 export interface NoteOptions {
-  /** Display author, e.g. "Bram (agent)", "Jasper (player)", "MineVibe". */
+  /** Display author, e.g. "Bram (agent)", "Jordan (player)", "MineVibe". */
   readonly author: string;
   readonly kind: NoteKind;
   /** Extra attributes (scope, id, title, rev, at). */

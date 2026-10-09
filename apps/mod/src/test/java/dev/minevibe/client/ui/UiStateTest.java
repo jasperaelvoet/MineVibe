@@ -117,6 +117,15 @@ class UiStateTest {
 	}
 
 	@Test
+	void barkBubblesUseTheLocalPlayersName() {
+		String[] name = {null};
+		UiState named = UiState.create(clock::get, () -> name[0]);
+		assertEquals("BRB, asking the player.", named.applySay(new Messages.AgentSay("bram", null, "brb", "bark", 2000)).text());
+		name[0] = "Jordan";
+		assertEquals("BRB, asking Jordan.", named.applySay(new Messages.AgentSay("bram", null, "brb", "bark", 2000)).text());
+	}
+
+	@Test
 	void transcriptsAndTheCrewLog() {
 		state.applyChat(new Ui.ChatAppend("bram", new Ui.ChatEntry(0, 300, "agent", "later line", null, null)));
 		state.applyChat(new Ui.ChatAppend("ada", new Ui.ChatEntry(4, 100, "player", "first", null, null)));

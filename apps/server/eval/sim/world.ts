@@ -17,6 +17,8 @@ import type { IdleMode } from '@minevibe/protocol';
 import { blockSpec, maxStack, NS, normId, shortId } from './items.js';
 
 export const TPS = 20;
+/** The simulated player's name (the eval's stand-in for `hello.playerName`). */
+export const SIM_PLAYER = 'Jordan';
 export const TICKS_PER_DAY = 24_000;
 /** Walking speed of the body in blocks per second (jobs and idle modes). */
 export const WALK_BPS = 4.3;
@@ -88,7 +90,7 @@ export interface Verdict {
   readonly lead?: string | undefined;
 }
 
-/** The mod's `Verdict.hint()`: "That's part of Jasper's build — ask Jasper before changing it." */
+/** The mod's `Verdict.hint()`: "That's part of Jordan's build — ask Jordan before changing it." */
 export function verdictHint(v: Verdict): string {
   const thing =
     v.what === 'base'
@@ -282,7 +284,7 @@ export class SimWorld {
     };
     for (const [item, count] of init.inventory ?? []) this.give(normId(item), count);
     this.player = {
-      name: init.playerName ?? 'Jasper',
+      name: init.playerName ?? SIM_PLAYER,
       pos: init.playerPos ?? { x: 2, y: 64, z: -2 },
       hp: 20,
       received: new Map(),

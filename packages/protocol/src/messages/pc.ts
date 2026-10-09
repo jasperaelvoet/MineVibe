@@ -72,9 +72,9 @@ export const PcInfo = z.object({
   mounts: z.array(VaultMount).max(16),
   /** Who sits in the chair. */
   occupant: Occupant.nullable(),
-  /** "Bram is coming" (`coming`) or "BRB: asking Jasper" (`away`). */
+  /** "Bram is coming" (`coming`) or "BRB: asking Jordan" (`away`). */
   reservation: z.object({ agentId: AgentId, kind: z.enum(['coming', 'away']) }).nullable(),
-  /** Monitor banner, e.g. "? for Jasper"; null when none. */
+  /** Monitor banner, e.g. "? for Jordan"; null when none. */
   banner: z.string().min(1).max(80).nullable(),
   /** Guest screen size in pixels once known. */
   screen: z

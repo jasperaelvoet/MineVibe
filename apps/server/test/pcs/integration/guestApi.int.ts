@@ -259,7 +259,7 @@ beforeAll(async () => {
     handoffs: new HandoffNotes(join(tmp, 'handoffs')),
     access: () => ({ pcId: ID, epoch: EPOCH }),
     authorName: () => 'Ada',
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     batch,
   };
   tools = (createPcServer(host).instance as unknown as { _registeredTools: Registered })._registeredTools;

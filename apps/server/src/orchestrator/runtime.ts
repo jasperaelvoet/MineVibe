@@ -42,6 +42,7 @@ import { ensureBaseDirs, type MineVibePaths } from '../config/paths.js';
 import type { CrewApi } from '../contracts/CrewApi.js';
 import { ApiError } from '../contracts/common.js';
 import { FakeCrewApi } from '../contracts/FakeCrewApi.js';
+import { DEFAULT_PLAYER_NAME } from '../launcher/settings.js';
 import { ScriptedCrew } from '../ui/ScriptedCrew.js';
 import { UiHub } from '../ui/UiHub.js';
 import { SERVER_VERSION } from '../version.js';
@@ -105,7 +106,7 @@ export interface RuntimeOptions {
   readonly token?: string;
   /** Heartbeat interval for the bridge (0 disables). */
   readonly heartbeatMs?: number;
-  /** Offline profile name until the mod reports one (default "Jasper"). */
+  /** Offline profile name until the mod's `hello` reports the real one (default: the launcher's default name). */
   readonly playerName?: string;
   readonly graveyardKeep?: number;
   /** E2E mode: exposes {@link Runtime.debug}. */
@@ -346,7 +347,7 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
     store,
     logger: worldLog,
     serverVersion: SERVER_VERSION,
-    playerName: options.playerName ?? 'Jasper',
+    playerName: options.playerName ?? DEFAULT_PLAYER_NAME,
     onWorldEnded: async (dead) => {
       const result = await buryWorldSave(options.savesDir, dead.worldId, { keep: graveyardKeep });
       fates.delete(dead.worldId);

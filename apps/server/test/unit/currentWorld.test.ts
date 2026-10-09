@@ -14,7 +14,7 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const death = { cause: 'Jasper fell from a high place', day: 3, ticksAlive: 5000 };
+const death = { cause: 'Jordan fell from a high place', day: 3, ticksAlive: 5000 };
 
 describe('CurrentWorldStore', () => {
   it('creates World #1 on first load, privately', async () => {

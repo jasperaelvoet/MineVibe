@@ -124,7 +124,7 @@ class BridgeClientTest {
 	private BridgeClient.Builder builder(int port) {
 		return BridgeClient.builder()
 				.config(() -> new BridgeConfig(port, TOKEN))
-				.hello(() -> new Messages.Hello("0.1.0", "26.3", Messages.Hello.PHASE_BOOT, null, "Jasper"))
+				.hello(() -> new Messages.Hello("0.1.0", "26.3", Messages.Hello.PHASE_BOOT, null, "Jordan"))
 				.backoff(Duration.ofMillis(50), Duration.ofMillis(200));
 	}
 
@@ -383,11 +383,11 @@ class BridgeClientTest {
 		WebSocket conn = connect(builder(server.getPort()));
 		server.next("hello");
 		// A cause clipped in the middle of an emoji by older code, or any other unpaired surrogate.
-		String cause = "Jasper was blown up by \uD83D";
+		String cause = "Jordan was blown up by \uD83D";
 		CompletableFuture<JsonObject> acked = client.requestUntilAcked(
 				Messages.PLAYER_DIED, () -> new Messages.PlayerDied("world-1", cause, null, 1, 1), Duration.ofSeconds(2), Duration.ofMillis(100));
 		JsonObject died = server.next("player.died");
-		assertEquals("Jasper was blown up by \uFFFD", died.get("cause").getAsString());
+		assertEquals("Jordan was blown up by \uFFFD", died.get("cause").getAsString());
 		conn.send("{\"t\":\"ok\",\"v\":1,\"re\":\"" + died.get("id").getAsString() + "\"}");
 		acked.get(5, TimeUnit.SECONDS);
 	}

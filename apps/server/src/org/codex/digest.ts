@@ -16,7 +16,7 @@ export interface DigestStats {
 
 export interface DigestOptions {
   readonly nonce: ControlNonce;
-  /** The player's name for "check the Codex before asking Jasper". */
+  /** The player's name for "check the Codex before asking Jordan". */
   readonly playerName: string;
   readonly now: number;
   /** Character budget (~4 characters per token). */

@@ -51,7 +51,7 @@ describe('chat during a handoff waits for the session that takes over', () => {
     await w.until(() => w.texts(q).some((t) => t.includes('DESK REPORT')), 'report');
     const turn = lastText(w, q);
     expect(turn.startsWith(`[MV:${nonce} DESK REPORT]`)).toBe(true);
-    expect(turn).toContain('Jasper: then chop some wood');
+    expect(turn).toContain('Jordan: then chop some wood');
     expect(d.closed).toBe(true);
   });
 
@@ -76,8 +76,8 @@ describe('chat during a handoff waits for the session that takes over', () => {
     const first = lastText(w, d);
     expect(first.startsWith(`[MV:${nonce} KICKOFF]`)).toBe(true);
     // The handoff quotes it, and it is a wake of its own after the KICKOFF in the desk's first turn.
-    expect(first).toContain('- Jasper: and run the linter too');
-    expect(first).toContain('\n\nJasper: and run the linter too');
+    expect(first).toContain('- Jordan: and run the linter too');
+    expect(first).toContain('\n\nJordan: and run the linter too');
   });
 
   it('a kick during the body’s sit turn: the waiting line reaches the body with the KICKED notice', async () => {
@@ -92,8 +92,8 @@ describe('chat during a handoff waits for the session that takes over', () => {
     q.result({ subtype: 'error_during_execution', is_error: true, num_turns: 0 });
     await w.until(() => w.texts(q).some((t) => t.includes(`[MV:${nonce} KICKED]`)), 'kicked');
     // One body turn: the player's line (P0) and the notice.
-    expect(lastText(w, q)).toContain('Jasper: are you there?');
-    expect(lastText(w, q)).toContain(`[MV:${nonce} KICKED] Jasper kicked you off linux-1`);
+    expect(lastText(w, q)).toContain('Jordan: are you there?');
+    expect(lastText(w, q)).toContain(`[MV:${nonce} KICKED] Jordan kicked you off linux-1`);
     expect(brain?.deskSession).toBeNull();
   });
 
@@ -291,7 +291,7 @@ describe('the KICKOFF', () => {
       ),
     ).toBe(true);
     expect(kickoff).toContain('Your task: fix the flaky test');
-    expect(kickoff).toContain('- Jasper: please fix the flaky test');
+    expect(kickoff).toContain('- Jordan: please fix the flaky test');
     expect(kickoff).toContain('then call mcp__mc__stand_up.');
   });
 });

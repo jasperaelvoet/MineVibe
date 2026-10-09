@@ -154,7 +154,7 @@ async function harness(options: { codex?: boolean } = {}) {
     clock,
     codex,
     calendar,
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     formatNow: () => formatGameTime(calendar.gameTicks ?? 0),
     effects: {
       state: (s) => fx.states.push(s),
@@ -264,8 +264,8 @@ describe('MeetingRunner', () => {
     expect(h.brain.kinds().slice(4)).toEqual(['floor_chair:ada', 'floor_reply:cleo', 'floor_reply:dora']);
     const chairReq = h.brain.requests[4] as MeetingTurnRequest;
     expect(chairReq.candidates).toEqual(['bram', 'cleo', 'dora']);
-    expect(chairReq.prompt.split('\n')[0]).toMatch(/^\[MV:abcd MEETING\] Jasper asked the meeting something/);
-    expect(chairReq.prompt).toContain('<<note author="Jasper (player)" kind="meeting">>');
+    expect(chairReq.prompt.split('\n')[0]).toMatch(/^\[MV:abcd MEETING\] Jordan asked the meeting something/);
+    expect(chairReq.prompt).toContain('<<note author="Jordan (player)" kind="meeting">>');
     expect(chairReq.prompt).toContain('(MV:abcd KICKED]');
 
     // The floor closes after 30 s without a message, then the CEO wraps up.
@@ -312,7 +312,7 @@ describe('MeetingRunner', () => {
   it('records the triggering occurrence on the calendar event', async () => {
     const h = await harness();
     const ev = h.calendar.add(
-      { kind: 'player', name: 'Jasper' },
+      { kind: 'player', name: 'Jordan' },
       { title: 'Sync', kind: 'meeting', when: 'Day 3 09:00' },
     );
     if (!ev.ok) throw new Error(ev.message);
@@ -374,7 +374,7 @@ describe('MeetingRunner', () => {
     h.setCrew([member('ada', 'Ada', { isCeo: true }), member('bram', 'Bram', { status: 'dead' })]);
     h.player.value = { ...h.player.value, distanceToTable: 100 };
     const ev = h.calendar.add(
-      { kind: 'player', name: 'Jasper' },
+      { kind: 'player', name: 'Jordan' },
       { title: 'Solo', kind: 'meeting', when: 'Day 3 10:00' },
     );
     if (!ev.ok) throw new Error(ev.message);
@@ -412,7 +412,7 @@ describe('MeetingRunner', () => {
     h.player.value = { hpFraction: 0.3, inCombat: false, distanceToTable: 5, isNight: false };
     const id = h.runner.request(everyone());
     await h.settle();
-    expect(h.fx.toasts[0]).toBe('Meeting "Morning standup" postponed: Jasper is hurt');
+    expect(h.fx.toasts[0]).toBe('Meeting "Morning standup" postponed: Jordan is hurt');
     expect(h.fx.gather).toEqual([]);
     await h.clock.advance(20_000);
     h.player.value = { hpFraction: 0.9, inCombat: false, distanceToTable: 5, isNight: false };
@@ -428,7 +428,7 @@ describe('MeetingRunner', () => {
     await h.clock.advance(55_000);
     expect(await h.runner.outcome(id2)).toEqual({
       status: 'missed',
-      reason: 'postponed too long (Jasper is in combat)',
+      reason: 'postponed too long (Jordan is in combat)',
     });
 
     // Far from the table at night counts too; "Start meeting now" skips the safety check.
@@ -499,9 +499,9 @@ describe('MeetingRunner', () => {
     const h = await harness();
     const id = h.runner.request(everyone());
     await h.arriveAll();
-    h.runner.end('ended by Jasper');
+    h.runner.end('ended by Jordan');
     await h.settle();
-    expect(await h.runner.outcome(id)).toMatchObject({ status: 'adjourned', reason: 'ended by Jasper' });
+    expect(await h.runner.outcome(id)).toMatchObject({ status: 'adjourned', reason: 'ended by Jordan' });
     expect(h.fx.dismissed.map(([a]) => a)).toEqual(['ada', 'bram', 'cleo']);
     expect(h.runner.isAttending('ada')).toBe(false);
   });

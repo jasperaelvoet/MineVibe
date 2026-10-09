@@ -40,7 +40,7 @@ function setup() {
     plans,
     turnText: () => said.latest(),
     seatEpoch: () => 3,
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     now: () => 1000,
     hooks: {
       onWaitStart: (card) => events.push(`wait:${card.kind}`),
@@ -86,8 +86,8 @@ describe('InteractionBroker (canUseTool)', () => {
     expect(await call('AskUserQuestion', { questions: [] })).toMatchObject({ behavior: 'deny' });
     const pending = call('AskUserQuestion', { questions: QUESTIONS });
     await next();
-    expect(store.cleanup('ada-1', 'Jasper kicked you.')).toBe(1);
-    expect(await pending).toEqual({ behavior: 'deny', message: 'Jasper kicked you.' });
+    expect(store.cleanup('ada-1', 'Jordan kicked you.')).toBe(1);
+    expect(await pending).toEqual({ behavior: 'deny', message: 'Jordan kicked you.' });
   });
 
   it('AskUserQuestion: an aborted turn withdraws the card', async () => {
@@ -126,7 +126,7 @@ describe('InteractionBroker (canUseTool)', () => {
     store.resolve(card?.id ?? '', { kind: 'revise', feedback: 'use tabs' });
     const res = await pending;
     expect(res).toMatchObject({ behavior: 'deny' });
-    expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jasper wants changes to the plan: use tabs/);
+    expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jordan wants changes to the plan: use tabs/);
   });
 
   it('ExitPlanMode without a plan file: the card shows what the agent last said; a stale file loses to new prose', async () => {
@@ -200,7 +200,7 @@ describe('InteractionBroker (canUseTool)', () => {
       plans: first.plans,
       turnText: () => said.latest(),
       seatEpoch: () => 3,
-      playerName: () => 'Jasper',
+      playerName: () => 'Jordan',
       now: () => 2000,
       hooks: { onWaitStart: async () => {}, onWaitEnd: async () => {}, setPermissionMode: async () => {} },
     });
@@ -225,7 +225,7 @@ describe('InteractionBroker (canUseTool)', () => {
     const b = setup();
     const res = await b.call('EnterPlanMode', {});
     expect(res).toMatchObject({ behavior: 'deny' });
-    expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jasper turns on Plan-first/);
+    expect(res?.behavior === 'deny' ? res.message : '').toMatch(/Jordan turns on Plan-first/);
     expect(b.events).toEqual([]);
     for (const tool of ['Bash', 'mcp__pc__bash', 'mcp__mc__status', 'WebFetch']) {
       expect(await b.call(tool, {}), tool).toMatchObject({ behavior: 'deny' });

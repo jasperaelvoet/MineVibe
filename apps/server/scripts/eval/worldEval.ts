@@ -114,7 +114,7 @@ const ZONE_MIN = BASE ? { x: BASE.min.x - 2, y: BASE.min.y - 2, z: BASE.min.z - 
 const ZONE_MAX = BASE ? { x: BASE.max.x + 2, y: BASE.max.y + 2, z: BASE.max.z + 2 } : { x: 0, y: 0, z: 0 };
 /** The agent's block position. */
 const HERE: BlockPos = { x: Math.floor(AGENT_POS.x), y: AGENT_POS.y, z: Math.floor(AGENT_POS.z) };
-const PLAYER = 'Jasper';
+const PLAYER = 'Jordan';
 /** The W1 mod's footer: the zone after the position. */
 const FOOTER_W1 = 'HP 20/20 food 18 | day 2 07:40 | 6 65 5 overworld | in Base | idle (follow)';
 const FOOTER_LEGACY = 'HP 20/20 food 18 | day 2 07:40 | 6 65 5 overworld | idle (follow)';

@@ -30,7 +30,7 @@ export type AuthorKind = 'agent' | 'player' | 'system';
 /** Who wrote a piece of shared text, as Node knows it (never as the text claims). */
 export interface Author {
   readonly kind: AuthorKind;
-  /** Display name ("Bram", "Jasper"). */
+  /** Display name ("Bram", "Jordan"). */
   readonly name: string;
 }
 
@@ -58,7 +58,7 @@ export interface NoteMeta {
   readonly attrs?: Readonly<Record<string, string | number | undefined>> | undefined;
 }
 
-/** "Bram (agent)", "Jasper (player)", "MineVibe (system)". */
+/** "Bram (agent)", "Jordan (player)", "MineVibe (system)". */
 export function authorLabel(author: Author): string {
   const name = singleLine(author.name, 32) || (author.kind === 'system' ? 'MineVibe' : 'unknown');
   return `${name} (${author.kind})`;

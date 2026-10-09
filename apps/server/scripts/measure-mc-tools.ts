@@ -18,14 +18,14 @@ function host(): McHost {
     clockTime: () => 30_000,
     positionOf: () => ({ pos: { x: 0, y: 64, z: 0 }, dim: 'minecraft:overworld' }),
     isCeo: () => true,
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
   });
   return {
     agentId: 'ada1',
     skills: new FakeSkillApi(),
     org,
     actor: () => agentActor('ada1', true),
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     footer: () => null,
     here: () => null,
     clockTime: () => 0,

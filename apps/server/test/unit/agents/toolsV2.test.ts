@@ -59,7 +59,7 @@ function v2Host(over: Partial<McHost> = {}, caps: readonly string[] = ALL_CAPS) 
     clockTime: () => 30_000,
     positionOf: () => ({ pos: { x: 5, y: 66, z: -5 }, dim: 'minecraft:overworld' }),
     isCeo: (agentId) => agentId === 'ada-1',
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
   });
   const log: string[] = [];
   const jobs = new JobRegistry();
@@ -68,7 +68,7 @@ function v2Host(over: Partial<McHost> = {}, caps: readonly string[] = ALL_CAPS) 
     skills,
     org,
     actor: () => agentActor('ada-1', true),
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     footer: () => FOOTER,
     here: () => ({ pos: { x: 5, y: 66, z: -5 }, dim: 'minecraft:overworld' }),
     clockTime: () => 30_000,
@@ -456,7 +456,7 @@ describe('v2 world tools (§5)', () => {
         floorY: 64,
       },
       zone: null,
-      playerName: 'Jasper',
+      playerName: 'Jordan',
     });
     const { reg, fake } = v2Host({ world, noteRefusal: (r) => refusals.push(r) });
     const res = await call(reg, 'gather', { item: '#logs', count: 10 });
@@ -497,7 +497,7 @@ describe('v2 world tools (§5)', () => {
               protected: {
                 pos: { x: 6, y: 66, z: -6 },
                 what: 'player-built',
-                owner: 'Jasper',
+                owner: 'Jordan',
                 block: 'minecraft:stripped_spruce_log',
                 count: 1,
               },
@@ -506,7 +506,7 @@ describe('v2 world tools (§5)', () => {
         : { status: 'done', result: { dug: 1 } };
     const refused = await call(reg, 'build', dig);
     expect(refused.text).toContain('PROTECTED');
-    expect(refused.text).toContain("stripped_spruce_log at 6 66 -6 is Jasper's (player-built)");
+    expect(refused.text).toContain("stripped_spruce_log at 6 66 -6 is Jordan's (player-built)");
     expect(refused.text).toContain('"Allow"');
     // The player allowed it. Another call does not carry the token...
     granted = true;
@@ -631,7 +631,7 @@ describe('v2 do (§5.10)', () => {
     expect(fake.runs.map((r) => r.skill)).toEqual(['collect']);
     expect(res.isError).toBe(true);
     expect(res.text).toMatch(
-      /^failed: do step 1\/2 gather \| NO_NATURAL_SOURCE: no reachable natural oak_log within 48m\n 1 gather oak_log 0\/10 failed\n 2 craft crafting_table skipped\nnext: ask Jasper/,
+      /^failed: do step 1\/2 gather \| NO_NATURAL_SOURCE: no reachable natural oak_log within 48m\n 1 gather oak_log 0\/10 failed\n 2 craft crafting_table skipped\nnext: ask Jordan/,
     );
     const cont = v2Host({}, []);
     cont.fake.skillHandler = fake.skillHandler;
@@ -676,7 +676,7 @@ describe('v2 next: hints (§8)', () => {
     let checked = 0;
     for (const meta of metas) {
       for (const code of codes) {
-        const next = hintFor(code, meta, { here: null, playerName: 'Jasper' }) ?? '';
+        const next = hintFor(code, meta, { here: null, playerName: 'Jordan' }) ?? '';
         for (const m of next.matchAll(CALL_RE)) {
           const [, tool = '', json = '{}'] = m;
           if (!reg[tool]) continue;

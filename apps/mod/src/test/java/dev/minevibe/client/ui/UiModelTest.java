@@ -121,6 +121,15 @@ class UiModelTest {
 	}
 
 	@Test
+	void barksNameTheActualPlayer() {
+		assertEquals("BRB, asking Jordan.", Barks.text("brb", "Jordan"));
+		assertEquals("BRB, asking the player.", Barks.text("brb", null));
+		assertEquals("BRB, asking the player.", Barks.text("brb", " "));
+		assertEquals("BRB, asking the player.", Barks.text("brb"));
+		assertEquals("On it!", Barks.text("on_it", "Jordan"));
+	}
+
+	@Test
 	void chatCompletionsListLivingHandlesTheCeoAliasAndBroadcastWords() {
 		UiState state = crew("ada:alive:ceo", "bram", "cleo:dead");
 		assertEquals(List.of("@ada", "@bram", "@ceo", "@all", "@everyone"), ChatCompletions.entriesFor(state.agents()));

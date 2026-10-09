@@ -44,7 +44,7 @@ describe('app restart (same world)', () => {
     await a.manager.command(id, { cmd: 'plan_first', on: false });
     await a.manager.deliverChat({ to: 'all', text: '@ada build a house' });
     await a.until(() => a.texts(q).some((t) => t.includes('build a house')), 'wake');
-    expect(resultText(await q.callTool('mcp__mc__remember', { note: 'Jasper likes spruce' }))).toMatch(
+    expect(resultText(await q.callTool('mcp__mc__remember', { note: 'Jordan likes spruce' }))).toMatch(
       /Remembered/,
     );
     // Sit, then the app stops while seated and while the desk's question is pending.
@@ -71,7 +71,7 @@ describe('app restart (same world)', () => {
     await b.until(() => b.texts(q2).some((t) => t.includes('RESTARTED')), 'restart notice');
     const texts = b.texts(q2);
     expect(texts.find((t) => t.includes('RESTARTED'))).toContain('You are no longer seated at linux-1.');
-    expect(texts.find((t) => t.includes('MEMORY'))).toContain('Jasper likes spruce');
+    expect(texts.find((t) => t.includes('MEMORY'))).toContain('Jordan likes spruce');
     expect(q2.sent.every((m) => m.shouldQuery === false)).toBe(true);
     expect(b.manager.brain(id)?.fsm.state).toBe('wandering');
     // The stale question is re-asked: answering it delivers the answer as a P0 wake.

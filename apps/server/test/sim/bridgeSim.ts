@@ -97,7 +97,7 @@ export class BridgeSim {
   }
 
   /** `hello{boot}`: resolves with `hello.ok` and the `world.open` that follows it. */
-  async boot(playerName = 'Jasper'): Promise<{ helloOk: Received; open: Received }> {
+  async boot(playerName = 'Jordan'): Promise<{ helloOk: Received; open: Received }> {
     const id = `m-${++simSeq}`;
     this.send({ t: 'hello', id, mod: '0.1.0', mc: '26.3', phase: 'boot', playerName });
     const helloOk = await this.next('hello.ok', (m) => m.re === id);

@@ -3,6 +3,7 @@ package dev.minevibe.client.ui;
 import dev.minevibe.bridge.msg.Bodies;
 import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.bridge.protocol.Messages;
+import dev.minevibe.client.ClientSession;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -13,6 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -29,12 +31,14 @@ import org.jspecify.annotations.Nullable;
  * from here: the bridge allows one handler per message type, and this class owns the UI group's pushes.
  */
 public final class UiState {
-	private static final UiState INSTANCE = new UiState(System::currentTimeMillis);
+	private static final UiState INSTANCE = new UiState(System::currentTimeMillis, () -> ClientSession.get().playerName());
 
 	/** At most this many toasts are visible; older ones drop off. */
 	static final int MAX_TOASTS = 5;
 
 	private final LongSupplier clock;
+	/** The local player's name for bark lines ({@code null} while unknown). */
+	private final Supplier<@Nullable String> playerName;
 	private final Map<String, AgentView> agents = new LinkedHashMap<>();
 	private final Map<UUID, String> byUuid = new HashMap<>();
 	private final Map<String, Bubble> bubbles = new HashMap<>();
@@ -46,7 +50,12 @@ public final class UiState {
 	private boolean crewKnown;
 
 	UiState(LongSupplier clock) {
+		this(clock, () -> null);
+	}
+
+	UiState(LongSupplier clock, Supplier<@Nullable String> playerName) {
 		this.clock = clock;
+		this.playerName = playerName;
 	}
 
 	public static UiState get() {
@@ -56,6 +65,11 @@ public final class UiState {
 	/** A fresh, independent state (tests). */
 	public static UiState create(LongSupplier clock) {
 		return new UiState(clock);
+	}
+
+	/** A fresh, independent state that fills bark lines with {@code playerName} (tests). */
+	public static UiState create(LongSupplier clock, Supplier<@Nullable String> playerName) {
+		return new UiState(clock, playerName);
 	}
 
 	public long now() {
@@ -117,7 +131,8 @@ public final class UiState {
 
 	/** {@code agent.say}: the agent's new bubble (barks come from the {@link Barks} table). */
 	public @Nullable Bubble applySay(Messages.AgentSay say) {
-		String text = say.text() != null ? say.text() : say.bark() != null ? Barks.text(say.bark()) : null;
+		String bark = say.bark();
+		String text = say.text() != null ? say.text() : bark != null ? Barks.text(bark, playerName.get()) : null;
 		if (text == null || text.isBlank()) return null;
 		Bubble bubble = new Bubble(say.agentId(), text, say.style(), now(), say.ttlMs());
 		bubbles.put(say.agentId(), bubble);

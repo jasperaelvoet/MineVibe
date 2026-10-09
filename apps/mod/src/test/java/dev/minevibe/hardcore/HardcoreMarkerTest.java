@@ -32,7 +32,7 @@ class HardcoreMarkerTest {
 
 	@Test
 	void roundTripsTheDeath(@TempDir Path world) throws IOException {
-		DeathRecord death = new DeathRecord("world-7", "Jasper was shot by Skeleton", "minecraft:skeleton", 5, 98765L, 1_760_000_000_000L);
+		DeathRecord death = new DeathRecord("world-7", "Jordan was shot by Skeleton", "minecraft:skeleton", 5, 98765L, 1_760_000_000_000L);
 		HardcoreMarker marker = new HardcoreMarker();
 		marker.markDead(death);
 		assertTrue(marker.isDirty());

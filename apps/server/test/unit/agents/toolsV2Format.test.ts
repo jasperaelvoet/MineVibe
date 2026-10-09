@@ -29,7 +29,7 @@ import { JobRegistry } from '../../../src/agents/tools/jobs.js';
 import { progressFor, renderPlan } from '../../../src/agents/tools/mcToolsV2.js';
 import { parsePos, requireTarget, resolveTarget } from '../../../src/agents/tools/targets.js';
 
-const ctx = { here: { x: 5, y: 66, z: -5 }, playerName: 'Jasper' };
+const ctx = { here: { x: 5, y: 66, z: -5 }, playerName: 'Jordan' };
 const gatherMeta: JobMeta = {
   tool: 'gather',
   skill: 'collect',
@@ -81,14 +81,14 @@ describe('v2 result format basics (tools-v2-mc.md §6.2)', () => {
     expect(parsePos('12 64')).toBeNull();
     expect(parsePos({ x: 1, y: 2, z: 3 })).toBeNull();
     const host = {
-      playerName: () => 'Jasper',
+      playerName: () => 'Jordan',
       crewMember: (ref: string) =>
         ref.replace(/^@/, '').toLowerCase() === 'bram'
           ? { agentId: 'bram1a2b', name: 'Bram', handle: 'bram' }
           : null,
     };
     expect(resolveTarget('player', host)).toMatchObject({ kind: 'player', entity: 'player' });
-    expect(resolveTarget('jasper', host)).toMatchObject({ kind: 'player' });
+    expect(resolveTarget('jordan', host)).toMatchObject({ kind: 'player' });
     expect(resolveTarget('@bram', host)).toMatchObject({ kind: 'agent', entity: 'bram1a2b', label: 'Bram' });
     expect(resolveTarget('crafting_table', host)).toMatchObject({ kind: 'place', entity: 'crafting_table' });
     expect(resolveTarget('pc:linux-1', host)).toMatchObject({ kind: 'place', entity: 'pc:linux-1' });
@@ -159,7 +159,7 @@ describe('v2 job results (§5.4, §6.1)', () => {
         'failed: gather oak_log 0/10 | NO_NATURAL_SOURCE: no reachable natural oak_log within 48m',
         ' seen: oak trunk at 9 67 -12, 8m NE, unreachable (no path: wall)',
         ' seen: oak trunk at 6 66 60, 65m S, beyond radius',
-        'next: ask Jasper (AskUserQuestion: go further / use something else / skip). Never take oak_log from buildings.',
+        'next: ask Jordan (AskUserQuestion: go further / use something else / skip). Never take oak_log from buildings.',
         '· HP 20/20',
       ].join('\n'),
     );
@@ -219,13 +219,13 @@ describe('v2 job results (§5.4, §6.1)', () => {
         error: { code: 'PROTECTED', msg: 'player-built' },
         result: {
           protected: [
-            { pos: { x: 6, y: 66, z: -6 }, block: 'minecraft:stripped_spruce_log', owner: 'Jasper' },
+            { pos: { x: 6, y: 66, z: -6 }, block: 'minecraft:stripped_spruce_log', owner: 'Jordan' },
           ],
         },
       },
       ctx,
     );
-    expect(r.details).toEqual(["stripped_spruce_log at 6 66 -6 is Jasper's (player-built)"]);
+    expect(r.details).toEqual(["stripped_spruce_log at 6 66 -6 is Jordan's (player-built)"]);
     expect(r.next).toContain('"Allow"');
     expect(r.next).toContain('repeat this exact call');
     // Right-clicks and menu clicks take consent like every other block-changing skill (DEBT, after-v2 eval): the same
@@ -394,7 +394,7 @@ describe('v2 job results (§5.4, §6.1)', () => {
     expect(failed.next).toContain('AskUserQuestion');
     const wake = wakeText('j2-9', failed);
     expect(wake.startsWith('j2-9 do step 1/2 gather | NO_NATURAL_SOURCE')).toBe(true);
-    expect(wake).toContain('| next: ask Jasper');
+    expect(wake).toContain('| next: ask Jordan');
     expect(wake.length).toBeLessThanOrEqual(400);
   });
 
@@ -422,12 +422,12 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
           mode: 'follow',
           playerDistance: 2.2,
           held: 'minecraft:wheat_seeds',
-          zone: { kind: 'base', name: "Jasper's office" },
+          zone: { kind: 'base', name: "Jordan's office" },
         },
         ctx,
       ),
     ).toBe(
-      "status: HP 20/20 food 20 | day 1 06:15 | 5 66 -5 plains | in Base (Jasper's office) | idle (follow, Jasper 2m) | held wheat_seeds",
+      "status: HP 20/20 food 20 | day 1 06:15 | 5 66 -5 plains | in Base (Jordan's office) | idle (follow, Jordan 2m) | held wheat_seeds",
     );
     expect(
       renderInventory({
@@ -459,7 +459,7 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
           names: (id) => (id === 'bram1' ? { handle: 'bram', name: 'Bram', role: 'miner' } : null),
         },
       ),
-    ).toBe('crew: Jasper 2m | @bram Bram (miner) 42m NE collect 3/20 iron_ore | Cleo seated at linux-1');
+    ).toBe('crew: Jordan 2m | @bram Bram (miner) 42m NE collect 3/20 iron_ore | Cleo seated at linux-1');
     expect(
       renderEvents({
         events: [
@@ -526,7 +526,7 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
             pos: { x: 6, y: 66, z: -6 },
             block: 'minecraft:oak_log',
             provenance: 'player-built',
-            owner: 'Jasper',
+            owner: 'Jordan',
           },
         ],
       },
@@ -538,7 +538,7 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
         'find oak_log (any, ≤48m): 3 found',
         '1. oak tree, trunk ×4 at 9 67 -12, 8m NE, natural, unreachable (no path)',
         '2. oak tree, trunk ×5 at 6 66 24, 29m S, natural, reachable',
-        "3. oak_log at 6 66 -6, 1m NE, Jasper's (player-built), protected",
+        "3. oak_log at 6 66 -6, 1m NE, Jordan's (player-built), protected",
       ].join('\n'),
     );
     expect(found.trees).toEqual({ pos: { x: 9, y: 67, z: -12 }, reachable: false });
@@ -548,7 +548,7 @@ describe('v2 observation renderers (§5.1, §5.2)', () => {
       radius: 48,
     });
     expect(none.text).toBe(
-      'find diamond_ore (natural, ≤48m): none (loaded chunks only)\nnext: find{"target":"diamond_ore","radius":64}, or ask Jasper where to look',
+      'find diamond_ore (natural, ≤48m): none (loaded chunks only)\nnext: find{"target":"diamond_ore","radius":64}, or ask Jordan where to look',
     );
     const cow = renderFind(
       { kind: 'entity', matches: [{ type: 'minecraft:cow', pos: { x: 12, y: 64, z: -3 }, hp: 10 }] },

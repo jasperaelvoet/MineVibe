@@ -92,7 +92,7 @@ function setup(
     handoffs,
     access: () => (seated ? { pcId: 'linux-1', epoch } : null),
     authorName: () => 'Ada',
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     settle: { windowMs: 1_500, pollMs: 1, minMs: 0, maxMs: 20, batchWaitMs: 50 },
     onCompaction: (l) => compaction.push(l),
     ...(options.batch ? { batch: options.batch } : {}),

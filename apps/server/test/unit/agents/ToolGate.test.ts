@@ -46,7 +46,7 @@ function ctx(overrides: Partial<GateContext> & { state?: Parameters<typeof seat>
     trackedMode: 'bypassPermissions',
     plans: new PlanCapture([HOME]),
     turn: { calls: 0, activeMs: 0 },
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     ...rest,
   };
 }

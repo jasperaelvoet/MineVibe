@@ -138,7 +138,7 @@ export interface DeskReportInput {
   readonly playerName: string;
   readonly pcId: string;
   readonly outcome: DeskOutcome;
-  /** Why the sit ended, when the agent did not stand up itself ("Jasper kicked you off linux-1 mid-task."). */
+  /** Why the sit ended, when the agent did not stand up itself ("Jordan kicked you off linux-1 mid-task."). */
   readonly why?: string | null | undefined;
   /** The desk session's last words at this sit (its final text), or null. */
   readonly summary: string | null;

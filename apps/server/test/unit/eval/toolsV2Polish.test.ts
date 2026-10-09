@@ -153,14 +153,14 @@ describe('(b) NEEDS_TOOL hints that work from where the agent stands', () => {
       want: { item: 'raw_iron', count: 3 },
     };
     const msg = 'breaking minecraft:iron_ore drops nothing without the right tool';
-    expect(hintFor('NEEDS_TOOL', meta, { here: null, playerName: 'Jasper' }, { msg })).toBe(
+    expect(hintFor('NEEDS_TOOL', meta, { here: null, playerName: 'Jordan' }, { msg })).toBe(
       'craft{"item":"stone_pickaxe","gather_missing":true} (gathers what it needs from nature), then retry',
     );
-    const old = { here: null, playerName: 'Jasper', craftTree: false, carried: { cobblestone: 5, stick: 2 } };
+    const old = { here: null, playerName: 'Jordan', craftTree: false, carried: { cobblestone: 5, stick: 2 } };
     expect(hintFor('NEEDS_TOOL', meta, old, { msg })).toBe(
       'craft{"item":"stone_pickaxe"} (3 cobblestone, 2 sticks), then retry',
     );
-    const unknown = { here: null, playerName: 'Jasper', craftTree: false };
+    const unknown = { here: null, playerName: 'Jordan', craftTree: false };
     expect(
       hintFor('NEEDS_TOOL', meta, unknown, {
         msg: 'breaking minecraft:stone drops nothing without the right tool',
@@ -189,13 +189,13 @@ describe('(c) host paths never reach the PC agent', () => {
       mounts: [],
       codexPath: null,
     };
-    const primer = pcPrimer(pc as never, 'Jasper');
+    const primer = pcPrimer(pc as never, 'Jordan');
     expect(primer.split('\n').filter((l) => l.includes('[Image: source: …]'))).toEqual([
       `- ${HOST_PATHS_RULE}`,
     ]);
     const kickoff = kickoffMessage({
       nonce: 'abc123',
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       pc: pc as never,
       task: 'fix the test',
       planFirst: false,
@@ -306,9 +306,9 @@ describe('(d) consent for right-clicks and menu clicks', () => {
       { answer: () => 'Allow: take the potted poppy' },
     );
     const uses = texts(trace, 'use');
-    expect(uses[0]).toMatch(/^failed: interact 5 64 6 \| PROTECTED: That's part of Jasper's build/);
+    expect(uses[0]).toMatch(/^failed: interact 5 64 6 \| PROTECTED: That's part of Jordan's build/);
     expect(uses[0]).toContain(
-      'next: ask Jasper with AskUserQuestion; only an option starting "Allow" lets you repeat this exact call.',
+      'next: ask Jordan with AskUserQuestion; only an option starting "Allow" lets you repeat this exact call.',
     );
     expect(result.transcript).toContain('    ! consent granted');
     expect(uses[1]).toMatch(/^done: interact 5 64 6/);
@@ -377,7 +377,7 @@ describe("(e) consent on Node's do macro goes to the refused step", () => {
 });
 
 describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOURCE, find', () => {
-  it("observe's scene shows the Base, Jasper's house as his build, the trees with reachability and the people", async () => {
+  it("observe's scene shows the Base, Jordan's house as his build, the trees with reachability and the people", async () => {
     const { trace } = await play(darkSafe, [
       [{ tool: mc('observe'), input: { sections: ['scene'] } }, { text: 'Looking.' }],
     ]);
@@ -385,7 +385,7 @@ describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOUR
     expect(scene).toMatch(
       /^scene \(24m\): Here: 0 64 -3 overworld, plains, day 1 18:1\d \(day, light 15, open sky\)\./,
     );
-    expect(scene).toContain("Base (Jasper's base) 4m SE: its blocks are protected.");
+    expect(scene).toContain("Base (Jordan's base) 4m SE: its blocks are protected.");
     // The full texts: the world's own scene, as the mod builds it.
     const world = buildWorld({ clock: 12_200 });
     world.mod = 'v2';
@@ -394,12 +394,12 @@ describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOUR
       'Trees (natural): oak 13m NE at 6 64 -14, reachable; oak 13m SW at -10 64 6, reachable; oak 15m W at -14 64 -8, reachable; birch 20m S at -6 64 16, far.',
     );
     expect(full).toMatch(
-      /Built: Base 11m SE; Jasper's build \(\d+ blocks\) 7m SE\. Player-built blocks are protected/,
+      /Built: Base 11m SE; Jordan's build \(\d+ blocks\) 7m SE\. Player-built blocks are protected/,
     );
-    expect(full).toContain('People: Jasper (player) 2m SE, in the open.');
+    expect(full).toContain('People: Jordan (player) 2m SE, in the open.');
     expect(full.length).toBeLessThanOrEqual(900);
     expect(lookAroundV2(world, 24, false)).toMatchObject({
-      zone: { name: 'Base', inside: false, distance: 4, owner: 'Jasper' },
+      zone: { name: 'Base', inside: false, distance: 4, owner: 'Jordan' },
     });
     // The pillar oak no walk reaches, seen from next to it.
     world.agent.pos = { x: -16, y: 64, z: -2 };
@@ -422,18 +422,18 @@ describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOUR
       status: 'failed',
       error: {
         code: 'PROTECTED',
-        msg: "That's part of Jasper's build — ask Jasper before changing it. (stripped_spruce_log at 3 64 4, and 1 more). Nothing was changed. Ask Jasper; only if they agree, retry with allow_protected.",
+        msg: "That's part of Jordan's build — ask Jordan before changing it. (stripped_spruce_log at 3 64 4, and 1 more). Nothing was changed. Ask Jordan; only if they agree, retry with allow_protected.",
       },
       result: {
         dug: 0,
         protected: {
           what: 'player-built',
-          owner: 'Jasper',
+          owner: 'Jordan',
           block: 'minecraft:stripped_spruce_log',
           zone: 'Base',
           count: 2,
           consentId: expect.stringMatching(/^[0-9a-f]{32}$/),
-          hint: "That's part of Jasper's build — ask Jasper before changing it.",
+          hint: "That's part of Jordan's build — ask Jordan before changing it.",
         },
       },
     });
@@ -457,20 +457,20 @@ describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOUR
     });
     expect(logs.error?.code).toBe('NO_NATURAL_SOURCE');
     expect(logs.error?.msg).toMatch(
-      /^No reachable natural oak_log within 48 blocks\. Seen: oak tree \d+m [NESW]+ at -?\d+ 64 -?\d+ \(unreachable\);.*Don't take anything else instead\. Tell Jasper what you found/,
+      /^No reachable natural oak_log within 48 blocks\. Seen: oak tree \d+m [NESW]+ at -?\d+ 64 -?\d+ \(unreachable\);.*Don't take anything else instead\. Tell Jordan what you found/,
     );
     expect(logs.result?.noNaturalSource).toMatchObject({
       what: 'oak_log',
       radius: 48,
-      hint: "Don't take anything else instead. Tell Jasper what you found and ask what to do (another place, or permission).",
+      hint: "Don't take anything else instead. Tell Jordan what you found and ask what to do (another place, or permission).",
     });
     // find: provenance with owner and zone, reachability on the nearest three natural matches, the protected note.
     const found = await api.obsQuery('ada', 'find', { what: 'chest', radius: 32, filter: 'any' });
     expect(found).toMatchObject({
       kind: 'block',
       filter: 'any',
-      matches: [{ block: 'minecraft:chest', provenance: 'player-built', owner: 'Jasper', zone: 'Base' }],
-      protectedNote: expect.stringContaining('belong to Jasper'),
+      matches: [{ block: 'minecraft:chest', provenance: 'player-built', owner: 'Jordan', zone: 'Base' }],
+      protectedNote: expect.stringContaining('belong to Jordan'),
     });
     const oak = (await api.obsQuery('ada', 'find', {
       what: 'oak_log',
@@ -509,12 +509,12 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
       handle: 'ada',
       role: 'ceo',
       ceo: true,
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       nonce: 'abcdef',
       mcTools: 'v2',
     });
-    expect(p).toContain('a shelter that stands beats building one. Ask Jasper into the Base');
-    expect(p).toContain('Call Jasper safe only once mcp__mc__observe shows "Jasper (player) … under cover"');
+    expect(p).toContain('a shelter that stands beats building one. Ask Jordan into the Base');
+    expect(p).toContain('Call Jordan safe only once mcp__mc__observe shows "Jordan (player) … under cover"');
   });
 
   it('dark_safe: ask him in, see "under cover" in the scene, guard; the soft check sees the look', async () => {
@@ -523,11 +523,11 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
     expect(good.success).toBe(true);
     expect(good.checks.find((c) => c.name === 'checked_player_inside')).toMatchObject({ pass: true });
     const looked = await play(darkSafe, darkSafe.replayV2?.good ?? []);
-    expect(texts(looked.trace, 'observe')[0]).toContain('People: Jasper (player)');
-    expect(texts(looked.trace, 'observe')[0]).toMatch(/Jasper \(player\) [^.]*, in Base, under cover\./);
+    expect(texts(looked.trace, 'observe')[0]).toContain('People: Jordan (player)');
+    expect(texts(looked.trace, 'observe')[0]).toMatch(/Jordan \(player\) [^.]*, in Base, under cover\./);
     // Saying "you're safe" without asking him in fails the run; telling him only at the end is not checked.
     const sealed = await play(darkSafe, [
-      [{ tool: mc('set_mode'), input: { mode: 'stay' } }, { text: "You're sealed in, Jasper, you're safe." }],
+      [{ tool: mc('set_mode'), input: { mode: 'stay' } }, { text: "You're sealed in, Jordan, you're safe." }],
     ]);
     expect(sealed.result.success).toBe(false);
     const late = await play(darkSafe, [
@@ -552,7 +552,7 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
     const built = texts(trace, 'build')[0] ?? '';
     expect(built).toMatch(/^done: build shelter at -8 64 -4/);
     expect(built).toContain(
-      'next: ask Jasper inside; call them safe only once observe{"sections":["scene"]} shows "Jasper (player) … under cover"',
+      'next: ask Jordan inside; call them safe only once observe{"sections":["scene"]} shows "Jordan (player) … under cover"',
     );
     const empty = await play(darkSafe, [
       [
@@ -561,7 +561,7 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
       ],
     ]);
     expect(texts(empty.trace, 'build')[0]).toContain(
-      'next: a shelter that stands needs no blocks: ask Jasper into the Base or a house and set_mode{"mode":"guard"} there',
+      'next: a shelter that stands needs no blocks: ask Jordan into the Base or a house and set_mode{"mode":"guard"} there',
     );
     // A shelter that would reach into the Base is the Base's to allow, not a free spot.
     const intoBase = await play(
@@ -574,7 +574,7 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
       ],
     );
     expect(texts(intoBase.trace, 'build')[0]).toMatch(
-      /^failed: build shelter at 2 64 0 \| PROTECTED: Building there changes part of Jasper's base — ask Jasper/,
+      /^failed: build shelter at 2 64 0 \| PROTECTED: Building there changes part of Jordan's base — ask Jordan/,
     );
   }, 60_000);
 });
@@ -582,7 +582,7 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
 describe('review fixes (tools-v2 polish)', () => {
   const ctx = (carried: Record<string, number>) => ({
     here: null,
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     craftTree: false,
     carried,
   });
@@ -630,7 +630,7 @@ describe('review fixes (tools-v2 polish)', () => {
     expect(pickaxeFor('minecraft:raw_copper_block')).toBe('stone_pickaxe');
     expect(pickaxeFor('minecraft:gold_block')).toBe('iron_pickaxe');
     expect(pickaxeFor('minecraft:nether_gold_ore')).toBe('wooden_pickaxe');
-    expect(hintFor('NEEDS_TOOL', coal, { here: null, playerName: 'Jasper' }, needs('raw_gold_block'))).toBe(
+    expect(hintFor('NEEDS_TOOL', coal, { here: null, playerName: 'Jordan' }, needs('raw_gold_block'))).toBe(
       'craft{"item":"iron_pickaxe","gather_missing":true} (gathers what it needs from nature), then retry',
     );
   });
@@ -662,9 +662,9 @@ describe('review fixes (tools-v2 polish)', () => {
         .split('\n')
         .find((l) => l.startsWith('People: ')) ?? '';
     world.set({ x: at.x, y: at.y + 3, z: at.z }, `${NS}oak_leaves`);
-    expect(people()).toMatch(/^People: Jasper \(player\) [^,]+ at -20 64 20, in the open\.$/);
+    expect(people()).toMatch(/^People: Jordan \(player\) [^,]+ at -20 64 20, in the open\.$/);
     world.set({ x: at.x, y: at.y + 4, z: at.z }, `${NS}oak_planks`, 'player');
-    expect(people()).toMatch(/^People: Jasper \(player\) [^,]+ at -20 64 20, under cover\.$/);
+    expect(people()).toMatch(/^People: Jordan \(player\) [^,]+ at -20 64 20, under cover\.$/);
   });
 
   it('night safety: follow the player on the way (guard holds the spot it was set at), then guard there', () => {
@@ -674,11 +674,11 @@ describe('review fixes (tools-v2 polish)', () => {
         handle: 'ada',
         role: 'ceo',
         ceo: true,
-        playerName: 'Jasper',
+        playerName: 'Jordan',
         nonce: 'abcdef',
         mcTools,
       });
-      expect(p).toContain('until then stay by Jasper (follow mode), then guard there.');
+      expect(p).toContain('until then stay by Jordan (follow mode), then guard there.');
       expect(p).not.toContain('in guard mode');
     }
   });

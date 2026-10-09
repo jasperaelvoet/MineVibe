@@ -103,22 +103,22 @@ describe('pc.state (PcInfo)', () => {
 
   it('shows "BRB: asking <player>" while the agent walked over to ask (away reservation only)', () => {
     const away = { occupant: null, reservation: { agentId: 'bram', kind: 'away' as const } };
-    expect(seatBanner(away, 'Jasper', 'bram')).toBe('BRB: asking Jasper');
+    expect(seatBanner(away, 'Jordan', 'bram')).toBe('BRB: asking Jordan');
     expect(seatBanner(away, null, 'bram')).toBe('BRB: asking the player');
     // An away reservation of a meeting pull (no pc.unseat{away}) shows nothing.
-    expect(seatBanner(away, 'Jasper', null)).toBeNull();
+    expect(seatBanner(away, 'Jordan', null)).toBeNull();
     expect(
-      seatBanner({ occupant: null, reservation: { agentId: 'bram', kind: 'coming' } }, 'Jasper', 'bram'),
+      seatBanner({ occupant: null, reservation: { agentId: 'bram', kind: 'coming' } }, 'Jordan', 'bram'),
     ).toBeNull();
     expect(
       seatBanner(
         { occupant: { kind: 'agent', agentId: 'bram', seatEpoch: 1 }, reservation: null },
-        'Jasper',
+        'Jordan',
         'bram',
       ),
     ).toBeNull();
-    const info = toPcInfo(view, rec, { seat: away, diskGiB: 68, banner: seatBanner(away, 'Jasper', 'bram') });
-    expect(info?.banner).toBe('BRB: asking Jasper');
+    const info = toPcInfo(view, rec, { seat: away, diskGiB: 68, banner: seatBanner(away, 'Jordan', 'bram') });
+    expect(info?.banner).toBe('BRB: asking Jordan');
     expect(PcInfo.safeParse(info).success).toBe(true);
   });
 });

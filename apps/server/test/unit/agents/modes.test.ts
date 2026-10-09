@@ -266,7 +266,7 @@ describe('modeForSeat', () => {
 });
 
 describe('MODE banner and persona sections', () => {
-  const input = { nonce: 'abc123', playerName: 'Jasper' };
+  const input = { nonce: 'abc123', playerName: 'Jordan' };
 
   it('is deterministic per mode and carries the control tag, the persona section and the lists', () => {
     for (const v of MC_TOOL_SETS) {
@@ -274,7 +274,7 @@ describe('MODE banner and persona sections', () => {
         const b = modeBanner(m, { ...input, mcTools: v });
         expect(modeBanner(m, { ...input, mcTools: v })).toBe(b);
         expect(b.startsWith(`[MV:abc123 MODE] ${modeProfile(m, v).title}:`)).toBe(true);
-        for (const line of modeSection(m, 'Jasper', v)) expect(b).toContain(line);
+        for (const line of modeSection(m, 'Jordan', v)) expect(b).toContain(line);
         expect(b).toMatch(/\nAvailable now: /);
       }
     }
@@ -308,7 +308,7 @@ describe('MODE banner and persona sections', () => {
     expect(v2).toContain('mcp__mc__observe shows what goes on around you');
     // ExitPlanMode is only for plan-first sessions: the kickoff names it then, the list never does.
     expect(b.split('\n').find((l) => l.startsWith('Available now:'))).not.toContain('ExitPlanMode');
-    expect(b).toContain("Jasper's Vault folders");
+    expect(b).toContain("Jordan's Vault folders");
   });
 
   it('Meeting mode: talk, notes and calendar; everything else waits', () => {
@@ -328,18 +328,18 @@ describe('MODE banner and persona sections', () => {
       handle: 'ada',
       role: 'engineer' as const,
       ceo: false,
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       nonce: 'abc123',
     };
     for (const v of MC_TOOL_SETS) {
       const body = personaPrompt({ ...input, mcTools: v });
       const desk = personaPrompt({ ...input, mcTools: v, session: 'desk' });
       expect(body).toContain('[MV:abc123 MODE]');
-      for (const line of modeSection('wander', 'Jasper', v)) expect(body).toContain(line);
-      for (const line of modeSection('seated', 'Jasper', v)) expect(desk).toContain(line);
-      for (const line of modeSection('seated', 'Jasper', v)) expect(body).not.toContain(line);
-      for (const line of modeSection('wander', 'Jasper', v)) expect(desk).not.toContain(line);
-      for (const line of modeSection('meeting', 'Jasper', v)) {
+      for (const line of modeSection('wander', 'Jordan', v)) expect(body).toContain(line);
+      for (const line of modeSection('seated', 'Jordan', v)) expect(desk).toContain(line);
+      for (const line of modeSection('seated', 'Jordan', v)) expect(body).not.toContain(line);
+      for (const line of modeSection('wander', 'Jordan', v)) expect(desk).not.toContain(line);
+      for (const line of modeSection('meeting', 'Jordan', v)) {
         expect(body).not.toContain(line);
         expect(desk).not.toContain(line);
       }
@@ -357,7 +357,7 @@ function ctx(s: SeatSnapshot, extra: Partial<GateContext> = {}): GateContext {
     trackedMode: 'bypassPermissions',
     plans: new PlanCapture(['/Users/jasper']),
     turn: { calls: 0, activeMs: 0 },
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     ...extra,
   };
 }

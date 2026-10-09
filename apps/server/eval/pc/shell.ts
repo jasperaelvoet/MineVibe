@@ -849,7 +849,7 @@ export class Shell {
       }
       case 'show':
         return {
-          out: 'commit a41c9e2\nAuthor: Jasper <jasper@example.com>\n\n    Add total() with discounts\n',
+          out: 'commit a41c9e2\nAuthor: Jordan <jordan@example.com>\n\n    Add total() with discounts\n',
           err: '',
           code: 0,
         };

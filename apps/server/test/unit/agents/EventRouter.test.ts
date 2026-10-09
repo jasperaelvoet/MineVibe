@@ -59,7 +59,7 @@ describe('EventRouter wake table (PLAN §6.5)', () => {
 
   it('player HP < 30% wakes only the Guard and the nearest wandering agent within 32 blocks; debounced 60 s', () => {
     let t = 0;
-    const r = new EventRouter({ now: () => t, playerName: () => 'Jasper' });
+    const r = new EventRouter({ now: () => t, playerName: () => 'Jordan' });
     const crew = [
       agent({ agentId: 'guard-1', role: 'guard', playerDistance: 50 }),
       agent({ agentId: 'near-1', playerDistance: 10 }),

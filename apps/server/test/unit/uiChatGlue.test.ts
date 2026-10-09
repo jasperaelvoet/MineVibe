@@ -55,7 +55,7 @@ const calendar: PendingCard = { ...base, kind: 'calendar', id: 'c-1', eventId: '
 const router = new ChatRouter();
 function route(text: string, cards: PendingCard[]): RouteOk {
   const ctx = chatContextFrom({
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     agents: [summary('ada', { ceo: true }), summary('bram', { seatedPc: 'linux-1' })],
     cards: new Map([['ada', cards]]),
   });
@@ -83,7 +83,7 @@ describe('chat glue', () => {
     });
     expect(toGrammarCard(calendar)).toBeNull();
     const ctx = chatContextFrom({
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       agents: [summary('ada'), summary('bram', { seatedPc: 'linux-1', status: 'dead' })],
       cards: new Map([
         ['ada', [calendar]],

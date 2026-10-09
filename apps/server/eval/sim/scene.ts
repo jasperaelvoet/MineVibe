@@ -1,8 +1,8 @@
 /**
  * `look_around` of the simulated W1 mod: a port of the mod's `dev.minevibe.agent.perception.Scene` over the
  * simulated world, so the v2 eval measures the scene the agents really read. The lines, most important first: where
- * the agent is (`Here:`), the zone (`Inside Base (...)` or `Base (Jasper's base) 7m SE`), hazards, natural trees with
- * reachability, what players and agents built (`Built: Base 3m SE; Jasper's build (152 blocks) 4m SE.`), the people
+ * the agent is (`Here:`), the zone (`Inside Base (...)` or `Base (Jordan's base) 7m SE`), hazards, natural trees with
+ * reachability, what players and agents built (`Built: Base 3m SE; Jordan's build (152 blocks) 4m SE.`), the people
  * (the player with whether they stand in a zone and under cover), water and ores, the ground; `full` adds workstations.
  * `brief` stays within 900 characters, `full` within 2500. The result carries `zone` and `trees` as data, like the mod.
  *

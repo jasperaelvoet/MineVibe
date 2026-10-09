@@ -53,12 +53,12 @@ const TOKEN = '3f9c2a7be41d08c65a9e0b7d21c4f8e1';
 const PROTECTED = {
   pos: { x: 102, y: 64, z: -37 },
   what: 'base' as const,
-  owner: 'Jasper',
+  owner: 'Jordan',
   block: 'minecraft:stripped_spruce_log',
   zone: 'Base',
   count: 4,
   consentId: TOKEN,
-  hint: "That's part of Jasper's base — ask Jasper before changing it.",
+  hint: "That's part of Jordan's base — ask Jordan before changing it.",
 };
 
 function mcHost(consents?: ConsentLedger, extra: Partial<McHost> = {}) {
@@ -68,14 +68,14 @@ function mcHost(consents?: ConsentLedger, extra: Partial<McHost> = {}) {
     clockTime: () => 30_000,
     positionOf: () => ({ pos: { x: 10, y: 64, z: -3 }, dim: 'minecraft:overworld' }),
     isCeo: () => true,
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
   });
   const host: McHost = {
     agentId: 'ada-1',
     skills,
     org,
     actor: () => agentActor('ada-1', true),
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     footer: () => '[footer]',
     here: () => ({ pos: { x: 10, y: 64, z: -3 }, dim: 'minecraft:overworld' }),
     clockTime: () => 30_000,
@@ -138,7 +138,7 @@ describe('mc tools and consent (W1)', () => {
     const refused = await call(reg, 'mine', { block: 'stripped_spruce_log', count: 1 });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('PROTECTED');
-    expect(refused.text).toContain('ask Jasper before changing it');
+    expect(refused.text).toContain('ask Jordan before changing it');
     expect(refused.text).not.toContain(TOKEN);
     // AgentManager notes every PROTECTED job end (here by hand).
     ledger.noteRefusal('ada-1', refusalOf({ protected: PROTECTED }));
@@ -181,7 +181,7 @@ describe('mc tools and consent (W1)', () => {
   it('look_around reads as the scene text; find and the skills take the new arguments', async () => {
     const { reg, skills } = mcHost();
     skills.observations.set('look_around', {
-      scene: "Here: 1 64 2 overworld.\nInside Base (Jasper's base): never break or change its blocks.",
+      scene: "Here: 1 64 2 overworld.\nInside Base (Jordan's base): never break or change its blocks.",
       detail: 'brief',
       footer: 'HP 20/20 food 20 | day 1 06:00 | 1 64 2 overworld | in Base | idle (follow)',
     });
@@ -209,7 +209,7 @@ describe("the mod's perception through Node", () => {
             pos: { x: 3, y: 64, z: 0 },
             block: 'minecraft:stripped_spruce_log',
             provenance: 'base',
-            owner: 'Jasper',
+            owner: 'Jordan',
             zone: 'Base',
           },
           {
@@ -226,9 +226,9 @@ describe("the mod's perception through Node", () => {
             reachable: 'reachable',
           },
         ],
-        protectedNote: 'Matches marked player-built or base belong to Jasper.',
+        protectedNote: 'Matches marked player-built or base belong to Jordan.',
       },
-      { here: { x: 0, y: 64, z: 0 }, base: null, playerName: 'Jasper' },
+      { here: { x: 0, y: 64, z: 0 }, base: null, playerName: 'Jordan' },
     );
     expect(seen.text).toContain('stripped_spruce_log 3m E at 3 64 0: PROTECTED (part of the Base)');
     expect(seen.text).toContain('built by the crew (yours to take back)');
@@ -294,11 +294,11 @@ describe('status footer and persona (W1)', () => {
       handle: 'ada',
       role: 'ceo',
       ceo: true,
-      playerName: 'Jasper',
+      playerName: 'Jordan',
       nonce: 'abc123',
     });
     expect(text).toContain('mcp__mc__look_around');
-    expect(text).toContain('Never break, replace or take blocks of the Base or anything Jasper built');
+    expect(text).toContain('Never break, replace or take blocks of the Base or anything Jordan built');
     expect(text).toContain('NO_NATURAL_SOURCE');
     expect(text).toContain('instead of taking something else');
     expect(text).toContain('logs come from trees, not from walls');

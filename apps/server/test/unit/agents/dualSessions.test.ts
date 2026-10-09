@@ -303,7 +303,7 @@ describe('handoffs', () => {
       text: 'Half done; see TODO.md',
     });
     await wake(w, q, 'the parser test fails, please fix it');
-    expect(resultText(await q.callTool('mcp__mc__remember', { note: 'Jasper wants small commits' }))).toBe(
+    expect(resultText(await q.callTool('mcp__mc__remember', { note: 'Jordan wants small commits' }))).toBe(
       'Remembered.',
     );
     await w.manager.deliverChat({ to: 'all', text: '@ada and use tabs, not spaces' });
@@ -314,14 +314,14 @@ describe('handoffs', () => {
       kickoff.startsWith(`[MV:${nonce} KICKOFF] You are seated at linux-1 (linux, linux, screen 1280x800).`),
     ).toBe(true);
     expect(kickoff).toContain(
-      "Jasper's Vault folders (same absolute path inside the PC):\n- /Users/jasper/Code/foo (read-write)",
+      "Jordan's Vault folders (same absolute path inside the PC):\n- /Users/jasper/Code/foo (read-write)",
     );
     expect(kickoff).toContain('Your task: fix the parser test');
     expect(kickoff).toContain(
-      'What Jasper said to you lately (oldest first, word for word):\n- Jasper: the parser test fails, please fix it\n- Jasper: and use tabs, not spaces',
+      'What Jordan said to you lately (oldest first, word for word):\n- Jordan: the parser test fails, please fix it\n- Jordan: and use tabs, not spaces',
     );
     expect(kickoff).toContain('author="your own memory" kind="memory"');
-    expect(kickoff).toContain('Jasper wants small commits');
+    expect(kickoff).toContain('Jordan wants small commits');
     expect(kickoff).toContain(`[MV:${nonce} CODEX DIGEST] The Codex has 1 page(s).`);
     expect(kickoff).toContain('Build notes (howto)');
     expect(kickoff).toContain('author="Bram (agent)" kind="handoff"');
@@ -387,8 +387,8 @@ describe('handoffs', () => {
     d.result({ subtype: 'error_during_execution', is_error: true, num_turns: 0 });
     await w.until(() => w.texts(q).some((t) => t.includes('DESK REPORT')), 'report');
     const report = w.texts(q).find((t) => t.includes('DESK REPORT')) ?? '';
-    expect(report).toContain('(outcome: kicked). Jasper kicked you off linux-1 mid-task.');
-    expect(report).toContain('Ask Jasper what they want, or do something else.');
+    expect(report).toContain('(outcome: kicked). Jordan kicked you off linux-1 mid-task.');
+    expect(report).toContain('Ask Jordan what they want, or do something else.');
     expect(w.events.some((e) => e.type === 'say' && (e.payload as { bark?: string }).bark === 'kicked')).toBe(
       true,
     );

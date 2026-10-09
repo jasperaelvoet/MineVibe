@@ -4,7 +4,7 @@
   "re": "m-1",
   "server": { "version": "0.0.0", "protocol": 1 },
   "world": { "id": "world-7", "gen": 7, "fresh": false },
-  "player": { "name": "Jasper" },
+  "player": { "name": "Jordan" },
   "settings": { "mirrorAgentRepliesToChat": false },
   "pcs": [],
   "budget": null,

@@ -109,7 +109,7 @@ function recordingModules(): Recorded {
 
 /** The default script: a turn that asks for logs mines them; anything else gets a short answer. */
 const defaultScript: TurnScript = (text) => {
-  if (/LAST WORDS/.test(text)) return [{ say: 'Goodbye, Jasper.' }];
+  if (/LAST WORDS/.test(text)) return [{ say: 'Goodbye, Jordan.' }];
   if (/MEETING/.test(text)) return [{ say: 'Mined logs today. Next I build a hut. Then more.' }];
   // A whole word: every first turn opens with the "Minecraft mode" banner (agents/modes.ts).
   if (/\bmine\b/i.test(text))
@@ -118,7 +118,7 @@ const defaultScript: TurnScript = (text) => {
       { tool: { name: 'mcp__mc__gather', input: { item: 'oak_log', count: 3 } } },
       { say: 'Got 3 oak logs.' },
     ];
-  return [{ say: 'Hello Jasper.' }];
+  return [{ say: 'Hello Jordan.' }];
 };
 
 async function start(
@@ -219,7 +219,7 @@ describe('startRuntime composition', () => {
     expect(mods.calls.filter((c) => c.includes('.open:'))).toHaveLength(2);
     expect(sim.sent('agent.spawn')).toHaveLength(1);
     // The welcome turn's text became a bubble and a transcript line.
-    expect(sim.sent('agent.say').some((m) => m.agentId === id && m.text === 'Hello Jasper.')).toBe(true);
+    expect(sim.sent('agent.say').some((m) => m.agentId === id && m.text === 'Hello Jordan.')).toBe(true);
     expect(sim.sent('crew.state').at(-1)).toMatchObject({
       crew: [{ agentId: id, ceo: true, status: 'alive' }],
     });
@@ -256,7 +256,7 @@ describe('startRuntime composition', () => {
     const id = await bootWorld1(sim, runtime, brain);
     const died = await sim.request('player.died', {
       worldId: 'world-1',
-      cause: 'Jasper fell',
+      cause: 'Jordan fell',
       day: 2,
       ticksAlive: 900,
     });
@@ -271,15 +271,15 @@ describe('startRuntime composition', () => {
     });
     await runtime.settled();
     expect(brain.turns.some((t) => t.text.includes('LAST WORDS'))).toBe(true);
-    expect(sim.sent('agent.say').some((m) => m.text === 'Goodbye, Jasper.')).toBe(true);
+    expect(sim.sent('agent.say').some((m) => m.text === 'Goodbye, Jordan.')).toBe(true);
     expect(mods.calls.slice(-2)).toEqual(['pc.ended:world-1', 'org.ended:world-1']);
     expect(runtime.ctx.world()).toBeNull();
     expect(runtime.agents?.manager.world).toBeNull();
     // The world's crew file stays as its archive, marked ended.
     const crew = JSON.parse(readFileSync(join(dir, 'worlds', 'world-1', 'crew.json'), 'utf8'));
-    expect(crew.ended).toMatchObject({ day: 2, cause: 'Jasper fell' });
+    expect(crew.ended).toMatchObject({ day: 2, cause: 'Jordan fell' });
     // A re-send of player.died for the ended world ends nothing twice.
-    await sim.request('player.died', { worldId: 'world-1', cause: 'Jasper fell', day: 2, ticksAlive: 900 });
+    await sim.request('player.died', { worldId: 'world-1', cause: 'Jordan fell', day: 2, ticksAlive: 900 });
     await runtime.settled();
     expect(mods.calls.filter((c) => c.startsWith('org.ended:'))).toHaveLength(1);
 
@@ -448,7 +448,7 @@ describe('brainless end-to-end (scripted brain)', () => {
     const say = await sim.next('agent.say', (m) => m.agentId === id && m.text === 'Got 3 oak logs.');
     expect(say).toMatchObject({ style: 'speech' });
     const turn = brain.turns.find((t) => t.text.includes('please mine 3 oak logs'));
-    expect(turn?.text).toContain('Jasper: please mine 3 oak logs');
+    expect(turn?.text).toContain('Jordan: please mine 3 oak logs');
     // AgentScreen's transcript has the player line, the activity and the answer.
     const history = await sim.request('chat.history', { agentId: id, limit: 50 });
     const kinds = (history.entries as Array<{ kind: string; text: string }>).map(

@@ -37,6 +37,7 @@ import type {
 } from '../contracts/CrewApi.js';
 import { ApiError } from '../contracts/common.js';
 import { type FakeAgentInit, FakeCrewApi } from '../contracts/FakeCrewApi.js';
+import { DEFAULT_PLAYER_NAME } from '../launcher/settings.js';
 import { chatContextFrom, findCard, toCrewCardAnswer } from './chatGlue.js';
 
 export const SCRIPTED_AGENTS: readonly FakeAgentInit[] = [
@@ -63,7 +64,7 @@ export interface ScriptedCrewOptions {
   /** Time between "thinking" and the reply (default 1200 ms). */
   readonly replyDelayMs?: number;
   readonly agents?: readonly FakeAgentInit[];
-  /** The player's name, for the router's handle rules. */
+  /** The player's name (from `hello`), for the router's handle rules; default the launcher's default name. */
   readonly playerName?: () => string;
   /** Lets the crew ask the mod for bodies (`agent.spawn`) and idle modes (`agent.mode`). */
   readonly bridge?: Pick<BridgeServer, 'request' | 'on'>;
@@ -109,7 +110,7 @@ export class ScriptedCrew extends FakeCrewApi {
     this.#log = options.logger;
     this.#clock = now;
     this.#replyDelayMs = options.replyDelayMs ?? 1200;
-    this.#playerName = options.playerName ?? (() => 'Jasper');
+    this.#playerName = options.playerName ?? (() => DEFAULT_PLAYER_NAME);
     this.#bridge = options.bridge;
     this.#onBrains = options.onBrains;
     this.#schedule =

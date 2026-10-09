@@ -64,7 +64,7 @@ const crew: ChatAgent[] = [
 ];
 
 function ctx(extra: Partial<ChatContext> = {}): ChatContext {
-  return { playerName: 'Jasper', crew, cards: new Map(), meeting: null, ...extra };
+  return { playerName: 'Jordan', crew, cards: new Map(), meeting: null, ...extra };
 }
 
 const router = new ChatRouter();

@@ -79,12 +79,12 @@ function protectedDetail() {
   return {
     pos: PILLAR,
     what: 'base',
-    owner: 'Jasper',
+    owner: 'Jordan',
     block: 'minecraft:stripped_spruce_log',
     zone: 'Base',
     count: 1,
     consentId: TOKEN,
-    hint: "That's part of Jasper's base — ask Jasper before changing it.",
+    hint: "That's part of Jordan's base — ask Jordan before changing it.",
   };
 }
 
@@ -107,19 +107,19 @@ describe('world context on the agent runtime', () => {
     const { w, id, q } = await officeWorld();
     const welcome = w.texts(q).find((t) => t.includes('WELCOME')) ?? '';
     expect(welcome).toContain(
-      'The Base (office) is Jasper\'s home (Codex page "Base (office)", door at 6 65 9). Never break or take its blocks',
+      'The Base (office) is Jordan\'s home (Codex page "Base (office)", door at 6 65 9). Never break or take its blocks',
     );
     await wake(w, q, 'collect 10 oak logs and make a crafting table');
     const turn = w.texts(q).find((t) => t.includes('collect 10 oak logs')) ?? '';
     const nonce = w.manager.brain(id)?.record.nonce ?? '';
     expect(turn).toContain(
-      `[MV:${nonce} DIGEST] Scene: D2 07:40 · in Base (office) · Jasper 4m · no threats.`,
+      `[MV:${nonce} DIGEST] Scene: D2 07:40 · in Base (office) · Jordan 4m · no threats.`,
     );
     expect(turn.indexOf('DIGEST')).toBeLessThan(turn.indexOf('collect 10 oak logs'));
     // The persona carries the world primer.
     const append = (q.options.systemPrompt as { append?: string }).append ?? '';
     expect(append).toContain('## The world');
-    expect(append).toContain("The Base (the office you start in) is Jasper's home.");
+    expect(append).toContain("The Base (the office you start in) is Jordan's home.");
   });
 
   it('a refused job, then an "Allow" option on the card: consent for exactly those blocks on the next job', async () => {
@@ -217,7 +217,7 @@ describe('world context on the agent runtime', () => {
     expect(w.manager.consents.active(id)).toBeNull();
     const nonce = w.manager.brain(id)?.record.nonce ?? '';
     await w.until(
-      () => w.texts(q).some((t) => t.includes(`[MV:${nonce} CONSENT] Jasper's reply did not allow`)),
+      () => w.texts(q).some((t) => t.includes(`[MV:${nonce} CONSENT] Jordan's reply did not allow`)),
       'unclear notice',
     );
     // A model-written "Allow" option that names something else unlocks nothing either; the player gets a toast.

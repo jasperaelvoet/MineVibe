@@ -648,7 +648,7 @@ describe('status footer contract (protocol §7.3)', () => {
       skills,
       org: new FakeOrgApi(),
       actor: () => agentActor('ada-1', true),
-      playerName: () => 'Jasper',
+      playerName: () => 'Jordan',
       footer: () => footer,
       here: () => null,
       clockTime: () => 0,

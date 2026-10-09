@@ -1,7 +1,7 @@
 /**
  * The agent's one-line scene (PLAN §6.5 "Layer 2: Digest"), prepended to every turn with the Digest:
  *
- *   `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no threats`
+ *   `D2 07:40 · in Base (office) · trees 20m NE · Jordan 4m · no threats`
  *
  * Built at zero tokens from what Node already has: the overworld clock (`world.state`), the agent's body
  * (`agent.state`, its `zone` included), the Base (`world.state.office`) and the nearest natural trees the agent saw in
@@ -96,7 +96,7 @@ function zoneName(name: string | undefined): string | null {
   return flat.length > 0 ? flat : null;
 }
 
-/** Where the body is: "in Base (office)", "outside, Base 34m SW", "by Jasper's builds", "in the_nether". */
+/** Where the body is: "in Base (office)", "outside, Base 34m SW", "by Jordan's builds", "in the_nether". */
 export function whereText(body: AgentBody, base: BaseArea | null, playerName: string): string | null {
   if (body.dim !== OVERWORLD) {
     const dim = body.dim.includes(':') ? body.dim.slice(body.dim.indexOf(':') + 1) : body.dim;

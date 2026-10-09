@@ -100,7 +100,7 @@ describe('live brain smoke (subscription)', () => {
       agentEnv: () => agentEnv({ version: SERVER_VERSION, source: env }),
       worldsDir: join(dir, 'worlds'),
       stateDir: join(dir, 'state'),
-      playerName: () => 'Jasper',
+      playerName: () => 'Jordan',
       log: pino({ level: env.MINEVIBE_LOG_LEVEL ?? 'warn' }),
       queryFactory: factory,
       chatDebounceMs: 0,

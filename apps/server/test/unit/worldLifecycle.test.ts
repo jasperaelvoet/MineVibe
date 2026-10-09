@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BridgeServer } from '../../src/bridge/BridgeServer.js';
+import { DEFAULT_PLAYER_NAME } from '../../src/launcher/settings.js';
 import { silentLogger } from '../../src/log.js';
 import { type CurrentWorldRecord, CurrentWorldStore } from '../../src/world/currentWorld.js';
 import { buryWorldSave } from '../../src/world/graveyard.js';
@@ -61,13 +62,37 @@ function lifecycle(store: CurrentWorldStore, onWorldEnded?: WorldLifecycleOption
     store,
     logger: silentLogger(),
     serverVersion: 'test',
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     ...(onWorldEnded ? { onWorldEnded } : {}),
   });
   return { lc, ...fake };
 }
 
 const onDisk = (path: string) => JSON.parse(readFileSync(path, 'utf8')) as CurrentWorldRecord;
+
+describe('WorldLifecycle: the player name', () => {
+  it("starts from the launcher's default and takes the real name from hello", async () => {
+    const store = new CurrentWorldStore(join(tmp(), 'state', 'current-world.json'));
+    await store.load();
+    const fake = fakeBridge();
+    const lc = new WorldLifecycle({
+      bridge: fake.bridge,
+      store,
+      logger: silentLogger(),
+      serverVersion: 'test',
+      playerName: DEFAULT_PLAYER_NAME,
+    });
+    await lc.whenRecovered();
+    expect(lc.playerName).toBe('Player');
+    await fake.call('hello', { id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jordan' });
+    expect(lc.playerName).toBe('Jordan');
+    expect(fake.sent.find((s) => s.t === 'hello.ok')?.payload).toMatchObject({ player: { name: 'Jordan' } });
+    // A hello without a name keeps the one already known.
+    await fake.call('hello', { id: 'm-2', mod: '0.1.0', mc: '26.3', phase: 'boot' });
+    expect(lc.playerName).toBe('Jordan');
+    lc.dispose();
+  });
+});
 
 describe('WorldLifecycle: durable world endings (DEBT N3)', () => {
   it('saves the advance with the dead world listed as unburied, and clears it once the hook is done', async () => {

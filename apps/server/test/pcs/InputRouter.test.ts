@@ -59,7 +59,7 @@ function fakeClient(options: { failPointer?: (json: Record<string, unknown>) => 
   };
 }
 
-const player = { kind: 'player' as const, id: 'jasper' };
+const player = { kind: 'player' as const, id: 'jordan' };
 const ada = { kind: 'agent' as const, id: 'ada' };
 
 const move = (x: number, y: number) => ({ k: 'move', x, y });

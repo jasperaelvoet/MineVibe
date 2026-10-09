@@ -62,7 +62,7 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-const hello = { t: 'hello', v: 1, id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jasper' };
+const hello = { t: 'hello', v: 1, id: 'm-1', mod: '0.1.0', mc: '26.3', phase: 'boot', playerName: 'Jordan' };
 
 /** Boots into World #1, dies there and waits for Node's ack and world.next{world-2}. */
 async function dieInWorld1(mod: ModClient): Promise<void> {
@@ -107,7 +107,7 @@ describe('dev server', () => {
       re: 'm-1',
       server: { protocol: 1 },
       world: { id: 'world-1', gen: 1, fresh: true },
-      player: { name: 'Jasper' },
+      player: { name: 'Jordan' },
       crew: [],
       pending: [],
     });
@@ -166,7 +166,7 @@ describe('dev server', () => {
       v: 1,
       id: 'd-1',
       worldId: 'world-1',
-      cause: 'Jasper burned',
+      cause: 'Jordan burned',
       day: 2,
       ticksAlive: 30000,
     };
@@ -180,7 +180,7 @@ describe('dev server', () => {
         worldId: 'world-1',
         gen: 1,
         day: 2,
-        cause: 'Jasper burned',
+        cause: 'Jordan burned',
         crewFates: [],
         vaultCommits: [],
       },

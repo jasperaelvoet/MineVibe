@@ -75,7 +75,7 @@ describe('plan-first: plan mode, PlanCapture and the plan card (desk session)', 
     );
     expect(await exiting).toMatchObject({
       kind: 'denied',
-      reason: expect.stringMatching(/Jasper wants changes to the plan: use tabs, not spaces/),
+      reason: expect.stringMatching(/Jordan wants changes to the plan: use tabs, not spaces/),
     });
     expect(w.manager.brain(id)?.trackedMode).toBe('plan');
     // Read-only in plan mode, except the plan file; bash is allowed with the read-only note.

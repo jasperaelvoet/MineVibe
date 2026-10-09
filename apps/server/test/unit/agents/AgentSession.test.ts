@@ -127,7 +127,7 @@ describe('AgentSession', () => {
       onRateLimit: (i) => seen.push(`rate:${i.status}`),
       onAssistantError: (e) => seen.push(`error:${e}`),
     });
-    q.assistantText('Hello Jasper. I will mine.');
+    q.assistantText('Hello Jordan. I will mine.');
     q.assistantToolUse('mcp__mc__mine', { block: 'oak_log', count: 3 });
     q.emit({
       type: 'assistant',
@@ -145,7 +145,7 @@ describe('AgentSession', () => {
     q.assistantError('rate_limit');
     await settle();
     expect(seen).toEqual([
-      'text:Hello Jasper. I will mine.',
+      'text:Hello Jordan. I will mine.',
       'tool:mcp__mc__mine',
       'rate:allowed',
       'error:rate_limit',
@@ -247,8 +247,8 @@ describe('startup assertions (PLAN §6.1)', () => {
     const account = {
       subscriptionType: 'Claude Max',
       apiProvider: 'firstParty' as const,
-      email: 'jasper@example.com',
-      organization: "jasper@example.com's Organization",
+      email: 'jordan@example.com',
+      organization: "jordan@example.com's Organization",
     };
     const q = { accountInfo: async () => account, supportedModels: async () => FAKE_MODELS };
     const seen: unknown[] = [];

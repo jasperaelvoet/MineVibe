@@ -423,7 +423,7 @@ describe('Linux PC on Apple container', () => {
     });
     const b = await findWindow('mvterm');
     const router: InputRouter = manager.createInputRouter();
-    const player = { kind: 'player' as const, id: 'jasper' };
+    const player = { kind: 'player' as const, id: 'jordan' };
     router.setOccupant(ID, player);
     router.setDisplay(ID, 1280, 800);
     const cx = Math.round(b.x + b.width / 2);

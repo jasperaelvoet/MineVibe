@@ -77,7 +77,7 @@ function persona(version: McToolsVersion, session: SessionKind): string {
     handle: 'ada',
     role: 'ceo',
     ceo: true,
-    playerName: 'Jasper',
+    playerName: 'Jordan',
     nonce: 'abc123',
     mcTools: version,
     session,
@@ -235,7 +235,7 @@ async function sessionReport(version: McToolsVersion, session: SessionKind) {
 async function report(version: McToolsVersion) {
   const out: Record<string, unknown> = {};
   for (const session of SESSIONS) out[session] = await sessionReport(version, session);
-  const banner = modeBanner('meeting', { nonce: 'abc123', playerName: 'Jasper', mcTools: version });
+  const banner = modeBanner('meeting', { nonce: 'abc123', playerName: 'Jordan', mcTools: version });
   out.meetingBanner = { chars: banner.length, approxTokens: approx(banner.length) };
   return out;
 }

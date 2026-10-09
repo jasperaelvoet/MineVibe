@@ -165,7 +165,7 @@ describe('launcher settings', () => {
     const s = await loadLauncherSettings(dir, {}, (m) => warnings.push(m));
     expect(s).toEqual({ playerName: 'Player', optionalMods: ['iris'], maxMemoryMb: 6144 });
     expect(warnings).toEqual(['settings.playerName is invalid; using the default']);
-    expect((await loadLauncherSettings(dir, { MINEVIBE_PLAYER_NAME: 'Jasper' })).playerName).toBe('Jasper');
+    expect((await loadLauncherSettings(dir, { MINEVIBE_PLAYER_NAME: 'Jordan' })).playerName).toBe('Jordan');
   });
 });
 

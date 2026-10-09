@@ -7,7 +7,7 @@
     "worldId": "world-7",
     "gen": 7,
     "day": 5,
-    "cause": "Jasper was shot by Skeleton",
+    "cause": "Jordan was shot by Skeleton",
     "killer": "minecraft:skeleton",
     "crewFates": [
       { "agentId": "ada", "name": "Ada", "role": "ceo", "fate": "lost_with_world" },

@@ -30,7 +30,7 @@ async function freshWorld(): Promise<Harness & { ceoId: string }> {
   const q = h.query(0);
   await h.until(() => h?.texts(q).some((t) => t.includes('WELCOME')) ?? false, 'welcome');
   q.init();
-  q.assistantText('Hello Jasper! I am Ada, ready when you are.');
+  q.assistantText('Hello Jordan! I am Ada, ready when you are.');
   q.result();
   await h.until(() => h?.manager.brain(ceoId)?.status === 'idle', 'idle');
   return Object.assign(h, { ceoId });
@@ -126,16 +126,16 @@ describe('AgentManager: world lifecycle', () => {
   it('player death: last words for the CEO off the scheduler, barks for others, sessions closed, Chronicle written', async () => {
     const w = await freshWorld();
     const q = w.query(0);
-    const done = w.manager.playerDied({ cause: 'Jasper was slain by a Zombie', day: 4 });
+    const done = w.manager.playerDied({ cause: 'Jordan was slain by a Zombie', day: 4 });
     await w.until(() => w.texts(q).some((t) => t.includes('LAST WORDS')), 'last words');
     expect(q.sent.at(-1)).toMatchObject({ priority: 'now' });
-    q.assistantText('Goodbye, Jasper.');
+    q.assistantText('Goodbye, Jordan.');
     q.result();
     await done;
     expect(q.closed).toBe(true);
     expect(w.manager.world).toBeNull();
     expect(await w.manager.chronicle.paragraph()).toMatch(
-      /World #1: ended on Day 4: Jasper was slain by a Zombie\. Crew: Ada \(CEO\) was lost with the world/,
+      /World #1: ended on Day 4: Jordan was slain by a Zombie\. Crew: Ada \(CEO\) was lost with the world/,
     );
   });
 });
@@ -154,7 +154,7 @@ describe('AgentManager: chat and wakes', () => {
       deliveries: [{ agentId: w.ceoId, mode: 'wake', queued: false }],
     });
     expect(res.echo).toBe('You → Ada: get 10 logs and make a crafting table');
-    await w.until(() => w.texts(q).some((t) => t.startsWith('Jasper: get 10 logs')), 'wake');
+    await w.until(() => w.texts(q).some((t) => t.startsWith('Jordan: get 10 logs')), 'wake');
     expect(w.manager.brain(w.ceoId)?.status).toBe('thinking');
     expect(w.manager.scheduler.grantOf(w.ceoId)?.lane).toBe('interactive');
   });
@@ -315,7 +315,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
       reason: 'iron for tools',
       first_task: 'mine 10 iron ore',
     });
-    expect(resultText(out)).toMatch(/Asked Jasper to hire Bram \(miner\)/);
+    expect(resultText(out)).toMatch(/Asked Jordan to hire Bram \(miner\)/);
     q.result();
     await w.until(() => w.manager.brain(w.ceoId)?.status === 'idle', 'idle');
     const card = w.manager.pendingCards()[0];
@@ -366,7 +366,7 @@ describe('AgentManager: hires, dismissal, death and succession', () => {
     await w.until(() => w.texts(bq).some((t) => t.includes('WELCOME')), 'bram welcome');
     bq.init();
     expect(w.texts(bq).find((t) => t.includes('WELCOME'))).toContain(
-      'First task (approved by Jasper): mine 10 iron ore',
+      'First task (approved by Jordan): mine 10 iron ore',
     );
     await w.until(() => w.texts(w.query(0)).some((t) => t.includes('HIRE APPROVED')), 'ceo wake');
     // Hiring is CEO-only (gate) and capped.
@@ -507,7 +507,7 @@ describe('AgentManager: commands and usage', () => {
       isApiError(e, 'FORBIDDEN'),
     );
     const history = await w.manager.chatHistory(w.ceoId, { limit: 50 });
-    expect(history.entries.some((e) => e.kind === 'agent' && e.text.includes('Hello Jasper'))).toBe(true);
+    expect(history.entries.some((e) => e.kind === 'agent' && e.text.includes('Hello Jordan'))).toBe(true);
   });
 
   it('a rejected rate limit puts the crew to sleep and the echo says when it wakes', async () => {

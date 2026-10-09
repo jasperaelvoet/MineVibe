@@ -71,7 +71,7 @@ function event(over: Partial<CalendarEvent> = {}): CalendarEvent {
     location: 'farm',
     task: 'Harvest and replant.',
     createdBy: 'player',
-    createdByName: 'Jasper',
+    createdByName: 'Jordan',
     createdByCeo: false,
     catchUp: 'skip',
     runWhileAway: false,
@@ -139,7 +139,7 @@ describe('wire adapters: Codex', () => {
     const wirePage = toWireCodexPage(page, [
       {
         commit: 'ABCDEF0123456789abcdef0123456789abcdef01',
-        authorName: 'Jasper (player)',
+        authorName: 'Jordan (player)',
         authorEmail: 'player@minevibe.invalid',
         at: '2026-10-08T11:00:00+02:00',
         message: 'update iron-cave: Iron cave',
@@ -159,7 +159,7 @@ describe('wire adapters: Codex', () => {
       {
         rev: 'abcdef0123456789abcdef0123456789abcdef01',
         at: Date.parse('2026-10-08T09:00:00Z'),
-        author: { kind: 'player', name: 'Jasper' },
+        author: { kind: 'player', name: 'Jordan' },
         summary: 'update iron-cave: Iron cave',
       },
       {

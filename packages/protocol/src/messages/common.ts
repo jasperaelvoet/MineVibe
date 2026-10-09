@@ -150,7 +150,7 @@ export type Occupant = z.infer<typeof Occupant>;
 /** Who wrote something (Codex pages, calendar events). */
 export const Author = z.object({
   kind: z.enum(['player', 'agent', 'system']),
-  /** Display name, e.g. "Jasper" or "Bram". */
+  /** Display name, e.g. "Jordan" or "Bram". */
   name: z.string().min(1).max(48),
   /** Set when `kind` is `agent`. */
   agentId: AgentId.optional(),

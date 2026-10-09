@@ -36,7 +36,7 @@ class FakeOrgBackendTest {
 	@BeforeEach
 	void setUp() {
 		this.state = new OrgClientState();
-		this.fake = new FakeOrgBackend(this.state, this.game::get, this.real::get, "Jasper").seed();
+		this.fake = new FakeOrgBackend(this.state, this.game::get, this.real::get, "Jordan").seed();
 	}
 
 	private static String code(final CompletableFuture<?> future) {
@@ -62,7 +62,7 @@ class FakeOrgBackendTest {
 		assertEquals("wheat-farm", created.pageId());
 		Org.CodexPage page = this.fake.codexGet("wheat-farm").join();
 		assertEquals("player", page.author().kind());
-		assertEquals("Jasper", page.author().name());
+		assertEquals("Jordan", page.author().name());
 		assertEquals(5, this.state.codexPages().size(), "the index was pushed");
 		assertValid(Org.CODEX_GET_RESULT, new Org.CodexGetResult(page));
 		JsonObject half = ProtocolCodec.GSON.toJsonTree(new Org.CodexGetResult(page)).getAsJsonObject();

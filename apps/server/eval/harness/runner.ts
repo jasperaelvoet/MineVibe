@@ -79,7 +79,7 @@ import { HOME } from '../pc/content.js';
 import { PC_ID, ScriptedPc } from '../pc/ScriptedPc.js';
 import { buildWorld } from '../sim/layout.js';
 import { SimSkillApi } from '../sim/SimSkillApi.js';
-import { type SimWorld, TPS } from '../sim/world.js';
+import { SIM_PLAYER, type SimWorld, TPS } from '../sim/world.js';
 import { clip, StreamMetrics } from './metrics.js';
 import type {
   AskRecord,
@@ -93,7 +93,7 @@ import type {
 } from './types.js';
 
 export const AGENT_ID = 'ada';
-export const PLAYER = 'Jasper';
+export const PLAYER = SIM_PLAYER;
 /** Game time one `mc` tool call costs (the world keeps running while the model thinks). */
 export const THINK_TICKS = 2 * TPS;
 

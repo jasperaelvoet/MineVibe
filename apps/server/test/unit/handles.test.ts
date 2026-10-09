@@ -47,13 +47,13 @@ describe('handleFromName', () => {
   });
 
   it('foldName strips accents and symbols', () => {
-    expect(foldName('Jasper_Aelvoet')).toBe('jasperaelvoet');
+    expect(foldName('Jordan_Lee')).toBe('jordanlee');
     expect(foldName('Ångström')).toBe('angstrom');
   });
 });
 
 describe('validateHandle (enforced at hire)', () => {
-  const rules = { taken: ['ada', 'bram'], playerName: 'Jasper' };
+  const rules = { taken: ['ada', 'bram'], playerName: 'Jordan' };
 
   it('accepts a distinct handle', () => {
     expect(validateHandle('cleo', rules)).toBeNull();
@@ -97,9 +97,9 @@ describe('validateHandle (enforced at hire)', () => {
   });
 
   it("rejects prefixes of the player's name, and the name itself", () => {
-    expect(validateHandle('jas', rules)?.code).toBe('player');
-    expect(validateHandle('jasper', rules)?.code).toBe('player');
-    expect(validateHandle('jasperbot', rules)?.code).toBe('player');
+    expect(validateHandle('jor', rules)?.code).toBe('player');
+    expect(validateHandle('jordan', rules)?.code).toBe('player');
+    expect(validateHandle('jordanbot', rules)?.code).toBe('player');
     expect(validateHandle('jade', rules)).toBeNull();
   });
 

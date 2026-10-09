@@ -67,7 +67,7 @@ export async function createHarness(
     agentEnv: () => ({ HOME, PATH: '/usr/bin:/bin' }),
     worldsDir: join(dir, 'worlds'),
     stateDir: join(dir, 'state'),
-    playerName: () => 'Jasper',
+    playerName: () => 'Jordan',
     log: pino({ level: 'silent' }),
     queryFactory: factory,
     chatDebounceMs: 0,

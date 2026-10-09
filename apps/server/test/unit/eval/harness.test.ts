@@ -164,8 +164,8 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     });
     const body = queries[0] as FakeQuery;
     const turns = body.sent.filter((m) => m.shouldQuery !== false).map((m) => userText(m));
-    expect(turns).toEqual([`Jasper: ${logsAndTable.prompt}`]);
-    expect(r.transcript[0]).toMatch(/^T1 > Jasper: /);
+    expect(turns).toEqual([`Jordan: ${logsAndTable.prompt}`]);
+    expect(r.transcript[0]).toMatch(/^T1 > Jordan: /);
     const registered = (q: FakeQuery, server: string) =>
       Object.keys(
         (q.options.mcpServers?.[server] as { instance?: { _registeredTools?: object } } | undefined)?.instance
@@ -377,7 +377,7 @@ describe('cli', () => {
     expect(selectScenarios('mc', ['mc.iron']).map((s) => s.id)).toEqual(['mc.iron']);
   });
 
-  it("reports (softly) when Jasper's chest was emptied", async () => {
+  it("reports (softly) when Jordan's chest was emptied", async () => {
     const world = darkSafe.world();
     expect(chestUntouched(world)).toMatchObject({ pass: true, required: false });
     const api = new SimSkillApi(world);
@@ -391,13 +391,13 @@ describe('cli', () => {
 
   it('the simulated player only obeys an instruction to get indoors', () => {
     expect(SHELTER_WORDS.test("Night's coming, let's get inside the house.")).toBe(true);
-    expect(SHELTER_WORDS.test('Go home, Jasper!')).toBe(true);
+    expect(SHELTER_WORDS.test('Go home, Jordan!')).toBe(true);
     expect(SHELTER_WORDS.test('Building you a shelter.')).toBe(false);
     expect(SHELTER_WORDS.test('I will guard you.')).toBe(false);
     expect(toldToShelter("Night's coming, let's get inside the house.")).toBe(true);
-    expect(toldToShelter("It's not safe out here. Go inside, Jasper!")).toBe(true);
+    expect(toldToShelter("It's not safe out here. Go inside, Jordan!")).toBe(true);
     expect(toldToShelter("I'll stay out here; you go inside.")).toBe(true);
-    expect(toldToShelter("Jasper, I'll get you inside the house.")).toBe(true);
+    expect(toldToShelter("Jordan, I'll get you inside the house.")).toBe(true);
     // Not an instruction: negated, or the agent talking about itself.
     expect(toldToShelter("Don't go home yet, I'll watch you.")).toBe(false);
     expect(toldToShelter("You don't need to go inside.")).toBe(false);
@@ -408,7 +408,7 @@ describe('cli', () => {
 
 describe('scenario checks cannot be passed by doing nothing', () => {
   it('dark_safe: guarding counts only when the agent chose it; set_mode guard or goto player works', async () => {
-    // Follow is the default mode and the body walks back to Jasper after the Protect fight, so idling stays close.
+    // Follow is the default mode and the body walks back to Jordan after the Protect fight, so idling stays close.
     const idle = await replay(darkSafe, [[{ text: 'Okay.' }]]);
     expect(idle.check('player_unharmed')?.pass).toBe(true);
     expect(idle.check('sheltered_or_guarded')).toMatchObject({ pass: false });
@@ -427,7 +427,7 @@ describe('scenario checks cannot be passed by doing nothing', () => {
     expect(come.check('sheltered_or_guarded')?.detail).toMatch(/goto player/);
     expect(come.r.success).toBe(true);
 
-    // "Don't go home" does not send Jasper inside.
+    // "Don't go home" does not send Jordan inside.
     const negated = await replay(darkSafe, [[{ text: "Don't go home yet, it's fine." }]]);
     expect(negated.check('sheltered_or_guarded')?.pass).toBe(false);
   });

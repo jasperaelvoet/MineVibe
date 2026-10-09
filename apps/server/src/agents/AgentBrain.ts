@@ -2627,7 +2627,7 @@ export class AgentBrain {
   }
 
   /**
-   * The one-line scene of the Digest (world/scene.ts): `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no
+   * The one-line scene of the Digest (world/scene.ts): `D2 07:40 · in Base (office) · trees 20m NE · Jordan 4m · no
    * threats`. Null before Node knows the clock or the body.
    */
   scene(): string | null {

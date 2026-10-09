@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 /** CodexScreen's browser, soft lock and Markdown subset. */
 class CodexModelsTest {
-	private static final Types.Author PLAYER = new Types.Author("player", "Jasper", null);
+	private static final Types.Author PLAYER = new Types.Author("player", "Jordan", null);
 	private static final Types.Author BRAM = new Types.Author("agent", "Bram", "bram");
 
 	private static Org.CodexPageMeta meta(final String id, final String title, final String category, final boolean pinned, final long updated, final String rev,
