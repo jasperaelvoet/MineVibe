@@ -56,7 +56,7 @@ import type { Card, PendingStore } from './PendingStore.js';
 import { PlanCapture } from './PlanCapture.js';
 import { BARKS, type BarkKey } from './prompts/barks.js';
 import { kickoffMessage } from './prompts/kickoff.js';
-import { modeBanner } from './prompts/modes.js';
+import { modeBanner, stoodUpText } from './prompts/modes.js';
 import { personaPrompt } from './prompts/persona.js';
 import { Mutex, type SeatEndReason, SeatFSM, type SeatSnapshot } from './SeatFSM.js';
 import type {
@@ -435,7 +435,8 @@ export class AgentBrain {
   #meetingReturn: { pcId: string; purpose: string | null } | null = null;
   /**
    * The mode the model was last told about (the MODE banner), or null when it must be told again: a new or resumed
-   * session, or a compaction that may have summarized the last banner away.
+   * session, a compaction that may have summarized the last banner away, or a mid-turn stand_up (its reply names
+   * Minecraft mode, and the same turn may sit down again).
    */
   #announcedMode: BrainMode | null = null;
 
@@ -1690,10 +1691,14 @@ export class AgentBrain {
         .unseat({ agentId: this.agentId, seatEpoch: s.epoch, reason: 'stand', keepReservation: false })
         .catch((err: unknown) => this.#log.warn({ err }, 'unseat failed'));
       this.fsm.stand('stand');
+      // The reply below only names Minecraft mode, and the turn goes on: the next turn opens with a full MODE banner
+      // whatever the mode is by then, also after a re-sit in this same turn (back to PC mode with no turn between).
+      this.#announcedMode = null;
       if (!this.#session?.inTurn) await this.#boundary();
-      return s.kind === 'pc'
-        ? `Stood up from ${s.pcId}: Minecraft mode, your PC tools stop now. Tell ${this.#env.playerName()} the result if you haven't.`
-        : 'You left the meeting chair: Minecraft mode.';
+      return stoodUpText(
+        s.kind === 'pc' ? { kind: 'pc', pcId: s.pcId } : { kind: 'meeting' },
+        this.#env.playerName(),
+      );
     });
   }
 

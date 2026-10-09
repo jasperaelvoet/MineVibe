@@ -141,9 +141,25 @@ export function modeBanner(mode: BrainMode, input: ModeBannerInput): string {
   return lines.join('\n');
 }
 
+/**
+ * `mcp__mc__stand_up`'s reply after leaving a seat (AgentBrain.standUp, and the tool eval's stand-in for it): the rest
+ * of the turn is Minecraft mode already; the full MODE banner follows with the next turn.
+ */
+export function stoodUpText(
+  seat: { kind: 'pc'; pcId: string | null } | { kind: 'meeting' },
+  playerName: string,
+): string {
+  return seat.kind === 'pc'
+    ? `Stood up from ${seat.pcId ?? 'the PC'}: Minecraft mode, your PC tools stop now. Tell ${playerName} the result if you haven't.`
+    : 'You left the meeting chair: Minecraft mode.';
+}
+
 /** ToolGate's teaching text for `toolName` outside `mode` (a call the seat rules alone would have allowed). */
 export function outsideModeText(mode: BrainMode, toolName: string, version: McToolsVersion = 'v1'): string {
   const p = modeProfile(mode, version);
+  // A plan-first plan belongs to its PC seat (the CLI stays in plan mode until the turn ends after a stand_up).
+  if (toolName === 'ExitPlanMode' && mode !== 'seated')
+    return `ExitPlanMode is not available in ${p.title}: a plan ends with its PC seat, so there is nothing to approve now.`;
   switch (mode) {
     case 'seated':
       return `${toolName} is not available in PC mode. Stand up first (mcp__mc__stand_up). Here you have the computer tools, ${p.builtins.filter((b) => b !== 'ExitPlanMode').join(', ')} and from ${MC_PREFIX} only ${mcList(p)}.`;

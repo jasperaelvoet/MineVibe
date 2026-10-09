@@ -160,6 +160,21 @@ describe('mode switch at the turn boundary', () => {
     expect(log.filter((l) => l.includes('MODE]'))).toHaveLength(3);
   });
 
+  it('stand_up and a re-sit in the same turn: the second kickoff still opens with the PC-mode banner', async () => {
+    const { w, id, q, nonce } = await world();
+    const log = recorder(q);
+    await wake(w, q, 'fix it');
+    await sitAndKickoff(w, q, id);
+    expect(resultText(await q.callTool('mcp__mc__stand_up', {}))).toMatch(/Minecraft mode/);
+    // Back to a chair before this turn ends (within the re-sit debounce: no swap, no turn in between).
+    await sitAndKickoff(w, q, id);
+    const kickoff = lastText(w, q);
+    expect(kickoff.startsWith(modeLine(nonce, 'PC mode'))).toBe(true);
+    expect(kickoff.indexOf('MODE]')).toBeLessThan(kickoff.indexOf('KICKOFF]'));
+    expect(w.manager.brain(id)?.announcedMode).toBe('seated');
+    expect(log.filter((l) => l.startsWith('flags:'))).toEqual(['flags:claude-opus-5-5/medium']);
+  });
+
   for (const reason of ['kick', 'damage', 'survival', 'pc_down'] as const satisfies readonly UnseatReason[]) {
     it(`${reason}: Haiku/xhigh at once, then the critical wake opens with Minecraft mode`, async () => {
       const { w, id, q, nonce } = await world();

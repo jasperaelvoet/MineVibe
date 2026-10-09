@@ -231,7 +231,7 @@ query({ prompt: gatedInbox, options: {
 | `mc__calendar_*`, `report_task` | allow for self. Scheduling others is CEO only; agents can't edit events the player created. | same |
 | Plan mode (seated) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (the clicks, left_click_drag, left_mouse_down/up, type, key, hold_key, ui_act, open, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: reads (screenshot, zoom, ui, read, glob, grep), mouse_move, scroll, wait, wait_for, task_stop, and `pc__bash` with the instruction "read-only commands only, e.g. git status or running tests". |
 | AskUserQuestion | broker | broker |
-| ExitPlanMode | deny ("not in plan mode") | broker in plan mode (plan-first sessions only); deny otherwise |
+| ExitPlanMode | deny ("not in plan mode"); in plan mode (the turn of a mid-turn stand_up) deny: `mode` | broker in plan mode (plan-first sessions only); deny otherwise |
 | EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
 
 - **Tools per mode (spike S3b, `agents/modes.ts`).** On top of the rows above, every agent is in one of three
@@ -315,7 +315,8 @@ query({ prompt: gatedInbox, options: {
   4. Debounce rules are unchanged: a turn within the re-sit debounce runs on Opus in Minecraft mode, and the later
      downswap adds no banner. An agent pulled from its PC into a meeting stays on Opus (the stretched debounce) and
      gets Meeting mode, then PC mode with the kickoff when it sits back down.
-  5. A new or resumed session, and every compaction, make the next turn announce the mode again.
+  5. A new or resumed session, every compaction and a mid-turn `stand_up` (its reply only names Minecraft mode, and
+     the same turn may sit down again) make the next turn announce the mode again.
 - **Fallback** if S3 fails: T3 Code's `close()` + `resume` with explicit model and effort. S3b measured it: the
   conversation and the pinned tool list are kept, each switch costs 0.86–1.43 s plus a CLI respawn, and no
   PostModelSwitch hook fires (Node marks such a swap `acked: false`).

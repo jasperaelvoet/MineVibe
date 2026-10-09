@@ -362,6 +362,66 @@ describe('ToolGate holds every call to the mode of the seat', () => {
     expect(allowed).toBeGreaterThan(100);
   });
 
+  it('lets nothing outside the mode through (allow or broker), with both tool sets, the built-ins and plan mode', async () => {
+    const states: readonly SeatCase[] = [
+      'wandering',
+      'walking',
+      'pending',
+      'seated',
+      'away',
+      'standing',
+      'meeting_walking',
+      'meeting',
+      'debounce',
+    ];
+    let passed = 0;
+    for (const version of MC_TOOL_SETS) {
+      const tools = [
+        ...mcToolsIn(version).map((t) => `mcp__mc__${t}`),
+        ...PC_TOOLS.map((t) => `mcp__pc__${t}`),
+        ...BUILTIN_TOOLS,
+        'EnterPlanMode',
+      ];
+      for (const state of states) {
+        const s = seat(state);
+        const mode = modeForSeat(s);
+        for (const trackedMode of ['bypassPermissions', 'plan'] as const) {
+          for (const tool of tools) {
+            const d = await decideTool(tool, INPUT, ctx(s, { trackedMode, mcTools: version }), {
+              serverSource: 'sdk',
+              web,
+            });
+            if (d.behavior === 'deny') continue;
+            passed++;
+            expect(
+              toolInMode(mode, tool),
+              `${tool} ${d.behavior} in ${state}/${trackedMode} (${version})`,
+            ).toBe(true);
+          }
+        }
+      }
+    }
+    expect(passed).toBeGreaterThan(200);
+  });
+
+  it('ExitPlanMode reaches the broker only in PC mode: a plan ends with its PC seat', async () => {
+    const plan = { trackedMode: 'plan' as const };
+    expect((await decideTool('ExitPlanMode', {}, ctx(seat('seated'), plan))).behavior).toBe('defer');
+    // A plan-first agent that stood up mid-turn: the CLI is still in plan mode until the turn boundary.
+    for (const state of ['standing', 'debounce', 'meeting'] as const) {
+      const d = await decideTool('ExitPlanMode', {}, ctx(seat(state), plan));
+      expect(d, state).toMatchObject({ behavior: 'deny', code: 'mode' });
+      expect(d.reason, state).toMatch(
+        /^ExitPlanMode is not available in (Minecraft|Meeting) mode: a plan ends/,
+      );
+    }
+    // Outside plan mode the old rule answers first.
+    expect(await decideTool('ExitPlanMode', {}, ctx(seat('standing')))).toMatchObject({
+      behavior: 'deny',
+      code: 'no_plan_mode',
+    });
+  });
+
   it('denies a tool outside the mode with teaching text (code "mode")', async () => {
     const seated = await decideTool('mcp__mc__inventory', {}, ctx(seat('seated')), { serverSource: 'sdk' });
     expect(seated).toMatchObject({ behavior: 'deny', code: 'mode' });

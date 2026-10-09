@@ -15,7 +15,8 @@
  * - Plan mode uses `input.permission_mode ?? nodeTrackedMode`.
  * - Mode profiles (agents/modes.ts): after the seat rules, a tool outside the mode of the current seat (Minecraft, PC
  *   or Meeting mode) is denied with teaching text (`mode`). Every tool stays in the model's list in every mode (spike
- *   S3b: the list is pinned to the conversation's first request), so this gate is what makes it unavailable.
+ *   S3b: the list is pinned to the conversation's first request), so this gate is what makes it unavailable. That
+ *   includes the broker's ExitPlanMode: only PC mode hands it to the broker, even while the CLI is still in plan mode.
  * - Any exception while deciding is a deny.
  */
 
@@ -371,11 +372,20 @@ export async function decideTool(
   switch (toolName) {
     case 'AskUserQuestion':
       return { behavior: 'defer', reason: 'broker' };
-    case 'ExitPlanMode':
+    case 'ExitPlanMode': {
       // USER DECISION 2026-10-08: only plan-first sessions (the player's toggle) are in plan mode.
-      return mode === 'plan'
+      if (mode !== 'plan')
+        return deny(
+          'no_plan_mode',
+          'You are not in plan mode: there is no plan to approve. Just do the work.',
+        );
+      // A plan belongs to the PC: after a mid-turn stand_up the CLI stays in plan mode until the turn boundary, so
+      // the mode profile (PC mode only) keeps the broker from raising a plan card for a PC the agent has left.
+      const seatMode = modeForSeat(ctx.seat);
+      return toolInMode(seatMode, toolName)
         ? { behavior: 'defer', reason: 'broker' }
-        : deny('no_plan_mode', 'You are not in plan mode: there is no plan to approve. Just do the work.');
+        : deny('mode', outsideModeText(seatMode, toolName, ctx.mcTools));
+    }
     case 'EnterPlanMode':
       // USER DECISION 2026-10-08: agents never put themselves into plan mode (not in the tool list either).
       return deny(
