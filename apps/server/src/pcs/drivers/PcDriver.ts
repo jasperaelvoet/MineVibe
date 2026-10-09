@@ -10,6 +10,13 @@ export const MANAGED_LABEL = 'minevibe';
 export const PC_ID_LABEL = 'minevibe.pc';
 /** Label carrying the MineVibe instance id (hash of the state dir), so instances sharing an app root never touch each other's PCs. */
 export const PC_INSTANCE_LABEL = 'minevibe.instance';
+/**
+ * Label of a container that belongs to a PC without being the PC itself (`phone`: its Android phone). PC scans skip
+ * every container that carries it.
+ */
+export const ROLE_LABEL = 'minevibe.role';
+/** Label carrying the id of the kernel a PC boots with `--kernel` (nested virtualization). */
+export const KERNEL_LABEL = 'minevibe.kernel';
 
 /** True when `labels` carries every key/value of `want`. */
 export function hasLabels(
@@ -58,6 +65,68 @@ export interface PcRunSpec {
    * own environment, so it never appears in a process listing.
    */
   secretEnv: Record<string, string>;
+  /**
+   * Nested virtualization (`--virtualization`, Apple `container` on M3 or newer): the guest's CPUs start at EL2. Only
+   * useful with a {@link kernel} that has KVM; the stock kernel has none.
+   */
+  virtualization?: boolean;
+  /** A kernel image this container boots instead of the engine's default (`--kernel`, copied at create). */
+  kernel?: string;
+}
+
+/**
+ * A PC's Android phone (PLAN §8.7): a Redroid container on the PC's network that boots MineVibe's Android kernel
+ * (binder, PSI). It publishes no port: its adb (5555, unauthenticated) is reachable only from the PC.
+ */
+export interface PhoneRunSpec {
+  name: string;
+  image: string;
+  /** The kernel with binder (never the engine default, which has none). */
+  kernel: string;
+  /** The PC's network. */
+  network: string;
+  cpus: number;
+  memoryMiB: number;
+  /** `/data` (apps and saves). */
+  data: VolumeMount | null;
+  labels: Record<string, string>;
+  /** Labels proving ownership of the data volume. */
+  ownerLabels: Record<string, string>;
+  /** Android init arguments (`androidboot.redroid_fps=60`, …), appended to the image's entrypoint. */
+  initArgs: string[];
+}
+
+/** A container that runs one command to completion and is removed (`run --rm`), e.g. the Android kernel build. */
+export interface OneShotSpec {
+  name: string;
+  image: string;
+  cpus: number;
+  memoryMiB: number;
+  /** Replaces the image's entrypoint. */
+  entrypoint: string;
+  args: string[];
+  binds: BindMount[];
+  labels: Record<string, string>;
+  timeoutMs: number;
+}
+
+/**
+ * What the Android phone and nested virtualization need from the engine (PLAN §8.7). Only Apple `container` has it:
+ * per-container kernels (`--kernel`), image save/load and one-shot runs.
+ */
+export interface AndroidDriverOps {
+  /** `image save` of one platform into an OCI tar. */
+  saveImage(ref: string, file: string): Promise<void>;
+  /** `image load` of an OCI tar. */
+  loadImage(file: string): Promise<void>;
+  /** `image delete` (a missing image is fine). */
+  removeImage(ref: string): Promise<void>;
+  /** The index digest of a local image, or null when it is missing. */
+  imageDigest(ref: string): Promise<string | null>;
+  /** Runs a one-shot container to completion; rejects when it fails. Output lines go to `onOutput`. */
+  runOnce(spec: OneShotSpec, onOutput?: Progress): Promise<void>;
+  /** Creates (never starts) the phone container, then verifies its network and `/data` volume. */
+  createPhone(spec: PhoneRunSpec): Promise<PcContainerInfo>;
 }
 
 export type ContainerState = 'running' | 'stopped' | 'stopping' | 'created' | 'unknown';
@@ -85,6 +154,8 @@ export interface PcContainerInfo {
    * the parser; the token itself (plaintext in `inspect`) is never kept.
    */
   tokenSha256?: string;
+  /** Whether the container was created with `--virtualization` (absent: the engine does not say). */
+  virtualization?: boolean;
 }
 
 /** Name of the env var carrying a PC's spacesd token. */
@@ -128,6 +199,8 @@ export interface PcDriver {
   readonly cpuOverhead: number;
   /** Whether volume size caps are enforced. */
   readonly capsVolumes: boolean;
+  /** Android phone and nested-virtualization support (Apple `container` only; absent: neither is possible). */
+  readonly android?: AndroidDriverOps | undefined;
 
   /**
    * Provisions/starts the engine (or verifies it is reachable) and takes this process's hold on it.
@@ -213,6 +286,8 @@ export function assertRunSpec(spec: PcRunSpec): void {
   }
   if (spec.network !== undefined && !/^[a-z0-9][a-z0-9._-]*$/.test(spec.network))
     fail(`network ${spec.network}`);
+  if (spec.kernel !== undefined && !pathOk(spec.kernel)) fail(`kernel ${spec.kernel}`);
+  if (spec.virtualization && spec.kernel === undefined) fail('virtualization without a kernel');
   for (const [k, v] of Object.entries(spec.labels)) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(k) || /[\n\r\0=,]/.test(v)) fail(`label ${k}`);
   }
@@ -302,6 +377,9 @@ export function specProblems(want: PcRunSpec, info: PcContainerInfo): string[] {
   if (!hasLabels(info.labels, want.labels)) problems.push('labels differ');
   if (want.network && info.networks && !info.networks.includes(want.network)) {
     problems.push(`not on network ${want.network}`);
+  }
+  if (info.virtualization !== undefined && info.virtualization !== (want.virtualization ?? false)) {
+    problems.push(`virtualization is ${info.virtualization ? 'on' : 'off'}`);
   }
   // L1 (strict): a missing host address is as unacceptable as a wrong one.
   if (info.hostAddress !== '127.0.0.1') {

@@ -5,11 +5,14 @@
 import { GiB, MiB } from '../../src/pcs/Budget.js';
 import type { ExecResult } from '../../src/pcs/drivers/exec.js';
 import {
+  type AndroidDriverOps,
   hasLabels,
   type NetworkInfo,
+  type OneShotSpec,
   type PcContainerInfo,
   type PcDriver,
   type PcRunSpec,
+  type PhoneRunSpec,
   TOKEN_ENV,
   tokenFingerprint,
   type VolumeInfo,
@@ -145,6 +148,7 @@ export class FakeDriver implements PcDriver {
       shmBytes: c.spec.shmMiB * MiB,
       ...(c.spec.network ? { networks: [c.spec.network] } : {}),
       ...(token ? { tokenSha256: tokenFingerprint(token) } : {}),
+      virtualization: c.spec.virtualization ?? false,
     };
   }
   async list(labels: Record<string, string>) {
@@ -158,7 +162,11 @@ export class FakeDriver implements PcDriver {
   async diskUsage() {
     return this.usage;
   }
-  async exec(): Promise<ExecResult> {
+  async exec(
+    _name: string,
+    _argv: readonly string[],
+    _options: { user?: string; timeoutMs?: number } = {},
+  ): Promise<ExecResult> {
     return { code: 0, signal: null, stdout: '', stderr: '', ms: 0, timedOut: false };
   }
 }
@@ -226,4 +234,106 @@ export function fakePool(
     loader: async () => mod,
     healthTimeoutMs: options.healthTimeoutMs ?? 200,
   });
+}
+
+/** One phone container of {@link FakeAndroidDriver}. */
+export type FakePhone = { spec: PhoneRunSpec; state: 'running' | 'stopped'; ip: string };
+
+/**
+ * A {@link FakeDriver} with the Android ops (PLAN §8.7): phones are kept apart from PC containers, boot at once
+ * (`getprop sys.boot_completed` answers 1 while running) and get the next address of 192.168.64.x.
+ */
+export class FakeAndroidDriver extends FakeDriver implements AndroidDriverOps {
+  readonly android: AndroidDriverOps = this;
+  phones = new Map<string, FakePhone>();
+  /** `exec` calls: container, argv and user. */
+  execs: { name: string; argv: readonly string[]; user?: string }[] = [];
+  /** Answer of `getprop sys.boot_completed` (a phone that never boots: '0'). */
+  bootCompleted = '1';
+  images = new Map<string, string>();
+  oneShots: OneShotSpec[] = [];
+  #nextIp = 10;
+
+  async saveImage(ref: string, file: string) {
+    this.log.push(`save ${ref} ${file}`);
+  }
+  async loadImage(file: string) {
+    this.log.push(`load ${file}`);
+  }
+  async removeImage(ref: string) {
+    this.images.delete(ref);
+  }
+  async imageDigest(ref: string) {
+    return this.images.get(ref) ?? null;
+  }
+  async runOnce(spec: OneShotSpec, _onOutput?: (line: string) => void) {
+    this.oneShots.push(spec);
+  }
+  async createPhone(spec: PhoneRunSpec) {
+    this.log.push(`create-phone ${spec.name}`);
+    if (spec.data) await this.ensureVolume(spec.data, spec.ownerLabels);
+    this.phones.set(spec.name, { spec, state: 'stopped', ip: `192.168.64.${this.#nextIp++}` });
+    return (await this.inspect(spec.name)) as PcContainerInfo;
+  }
+  override async start(name: string) {
+    const ph = this.phones.get(name);
+    if (!ph) return super.start(name);
+    this.log.push(`start ${name}`);
+    ph.state = 'running';
+  }
+  override async stop(name: string) {
+    const ph = this.phones.get(name);
+    if (!ph) return super.stop(name);
+    this.log.push(`stop ${name}`);
+    ph.state = 'stopped';
+  }
+  override async remove(name: string) {
+    if (!this.phones.has(name)) return super.remove(name);
+    this.log.push(`rm ${name}`);
+    this.phones.delete(name);
+  }
+  override async inspect(name: string): Promise<PcContainerInfo | null> {
+    const ph = this.phones.get(name);
+    if (!ph) return super.inspect(name);
+    return {
+      name,
+      state: ph.state,
+      image: ph.spec.image,
+      labels: ph.spec.labels,
+      binds: [],
+      volumes: ph.spec.data ? [{ name: ph.spec.data.name, target: '/data' }] : [],
+      cpus: ph.spec.cpus,
+      memoryBytes: ph.spec.memoryMiB * MiB,
+      networks: [ph.spec.network],
+      ...(ph.state === 'running' ? { ipv4: ph.ip } : {}),
+    };
+  }
+  override async list(labels: Record<string, string>) {
+    const out = await super.list(labels);
+    for (const name of this.phones.keys()) {
+      const info = await this.inspect(name);
+      if (info && hasLabels(info.labels, labels)) out.push(info);
+    }
+    return out;
+  }
+  override async exec(
+    name: string,
+    argv: readonly string[],
+    options: { user?: string } = {},
+  ): Promise<ExecResult> {
+    this.execs.push({ name, argv, ...(options.user ? { user: options.user } : {}) });
+    const ph = this.phones.get(name);
+    if (ph) {
+      const booted = ph.state === 'running' && argv.includes('sys.boot_completed');
+      return {
+        code: booted ? 0 : 1,
+        signal: null,
+        stdout: booted ? `${this.bootCompleted}\n` : '',
+        stderr: '',
+        ms: 0,
+        timedOut: false,
+      };
+    }
+    return { code: 0, signal: null, stdout: '', stderr: '', ms: 0, timedOut: false };
+  }
 }

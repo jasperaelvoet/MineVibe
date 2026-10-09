@@ -13,7 +13,7 @@ import { PcManager } from '../../src/pcs/PcManager.js';
 import { SeatBook } from '../../src/pcs/SeatBook.js';
 import type { ShellMirror } from '../../src/pcs/ShellMirror.js';
 import { FakePcBridge } from './fakeBridge.js';
-import { FakeDriver, fakePool } from './fakes.js';
+import { FakeAndroidDriver, FakeDriver, fakePool } from './fakes.js';
 
 let dir: string;
 let host: HostFacts;
@@ -26,8 +26,8 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-async function setup() {
-  const driver = new FakeDriver();
+async function setup(opts: { android?: boolean } = {}) {
+  const driver = opts.android ? new FakeAndroidDriver() : new FakeDriver();
   const manager = new PcManager({
     stateDir: join(dir, 'state'),
     driver,
@@ -39,6 +39,20 @@ async function setup() {
     bootTimeoutMs: 2000,
     imageBuild: { contextDir: dir, file: join(dir, 'Containerfile') },
     portProbe: { attempts: 1, intervalMs: 1 },
+    ...(opts.android
+      ? {
+          // A kit whose kernel and phone image are ready (PLAN §8.7).
+          android: {
+            supported: true,
+            kernelPath: '/kits/vmlinux',
+            kernelReady: async () => true,
+            ensureKernel: async () => '/kits/vmlinux',
+            phoneImageReady: async () => true,
+            ensurePhoneImage: async () => 'minevibe/android-phone:test',
+          },
+          nestedVirtualization: async () => ({ supported: true }),
+        }
+      : {}),
   });
   await manager.init();
   const bridge = new FakePcBridge();
@@ -422,6 +436,37 @@ describe('requests', () => {
       wipeOnDeath: true,
     });
     expect(await t.bridge.call('pc.config', { pcId: 'linux-1', cpus: 1 })).toEqual({ recreate: false });
+  });
+
+  it('pc.config: virtualization recreates the PC, android only starts the phone; pc.state shows both', async () => {
+    const t = await setup({ android: true });
+    await t.manager.start('linux-1');
+    expect(states(t.bridge).at(-1)?.capabilities).toMatchObject({
+      virtualization: { enabled: false, unavailable: null },
+      android: { enabled: false, unavailable: null, status: 'off' },
+    });
+    expect(await t.bridge.call('pc.config', { pcId: 'linux-1', virtualization: true })).toEqual({
+      recreate: true,
+    });
+    expect(t.manager.get('linux-1')?.virtualization).toBe(true);
+    expect(await t.bridge.call('pc.config', { pcId: 'linux-1', android: true })).toEqual({ recreate: false });
+    for (let i = 0; i < 200 && t.manager.phone('linux-1').status !== 'running'; i++) await tick(5);
+    expect(states(t.bridge).at(-1)?.capabilities).toMatchObject({
+      virtualization: { enabled: true },
+      android: { enabled: true, status: 'running' },
+    });
+    expect(PcInfo.safeParse(states(t.bridge).at(-1)).success).toBe(true);
+  });
+
+  it('pc.config: a capability this engine cannot have is BAD_MESSAGE with the reason', async () => {
+    const t = await setup();
+    t.glue.pushAll();
+    expect(states(t.bridge).at(-1)?.capabilities?.android.unavailable).toMatch(/Apple container/);
+    const e = await t.bridge
+      .call('pc.config', { pcId: 'linux-1', android: true })
+      .catch((err: unknown) => err);
+    expect((e as { code?: string }).code).toBe(ERROR_CODES.BAD_MESSAGE);
+    expect(t.manager.get('linux-1')).not.toHaveProperty('android');
   });
 
   it('kick unseats the agent through the mod; decommission ends with a last decommissioned state', async () => {

@@ -471,7 +471,7 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `pc.input` | pc | M→N |  | Batched player input for the PC the player sits at (≤ 60 Hz). |
 | `pc.frame.ack` | pc | M→N |  | Acknowledges a decoded MVF1 frame (≤ 2 unacked per PC). |
 | `pc.cursor` | pc | N→M |  | The seated agent's cursor (frames carry no cursor). |
-| `pc.config` | pc | M→N | `PcConfigResult` | Request: change a PC (resources, type, mounts, flags); may recreate it. |
+| `pc.config` | pc | M→N | `PcConfigResult` | Request: change a PC (resources, type, mounts, flags, virtualization, Android phone); may recreate it. |
 | `pc.action` | pc | M→N | `PcActionResult` | Request: create, start, stop, restart, reimage, decommission, plug, kick, watch, ... |
 | `pc.consent` | pc | M→N |  | Request: accept or decline a PC download. |
 | `host.pick_folder` | pc | M→N | `PickFolderResult` | Request: native folder picker through the stub (Vault "Browse…"). |
@@ -865,9 +865,12 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - `pc.state`: a `PcInfo` at the top level: `{ pcId, type: linux|linux-slim|macos, name, status, progress|null,
   detail|null, slot, cpus, memoryMiB, diskGiB, plugged, pinned, wipeOnDeath, mounts: [{ hostPath, mode: rw|ro }],
   occupant|null, reservation: { agentId, kind: coming|away }|null, banner|null, screen: { w, h }|null,
-  consent: { consentId, what, bytes, freeBytes }|null }`. `slot` is the MVF1 `pcSlot` of its frames. Statuses:
-  `off`, `downloading`, `awaiting_consent`, `booting`, `running`, `stopping`, `remounting`, `reimaging`,
-  `no_capacity`, `macos_slots_full`, `engine_down`, `error`, `decommissioned`.
+  consent: { consentId, what, bytes, freeBytes }|null, capabilities? }`. `slot` is the MVF1 `pcSlot` of its frames.
+  Statuses: `off`, `downloading`, `awaiting_consent`, `booting`, `running`, `stopping`, `remounting`, `reimaging`,
+  `no_capacity`, `macos_slots_full`, `engine_down`, `error`, `decommissioned`. `capabilities` (Linux PCs, PLAN §8.7):
+  `{ virtualization: { enabled, unavailable|null }, android: { enabled, unavailable|null, status:
+  off|preparing|starting|running|error, progress|null, detail|null } }`; `unavailable` says why this Mac cannot have
+  it ("needs an M3 or newer Mac"), null when it can.
 - `budget.state`: `{ cpu: { total, used, free, maxOvercommit }, memoryMiB: { pool, used, free }, diskFreeGiB,
   macos: { running, max }, crewCap }`.
 - `pc.view`: `{ pcId, tier: focus|visible|none }`, sent on change.
@@ -877,7 +880,9 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - `pc.frame.ack`: `{ pcId, seq }` after a frame is decoded (at most 2 unacknowledged per PC).
 - `pc.cursor`: `{ pcId, x, y, visible }`, the agent's last pointer target (frames carry no cursor, PLAN §8.6).
 - `pc.config` (request, `PcConfigResult { recreate }`): `{ pcId, name?, type?, cpus?, memoryMiB?, mounts?, pinned?,
-  wipeOnDeath? }`. Errors: `OVER_BUDGET`, `BAD_MOUNT`, `PC_UNKNOWN`.
+  wipeOnDeath?, virtualization?, android? }`. `type`, `cpus`, `memoryMiB`, `mounts` and `virtualization` recreate the
+  PC; `android` starts or removes its phone and leaves the PC running (off deletes the phone's apps and data).
+  Errors: `OVER_BUDGET`, `BAD_MOUNT`, `PC_UNKNOWN`, `BAD_MESSAGE` (a capability this Mac cannot have).
 - `pc.action` (request, `PcActionResult { pcId }`): `{ action, pcId?, type?, pos? }`. `create` takes `type` and
   no `pcId`; every other action (`start`, `stop`, `restart`, `reimage`, `decommission`, `reissue`, `unplug`,
   `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,

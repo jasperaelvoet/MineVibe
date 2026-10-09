@@ -492,9 +492,16 @@ export class PcBridgeGlue {
     } catch (err) {
       throw toBridgeError(err, 'config');
     }
-    const wantsRecreate =
-      m.type !== undefined || m.cpus !== undefined || m.memoryMiB !== undefined || m.mounts !== undefined;
-    if (!wantsRecreate) {
+    // Everything that defines the PC's containers goes through one reconfigure (an Android phone alone recreates
+    // nothing; PcManager tells).
+    const wantsReconfigure =
+      m.type !== undefined ||
+      m.cpus !== undefined ||
+      m.memoryMiB !== undefined ||
+      m.mounts !== undefined ||
+      m.virtualization !== undefined ||
+      m.android !== undefined;
+    if (!wantsReconfigure) {
       this.pushStates();
       return { recreate: false };
     }
@@ -511,6 +518,8 @@ export class PcBridgeGlue {
       ...(m.cpus !== undefined ? { cpus: m.cpus } : {}),
       ...(m.memoryMiB !== undefined ? { memMiB: m.memoryMiB } : {}),
       ...(mounts !== undefined ? { mounts } : {}),
+      ...(m.virtualization !== undefined ? { virtualization: m.virtualization } : {}),
+      ...(m.android !== undefined ? { android: m.android } : {}),
     });
     const done = (await this.#settle(op, 'config', `configure ${pcId}`)) as
       | Awaited<ReturnType<PcManager['reconfigure']>>

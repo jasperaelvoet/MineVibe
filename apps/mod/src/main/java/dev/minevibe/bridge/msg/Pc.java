@@ -59,6 +59,19 @@ public final class Pc {
 
 	public record ConsentPrompt(String consentId, String what, long bytes, long freeBytes) {}
 
+	/** {@code PhoneStatus} values: the Android phone of a PC (PLAN §8.7). */
+	public static final List<String> PHONE_STATUSES = List.of("off", "preparing", "starting", "running", "error");
+
+	/** Nested virtualization; {@code unavailable} says why this Mac cannot have it (null when it can). */
+	public record VirtualizationCapability(boolean enabled, @Nullable String unavailable) {}
+
+	/** The Android phone; {@code status} is one of {@link #PHONE_STATUSES}, {@code progress} set while preparing. */
+	public record AndroidCapability(
+			boolean enabled, @Nullable String unavailable, String status, @Nullable Double progress, @Nullable String detail) {}
+
+	/** What a Linux PC can do beyond the stock container (PLAN §8.7). */
+	public record Capabilities(VirtualizationCapability virtualization, AndroidCapability android) {}
+
 	/** Everything about one PC: the payload of {@code pc.state} and the items of {@code hello.ok.pcs}. */
 	public record PcInfo(
 			String pcId,
@@ -79,7 +92,33 @@ public final class Pc {
 			@Nullable Reservation reservation,
 			@Nullable String banner,
 			@Nullable Screen screen,
-			@Nullable ConsentPrompt consent) {}
+			@Nullable ConsentPrompt consent,
+			@Nullable Capabilities capabilities) {
+		/** A PC without capabilities (macOS, tests). */
+		public PcInfo(
+				String pcId,
+				String type,
+				String name,
+				String status,
+				@Nullable Double progress,
+				@Nullable String detail,
+				long slot,
+				int cpus,
+				int memoryMiB,
+				int diskGiB,
+				boolean plugged,
+				boolean pinned,
+				boolean wipeOnDeath,
+				List<VaultMount> mounts,
+				Types.@Nullable Occupant occupant,
+				@Nullable Reservation reservation,
+				@Nullable String banner,
+				@Nullable Screen screen,
+				@Nullable ConsentPrompt consent) {
+			this(pcId, type, name, status, progress, detail, slot, cpus, memoryMiB, diskGiB, plugged, pinned, wipeOnDeath, mounts, occupant,
+					reservation, banner, screen, consent, null);
+		}
+	}
 
 	public record CpuBudget(long total, long used, long free, double maxOvercommit) {}
 
@@ -141,7 +180,10 @@ public final class Pc {
 	/** N→M. */
 	public record PcCursor(String pcId, int x, int y, boolean visible) {}
 
-	/** M→N request; absent keys are unchanged. Reply: {@link PcConfigResult}. */
+	/**
+	 * M→N request; absent keys are unchanged. Reply: {@link PcConfigResult}. {@code virtualization} recreates the PC;
+	 * {@code android} starts or removes its phone and leaves the PC running.
+	 */
 	public record PcConfig(
 			String pcId,
 			@Nullable String name,
@@ -150,7 +192,22 @@ public final class Pc {
 			@Nullable Integer memoryMiB,
 			@Nullable List<VaultMount> mounts,
 			@Nullable Boolean pinned,
-			@Nullable Boolean wipeOnDeath) {}
+			@Nullable Boolean wipeOnDeath,
+			@Nullable Boolean virtualization,
+			@Nullable Boolean android) {
+		/** A change without capabilities. */
+		public PcConfig(
+				String pcId,
+				@Nullable String name,
+				@Nullable String type,
+				@Nullable Integer cpus,
+				@Nullable Integer memoryMiB,
+				@Nullable List<VaultMount> mounts,
+				@Nullable Boolean pinned,
+				@Nullable Boolean wipeOnDeath) {
+			this(pcId, name, type, cpus, memoryMiB, mounts, pinned, wipeOnDeath, null, null);
+		}
+	}
 
 	public record PcConfigResult(boolean recreate) {}
 
@@ -176,6 +233,14 @@ public final class Pc {
 	static final Schema.Obj VAULT_MOUNT = object().req("hostPath", ABS_PATH).req("mode", oneOf("rw", "ro"));
 	static final Schema.Node CPUS = integer(1, 64);
 	static final Schema.Node MEMORY_MIB = integer(256, 1_048_576);
+	static final Schema.Obj CAPABILITIES = object()
+			.req("virtualization", object().req("enabled", bool()).req("unavailable", nullable(string(1, 200))))
+			.req("android", object()
+					.req("enabled", bool())
+					.req("unavailable", nullable(string(1, 200)))
+					.req("status", oneOf(PHONE_STATUSES.toArray(String[]::new)))
+					.req("progress", nullable(FRACTION))
+					.req("detail", nullable(string(1, 256))));
 
 	/** {@code PcInfo} (also the items of {@code hello.ok.pcs}). */
 	public static final Schema.Obj PC_INFO = object()
@@ -201,7 +266,8 @@ public final class Pc {
 					.req("consentId", CONSENT_ID)
 					.req("what", string(1, 200))
 					.req("bytes", NON_NEG_INT)
-					.req("freeBytes", NON_NEG_INT)));
+					.req("freeBytes", NON_NEG_INT)))
+			.opt("capabilities", CAPABILITIES);
 
 	/** {@code Budget} (also {@code hello.ok.budget}). */
 	public static final Schema.Obj BUDGET = object()
@@ -267,7 +333,9 @@ public final class Pc {
 			.opt("memoryMiB", MEMORY_MIB)
 			.opt("mounts", array(VAULT_MOUNT, 0, 16))
 			.opt("pinned", bool())
-			.opt("wipeOnDeath", bool()));
+			.opt("wipeOnDeath", bool())
+			.opt("virtualization", bool())
+			.opt("android", bool()));
 
 	public static final MessageType<PcAction> PC_ACTION = type("pc.action", Direction.MOD_TO_NODE, PcAction.class, object()
 			.req("action", oneOf(ACTIONS.toArray(String[]::new)))

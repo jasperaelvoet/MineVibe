@@ -34,6 +34,34 @@ in a water pocket under the ground drowns" and the live report behind it (the CE
 stood a block over the water, brains 0/3): water exits in both tiers, no digging while swimming, the WaterEscape
 reflex, `STUCK_IN_WATER`, and stuck agents speaking up; also a GameTest's office (`OfficeService.overrideLayout`) that
 was saved into the GameTest world, which is kept from run to run, so every later player stand-in was welcomed into it.
+PC capabilities (2026-10-09, PLAN §8.7) fixed "an agent asked to run an Android game declares it impossible" (the live
+report: Ada installed sdkmanager, port-scanned the PC's isolated subnet for the player's Mac, asked "WHAT???"-grade
+questions and gave up): Linux PCs get an Android phone and nested virtualization, `pc__info` and the KICKOFF say what
+the PC can do, and the desk persona says to verify, try alternatives, never scan, and ask plainly. The same change
+fixed the packaged Linux PC build context missing `sudoers-minevibe` (`packaging/build-app.ts` `LINUX_PC_CONTEXT`;
+the Containerfile copies it, so a bundled image build would have failed) and made `AppleContainerDriver.stop` try
+twice (errno 95 on `cgroup.kill` after Docker ran in a PC). The Reimage confirmation no longer says the home folder is
+kept (PcManager deletes it, as the troubleshooting page says; with the phone's data too).
+
+## Found by PC capabilities (2026-10-09)
+- **The Android kernel is built on each Mac** (3.3 min at 4 vCPUs, once per engine app root, from the pinned
+  kernel.org source and the engine's own `/proc/config.gz`). A prebuilt kernel pinned in `packaging/vendor.lock.json`
+  would skip that, but needs somewhere to publish it. The base config follows the engine's stock kernel: a `container`
+  release with another default kernel changes it under the same id (`6.18.35-mv-android2`); bump the id with the pin.
+- **The source Redroid image stays loaded** next to `minevibe/android-phone` after the image is prepared (about
+  1.4 GB unpacked; their big layer is shared). Deleting it after the load was not tried.
+- **The phone's adb is open to everything in the PC** (Redroid's adb has no authentication). Only the PC can reach it
+  (no published port, the PC's own network), which is the trust boundary of the PC itself.
+- **scrcpy is built inside the PC** on first `android open` (~250 MB of apt build tools in the PC's root filesystem,
+  about a minute). The binary lives in `~/.local` and survives a recreate; its runtime libraries are reinstalled
+  (~15 s) after one. A published arm64 build, or building it into the image, would remove this.
+- **PcConfigScreen's sliders do not reserve the phone's share for a stopped PC:** a size that fits on its own may then
+  start as `no_capacity` once the phone (4 vCPUs, 4 GiB) is counted. A running PC's sliders are right (its phone is
+  already in the budget's `used`).
+- **Measured only on an M5 Pro** (macOS 27.0.1, `container` 1.5.0). The phone needs no nested virtualization, so it
+  should run on M1/M2 too; nested virtualization is refused there by the chip check.
+- **Phone restarts have no backoff:** the monitor starts a stopped phone again at once, at most 3 times per PC boot,
+  then shows the error.
 
 ## Found by navigation v2 (2026-10-09)
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars

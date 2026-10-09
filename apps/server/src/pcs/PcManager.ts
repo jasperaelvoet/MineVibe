@@ -7,6 +7,8 @@ import type { Logger } from 'pino';
 import { writeFileAtomic } from '../util/atomicFile.js';
 import { instanceIdFor, mountSourceProblem, realpathLoose, tccProtectedReason } from '../util/hostPaths.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
+import { ANDROID_KERNEL, type AndroidKitLike, PHONE_INIT_ARGS } from './android/kit.js';
+import { LINK_PHONE_SCRIPT, OPEN_KVM_SCRIPT, UNLINK_PHONE_SCRIPT } from './android/phone.js';
 import {
   admit,
   type BootCandidate,
@@ -19,17 +21,21 @@ import {
   type PcAllocation,
   planBoot,
 } from './Budget.js';
-import { settleWithin } from './deadline.js';
+import { delay, settleWithin } from './deadline.js';
 import { EngineError } from './drivers/ContainerRuntime.js';
 import {
+  type AndroidDriverOps,
   hasLabels,
+  KERNEL_LABEL,
   MANAGED_LABEL,
   PC_ID_LABEL,
   PC_INSTANCE_LABEL,
   type PcContainerInfo,
   type PcDriver,
   type PcRunSpec,
+  type PhoneRunSpec,
   portProblems,
+  ROLE_LABEL,
   specProblems,
   tokenFingerprint,
   type VolumeInfo,
@@ -37,7 +43,14 @@ import {
 } from './drivers/PcDriver.js';
 import { FrameService, type FrameServiceOptions, type FrameSink } from './FrameService.js';
 import { GUEST_HOME, GUEST_USER } from './guest.js';
-import { freeDiskBytes, freeLoopbackPort, isLoopbackPortFree, readHostFacts } from './host.js';
+import {
+  freeDiskBytes,
+  freeLoopbackPort,
+  isLoopbackPortFree,
+  type NestedVirtualizationSupport,
+  nestedVirtualizationSupport,
+  readHostFacts,
+} from './host.js';
 import { InputRouter, type InputRouterOptions } from './InputRouter.js';
 import { currentRecord, writeInstanceRecord } from './InstanceRegistry.js';
 import {
@@ -55,9 +68,13 @@ import {
   type PcDiskCaps,
   type PcStatus,
   type PcType,
+  PHONE_RESOURCES,
+  phoneContainerName,
+  phoneDataVolumeName,
   resourceProblem,
   sanitizeDiskCaps,
   tmpVolumeName,
+  VIRTUALIZATION_OVERHEAD_MIB,
 } from './PcTypes.js';
 import type { SpacesdPool } from './SpacesdPool.js';
 import {
@@ -90,6 +107,10 @@ import {
  *   reservation until it ends, so concurrent operations never overrun the budget between their awaits.
  * - The monitor acts only on what a fresh `inspect` under the PC's lock shows, never on a list taken
  *   before a concurrent start finished (N1). An unresponsive spacesd degrades a PC, never stops it (N2).
+ * - Capabilities (PLAN §8.7): a Linux PC may have nested virtualization (`--virtualization` with MineVibe's Android
+ *   kernel, M3 or newer; changing it recreates the PC) and an Android phone (a Redroid container on the PC's network,
+ *   started once the PC runs and stopped before it stops; its 4 vCPUs and 4 GiB count in the PC's allocation). Both
+ *   download or build what they need on first use (AndroidKit).
  */
 
 export interface PcRecord {
@@ -116,6 +137,28 @@ export interface PcRecord {
   name?: string;
   /** Reimage this PC when the world ends (PLAN §8.1 "World reset"). */
   wipeOnDeath?: boolean;
+  /** Nested virtualization: KVM inside the PC (Linux PCs on M3 or newer Macs, PLAN §8.7). */
+  virtualization?: boolean;
+  /** The PC has an Android phone (PLAN §8.7). */
+  android?: boolean;
+}
+
+/** The Android phone of a PC (PLAN §8.7). */
+export type PhoneStatus = 'off' | 'preparing' | 'starting' | 'running' | 'error';
+
+export interface PhoneState {
+  status: PhoneStatus;
+  /** 0–100 while `preparing`. */
+  progress?: number;
+  detail?: string;
+  /** Its address on the PC's network once it runs (the PC calls it `android-phone`). */
+  ip?: string;
+}
+
+/** What a Linux PC can do beyond the stock container, and whether this Mac allows it (null = available). */
+export interface PcCapabilities {
+  virtualization: { enabled: boolean; unavailable: string | null };
+  android: { enabled: boolean; unavailable: string | null; phone: PhoneState };
 }
 
 /** A display name: one line of 1–32 printable characters, or null. */
@@ -168,6 +211,8 @@ export interface PcView {
   plugged: boolean;
   pinned: boolean;
   display: [number, number];
+  /** Linux PCs only. */
+  capabilities?: PcCapabilities;
 }
 
 export type DiskLevel = 'ok' | 'low' | 'critical';
@@ -216,6 +261,17 @@ export interface PcManagerOptions {
   shutdownTimeoutMs?: number;
   /** Free-disk watchdog thresholds (M6): warn below 20 GiB, stop PCs below 10 GiB. */
   diskWatch?: { warnBelowGiB?: number; stopBelowGiB?: number };
+  /**
+   * The Android phone and nested virtualization (PLAN §8.7): the kernel and the phone image. Null (default): neither
+   * is available.
+   */
+  android?: AndroidKitLike | null;
+  /** The `android` helper script installed into a PC with a phone (`images/linux-pc/android`); null: none. */
+  androidHelper?: string | null;
+  /** Whether this Mac can nest virtualization (default: asks `sysctl` for the chip, M3 or newer). */
+  nestedVirtualization?: () => Promise<NestedVirtualizationSupport>;
+  /** How long a phone may take to finish booting (default 120 s; it takes 6–7 s). */
+  phoneBootTimeoutMs?: number;
   /** Monitor period for {@link PcManager.startMonitor} (default 10 s). */
   monitorIntervalMs?: number;
   /**
@@ -289,6 +345,18 @@ export function isPortConflictError(err: unknown): boolean {
 
 /** The instance id for a state dir: 8 hex chars of sha256(realpath) (util/hostPaths.ts). */
 export { instanceIdFor };
+
+/** A container of a PC that is not the PC itself (its phone, a kernel build): PC scans skip it. */
+export function isSidecar(c: Pick<PcContainerInfo, 'labels'>): boolean {
+  return c.labels[ROLE_LABEL] !== undefined;
+}
+
+/** The budget entry of the Android kernel build while it runs. */
+const KERNEL_BUILD_ID = '#android-kernel-build';
+/** The serialization key of a PC's phone (its own lock: a phone start never holds the PC's). */
+const phoneLock = (id: string) => `${id}#phone`;
+/** Phone restarts the monitor makes per PC boot before it gives up. */
+const MAX_PHONE_RESTARTS = 3;
 
 const MAX_MOUNTS = 16;
 const MAX_OVERLAYS_PER_MOUNT = 16;
@@ -365,6 +433,19 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #notes = new Map<string, { reason: PcStatusReason; detail: string }>();
   /** The Codex export bind-mounted at {@link CODEX_GUEST_PATH}, or null. */
   readonly #codex: string | null;
+  /** Each PC's Android phone (PLAN §8.7). */
+  readonly #phones = new Map<string, PhoneState>();
+  /** Bumped whenever a PC's phone must start over or go away; a phone start of an older generation gives up. */
+  readonly #phoneGens = new Map<string, number>();
+  /** Phone restarts since its PC booted (the monitor restarts a phone that stopped, at most 3 times). */
+  readonly #phoneRestarts = new Map<string, number>();
+  /** Engine work outside any PC that holds CPU and RAM (the Android kernel build), counted in the budget. */
+  readonly #extraAllocations = new Map<string, PcAllocation>();
+  /** Why this Mac cannot have each capability (null = it can), once {@link init} asked. */
+  #support: { virtualization: string | null; android: string | null } = {
+    virtualization: 'not checked yet',
+    android: 'not checked yet',
+  };
 
   constructor(options: PcManagerOptions) {
     super();
@@ -458,6 +539,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           if (name) rec.name = name;
           else delete rec.name;
           if (typeof p.wipeOnDeath !== 'boolean') delete rec.wipeOnDeath;
+          // Capabilities are Linux-only and stored only when on.
+          const linux = PC_TYPE_SPECS[p.type].family === 'linux';
+          if (p.virtualization !== true || !linux) delete rec.virtualization;
+          if (p.android !== true || !linux) delete rec.android;
           return rec;
         });
       const maxSlot = pcs.reduce((n, p) => Math.max(n, p.slot ?? 0), 0);
@@ -467,8 +552,33 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.#addRecord(this.#newRecord('linux-1', 'linux', {}));
     }
     for (const p of this.#file.pcs) if (!this.#status.has(p.id)) this.#status.set(p.id, { status: 'off' });
+    this.#support = await this.#probeSupport();
     await this.#register(true);
     return this.list();
+  }
+
+  /** Whether this Mac and engine allow nested virtualization and the Android phone (PLAN §8.7). */
+  async #probeSupport(): Promise<{ virtualization: string | null; android: string | null }> {
+    const kit = this.#o.android;
+    if (!kit?.supported) {
+      const why = 'needs Apple container (MineVibe on a Mac)';
+      return { virtualization: why, android: why };
+    }
+    let nested: NestedVirtualizationSupport;
+    try {
+      nested = await (this.#o.nestedVirtualization ?? nestedVirtualizationSupport)();
+    } catch (err) {
+      nested = { supported: false, reason: `could not check this Mac: ${errText(err)}` };
+    }
+    return {
+      virtualization: nested.supported ? null : (nested.reason ?? 'not supported on this Mac'),
+      android: null,
+    };
+  }
+
+  /** Why this Mac cannot have a capability, or null when it can (after {@link init}). */
+  capabilityUnavailable(which: 'virtualization' | 'android'): string | null {
+    return this.#support[which];
   }
 
   /**
@@ -649,8 +759,37 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         plugged: p.plugged,
         pinned: p.pinned,
         display: PC_TYPE_SPECS[p.type].display,
+        ...(PC_TYPE_SPECS[p.type].family === 'linux' ? { capabilities: this.capabilitiesOf(p.id) } : {}),
       };
     });
+  }
+
+  /** A Linux PC's capabilities (PLAN §8.7): what is on, what this Mac allows, and how its phone is doing. */
+  capabilitiesOf(id: string): PcCapabilities {
+    const p = this.#rec(id);
+    return {
+      virtualization: { enabled: p.virtualization === true, unavailable: this.#support.virtualization },
+      android: { enabled: p.android === true, unavailable: this.#support.android, phone: this.phone(id) },
+    };
+  }
+
+  /** The PC's Android phone (`off` when it has none or the PC is not running). */
+  phone(id: string): PhoneState {
+    return { ...(this.#phones.get(id) ?? { status: 'off' }) };
+  }
+
+  #setPhone(id: string, st: PhoneState): void {
+    const prev = this.#phones.get(id);
+    if (
+      prev &&
+      prev.status === st.status &&
+      prev.progress === st.progress &&
+      prev.detail === st.detail &&
+      prev.ip === st.ip
+    )
+      return;
+    this.#phones.set(id, st);
+    if (this.#file.pcs.some((p) => p.id === id)) this.emit('pc.state', this.views());
   }
 
   // ------------------------------------------------------------------ budget
@@ -714,7 +853,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const live = new Map<string, PcContainerInfo>();
       for (const c of cs) {
         const id = c.labels[PC_ID_LABEL];
-        if (id) live.set(id, c);
+        if (id && !isSidecar(c)) live.set(id, c);
       }
       this.#live = live;
     } catch (err) {
@@ -745,13 +884,14 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return ACTIVE.has(this.status(id).status) || this.#reservations.has(id);
   }
 
-  /** Every volume name a record expects (home, tmp, var/tmp, every configured overlay). */
+  /** Every volume name a record expects (home, tmp, var/tmp, every configured overlay, the phone's /data). */
   #expectedVolumes(p: PcRecord): Set<string> {
     const names = new Set([
       homeVolumeName(p.id, this.instanceId),
       tmpVolumeName(p.id, this.instanceId, 'tmp'),
       tmpVolumeName(p.id, this.instanceId, 'vartmp'),
     ]);
+    if (p.android) names.add(phoneDataVolumeName(p.id, this.instanceId));
     for (const m of p.mounts) {
       for (const o of m.overlays) names.add(overlayVolumeName(p.id, this.instanceId, m.host, o));
     }
@@ -795,33 +935,46 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return this.#hostFactsWith(await this.#inventory());
   }
 
-  #diskGiB(p: Pick<PcRecord, 'disk' | 'mounts' | 'type'>): number {
+  #diskGiB(p: Pick<PcRecord, 'disk' | 'mounts' | 'type' | 'android'>): number {
     const overlays = p.mounts.reduce((n, m) => n + m.overlays.length, 0);
     return (
       p.disk.rootfsGiB +
       p.disk.homeGiB +
       (p.disk.tmpGiB ?? 0) +
       (p.disk.varTmpGiB ?? 0) +
-      overlays * p.disk.overlayGiB
+      overlays * p.disk.overlayGiB +
+      (p.android ? PHONE_RESOURCES.dataGiB : 0)
     );
   }
 
+  /**
+   * What a PC holds while active. A phone runs whenever its PC runs, so its vCPUs (plus the engine's per-VM vCPU) and
+   * memory (plus the per-VM overhead) count in the PC's allocation; nested virtualization adds
+   * {@link VIRTUALIZATION_OVERHEAD_MIB} (PLAN §8.7).
+   */
   #alloc(p: PcRecord, active?: boolean): PcAllocation {
     const family = PC_TYPE_SPECS[p.type].family;
+    const linux = family === 'linux';
+    const phone = linux && p.android === true;
+    const overhead = linux ? this.driver.cpuOverhead : 0;
     return {
       id: p.id,
       family,
-      cpus: p.cpus,
-      memMiB: p.memMiB,
-      cpuOverhead: family === 'linux' ? this.driver.cpuOverhead : 0,
+      cpus: p.cpus + (phone ? PHONE_RESOURCES.cpus : 0),
+      memMiB:
+        p.memMiB +
+        (linux && p.virtualization ? VIRTUALIZATION_OVERHEAD_MIB : 0) +
+        (phone ? PHONE_RESOURCES.memMiB + this.#budget.vmMemOverheadMiB : 0),
+      cpuOverhead: phone ? 2 * overhead : overhead,
       active: active ?? (this.#isActive(p.id) || this.#liveActive(p.id)),
       diskGiB: this.#diskGiB(p),
     };
   }
 
-  /** Every PC's allocation plus orphaned volumes' caps (L11). */
+  /** Every PC's allocation plus orphaned volumes' caps (L11) and engine work in progress (the kernel build). */
   #allocations(inv: Inventory): PcAllocation[] {
     const out = this.#file.pcs.map((p) => this.#alloc(p));
+    out.push(...this.#extraAllocations.values());
     const orphans = inv.volumes ? this.#orphanVolumes(inv.volumes) : [];
     const bytes = orphans.reduce((n, v) => n + (v.sizeBytes ?? 0), 0);
     if (bytes > 0) {
@@ -1033,12 +1186,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return info;
   }
 
+  /** Stops the PC's container, its phone first (the phone lives on the PC's network). */
   async #stopContainer(p: PcRecord, timeoutSeconds?: number): Promise<void> {
+    await this.#stopPhone(p.id);
     const info = await this.#inspectOwned(p);
     if (info && info.state !== 'stopped') await this.driver.stop(info.name, timeoutSeconds);
   }
 
   async #removeContainer(p: PcRecord): Promise<void> {
+    await this.#stopPhone(p.id);
     const info = await this.#inspectOwned(p);
     if (info) await this.driver.remove(info.name);
   }
@@ -1114,6 +1270,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await mkdir(this.#codex, { recursive: true });
       binds.push({ source: this.#codex, target: CODEX_GUEST_PATH, readonly: true });
     }
+    const virt = this.#virtualizes(p);
     return {
       name: this.containerNameOf(p.id),
       image: this.#imageOf(p),
@@ -1124,10 +1281,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       network: this.networkNameOf(p.id),
       binds,
       volumes: this.#volumes(p, overlays),
-      labels: { ...this.#ownerLabels(p.id), 'minevibe.type': p.type },
+      labels: {
+        ...this.#ownerLabels(p.id),
+        'minevibe.type': p.type,
+        ...(virt ? { [KERNEL_LABEL]: ANDROID_KERNEL.id } : {}),
+      },
       ownerLabels: this.#ownerLabels(p.id),
       env,
       secretEnv: token ? { CUA_ENV_TOKEN: token } : {},
+      ...(virt ? { virtualization: true, kernel: this.#o.android?.kernelPath as string } : {}),
     };
   }
 
@@ -1177,7 +1339,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     mismatched: string[];
     legacy: { stopped: string[]; left: string[] };
   }> {
-    const containers = await this.driver.list(this.labels);
+    const all = await this.driver.list(this.labels);
+    // Phones and kernel builds are never adopted: whatever still runs of them goes (a running PC's phone is started
+    // again once the PC is up).
+    for (const c of all.filter(isSidecar)) await this.#removeSidecar(c);
+    const containers = all.filter((c) => !isSidecar(c));
     const adopted: string[] = [];
     const orphans: string[] = [];
     const mismatched: string[] = [];
@@ -1346,7 +1512,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const strays = this.#file.pcs
         .filter((p) => !this.#isActive(p.id) && this.#liveActive(p.id))
         .map((p) => this.#alloc(p, true));
-      const orphanAlloc = this.#allocations(inv).filter((a) => a.id === ORPHANS_ID);
+      // Orphaned volumes and engine work in progress (the kernel build) hold their share too.
+      const orphanAlloc = this.#allocations(inv).filter((a) => a.id.startsWith('#'));
       const mayBuild = await this.#mayBuild(candidates.map((c) => this.#rec(c.id)));
       const settings = this.#settings();
       if (mayBuild.size > 0) settings.builderActive = true;
@@ -1710,12 +1877,24 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       await this.ensureImage(image);
       this.#setStatus(p.id, { status: 'booting', progress: 5 });
     }
+    if (this.#virtualizes(p)) await this.#ensureVirtualizationKernel(p);
     await this.#recheckVault(p);
     const hostPort = await freeLoopbackPort(p.hostPort);
     const token = await this.#rotateToken(p.id);
     await this.driver.ensureNetwork(this.networkNameOf(p.id), this.#ownerLabels(p.id));
     const spec = await this.#buildSpec(p, hostPort, token);
-    await this.driver.create(spec);
+    try {
+      await this.driver.create(spec);
+    } catch (err) {
+      // The engine's own refusal on a Mac without nested virtualization (spike S9-android).
+      if (spec.virtualization && /nested virtualization is not supported/i.test(errText(err))) {
+        throw new PcError(
+          'UNAVAILABLE',
+          'this Mac cannot nest virtualization (it needs an M3 or newer chip)',
+        );
+      }
+      throw err;
+    }
     try {
       // H1: the last check before the folders are shared with the guest.
       await this.#recheckVault(p);
@@ -1740,8 +1919,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       onProgress: (pct) => booting(pct),
     });
     await this.#linkCodex(p);
+    if (this.#virtualizes(p)) await this.#openKvm(p);
     this.#notes.delete(p.id);
     this.#setStatus(p.id, { status: 'running', ...(note ? { ...note } : {}) });
+    this.#phoneRestarts.delete(p.id);
+    if (p.android) this.#startPhone(p.id);
   }
 
   /**
@@ -1775,6 +1957,23 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       }
     } catch (err) {
       this.#log?.debug({ pcId: p.id, err: errText(err) }, 'could not link ~/codex in the PC');
+    }
+  }
+
+  /**
+   * Makes /dev/kvm usable by the guest user (it comes up root-only) on a PC with nested virtualization. Best effort: a
+   * PC whose /dev/kvm could not be opened still runs, and `pc__info` says KVM is missing.
+   */
+  async #openKvm(p: PcRecord): Promise<void> {
+    try {
+      const r = await this.driver.exec(this.containerNameOf(p.id), ['sh', '-c', OPEN_KVM_SCRIPT], {
+        user: 'root',
+        timeoutMs: 10_000,
+      });
+      if (r.code !== 0)
+        this.#log?.warn({ pcId: p.id, err: r.stderr.trim().slice(0, 200) }, 'could not open /dev/kvm');
+    } catch (err) {
+      this.#log?.warn({ pcId: p.id, err: errText(err) }, 'could not open /dev/kvm');
     }
   }
 
@@ -1959,6 +2158,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       cpus?: number;
       memMiB?: number;
       mounts?: { host: string; ro?: boolean; overlays?: string[] }[];
+      /** Nested virtualization (PLAN §8.7): a change recreates the PC. */
+      virtualization?: boolean;
+      /** The Android phone (PLAN §8.7): a change starts or removes the phone; the PC keeps running. */
+      android?: boolean;
     },
   ): Promise<{ recreated: boolean; restarted: boolean; warnings: string[] }> {
     const bad = resourceProblem({
@@ -1993,26 +2196,339 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       const typeChanged = type !== cur.type;
       const resChanged = res.cpus !== cur.cpus || res.memMiB !== cur.memMiB || res.shmMiB !== cur.shmMiB;
       const mountsChanged = validated !== null && !sameMounts(cur.mounts, validated.mounts);
+      const virtualization = change.virtualization ?? cur.virtualization === true;
+      const android = change.android ?? cur.android === true;
+      const virtChanged = virtualization !== (cur.virtualization === true);
+      const androidChanged = android !== (cur.android === true);
+      if ((virtualization || android) && PC_TYPE_SPECS[type].family !== 'linux') {
+        throw new PcError('UNAVAILABLE', 'only Linux PCs have nested virtualization and an Android phone');
+      }
+      if (virtChanged && virtualization && this.#support.virtualization) {
+        throw new PcError('UNAVAILABLE', `nested virtualization ${this.#support.virtualization}`);
+      }
+      if (androidChanged && android && this.#support.android) {
+        throw new PcError('UNAVAILABLE', `the Android phone ${this.#support.android}`);
+      }
       const warnings = [...(validated?.warnings ?? [])];
-      if (!typeChanged && !resChanged && !mountsChanged)
+      if (!typeChanged && !resChanged && !mountsChanged && !virtChanged && !androidChanged)
         return { recreated: false, restarted: false, warnings };
-      const next: PcRecord = { ...cur, type, ...res, mounts };
+      const flags = (r: PcRecord) => {
+        if (virtualization) r.virtualization = true;
+        else delete r.virtualization;
+        if (android) r.android = true;
+        else delete r.android;
+        return r;
+      };
+      const next = flags({ ...cur, type, ...res, mounts });
       const active = ACTIVE.has(this.status(id).status);
+      // An Android phone alone starts or goes without touching the PC; everything else recreates it.
+      const recreate = typeChanged || resChanged || mountsChanged || virtChanged;
       const adm = await this.#admit('edit', next, {
         active,
         apply: () => {
           Object.assign(cur, { type, ...res, mounts });
+          flags(cur);
           if (cur.image && !isAllowedImage(type, cur.image)) delete cur.image;
         },
       });
       try {
         await this.#save();
-        await this.#recreateLocked(cur, typeChanged || resChanged ? 'booting' : 'remounting');
+        if (recreate) {
+          await this.#recreateLocked(
+            cur,
+            typeChanged || resChanged || virtChanged ? 'booting' : 'remounting',
+          );
+        }
+        if (androidChanged) await this.#phoneToggled(cur, active && !recreate);
       } finally {
         adm.release();
       }
-      return { recreated: true, restarted: active, warnings: [...warnings, ...adm.warnings] };
+      return { recreated: recreate, restarted: active && recreate, warnings: [...warnings, ...adm.warnings] };
     });
+  }
+
+  // ------------------------------------------------------------------ capabilities (PLAN §8.7)
+
+  /**
+   * Whether the PC's container gets nested virtualization: it is on and this Mac and engine can have it. A record that
+   * says on where they cannot (a `pcs.json` from another Mac, the Docker driver) boots without it rather than not at
+   * all; `capabilities` still shows why.
+   */
+  #virtualizes(p: PcRecord): boolean {
+    return (
+      p.virtualization === true &&
+      PC_TYPE_SPECS[p.type].family === 'linux' &&
+      !!this.#o.android &&
+      this.#support.virtualization === null
+    );
+  }
+
+  /**
+   * The kernel nested virtualization boots with (`--kernel`): built on first use while the PC shows `downloading`
+   * with progress. Refused on a Mac that cannot nest virtualization.
+   */
+  async #ensureVirtualizationKernel(p: PcRecord): Promise<void> {
+    const why = this.#support.virtualization;
+    const kit = this.#o.android;
+    if (why || !kit) throw new PcError('UNAVAILABLE', `nested virtualization ${why ?? 'is unavailable'}`);
+    if (await kit.kernelReady()) return;
+    this.#setStatus(p.id, {
+      status: 'downloading',
+      progress: 0,
+      detail: 'preparing the virtualization kernel',
+    });
+    try {
+      await kit.ensureKernel((pct, detail) =>
+        this.#setStatus(p.id, { status: 'downloading', progress: pct, detail }),
+      );
+    } catch (err) {
+      if (err instanceof PcError) throw err;
+      throw new PcError('UNAVAILABLE', `nested virtualization: ${errText(err)}`);
+    }
+    this.#setStatus(p.id, { status: 'booting', progress: 5 });
+  }
+
+  /**
+   * Admits engine work that is no PC (the Android kernel build) into the budget; it holds its vCPUs and RAM until
+   * the returned release runs. Throws OVER_BUDGET when it does not fit now.
+   */
+  async admitEngineWork(resources: { cpus: number; memMiB: number }): Promise<() => void> {
+    const alloc: PcAllocation = {
+      id: KERNEL_BUILD_ID,
+      family: 'linux',
+      cpus: resources.cpus,
+      memMiB: resources.memMiB,
+      cpuOverhead: this.driver.cpuOverhead,
+      active: true,
+      diskGiB: 0,
+    };
+    await this.#withAdmission(async () => {
+      if (this.#extraAllocations.has(alloc.id))
+        throw new PcError('BUSY', 'the Android kernel is already being built');
+      const inv = await this.#inventory();
+      const res = admit(await this.#hostFactsWith(inv), this.#settings(), this.#allocations(inv), {
+        kind: 'start',
+        pc: alloc,
+      });
+      if (!res.ok) {
+        throw new PcError(res.reason, `no room to build the Android kernel now: ${res.detail}`, res.resource);
+      }
+      this.#extraAllocations.set(alloc.id, alloc);
+    });
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.#extraAllocations.delete(alloc.id);
+    };
+  }
+
+  #phoneGen(id: string): number {
+    return this.#phoneGens.get(id) ?? 0;
+  }
+
+  #bumpPhone(id: string): number {
+    const g = this.#phoneGen(id) + 1;
+    this.#phoneGens.set(id, g);
+    return g;
+  }
+
+  /**
+   * Starts the phone of a running PC in the background: the kernel and image are prepared on first use (`preparing`
+   * with progress), then the phone container is created on the PC's network, booted, and linked into the PC
+   * (`android-phone` in its /etc/hosts, the `android` helper). A newer start, a stop or the PC going down makes it
+   * give up and remove what it made.
+   */
+  #startPhone(id: string): void {
+    if (this.#support.android || !this.#o.android) {
+      this.#setPhone(id, {
+        status: 'error',
+        detail: `the Android phone ${this.#support.android ?? 'is unavailable'}`,
+      });
+      return;
+    }
+    const gen = this.#bumpPhone(id);
+    void this.#runPhone(id, gen).catch((err: unknown) => {
+      if (this.#phoneGen(id) !== gen) return;
+      this.#log?.warn({ pcId: id, err: errText(err) }, 'the Android phone did not start');
+      this.#setPhone(id, { status: 'error', detail: errText(err) });
+    });
+  }
+
+  async #runPhone(id: string, gen: number): Promise<void> {
+    const kit = this.#o.android as AndroidKitLike;
+    const stale = () =>
+      this.#phoneGen(id) !== gen ||
+      this.#closing ||
+      this.get(id)?.android !== true ||
+      this.status(id).status !== 'running';
+    const preparing = (base: number, span: number) => (pct: number, detail: string) => {
+      if (!stale())
+        this.#setPhone(id, { status: 'preparing', progress: Math.round(base + (pct * span) / 100), detail });
+    };
+    this.#setPhone(id, { status: 'preparing', progress: 0, detail: 'getting the Android phone ready' });
+    const kernel = await kit.ensureKernel(preparing(0, 50));
+    if (stale()) return;
+    const image = await kit.ensurePhoneImage(preparing(50, 45));
+    if (stale()) return;
+    await this.#serialize(phoneLock(id), async () => {
+      if (stale()) return;
+      const p = this.#rec(id);
+      const ops = this.driver.android as AndroidDriverOps;
+      this.#setPhone(id, { status: 'starting', detail: 'the Android phone is starting' });
+      const spec = this.#phoneSpec(p, kernel, image);
+      await this.#removePhoneContainer(id);
+      await ops.createPhone(spec);
+      try {
+        await this.driver.start(spec.name);
+        const ip = await this.#waitPhoneBoot(spec.name, stale);
+        if (ip !== null) await this.#linkPhone(p, ip);
+        if (ip === null || stale()) {
+          await this.#removePhoneContainer(id);
+          return;
+        }
+        this.#setPhone(id, { status: 'running', ip, detail: "android-phone:5555 on the PC's network" });
+        this.#log?.info({ pcId: id, ip }, 'Android phone running');
+      } catch (err) {
+        await this.#removePhoneContainer(id).catch(() => {});
+        throw err;
+      }
+    });
+  }
+
+  #phoneSpec(p: PcRecord, kernel: string, image: string): PhoneRunSpec {
+    return {
+      name: phoneContainerName(p.id, this.instanceId),
+      image,
+      kernel,
+      network: this.networkNameOf(p.id),
+      cpus: PHONE_RESOURCES.cpus,
+      memoryMiB: PHONE_RESOURCES.memMiB,
+      data: {
+        name: phoneDataVolumeName(p.id, this.instanceId),
+        target: '/data',
+        sizeGiB: PHONE_RESOURCES.dataGiB,
+      },
+      labels: { ...this.#ownerLabels(p.id), [ROLE_LABEL]: 'phone' },
+      ownerLabels: this.#ownerLabels(p.id),
+      initArgs: [...PHONE_INIT_ARGS],
+    };
+  }
+
+  /** Waits for Android's `sys.boot_completed`; returns the phone's address, or null when the start went stale. */
+  async #waitPhoneBoot(name: string, stale: () => boolean): Promise<string | null> {
+    const deadline = Date.now() + (this.#o.phoneBootTimeoutMs ?? 120_000);
+    while (Date.now() < deadline) {
+      if (stale()) return null;
+      const r = await this.driver
+        .exec(name, ['/system/bin/getprop', 'sys.boot_completed'], { timeoutMs: 5_000 })
+        .catch(() => null);
+      if (r && r.code === 0 && r.stdout.trim() === '1') {
+        const info = await this.driver.inspect(name);
+        if (info?.ipv4) return info.ipv4;
+        throw new Error("the Android phone has no address on the PC's network");
+      }
+      if (r?.code !== 0) {
+        const info = await this.driver.inspect(name).catch(() => null);
+        if (info && info.state !== 'running') throw new Error('the Android phone stopped while it booted');
+      }
+      await delay(500);
+    }
+    throw new Error('the Android phone did not finish booting in time');
+  }
+
+  /** Writes `android-phone` into the PC's /etc/hosts (the address changes every start) and installs the helper. */
+  async #linkPhone(p: PcRecord, ip: string): Promise<void> {
+    const helper = this.#o.androidHelper ? Buffer.from(this.#o.androidHelper).toString('base64') : '';
+    const r = await this.driver.exec(
+      this.containerNameOf(p.id),
+      ['sh', '-c', LINK_PHONE_SCRIPT, 'link-phone', ip, helper],
+      { user: 'root', timeoutMs: 15_000 },
+    );
+    if (r.code !== 0 || r.timedOut) {
+      throw new Error(
+        `could not connect the PC to its Android phone: ${(r.stderr || r.stdout).trim().slice(0, 200)}`,
+      );
+    }
+  }
+
+  /**
+   * Stops and removes the PC's phone (its /data volume stays); a phone start in progress gives up first. Nothing to do
+   * for a PC that never had a phone.
+   */
+  async #stopPhone(id: string): Promise<void> {
+    const had = this.#phones.get(id)?.status ?? 'off';
+    if (!this.driver.android || (had === 'off' && this.get(id)?.android !== true)) return;
+    this.#bumpPhone(id);
+    await this.#serialize(phoneLock(id), () => this.#removePhoneContainer(id));
+    this.#setPhone(id, { status: 'off' });
+  }
+
+  /** Removes this instance's phone container of a PC (stopping it gracefully first). Never touches a foreign one. */
+  async #removePhoneContainer(id: string): Promise<void> {
+    const name = phoneContainerName(id, this.instanceId);
+    const info = await this.driver.inspect(name);
+    if (!info) return;
+    if (!hasLabels(info.labels, this.#ownerLabels(id))) {
+      this.#log?.warn({ name }, "a container with the phone's name is not this MineVibe's; leaving it alone");
+      return;
+    }
+    await this.#removeSidecar(info);
+  }
+
+  /** Stops (5 s grace: Android flushes /data) and deletes a phone or kernel-build container of this instance. */
+  async #removeSidecar(c: PcContainerInfo): Promise<void> {
+    try {
+      if (c.state === 'running' || c.state === 'stopping') await this.driver.stop(c.name, 5);
+      await this.driver.remove(c.name);
+    } catch (err) {
+      this.#log?.warn(
+        { name: c.name, err: errText(err) },
+        'could not remove a phone or kernel-build container',
+      );
+    }
+  }
+
+  /**
+   * The Android phone was turned on or off (PLAN §8.7). On: a running PC gets its phone now, a stopped one when it
+   * starts. Off: the phone goes, with its apps and data (its /data volume), and the PC forgets `android-phone`.
+   */
+  async #phoneToggled(p: PcRecord, running: boolean): Promise<void> {
+    if (p.android) {
+      if (running && this.status(p.id).status === 'running') this.#startPhone(p.id);
+      return;
+    }
+    this.#bumpPhone(p.id);
+    await this.#serialize(phoneLock(p.id), () => this.#removePhoneContainer(p.id));
+    if (this.status(p.id).status === 'running') {
+      await this.driver
+        .exec(this.containerNameOf(p.id), ['sh', '-c', UNLINK_PHONE_SCRIPT], {
+          user: 'root',
+          timeoutMs: 15_000,
+        })
+        .catch(() => null);
+    }
+    await this.driver.removeVolume(phoneDataVolumeName(p.id, this.instanceId)).catch((err: unknown) => {
+      this.#log?.warn({ pcId: p.id, err: errText(err) }, "could not delete the phone's data volume");
+    });
+    this.#phones.delete(p.id);
+    this.#phoneRestarts.delete(p.id);
+    this.emit('pc.state', this.views());
+  }
+
+  /** The monitor found a running PC's phone stopped: start it again, at most {@link MAX_PHONE_RESTARTS} times. */
+  #phoneStopped(id: string): void {
+    const n = (this.#phoneRestarts.get(id) ?? 0) + 1;
+    this.#phoneRestarts.set(id, n);
+    if (n > MAX_PHONE_RESTARTS) {
+      this.#setPhone(id, {
+        status: 'error',
+        detail: "the Android phone keeps stopping; turn it off and on again in the PC's settings",
+      });
+      return;
+    }
+    this.#log?.warn({ pcId: id, restart: n }, 'the Android phone stopped; starting it again');
+    this.#startPhone(id);
   }
 
   /** The crew cap the claude reserve is computed from. */
@@ -2097,6 +2613,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#healthNext.delete(id);
       this.#notes.delete(id);
       this.#live.delete(id);
+      this.#phones.delete(id);
+      this.#phoneRestarts.delete(id);
+      this.#bumpPhone(id);
       await this.#save();
       this.emit('pc.state', this.views());
     });
@@ -2171,12 +2690,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     // Status epochs as of before the list: a PC whose status moves on meanwhile is not judged by it.
     const epochs = new Map(this.#file.pcs.map((p) => [p.id, this.#epochOf(p.id)]));
     let live: Map<string, PcContainerInfo>;
+    const phones = new Map<string, PcContainerInfo>();
     try {
       const cs = await this.driver.list(this.labels);
       live = new Map();
       for (const c of cs) {
         const id = c.labels[PC_ID_LABEL];
-        if (id) live.set(id, c);
+        if (!id) continue;
+        if (!isSidecar(c)) live.set(id, c);
+        else if (c.labels[ROLE_LABEL] === 'phone') phones.set(id, c);
       }
       this.#live = live;
     } catch (err) {
@@ -2204,6 +2726,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           if (fresh?.state === 'running' || !unchanged()) return;
           this.#log?.warn({ pcId: p.id, state: fresh?.state ?? 'gone' }, 'PC container stopped unexpectedly');
           await this.#detachViewers(p.id);
+          await this.#stopPhone(p.id);
           this.#setStatus(p.id, {
             status: 'error',
             reason: 'crashed',
@@ -2211,6 +2734,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           });
         });
       } else if (st === 'running') {
+        if (p.android && this.phone(p.id).status === 'running' && phones.get(p.id)?.state !== 'running') {
+          // The list may predate the phone's start: only a fresh look decides.
+          const fresh = await this.driver
+            .inspect(phoneContainerName(p.id, this.instanceId))
+            .catch(() => undefined);
+          if (fresh !== undefined && fresh?.state !== 'running' && this.phone(p.id).status === 'running') {
+            this.#phoneStopped(p.id);
+          }
+        }
         if (pass < (this.#healthNext.get(p.id) ?? 0)) continue;
         try {
           const h = await this.pool.health(p.id);
@@ -2315,8 +2847,15 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     const active = this.#file.pcs.filter(
       (p) => ACTIVE.has(this.status(p.id).status) || this.#liveActive(p.id),
     );
+    // A phone whose PC is no longer active (it crashed) goes too.
+    const strayPhones = this.#file.pcs.filter(
+      (p) => !active.includes(p) && this.phone(p.id).status !== 'off',
+    );
     const grace = Math.max(1, Math.floor(budgetMs / 1000) - 8);
-    const all = Promise.allSettled(active.map((p) => this.stop(p.id, { timeoutSeconds: grace })));
+    const all = Promise.allSettled([
+      ...active.map((p) => this.stop(p.id, { timeoutSeconds: grace })),
+      ...strayPhones.map((p) => this.#stopPhone(p.id)),
+    ]);
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([all, new Promise((r) => (timer = setTimeout(r, budgetMs)))]);
     if (timer) clearTimeout(timer);

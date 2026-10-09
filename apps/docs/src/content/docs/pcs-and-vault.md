@@ -5,8 +5,8 @@ description: In-game PCs are real Linux containers and macOS VMs. How they are s
 
 :::caution[Partly built]
 - **Built:** the Linux PC manager in Node (Apple `container` and Docker drivers, the budget, the Vault, live
-  frames and input, measured in spikes S4 and S5 and in `npm run test:pcs`), and the PC blocks, monitors,
-  PcControlScreen and PcConfigScreen in the mod.
+  frames and input, measured in spikes S4 and S5 and in `npm run test:pcs`), the Android phone and nested
+  virtualization (spike S9-android), and the PC blocks, monitors, PcControlScreen and PcConfigScreen in the mod.
 - **Being wired together:** the two halves, so that a PC on a desk in the game is a running Linux PC; and agents
   at PCs (milestone M5).
 - **Planned:** macOS PCs (milestone M9, after spike S6). Items marked "untested" have not been measured yet.
@@ -71,8 +71,9 @@ with a warning if you overcommit past that, up to 1.5 times.
   are kept; system-level changes outside your home folder are lost. The config screen warns you first.
 
 Sneak + right-click a desk or monitor to open its config screen: CPU and memory sliders that stop at your
-free budget, bars for the host's remaining budget, the macOS slot count (`n/2`), the Vault list, and Start,
-Stop, Restart, Reimage, Watch and Decommission.
+free budget, the **KVM** and **Android** switches of a Linux PC (see [Running Android apps](#running-android-apps)),
+bars for the host's remaining budget, the macOS slot count (`n/2`), the Vault list, and Start, Stop, Restart,
+Reimage, Watch and Decommission.
 
 ## Sitting at a PC
 
@@ -103,6 +104,9 @@ calendar); walking, mining, crafting and building wait until it stands up.
   if the file changed since (you edited it in the meantime).
 - **Long commands** (servers, builds) run in the background; the agent hears when they finish.
 - **Apps it opens close when it stands up**, like its commands.
+- **It knows what its PC can do:** its handoff and its `info` tool list the PC's CPU (64-bit ARM), memory, free
+  disk, network, KVM, the Android phone and the installed tools. When something needs a switch only you can flip
+  (Android, KVM), it tells you plainly which one instead of giving up.
 
 - **Plan first.** Turn on Plan-first in an agent's AgentScreen (it is off for every role) and its PC sessions
   start in plan mode: the agent can look around and run read-only commands, and nothing changes until you approve
@@ -116,6 +120,36 @@ calendar); walking, mining, crafting and building wait until it stands up.
   seconds: the agent is interrupted, its processes on the PC are stopped, and it can't sit back down for 30
   seconds.
 - Agents also stand up on their own to fight or to survive, and when you call a meeting.
+
+## Running Android apps
+
+A Linux PC can have an **Android phone** next to it: a real Android 15 device (Redroid, 64-bit ARM) that you and
+your agents use from the PC. Turn on **Android** in the PC's config screen and press **Apply**.
+
+- **The first time** MineVibe downloads Android (about 660 MB) and builds its Android kernel (a few minutes).
+  The config screen shows the progress ("Android phone: preparing 42% · building the Android kernel"). After that
+  the phone starts in about 10 seconds whenever the PC starts.
+- **On the PC**, run `android install game.apk && android open`. The phone appears in a window called
+  "Android phone" on the PC's desktop: click to tap, right-click for back. An agent does the same from its shell.
+  `android status`, `android apps`, `android launch <package>`, `android screenshot` and `android adb …` do the
+  rest. The first `android open` installs adb and builds scrcpy inside the PC (about a minute).
+- **Apps and saves are kept** across PC restarts (the phone's storage is an 8 GiB volume). Turning Android off,
+  Reimage and Decommission delete the phone's apps and data.
+- **Budget:** the phone takes 4 vCPUs and 4 GiB of the PC pool whenever its PC runs. Turning it on is refused when
+  that does not fit.
+- **Limits:** 64-bit ARM apps only (`arm64-v8a`; Apple silicon runs no 32-bit ARM or x86 code, so an APK built only
+  for those fails with a clear message), no Google Play services (apps that need a Google sign-in or Play
+  Integrity refuse to run), and software graphics (2D and light 3D games are fine; heavy 3D games are slow).
+- **Why not the Android emulator?** Google publishes no Android SDK emulator for ARM Linux, and a full Android VM
+  inside a PC (Cuttlefish on nested virtualization) took over 30 minutes to boot in our tests. The phone runs as
+  its own lightweight VM instead, next to the PC, on the PC's private network; nothing else can reach it.
+
+### Nested virtualization (KVM)
+
+Turn on **KVM** in a Linux PC's config screen to give it `/dev/kvm`, for QEMU and other virtual machines inside the
+PC. It needs a Mac with an **M3 or newer** chip (the toggle says why when your Mac cannot), uses MineVibe's Android
+kernel (built on first use, as above), and **recreates the PC** when you change it (your home folder and the Vault
+are kept). You don't need it for Android apps.
 
 ## The Vault
 

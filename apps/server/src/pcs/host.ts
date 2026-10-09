@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { statfs } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { availableParallelism, freemem, totalmem } from 'node:os';
@@ -58,4 +59,50 @@ export function freeLoopbackPort(preferred?: number): Promise<number> {
     });
   if (preferred && preferred >= 1024) return tryPort(preferred).catch(() => tryPort(0));
   return tryPort(0);
+}
+
+/** Whether this Mac can run nested virtualization in a container (PLAN §8.7). */
+export interface NestedVirtualizationSupport {
+  supported: boolean;
+  /** Why not, in the player's words ("needs an M3 or newer Mac"). */
+  reason?: string;
+  /** The chip, as `sysctl machdep.cpu.brand_string` names it. */
+  chip?: string;
+}
+
+/**
+ * Apple's Virtualization framework nests only on M3 or newer (`VZGenericPlatformConfiguration
+ * .isNestedVirtualizationSupported`, macOS 15+; MineVibe needs 26 anyway). Pure: the chip name in, the verdict out.
+ */
+export function nestedVirtualizationFor(
+  chip: string,
+  platform: NodeJS.Platform = process.platform,
+): NestedVirtualizationSupport {
+  if (platform !== 'darwin') return { supported: false, reason: 'needs a Mac (Apple container)' };
+  const m = /Apple M(\d+)/.exec(chip);
+  if (!m) return { supported: false, reason: 'needs an Apple silicon Mac with an M3 or newer chip', chip };
+  return Number(m[1]) >= 3
+    ? { supported: true, chip }
+    : {
+        supported: false,
+        reason: `needs an M3 or newer Mac (this one has an ${chip.replace(/^Apple /, '')})`,
+        chip,
+      };
+}
+
+/** {@link nestedVirtualizationFor} of this Mac's chip (`sysctl -n machdep.cpu.brand_string`). */
+export function nestedVirtualizationSupport(): Promise<NestedVirtualizationSupport> {
+  return new Promise((resolvePromise) => {
+    if (process.platform !== 'darwin') {
+      resolvePromise(nestedVirtualizationFor('', process.platform));
+      return;
+    }
+    execFile('/usr/sbin/sysctl', ['-n', 'machdep.cpu.brand_string'], { timeout: 5_000 }, (err, stdout) => {
+      resolvePromise(
+        err
+          ? { supported: false, reason: 'could not tell which chip this Mac has' }
+          : nestedVirtualizationFor(stdout.trim()),
+      );
+    });
+  });
 }

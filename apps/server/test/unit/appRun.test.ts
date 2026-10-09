@@ -108,6 +108,11 @@ function fakeBundle(
   );
   writeFileSync(join(at(BUNDLE_LAYOUT.linuxPc), 'minevibe-entrypoint.sh'), '#!/bin/sh\n');
   chmodSync(join(at(BUNDLE_LAYOUT.linuxPc), 'minevibe-entrypoint.sh'), 0o755);
+  writeFileSync(
+    join(at(BUNDLE_LAYOUT.linuxPc), 'sudoers-minevibe'),
+    'Defaults env_keep += "MV_TAG MV_CALL"\n',
+  );
+  writeFileSync(join(at(BUNDLE_LAYOUT.linuxPc), 'android'), '#!/bin/bash\n');
   mkdirSync(join(at(BUNDLE_LAYOUT.jre), 'bin'), { recursive: true });
   writeFileSync(join(at(BUNDLE_LAYOUT.jre), 'bin', 'MineVibe'), '');
   mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true });

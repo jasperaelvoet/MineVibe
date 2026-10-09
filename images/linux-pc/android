@@ -1,0 +1,219 @@
+#!/bin/bash
+# android: run Android apps on this MineVibe PC's Android phone (PLAN §8.7).
+#
+# The phone is a separate Android 15 device (Redroid, arm64) that MineVibe starts next to this PC when the player turns
+# on "Android" in the PC's settings. This PC reaches it as `android-phone` (adb on port 5555). There is no Android
+# SDK emulator for arm64 Linux; this is the way to run APKs here.
+#
+#   android status              is the phone there and booted? which tools are installed?
+#   android install <app.apk>   install (or update) an APK on the phone
+#   android open                show the phone in a window on this desktop ("Android phone"; mouse = touch)
+#   android launch <package>    start an installed app
+#   android apps                installed apps (not the system ones)
+#   android screenshot [file]   save the phone's screen as PNG (default ~/android-screenshot.png)
+#   android setup               install adb and scrcpy now (the other commands do it when needed)
+#   android adb <args...>       any adb command against the phone
+#
+# Limits: 64-bit arm64 apps only (arm64-v8a; Apple silicon runs no 32-bit ARM or x86 code), no Google Play services,
+# software graphics (2D and light 3D games are fine).
+#
+# MineVibe installs this file (images/linux-pc/android) into every PC with a phone; edit it there.
+set -uo pipefail
+
+SERIAL="android-phone:5555"
+PREFIX="$HOME/.local"
+STATE="$HOME/.cache/minevibe-android"
+SCRCPY_VERSION="3.3.4"
+SCRCPY_SRC_URL="https://github.com/Genymobile/scrcpy/archive/refs/tags/v${SCRCPY_VERSION}.tar.gz"
+SCRCPY_SRC_SHA256="03b72d1f71ca7783cff2995ca7cd8c67b9b75038a3cc35e443a1913e951b49dd"
+SCRCPY_SERVER_URL="https://github.com/Genymobile/scrcpy/releases/download/v${SCRCPY_VERSION}/scrcpy-server-v${SCRCPY_VERSION}"
+SCRCPY_SERVER_SHA256="8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e"
+RUNTIME_PKGS="adb libsdl2-2.0-0 libavcodec60 libavdevice60 libavformat60 libavutil58 libswresample4 libusb-1.0-0"
+BUILD_PKGS="gcc pkg-config meson ninja-build libsdl2-dev libavcodec-dev libavdevice-dev libavformat-dev libavutil-dev libswresample-dev libusb-1.0-0-dev curl ca-certificates"
+export PATH="$PREFIX/bin:$PATH"
+export DISPLAY="${DISPLAY:-:1}"
+
+say() { echo "android: $*"; }
+die() { echo "android: $*" >&2; exit "${2:-1}"; }
+
+no_phone() {
+  die "no Android phone is attached to this PC. Ask the player to turn on \"Android\" in this PC's settings (the config screen of its workstation). It starts in about 10 seconds; the very first time MineVibe also downloads Android (~660 MB) and builds a kernel, which takes a few minutes. There is no Android SDK emulator for this CPU (arm64), so don't install one." 3
+}
+
+phone_address() {
+  getent hosts android-phone 2>/dev/null | awk '{ print $1; exit }'
+}
+
+apt_install() {
+  if ! sudo -n true 2>/dev/null; then die "installing $* needs sudo, which is not available"; fi
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" >"$STATE/apt.log" 2>&1 && return 0
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq >>"$STATE/apt.log" 2>&1
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" >>"$STATE/apt.log" 2>&1 ||
+    die "apt-get install failed (see $STATE/apt.log)"
+}
+
+need_adb() {
+  mkdir -p "$STATE"
+  if ! command -v adb >/dev/null 2>&1; then
+    say "installing adb (once per PC start, ~15 s)..."
+    apt_install adb
+  fi
+}
+
+scrcpy_ok() {
+  [ -x "$PREFIX/bin/scrcpy" ] || return 1
+  "$PREFIX/bin/scrcpy" --version 2>/dev/null | head -n 1 | grep -q "scrcpy $SCRCPY_VERSION" || return 1
+  ! ldd "$PREFIX/bin/scrcpy" 2>/dev/null | grep -q 'not found'
+}
+
+fetch() { # url sha256 file
+  curl -fsSL --retry 3 -o "$3.part" "$1" || die "download failed: $1"
+  echo "$2  $3.part" | sha256sum -c --status - || { rm -f "$3.part"; die "checksum mismatch: $1"; }
+  mv -f "$3.part" "$3"
+}
+
+need_scrcpy() {
+  need_adb
+  scrcpy_ok && return 0
+  if [ -x "$PREFIX/bin/scrcpy" ] && "$PREFIX/bin/scrcpy" --version 2>/dev/null | head -n 1 | grep -q "scrcpy $SCRCPY_VERSION"; then
+    say "installing scrcpy's libraries (~15 s)..."
+    apt_install $RUNTIME_PKGS
+    scrcpy_ok && return 0
+  fi
+  # Ubuntu's scrcpy (1.25) cannot mirror Android 15, and scrcpy publishes no arm64 Linux build: build 3.x from source.
+  say "setup 1/3: installing build tools (~30 s, once)..."
+  apt_install $RUNTIME_PKGS $BUILD_PKGS
+  local src="$STATE/scrcpy-$SCRCPY_VERSION"
+  say "setup 2/3: downloading scrcpy $SCRCPY_VERSION (checksums verified)..."
+  fetch "$SCRCPY_SRC_URL" "$SCRCPY_SRC_SHA256" "$STATE/scrcpy-src.tar.gz"
+  fetch "$SCRCPY_SERVER_URL" "$SCRCPY_SERVER_SHA256" "$STATE/scrcpy-server"
+  rm -rf "$src" && mkdir -p "$src" && tar -xzf "$STATE/scrcpy-src.tar.gz" -C "$src" --strip-components=1
+  say "setup 3/3: building scrcpy (~30 s, once)..."
+  (cd "$src" &&
+    meson setup build --buildtype=release --strip --prefix="$PREFIX" -Dprebuilt_server="$STATE/scrcpy-server" \
+      >"$STATE/build.log" 2>&1 &&
+    ninja -C build >>"$STATE/build.log" 2>&1 &&
+    ninja -C build install >>"$STATE/build.log" 2>&1) || die "building scrcpy failed (see $STATE/build.log)"
+  rm -rf "$src"
+  scrcpy_ok || die "scrcpy was built but does not run (see $STATE/build.log)"
+  say "scrcpy $SCRCPY_VERSION is installed in $PREFIX/bin"
+}
+
+connect() {
+  [ -n "$(phone_address)" ] || no_phone
+  need_adb
+  adb connect "$SERIAL" >/dev/null 2>&1
+  local i
+  for i in $(seq 1 30); do
+    if [ "$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+      export ANDROID_SERIAL="$SERIAL"
+      return 0
+    fi
+    [ "$i" = 1 ] && say "waiting for the phone to finish booting..."
+    adb connect "$SERIAL" >/dev/null 2>&1
+    sleep 1
+  done
+  die "the phone at $SERIAL does not answer; check \`android status\` and ask the player to look at the PC's settings"
+}
+
+third_party() {
+  adb shell pm list packages -3 2>/dev/null | tr -d '\r' | sed 's/^package://' | sort
+}
+
+cmd_status() {
+  local ip
+  ip="$(phone_address)"
+  if [ -z "$ip" ]; then
+    echo "Android phone: not attached (the player turns it on in this PC's settings)"
+  else
+    echo "Android phone: android-phone ($ip), adb $SERIAL"
+    if command -v adb >/dev/null 2>&1; then
+      adb connect "$SERIAL" >/dev/null 2>&1
+      if [ "$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+        echo "  booted: Android $(adb -s "$SERIAL" shell getprop ro.build.version.release | tr -d '\r'), ABI $(adb -s "$SERIAL" shell getprop ro.product.cpu.abilist | tr -d '\r')"
+      else
+        echo "  not answering yet (it may still be booting)"
+      fi
+    fi
+  fi
+  echo "adb: $(command -v adb >/dev/null 2>&1 && adb version | head -n 1 || echo 'not installed (android setup)')"
+  echo "scrcpy: $(scrcpy_ok && echo "$SCRCPY_VERSION in $PREFIX/bin" || echo 'not installed (android setup)')"
+  if pgrep -f 'scrcpy.*Android phone' >/dev/null 2>&1; then echo "window: open"; else echo "window: closed (android open)"; fi
+}
+
+cmd_install() {
+  [ $# -ge 1 ] || die "usage: android install <app.apk>"
+  local apk="$1"
+  [ -f "$apk" ] || die "no such file: $apk"
+  connect
+  local before after out
+  before="$(third_party)"
+  out="$(adb install -r "$apk" 2>&1)"
+  case "$out" in
+    *Success*) ;;
+    *NO_MATCHING_ABIS*)
+      die "this APK has no 64-bit ARM (arm64-v8a) build, so it cannot run here: Apple silicon runs no 32-bit ARM or x86 code. Look for an arm64-v8a or universal APK." 4 ;;
+    *) echo "$out" >&2; die "install failed" ;;
+  esac
+  after="$(third_party)"
+  local new
+  new="$(comm -13 <(echo "$before") <(echo "$after") | head -n 5)"
+  if [ -n "$new" ]; then say "installed $new (start it with: android launch $new)"; else say "installed (an update of an app already on the phone)"; fi
+}
+
+cmd_open() {
+  connect
+  need_scrcpy
+  if pgrep -f 'scrcpy.*Android phone' >/dev/null 2>&1; then
+    say "the \"Android phone\" window is already open"
+    return 0
+  fi
+  mkdir -p "$STATE"
+  nohup "$PREFIX/bin/scrcpy" --serial "$SERIAL" --window-title "Android phone" --max-size 1024 --max-fps 60 --no-audio \
+    >"$STATE/scrcpy.log" 2>&1 &
+  local i
+  for i in $(seq 1 20); do
+    if command -v xdotool >/dev/null 2>&1 && xdotool search --name '^Android phone$' >/dev/null 2>&1; then
+      say "the \"Android phone\" window is open on the desktop (click = touch, right click = back)"
+      return 0
+    fi
+    pgrep -f 'scrcpy.*Android phone' >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  pgrep -f 'scrcpy.*Android phone' >/dev/null 2>&1 && { say "scrcpy started (window \"Android phone\")"; return 0; }
+  tail -n 20 "$STATE/scrcpy.log" >&2
+  die "scrcpy did not start"
+}
+
+cmd_launch() {
+  [ $# -ge 1 ] || die "usage: android launch <package> (see: android apps)"
+  connect
+  local act
+  act="$(adb shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "$1" 2>/dev/null | tr -d '\r' | tail -n 1)"
+  case "$act" in
+    */*) ;;
+    *) die "$1 has no app to start (is it installed? android apps)" ;;
+  esac
+  adb shell am start -W -n "$act" 2>&1 | tr -d '\r' | grep -q 'Status: ok' || die "could not start $act"
+  say "started $1"
+}
+
+cmd_screenshot() {
+  local out="${1:-$HOME/android-screenshot.png}"
+  connect
+  adb exec-out screencap -p >"$out" || die "screenshot failed"
+  say "saved $out"
+}
+
+case "${1:-help}" in
+  status) cmd_status ;;
+  setup) need_scrcpy; say "ready" ;;
+  install) shift; cmd_install "$@" ;;
+  open) cmd_open ;;
+  launch) shift; cmd_launch "$@" ;;
+  apps) connect; third_party ;;
+  screenshot) shift; cmd_screenshot "$@" ;;
+  adb) shift; connect; exec adb "$@" ;;
+  help | -h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;
+  *) die "unknown command: $1 (android help)" ;;
+esac

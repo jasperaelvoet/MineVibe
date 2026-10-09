@@ -31,6 +31,9 @@ import org.jspecify.annotations.Nullable;
  *   <li>vCPU and RAM sliders clamped to what the host budget has free ({@link PcBudgetMath}); above the comfortable
  *       CPU count the slider warns about overcommit. {@code linux} / {@code linux-slim} is a type switch. Apply sends
  *       {@code pc.config}; a resize or type change recreates the PC (the screen says so).</li>
+ *   <li>Linux PCs: <b>KVM</b> (nested virtualization; changing it recreates the PC) and <b>Android</b> (a phone next to the
+ *       PC; applying starts or removes it, off deletes its apps), each greyed out with the reason when this Mac cannot
+ *       have it, plus the phone's status line (PLAN §8.7).</li>
  *   <li>Host budget bars (vCPU, RAM pool, free disk) and macOS slots {@code n/2}.</li>
  *   <li>The Vault: each folder read-write or read-only, removable; <b>Browse…</b> asks the app for a native folder
  *       picker ({@code host.pick_folder}); new folders start read-only, and the screen says plainly what read-write
@@ -53,6 +56,10 @@ public final class PcConfigScreen extends Screen {
 	private int draftCpus;
 	private int draftMemoryMiB;
 	private String draftType = "linux";
+	private boolean draftVirtualization;
+	private boolean draftAndroid;
+	/** Widget rows of the left column above the budget bars (set by {@link #init}). */
+	private int leftRows = 4;
 	private List<Pc.VaultMount> draftMounts = new ArrayList<>();
 	private boolean draftLoaded;
 	private long seenVersion = -1;
@@ -86,12 +93,31 @@ public final class PcConfigScreen extends Screen {
 		this.draftCpus = info.cpus();
 		this.draftMemoryMiB = info.memoryMiB();
 		this.draftType = info.type();
+		this.draftVirtualization = virtualizationOn(info);
+		this.draftAndroid = androidOn(info);
 		this.draftMounts = new ArrayList<>(info.mounts());
 		this.draftLoaded = true;
 	}
 
+	private static boolean virtualizationOn(final Pc.PcInfo info) {
+		return PcCapabilityText.virtualizationOn(info);
+	}
+
+	private static boolean androidOn(final Pc.PcInfo info) {
+		return PcCapabilityText.androidOn(info);
+	}
+
+	/** Changes that recreate the PC (the screen warns about them). */
 	private boolean resourcesChanged(final Pc.PcInfo info) {
-		return this.draftCpus != info.cpus() || this.draftMemoryMiB != info.memoryMiB() || !this.draftType.equals(info.type());
+		return this.draftCpus != info.cpus()
+				|| this.draftMemoryMiB != info.memoryMiB()
+				|| !this.draftType.equals(info.type())
+				|| this.draftVirtualization != virtualizationOn(info);
+	}
+
+	/** The Android phone was switched (no recreate: the phone starts or goes next to the PC). */
+	private boolean androidChanged(final Pc.PcInfo info) {
+		return this.draftAndroid != androidOn(info);
 	}
 
 	private boolean mountsChanged(final Pc.PcInfo info) {
@@ -168,6 +194,32 @@ public final class PcConfigScreen extends Screen {
 			}).bounds(left, row, colW, 20).tooltip(Tooltip.create(Component.translatable("screen.minevibe.pc.type.tooltip"))).build());
 			row += ROW;
 		}
+		Pc.Capabilities caps = info.capabilities();
+		if (caps != null) {
+			// Two toggles on one row: nested virtualization and the Android phone (PLAN §8.7).
+			int half = (colW - 4) / 2;
+			String virtWhy = caps.virtualization().unavailable();
+			Button virt = this.addRenderableWidget(Button.builder(toggleLabel("screen.minevibe.pc.virt", this.draftVirtualization), b -> {
+				this.draftVirtualization = !this.draftVirtualization;
+				b.setMessage(toggleLabel("screen.minevibe.pc.virt", this.draftVirtualization));
+				this.refreshButtons();
+			}).bounds(left, row, half, 20).tooltip(Tooltip.create(virtWhy != null
+					? Component.translatable("screen.minevibe.pc.virt.unavailable", virtWhy)
+					: Component.translatable("screen.minevibe.pc.virt.tooltip"))).build());
+			// A Mac that cannot have it may still turn it off.
+			virt.active = virtWhy == null || this.draftVirtualization;
+			String androidWhy = caps.android().unavailable();
+			Button phone = this.addRenderableWidget(Button.builder(toggleLabel("screen.minevibe.pc.android", this.draftAndroid), b -> {
+				this.draftAndroid = !this.draftAndroid;
+				b.setMessage(toggleLabel("screen.minevibe.pc.android", this.draftAndroid));
+				this.refreshButtons();
+			}).bounds(left + half + 4, row, colW - half - 4, 20).tooltip(Tooltip.create(androidWhy != null
+					? Component.translatable("screen.minevibe.pc.android.unavailable", androidWhy)
+					: Component.translatable("screen.minevibe.pc.android.tooltip"))).build());
+			phone.active = androidWhy == null || this.draftAndroid;
+			row += ROW;
+		}
+		this.leftRows = (row - top) / ROW + 1;
 		this.applyButton = this.addRenderableWidget(Button.builder(Component.translatable("screen.minevibe.pc.apply"), b -> this.apply())
 			.bounds(left, row, colW, 20)
 			.tooltip(Tooltip.create(Component.translatable("screen.minevibe.pc.apply.tooltip")))
@@ -229,7 +281,7 @@ public final class PcConfigScreen extends Screen {
 			return;
 		}
 		if (this.applyButton != null) {
-			this.applyButton.active = !this.busy && (this.resourcesChanged(info) || this.mountsChanged(info));
+			this.applyButton.active = !this.busy && (this.resourcesChanged(info) || this.mountsChanged(info) || this.androidChanged(info));
 		}
 		String s = info.status();
 		boolean on = PcBudgetMath.isActive(s);
@@ -278,7 +330,9 @@ public final class PcConfigScreen extends Screen {
 		Integer memory = this.draftMemoryMiB != info.memoryMiB() ? this.draftMemoryMiB : null;
 		String type = !this.draftType.equals(info.type()) ? this.draftType : null;
 		List<Pc.VaultMount> mounts = this.mountsChanged(info) ? List.copyOf(this.draftMounts) : null;
-		Pc.PcConfig config = new Pc.PcConfig(this.pcId, null, type, cpus, memory, mounts, null, null);
+		Boolean virtualization = this.draftVirtualization != virtualizationOn(info) ? this.draftVirtualization : null;
+		Boolean android = this.androidChanged(info) ? this.draftAndroid : null;
+		Pc.PcConfig config = new Pc.PcConfig(this.pcId, null, type, cpus, memory, mounts, null, null, virtualization, android);
 		this.track(PcBridge.request(Pc.PC_CONFIG, config, PcBridge.ACTION_TIMEOUT), ok -> {
 			boolean recreate = ok.has("recreate") && ok.get("recreate").getAsBoolean();
 			this.say(Component.translatable(recreate ? "screen.minevibe.pc.saved.recreate" : "screen.minevibe.pc.saved"), 0xFF4ADE80);
@@ -392,7 +446,7 @@ public final class PcConfigScreen extends Screen {
 
 		// Budget bars under the resources.
 		Pc.Budget budget = PcStates.budget();
-		int by = 34 + ("macos".equals(info.type()) ? 3 : 4) * ROW + 2;
+		int by = 34 + this.leftRows * ROW + 2;
 		if (budget != null) {
 			by = bar(g, left, by, colW, Component.translatable("screen.minevibe.pc.budget.cpu", budget.cpu().used(), budget.cpu().total()), budget.cpu().used(), budget.cpu().total());
 			by = bar(g, left, by, colW, Component.translatable("screen.minevibe.pc.budget.memory", gib(budget.memoryMiB().used()), gib(budget.memoryMiB().pool())), budget.memoryMiB().used(), budget.memoryMiB().pool());
@@ -405,6 +459,12 @@ public final class PcConfigScreen extends Screen {
 		}
 		if (this.resourcesChanged(info)) {
 			g.textWithWordWrap(this.font, Component.translatable("screen.minevibe.pc.recreate.warning"), left, by, colW, 0xFFFBBF24, false);
+			by += 2 + this.font.wordWrapHeight(Component.translatable("screen.minevibe.pc.recreate.warning"), colW);
+		}
+		Component phoneLine = this.phoneLine(info);
+		if (phoneLine != null) {
+			int color = this.androidChanged(info) ? 0xFFFBBF24 : phoneColor(info);
+			g.textWithWordWrap(this.font, phoneLine, left, by, colW, color, false);
 		}
 
 		// Vault rows.
@@ -438,6 +498,31 @@ public final class PcConfigScreen extends Screen {
 		double f = total <= 0 ? 0 : Math.max(0, Math.min(1, used / (double) total));
 		g.fill(x, by, x + (int) (w * f), by + 4, f > 0.9 ? 0xFFF87171 : 0xFF4ADE80);
 		return by + 8;
+	}
+
+	/** {@code KVM: On} / {@code Android: Off}. */
+	private static Component toggleLabel(final String key, final boolean on) {
+		return Component.translatable(key, Component.translatable(on ? "screen.minevibe.pc.toggle.on" : "screen.minevibe.pc.toggle.off"));
+	}
+
+	/** What applying the Android switch does, or how the phone is doing; null for a PC without one. */
+	private @Nullable Component phoneLine(final Pc.PcInfo info) {
+		if (this.androidChanged(info)) {
+			return Component.translatable(this.draftAndroid ? "screen.minevibe.pc.android.will_start" : "screen.minevibe.pc.android.will_delete");
+		}
+		if (!androidOn(info) || info.capabilities() == null) {
+			return null;
+		}
+		return Component.translatable("screen.minevibe.pc.android.status", PcCapabilityText.phoneStatus(info.capabilities().android()));
+	}
+
+	private static int phoneColor(final Pc.PcInfo info) {
+		String status = info.capabilities() != null ? info.capabilities().android().status() : "off";
+		return switch (status) {
+			case "running" -> 0xFF4ADE80;
+			case "error" -> 0xFFF87171;
+			default -> 0xFF9CA3AF;
+		};
 	}
 
 	static String gib(final long mib) {
