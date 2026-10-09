@@ -746,6 +746,13 @@ describe('PC tools V2: screen, windows and accessibility', () => {
       },
       { id: 'w1', title: 'Shell: ada', app: 'Xfce4-terminal', pid: 9, focused: false, onScreen: true, z: 4 },
     ]);
+    // macOS keeps a window Terminal closed as HIDDEN, without `onScreen`: it is not on the screen.
+    guest.rpc.set('WindowsService/ListWindows', () => ({
+      windows: [
+        { ref: { id: 'w3', epoch: '1' }, title: 'Shell: ada', state: 'WINDOW_STATE_HIDDEN', zOrder: 16 },
+      ],
+    }));
+    expect((await api.windows('linux-1'))[0]).toMatchObject({ id: 'w3', state: 'HIDDEN', onScreen: false });
   });
 
   it('window operations need the seated agent and map a gone window to WINDOW_NOT_FOUND', async () => {

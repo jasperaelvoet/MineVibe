@@ -114,7 +114,8 @@ export function parseWindow(w: RawWindow): GuestWindow | null {
     ...(b ? { bounds: b } : {}),
     focused: w.focused === true,
     ...(w.state ? { state: w.state.replace(/^WINDOW_STATE_/, '') } : {}),
-    onScreen: w.onScreen !== false,
+    // macOS lists windows an app closed but keeps (Terminal) as HIDDEN, without `onScreen` (M9).
+    onScreen: w.onScreen !== false && w.state !== 'WINDOW_STATE_HIDDEN',
     ...(typeof w.zOrder === 'number' ? { z: w.zOrder } : {}),
   };
 }

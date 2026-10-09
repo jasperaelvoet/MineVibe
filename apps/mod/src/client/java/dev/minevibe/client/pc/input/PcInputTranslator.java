@@ -12,7 +12,9 @@ import java.util.Set;
  *
  * <ul>
  *   <li>Text ({@code charTyped}) goes as {@code text}: layout-correct, so AZERTY and Option-characters work.</li>
- *   <li>Special keys go as {@code key} down/up by scancode; repeats are not re-sent (the guest repeats a held key).</li>
+ *   <li>Special keys go as {@code key} down/up by scancode; repeats are not re-sent (the guest repeats a held key),
+ *       except to a macOS guest, whose spacesd cannot hold a key: there every repeat is another key-down (Node presses
+ *       the key once per key-down).</li>
  *   <li>Printable keys with Ctrl or Cmd held go as keys (by keycode, see {@link SdlKeyMap}); their text is
  *       ignored.</li>
  *   <li>Modifiers are sent lazily: right before a key or button that needs them, and released again before text (so a
@@ -48,6 +50,10 @@ public final class PcInputTranslator {
 			return false;
 		}
 		if (this.keysDown.containsKey(scancode)) {
+			// A macOS guest cannot hold a key (its spacesd only presses), so the host's repeats press it again there.
+			if (this.macGuest) {
+				this.out.add(Pc.InputEvent.key(this.keysDown.get(scancode), true));
+			}
 			return true;
 		}
 		this.syncModifiers(modifiers);

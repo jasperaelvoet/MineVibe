@@ -35,6 +35,51 @@ stood a block over the water, brains 0/3): water exits in both tiers, no digging
 reflex, `STUCK_IN_WATER`, and stuck agents speaking up; also a GameTest's office (`OfficeService.overrideLayout`) that
 was saved into the GameTest world, which is kept from run to run, so every later player stand-in was welcomed into it.
 
+## Found in M9, macOS PCs (2026-10-09, PLAN §8.7, spikes/s6-lume/result.md)
+- **MineVibe.app does not bundle `lume.app` yet.** PLAN §9.1 puts the notarized app in `Contents/Helpers/lume.app`
+  and `buildMacDriver` uses it when it is there, but `packaging/build-app.ts` does not copy it. Until it does, the app
+  provisions Lume like dev: the pinned release from GitHub (6 MB, size + sha256, every file, `codesign`, `spctl`) into
+  `<App Support>/MineVibe/lume/install` on the first macOS PC.
+- **Vault folders under TCC-protected folders are unchecked inside MineVibe.app.** In dev `lume serve` inherits the
+  terminal's grants, so a share under `~/Documents` worked (S6). The app's serve is its child too, but whether its
+  Virtualization process may read `~/Documents` without a prompt is untested.
+- **The guest keeps the image's well-known password (`lume`).** PLAN §8.5 asked for a rotated one. Rotating it would
+  break the autologin spacesd needs (`/etc/kcpassword` and the login keychain hold the old one), and it guards
+  nothing MineVibe leaves open: VNC, Remote Login and sharing are off, the VM is reachable from the host only (NAT),
+  and agents in the PC have NOPASSWD sudo anyway (`/etc/sudoers.d/minevibe`).
+- **Automatic macOS update checks stay on in the guest.** `softwareupdate --schedule off` exits 0 without effect on
+  macOS 26 and the preference file needs Full Disk Access, so a PC may download updates in the background.
+- **Input on macOS PCs is presses, clicks and drags.** spacesd's macOS driver has no key or button down/up, so the
+  InputRouter presses a key at its key-down (the mod sends a held key's repeats as more key-downs), clicks at a
+  button-up where the button went down (double and triple clicks by timing) and drags from there when the pointer
+  moved. A drag happens at release (no hover or live feedback while dragging), a modifier tapped alone does nothing,
+  and an agent's `hold_key` presses its key once.
+- **Host edits reach a macOS guest only through a refresh before the next PcApi call.** GUI apps and watch-mode tools
+  inside the PC still see stale files (no kqueue events, cached data) until an agent's next file or shell call; a
+  host edit during a call is seen from the call after it. The refresh remounts the shares only when nothing in the
+  guest holds them busy: with a background job whose working directory is in the Vault it only purges, and a file
+  the Mac replaced by rename (an editor's atomic save) stays "No such file" in the guest until the job ends.
+- **Apps an agent opens in an app that already runs survive its stand-up.** `open --env` tags an app `open`
+  launches, so the seat's sweep kills it; a new Terminal or Finder window of the running app carries no tag.
+- **A started image download cannot be cancelled from the game.** Stopping a PC that waits for it ends the wait at
+  once (the PC turns `off`), but the pull goes on in `lume serve` for the next start; only quitting MineVibe stops it.
+- **The disk budget charges each macOS PC a 40 GiB allowance.** Clones share the base's ~29 GiB through APFS clonefile
+  and Lume's `diskSize.allocated` counts the shared blocks, so what a PC really adds is not measured; the base itself
+  is counted by the free disk.
+- **The Lume root is not excluded from Time Machine** (≥ 29 GiB base plus clones), like the `container` app root.
+- **`lume serve` has no authentication.** It binds 127.0.0.1 on a random port, so the guests cannot reach it (S6), but
+  any process of any local user can: on a Mac shared between accounts, another user could run a VM through it that
+  shares this user's folders (the serve runs as this user). Lume has no token option; a fix needs one upstream or a
+  socket only this user can open.
+- **Double and triple clicks on macOS PCs are not checked against the guest.** The InputRouter sends the first click at
+  once and the second as `click{count:2}`; if spacesd's macOS driver makes a count-2 click two clicks (as pynput
+  does), the app sees click, click, double-click (harmless in editors; Finder opens the file once).
+- **The serve log grows with every API call** (Lume logs request and response bodies: tens of MB a day with two
+  running PCs and the monitor) and is only rotated when the serve starts.
+- **The serve's lifeline checks lease pids with `kill -0` only.** A pid reused within its 10 s window keeps the serve
+  (and its VMs) alive until the next MineVibe takes the lock; comparing start times in `sh` was judged too fragile, a
+  wrong "dead" would kill live VMs.
+
 ## Found by navigation v2 (2026-10-09)
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars
   Tier 2 built; any other walk leaves its scaffold (noted, so agents may break it again later).

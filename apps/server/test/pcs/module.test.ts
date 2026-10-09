@@ -8,16 +8,37 @@ import { silentLogger } from '../../src/log.js';
 import type { RuntimeContext } from '../../src/orchestrator/modules.js';
 import { GiB, type HostFacts } from '../../src/pcs/Budget.js';
 import { AppleContainerDriver } from '../../src/pcs/drivers/AppleContainerDriver.js';
+import type { LumeLocks } from '../../src/pcs/drivers/LumeRuntime.js';
 import {
+  buildMacDriver,
   buildPcParts,
   containerRootsFor,
   createPcModule,
   loadContainerLock,
+  lumeRootFor,
   PcModuleImpl,
 } from '../../src/pcs/module.js';
 import { PcManager } from '../../src/pcs/PcManager.js';
 import { FakePcBridge } from './fakeBridge.js';
 import { FakeDriver, fakePool } from './fakes.js';
+
+const LOCKS: LumeLocks = {
+  lume: {
+    version: '0.6.1',
+    url: 'https://example.invalid/lume.tgz',
+    size: 1,
+    sha256: 'b'.repeat(64),
+    teamId: 'YCK386LBJ7',
+    appFiles: { 'Contents/MacOS/lume': 'c'.repeat(64) },
+  },
+  image: {
+    ref: 'ghcr.io/trycua/macos:26-test',
+    lumeRef: 'macos:26-test',
+    digest: `sha256:${'d'.repeat(64)}`,
+    downloadBytes: 1,
+    diskBytes: 1,
+  },
+};
 
 let dir: string;
 let host: HostFacts;
@@ -213,6 +234,25 @@ describe('container roots and lock', () => {
       MINEVIBE_CONTAINER_INSTALL_ROOT: '/tmp/b',
     });
     expect(overridden).toEqual({ appRoot: '/tmp/a', installRoot: '/tmp/b' });
+  });
+
+  it('macOS PCs: Lume lives under MineVibe-dev in dev and play, App Support in the app; off without pins', () => {
+    const paths = resolvePaths({ env: {}, home: '/Users/me', platform: 'darwin' });
+    expect(lumeRootFor({ mode: 'dev', paths }, {})).toBe(
+      join(homedir(), 'Library', 'Application Support', 'MineVibe-dev', 'lume'),
+    );
+    expect(lumeRootFor({ mode: 'play', paths }, {})).toBe(lumeRootFor({ mode: 'dev', paths }, {}));
+    expect(lumeRootFor({ mode: 'app', paths }, {})).toBe(
+      '/Users/me/Library/Application Support/MineVibe/lume',
+    );
+    expect(lumeRootFor({ mode: 'dev', paths }, { MINEVIBE_LUME_ROOT: '/tmp/lume-x' })).toBe('/tmp/lume-x');
+    const ctx = context(new FakePcBridge());
+    expect(buildMacDriver(ctx, { runtime: 'container', macos: true }, null, silentLogger())).toBeNull();
+    expect(buildMacDriver(ctx, { runtime: 'container', macos: false }, LOCKS, silentLogger())).toBeNull();
+    const mac = buildMacDriver(ctx, { runtime: 'container', macos: true }, LOCKS, silentLogger());
+    expect(mac?.kind).toBe('lume');
+    expect(mac?.image.digest).toBe(LOCKS.image.digest);
+    expect(mac?.engineHeld).toBe(false);
   });
 
   it('reads the first usable vendor lock, else a version-only lock', () => {

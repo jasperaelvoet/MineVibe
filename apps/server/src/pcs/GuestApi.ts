@@ -39,37 +39,23 @@ import {
   anchorGlob,
   applyEdit,
   EDIT_MAX_BYTES,
-  EDIT_READ_SCRIPT,
-  EDIT_WRITE_SCRIPT,
-  EXEC_PREFIX,
   exitCodeOf,
   formatRgJson,
   GLOB_COUNT_CAP,
   GLOB_LIMIT,
-  GLOB_SCRIPT,
-  GREP_SCRIPT,
-  GUEST_DISPLAY,
-  GUEST_HOME,
-  GUEST_USER,
+  type GuestProfile,
   grepArgs,
+  guestProfile,
   JOB_FILE_MAX_BYTES,
-  JOBS_DIR,
   JobBuffer,
   mirrorPrompt,
-  OPEN_SCRIPT,
   OutputCapture,
   parseRgCount,
   READ_MAX_BYTES,
-  READ_SCRIPT,
   SCRIPT_EXIT,
-  STAT_TARGET_SCRIPT,
   SWEEP_LAUNCH,
-  SWEEP_SCRIPT,
   splitGlob,
-  TRIM_JOB_SCRIPT,
   WRITE_MAX_BYTES,
-  WRITE_SCRIPT,
-  ZOOM_SCRIPT,
 } from './guest.js';
 import {
   InputError,
@@ -112,6 +98,11 @@ export interface PcGuestApiOptions {
     status(id: string): PcStatusInfo;
     /** Where the PC sees the read-only Codex export (`/mnt/codex`), or null (PcManager.codexPathOf). */
     codexPathOf?(id: string): string | null;
+    /**
+     * Called before every file or shell call with the files it writes (`write`, `edit`); resolves with the function that
+     * ends it (PcManager.guestIo: a macOS guest whose Vault the host changed is refreshed first, S6).
+     */
+    guestIo?(id: string, writes?: readonly string[]): Promise<() => void>;
   };
   /** The connected spacesd client of a running PC (SpacesdPool.client). */
   readonly client: (pcId: string) => Promise<SpacesdClientLike>;
@@ -280,6 +271,21 @@ export class PcGuestApi implements PcApi {
     return rec;
   }
 
+  /** The PC's guest (user, home, scripts): Linux or macOS. */
+  #guest(pcId: string): GuestProfile {
+    return guestProfile(PC_TYPE_SPECS[this.#record(pcId).type].family);
+  }
+
+  /** Runs `fn` as one guest I/O call (see `pcs.guestIo`) that writes the files `writes` names. */
+  async #io<T>(pcId: string, fn: () => Promise<T>, writes: readonly string[] = []): Promise<T> {
+    const done = this.#o.pcs.guestIo ? await this.#o.pcs.guestIo(pcId, writes) : () => {};
+    try {
+      return await fn();
+    } finally {
+      done();
+    }
+  }
+
   /** The client of a running PC; PC_UNKNOWN / PC_DOWN otherwise. */
   async #running(pcId: string): Promise<SpacesdClientLike> {
     this.#record(pcId);
@@ -331,17 +337,17 @@ export class PcGuestApi implements PcApi {
   async info(pcId: string): Promise<PcGuestInfo> {
     const rec = this.#record(pcId);
     const status = this.#o.pcs.status(pcId).status;
-    const family = PC_TYPE_SPECS[rec.type].family;
+    const g = this.#guest(pcId);
     const screen = await this.#screen(pcId, status === 'running');
     const osVersion = status === 'running' ? await this.#osVersion(pcId) : null;
     return {
       pcId,
       type: rec.type as PcGuestInfo['type'],
       status,
-      os: family === 'macos' ? 'macos' : 'linux',
+      os: g.os,
       screen,
-      user: GUEST_USER,
-      home: GUEST_HOME,
+      user: g.user,
+      home: g.home,
       mounts: rec.mounts.map((m) => ({ hostPath: m.host, mode: m.ro ? ('ro' as const) : ('rw' as const) })),
       codexPath: this.#o.pcs.codexPathOf?.(pcId) ?? null,
       cpus: rec.cpus,
@@ -489,11 +495,12 @@ export class PcGuestApi implements PcApi {
       const s = Math.min(options.fit.w / w, options.fit.h / h);
       const fw = Math.max(1, Math.round(w * s));
       const fh = Math.max(1, Math.round(h * s));
+      const g = this.#guest(pcId);
       const z = await this.#script(
         pcId,
-        ZOOM_SCRIPT,
+        g.scripts.zoom,
         [`${w}x${h}+${x}+${y}`, `${fw}x${fh}!`, String(quality)],
-        { env: { DISPLAY: GUEST_DISPLAY }, timeoutMs: 15_000 },
+        { env: g.display ? { DISPLAY: g.display } : {}, timeoutMs: 15_000 },
       ).catch(() => null);
       if (z && z.code === 0 && z.stdout.byteLength > 0) {
         return { mime: 'image/jpeg', data: new Uint8Array(z.stdout), w: fw, h: fh, screen, scale: fw / w };
@@ -698,13 +705,14 @@ export class PcGuestApi implements PcApi {
     this.#checkTag(pcId, request.tag);
     const before = await this.windows(pcId).catch(() => [] as GuestWindow[]);
     const callId = randomBytes(6).toString('hex');
-    const r = await this.#script(pcId, OPEN_SCRIPT, [request.target, ...(request.args ?? [])], {
+    const g = this.#guest(pcId);
+    const r = await this.#script(pcId, g.scripts.open, [request.target, ...(request.args ?? [])], {
       env: {
-        DISPLAY: GUEST_DISPLAY,
-        USER: GUEST_USER,
+        ...(g.display ? { DISPLAY: g.display } : {}),
+        USER: g.user,
         MV_TAG: request.tag,
         MV_CALL: callId,
-        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        PATH: g.path ?? '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       },
       timeoutMs: 20_000,
     });
@@ -718,7 +726,7 @@ export class PcGuestApi implements PcApi {
         `nothing opens ${request.target}${installed ? `. Installed apps include: ${installed}` : ''}`,
       );
     }
-    const via = /^via (.*)$/m.exec(out)?.[1]?.trim() ?? 'xdg-open';
+    const via = /^via (.*)$/m.exec(out)?.[1]?.trim() ?? (g.os === 'macos' ? 'open' : 'xdg-open');
     if (!this.#seatOwns(pcId, request.tag)) {
       void this.sweep(pcId, 'MV_CALL', callId).catch(() => 0);
       throw err(PC_ERROR_CODES.DENIED, `the seat ${request.tag} ended while ${request.target} opened`);
@@ -843,24 +851,24 @@ export class PcGuestApi implements PcApi {
     );
     const callId = randomBytes(6).toString('hex');
     const jobId = request.jobId ?? `bg${randomBytes(4).toString('hex')}`;
-    const outputPath = request.outputFile ? `${JOBS_DIR}/${jobId}.out` : undefined;
+    const g = this.#guest(pcId);
+    const outputPath = request.outputFile ? `${g.jobsDir}/${jobId}.out` : undefined;
     const env = new Map<string, string>(Object.entries(request.env ?? {}));
-    const cwd = request.cwd ?? GUEST_HOME;
+    const cwd = request.cwd ?? g.home;
     const prompt = mirrorPrompt(request.command, {
       agentId: agent.agentId,
       pcId,
       cwd: env.get('MV_CWD') ?? cwd,
+      home: g.home,
     });
     for (const [k, v] of Object.entries({
-      HOME: GUEST_HOME,
-      USER: GUEST_USER,
-      LOGNAME: GUEST_USER,
-      SHELL: '/bin/bash',
-      DISPLAY: GUEST_DISPLAY,
+      HOME: g.home,
+      USER: g.user,
+      LOGNAME: g.user,
+      ...g.execEnv,
       TERM: 'dumb',
       PAGER: 'cat',
       GIT_PAGER: 'cat',
-      DEBIAN_FRONTEND: 'noninteractive',
       MV_TAG: request.tag,
       MV_CALL: callId,
       MV_EXEC_CWD: cwd,
@@ -870,12 +878,13 @@ export class PcGuestApi implements PcApi {
     })) {
       env.set(k, v);
     }
-    const script = `${EXEC_PREFIX}\n${request.command}`;
+    const script = `${g.execPrefix}\n${request.command}`;
     const preserve = 'HOME,DISPLAY,MV_TAG,MV_CALL,MV_CWD,MV_EXEC_CWD,MV_PROMPT,MV_OUT,MV_KEEP';
     const program = request.root ? 'sudo' : 'bash';
     const args = request.root ? ['-n', `--preserve-env=${preserve}`, 'bash', '-lc', script] : ['-lc', script];
     const toBackground = request.onTimeout === 'background';
     let proc: SpacesdProcessLike;
+    const ioDone = this.#o.pcs.guestIo ? await this.#o.pcs.guestIo(pcId) : () => {};
     try {
       proc = await withDeadline(this.#callTimeoutMs, 'spawn', (signal) =>
         c.spawn(
@@ -883,7 +892,7 @@ export class PcGuestApi implements PcApi {
             program,
             args,
             env,
-            user: GUEST_USER,
+            user: g.user,
             stdin: false,
             // A backstop: Node's own timeout (and sweep) normally ends a foreground command first. A command that
             // may move to the background gets none: its job lifetime ends it.
@@ -894,6 +903,7 @@ export class PcGuestApi implements PcApi {
         ),
       );
     } catch (e) {
+      ioDone();
       // The spawn may still land after its deadline: whatever runs with this call id is swept (best effort).
       void this.sweep(pcId, 'MV_CALL', callId).catch(() => 0);
       throw err(
@@ -901,23 +911,27 @@ export class PcGuestApi implements PcApi {
         `starting the command failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    if (!this.#seatOwns(pcId, request.tag)) {
-      // The seat ended while the command was starting (its kill sweep may have run before the process existed).
-      await this.#killCall(pcId, callId, proc);
-      throw err(
-        PC_ERROR_CODES.DENIED,
-        `the seat ${request.tag} ended while the command started; it was killed`,
-      );
+    try {
+      if (!this.#seatOwns(pcId, request.tag)) {
+        // The seat ended while the command was starting (its kill sweep may have run before the process existed).
+        await this.#killCall(pcId, callId, proc);
+        throw err(
+          PC_ERROR_CODES.DENIED,
+          `the seat ${request.tag} ended while the command started; it was killed`,
+        );
+      }
+      const job = { jobId, outputPath, lifetimeMs };
+      if (outputPath) {
+        const key = `${pcId}\n${request.tag}`;
+        const files = this.#seatFiles.get(key) ?? new Set<string>();
+        if (files.size < 1_000) files.add(outputPath);
+        this.#seatFiles.set(key, files);
+      }
+      if (request.background) return this.#startJob(pcId, request.tag, callId, proc, job, null);
+      return await this.#runForeground(pcId, request.tag, callId, proc, timeoutMs, toBackground ? job : null);
+    } finally {
+      ioDone();
     }
-    const job = { jobId, outputPath, lifetimeMs };
-    if (outputPath) {
-      const key = `${pcId}\n${request.tag}`;
-      const files = this.#seatFiles.get(key) ?? new Set<string>();
-      if (files.size < 1_000) files.add(outputPath);
-      this.#seatFiles.set(key, files);
-    }
-    if (request.background) return this.#startJob(pcId, request.tag, callId, proc, job, null);
-    return this.#runForeground(pcId, request.tag, callId, proc, timeoutMs, toBackground ? job : null);
   }
 
   async #runForeground(
@@ -1058,9 +1072,14 @@ export class PcGuestApi implements PcApi {
     if (spec.outputPath) {
       const check = setInterval(() => {
         if (job.running && spec.outputPath)
-          void this.#script(pcId, TRIM_JOB_SCRIPT, [spec.outputPath, String(JOB_FILE_MAX_BYTES)], {
-            timeoutMs: 20_000,
-          }).catch(() => null);
+          void this.#script(
+            pcId,
+            this.#guest(pcId).scripts.trimJob,
+            [spec.outputPath, String(JOB_FILE_MAX_BYTES)],
+            {
+              timeoutMs: 20_000,
+            },
+          ).catch(() => null);
       }, JOB_FILE_CHECK_MS);
       check.unref?.();
       job.timers.push(check);
@@ -1247,17 +1266,23 @@ export class PcGuestApi implements PcApi {
 
   /** Kills every guest process whose environment holds `name=value`, and their descendants; returns how many. */
   async sweep(pcId: string, name: string, value: string): Promise<number> {
-    const r = await this.#script(pcId, SWEEP_LAUNCH, [name, value, SWEEP_SCRIPT], { timeoutMs: 30_000 });
+    const r = await this.#script(pcId, SWEEP_LAUNCH, [name, value, this.#guest(pcId).scripts.sweep], {
+      timeoutMs: 30_000,
+    });
     const n = Number.parseInt(r.stdout.toString('utf8').trim().split('\n').at(-1) ?? '', 10);
     return Number.isFinite(n) ? n : 0;
   }
 
   // ------------------------------------------------------------------------------------------- files
 
-  async readFile(pcId: string, request: ReadRequest): Promise<ReadResult> {
+  readFile(pcId: string, request: ReadRequest): Promise<ReadResult> {
+    return this.#io(pcId, () => this.#readFile(pcId, request));
+  }
+
+  async #readFile(pcId: string, request: ReadRequest): Promise<ReadResult> {
     const offset = Math.max(1, Math.floor(request.offset ?? 1));
     const limit = Math.max(1, Math.min(100_000, Math.floor(request.limit ?? 2000)));
-    const r = await this.#script(pcId, READ_SCRIPT, [
+    const r = await this.#script(pcId, this.#guest(pcId).scripts.read, [
       request.path,
       String(offset),
       String(limit),
@@ -1298,7 +1323,11 @@ export class PcGuestApi implements PcApi {
     }
     await this.#running(pcId);
     this.#seatedAgent(pcId);
-    const r = await this.#script(pcId, WRITE_SCRIPT, [path], { stdin: data });
+    const r = await this.#io(
+      pcId,
+      () => this.#script(pcId, this.#guest(pcId).scripts.write, [path], { stdin: data }),
+      [path],
+    );
     const known = scriptError(r, path);
     if (known) throw known;
     if (r.code !== 0) throw err(PC_ERROR_CODES.GUEST_ERROR, `writing ${path} failed: ${tail(r.stderr)}`);
@@ -1308,7 +1337,12 @@ export class PcGuestApi implements PcApi {
   async editFile(pcId: string, request: EditRequest): Promise<number> {
     await this.#running(pcId);
     this.#seatedAgent(pcId);
-    const read = await this.#script(pcId, EDIT_READ_SCRIPT, [request.path, String(EDIT_MAX_BYTES)]);
+    return this.#io(pcId, () => this.#editFile(pcId, request), [request.path]);
+  }
+
+  async #editFile(pcId: string, request: EditRequest): Promise<number> {
+    const g = this.#guest(pcId);
+    const read = await this.#script(pcId, g.scripts.editRead, [request.path, String(EDIT_MAX_BYTES)]);
     const knownRead = scriptError(read, request.path);
     if (knownRead) throw knownRead;
     if (read.code !== 0)
@@ -1328,7 +1362,7 @@ export class PcGuestApi implements PcApi {
       request.replaceAll === true,
     );
     const sha = createHash('sha256').update(read.stdout).digest('hex');
-    const write = await this.#script(pcId, EDIT_WRITE_SCRIPT, [request.path, sha], {
+    const write = await this.#script(pcId, g.scripts.editWrite, [request.path, sha], {
       stdin: enc.encode(content),
     });
     const knownWrite = scriptError(write, request.path);
@@ -1340,15 +1374,18 @@ export class PcGuestApi implements PcApi {
   }
 
   async glob(pcId: string, request: GlobRequest): Promise<GlobResult> {
-    const base = request.path ?? GUEST_HOME;
+    const g = this.#guest(pcId);
+    const base = request.path ?? g.home;
     const split = splitGlob(request.pattern, base);
     if (split.pattern.length === 0) return { paths: [], truncated: false, total: 0, countIsComplete: true };
-    const r = await this.#script(pcId, GLOB_SCRIPT, [
-      split.dir,
-      anchorGlob(split.pattern),
-      String(GLOB_LIMIT),
-      String(GLOB_COUNT_CAP),
-    ]);
+    const r = await this.#io(pcId, () =>
+      this.#script(pcId, g.scripts.glob, [
+        split.dir,
+        anchorGlob(split.pattern),
+        String(GLOB_LIMIT),
+        String(GLOB_COUNT_CAP),
+      ]),
+    );
     if (r.code === SCRIPT_EXIT.NOT_FOUND)
       throw err(PC_ERROR_CODES.NOT_FOUND, `no such directory: ${split.dir}`);
     const known = scriptError(r, split.dir);
@@ -1370,9 +1407,10 @@ export class PcGuestApi implements PcApi {
   }
 
   async grep(pcId: string, request: GrepRequest): Promise<GrepResult> {
-    const path = request.path ?? GUEST_HOME;
+    const g = this.#guest(pcId);
+    const path = request.path ?? g.home;
     const args = grepArgs({ ...request, path });
-    const r = await this.#script(pcId, GREP_SCRIPT, args);
+    const r = await this.#io(pcId, () => this.#script(pcId, g.scripts.grep, args));
     const stdout = r.stdout.toString('utf8');
     // ripgrep: 0 = matches, 1 = none, 2 = an error (also when some files could not be read: keep what it found).
     if (r.code === 2 && stdout.trim().length === 0) {
@@ -1417,7 +1455,11 @@ export class PcGuestApi implements PcApi {
     };
   }
 
-  async stat(pcId: string, path: string): Promise<FileStat> {
+  stat(pcId: string, path: string): Promise<FileStat> {
+    return this.#io(pcId, () => this.#stat(pcId, path));
+  }
+
+  async #stat(pcId: string, path: string): Promise<FileStat> {
     const c = await this.#running(pcId);
     try {
       const e = await withDeadline(this.#callTimeoutMs, 'stat', (signal) => c.stat(path, { signal }));
@@ -1442,7 +1484,7 @@ export class PcGuestApi implements PcApi {
 
   /** {@link stat} of a symlink's target (a dangling link does not exist). */
   async #statTarget(pcId: string, path: string): Promise<FileStat> {
-    const r = await this.#script(pcId, STAT_TARGET_SCRIPT, [path], { timeoutMs: 10_000 });
+    const r = await this.#script(pcId, this.#guest(pcId).scripts.statTarget, [path], { timeoutMs: 10_000 });
     if (r.code === SCRIPT_EXIT.NOT_FOUND) return { exists: false, size: 0, mtimeMs: 0 };
     if (r.code !== 0) throw err(PC_ERROR_CODES.GUEST_ERROR, `stat ${path} failed: ${tail(r.stderr)}`);
     const [type = '', size = '0', mtime = '0'] = r.stdout.toString('utf8').trim().split('|');
@@ -1454,8 +1496,12 @@ export class PcGuestApi implements PcApi {
     };
   }
 
-  async readBytes(pcId: string, path: string, maxBytes: number): Promise<Uint8Array> {
-    const st = await this.stat(pcId, path);
+  readBytes(pcId: string, path: string, maxBytes: number): Promise<Uint8Array> {
+    return this.#io(pcId, () => this.#readBytes(pcId, path, maxBytes));
+  }
+
+  async #readBytes(pcId: string, path: string, maxBytes: number): Promise<Uint8Array> {
+    const st = await this.#stat(pcId, path);
     if (!st.exists) throw err(PC_ERROR_CODES.NOT_FOUND, `no such file or directory: ${path}`);
     if (st.kind === 'dir') throw err(PC_ERROR_CODES.NOT_A_FILE, `${path} is a directory`);
     if (st.size > maxBytes) {
@@ -1485,17 +1531,19 @@ export class PcGuestApi implements PcApi {
     options: { timeoutMs?: number; stdin?: Uint8Array; env?: Readonly<Record<string, string>> } = {},
   ): Promise<ScriptResult> {
     const c = await this.#running(pcId);
+    const g = this.#guest(pcId);
     const timeoutMs = options.timeoutMs ?? this.#scriptTimeoutMs;
     const env = new Map<string, string>([
-      ['HOME', GUEST_HOME],
+      ['HOME', g.home],
       ['LC_ALL', 'C.UTF-8'],
+      ...(g.path ? ([['PATH', g.path]] as [string, string][]) : []),
       ...Object.entries(options.env ?? {}),
     ]);
     const command = {
       program: 'bash',
       args: ['-c', script, 'guest', ...args],
       env,
-      user: GUEST_USER,
+      user: g.user,
       stdin: options.stdin !== undefined,
       timeoutMs,
     };

@@ -95,6 +95,37 @@ describe('pc.state (PcInfo)', () => {
     expect(PcInfo.safeParse(gone).success).toBe(true);
   });
 
+  it('carries the download prompt only while the PC awaits consent', () => {
+    const consent = {
+      consentId: 'macos-image-0a1b',
+      what: 'macOS 26 image',
+      bytes: 23.8e9,
+      freeBytes: 300e9,
+    };
+    const mac = {
+      ...view,
+      pcId: 'mac-1',
+      type: 'macos' as const,
+      status: 'awaiting_consent' as const,
+      consent,
+    };
+    const info = toPcInfo(mac, { ...rec, id: 'mac-1', type: 'macos' } as PcRecord, {
+      seat: new SeatBook().get('mac-1'),
+      diskGiB: 40,
+    });
+    expect(info?.consent).toEqual(consent);
+    expect(PcInfo.safeParse(info).success).toBe(true);
+    const later = toPcInfo(
+      { ...mac, status: 'downloading' },
+      { ...rec, id: 'mac-1', type: 'macos' } as PcRecord,
+      {
+        seat: new SeatBook().get('mac-1'),
+        diskGiB: 40,
+      },
+    );
+    expect(later?.consent).toBeNull();
+  });
+
   it('has no wire form for a windows PC', () => {
     expect(
       toPcInfo({ ...view, type: 'windows' }, rec, { seat: new SeatBook().get('x'), diskGiB: 1 }),

@@ -179,6 +179,12 @@ export interface FakeHealth {
   probes?: Map<string, number>;
   /** Guest commands (`run`) received, with the URL of the PC; absent: the fake has no `run`. */
   runs?: { url: string; program: string; args: string[]; user?: string; env: Map<string, string> }[];
+  /** What a `run` prints (default: nothing). */
+  runStdout?: (cmd: { program: string; args: string[] }) => string;
+  /** spacesd `displays()` JSON (absent: the fake has no `displays`). */
+  displays?: string;
+  /** Keyboard and pointer JSON received (absent: the fake has no input calls). */
+  input?: string[];
 }
 
 export function fakePool(
@@ -208,11 +214,25 @@ export function fakePool(
                   env: Map<string, string>;
                 }) => {
                   health.runs?.push({ url, ...cmd });
+                  const out = new TextEncoder().encode(health.runStdout?.(cmd) ?? '');
                   return {
                     exit: { success: true, code: 0 },
-                    stdout: new ArrayBuffer(0),
+                    stdout: out.buffer,
                     stderr: new ArrayBuffer(0),
                   };
+                },
+              }
+            : {}),
+          ...(health.displays !== undefined ? { displays: async () => health.displays } : {}),
+          ...(health.input
+            ? {
+                keyboardJson: async (j: string) => {
+                  health.input?.push(`keyboard ${j}`);
+                  return '{}';
+                },
+                pointerJson: async (j: string) => {
+                  health.input?.push(`pointer ${j}`);
+                  return '{}';
                 },
               }
             : {}),

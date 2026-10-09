@@ -203,6 +203,33 @@ describe('kickoff and welcome messages', () => {
     expect(text).toContain('[mv-quoted:abc123 KICKED]');
     expect(text).toContain('ExitPlanMode');
     expect(text).toContain('mcp__mc__stand_up');
+    expect(text).not.toContain('runs macOS');
+  });
+
+  it('a macOS PC kickoff names the lume user, the Codex share and Cmd as "cmd"', () => {
+    const text = kickoffMessage({
+      nonce: 'abc123',
+      playerName: 'Jordan',
+      pc: {
+        pcId: 'mac-1',
+        type: 'macos',
+        status: 'running',
+        os: 'macos',
+        screen: { w: 1280, h: 800 },
+        user: 'lume',
+        home: '/Users/lume',
+        mounts: [{ hostPath: '/Users/jasper/Code/foo', mode: 'rw' }],
+        codexPath: '/Volumes/My Shared Files/codex',
+      },
+      task: null,
+      planFirst: false,
+      claudeMd: null,
+      handoffs: [],
+    });
+    expect(text).toContain('You are seated at mac-1 (macos, macos, screen 1280x800)');
+    expect(text).toContain('User lume, home /Users/lume.');
+    expect(text).toContain('Cmd is "cmd" in key names ("cmd+s" saves');
+    expect(text).toContain('The Codex is readable at /Volumes/My Shared Files/codex.');
   });
 
   it('the handoff quotes the player verbatim and carries memory and the Codex digest (resumed desk)', () => {

@@ -88,6 +88,17 @@ class PcInputTest {
 	}
 
 	@Test
+	void aMacGuestGetsEveryRepeatOfAHeldKey() {
+		PcInputBatcher batcher = new PcInputBatcher();
+		PcInputTranslator mac = new PcInputTranslator(batcher, true);
+		assertTrue(mac.keyPressed(SdlKeyMap.SC_BACKSPACE, '\b', 0, false));
+		assertTrue(mac.keyPressed(SdlKeyMap.SC_BACKSPACE, '\b', 0, false));
+		assertTrue(mac.keyPressed(SdlKeyMap.SC_BACKSPACE, '\b', 0, false));
+		mac.keyReleased(SdlKeyMap.SC_BACKSPACE, 0);
+		assertEquals(List.of("+KEY_BACKSPACE", "+KEY_BACKSPACE", "+KEY_BACKSPACE", "-KEY_BACKSPACE"), events(batcher));
+	}
+
+	@Test
 	void ctrlAndCmdChordsAreKeysWithTheirModifier() {
 		PcInputBatcher batcher = new PcInputBatcher();
 		PcInputTranslator in = new PcInputTranslator(batcher, false);

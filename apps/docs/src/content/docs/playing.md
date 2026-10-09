@@ -14,7 +14,7 @@ This page describes the approved design. What you can try from source today (see
   routing) against a scripted, zero-token crew (`npm run dev -- --scripted-crew`).
 - **Built, being wired in:** real Claude brains for the crew, agents walking over with cards, PCs on the desks,
   and the Codex, Calendar and meetings behind their blocks.
-- **Planned:** macOS PCs, sounds and the other polish of milestone M11.
+- **Planned:** sounds and the other polish of milestone M11.
 
 Details may still change (see the status table on the [home page](/MineVibe/#status)).
 :::

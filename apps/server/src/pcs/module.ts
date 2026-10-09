@@ -7,6 +7,7 @@ import { appBundleLayout } from '../app/appLayout.js';
 import type { HostDialogs } from '../app/StubChannel.js';
 import { findRepoRoot } from '../config/paths.js';
 import type { CreatePcModule, PcModule, RuntimeContext } from '../orchestrator/modules.js';
+import { tccProtectedReason } from '../util/hostPaths.js';
 import { settleWithin } from './deadline.js';
 import { AppleContainerDriver } from './drivers/AppleContainerDriver.js';
 import {
@@ -17,6 +18,9 @@ import {
   resolveContainerRoots,
 } from './drivers/ContainerRuntime.js';
 import { DockerDriver } from './drivers/DockerDriver.js';
+import { LumeMacDriver } from './drivers/LumeMacDriver.js';
+import { devLumeRoot, type LumeLocks, LumeRuntime, loadLumeLocks } from './drivers/LumeRuntime.js';
+import type { MacPcDriver } from './drivers/MacPcDriver.js';
 import type { PcDriver } from './drivers/PcDriver.js';
 import type { FrameService } from './FrameService.js';
 import { createFolderPicker, type FolderPicker } from './folderPicker.js';
@@ -45,6 +49,10 @@ import { SpacesdPool } from './SpacesdPool.js';
  * Every Linux PC mounts the org module's Codex export (`ctx.paths.codexExport`, which CodexStore keeps) read-only at
  * `/mnt/codex` (PLAN §6.6), and PcManager records this home's instance in `<appRoot>/minevibe-instances/` for
  * `doctor --clean-orphans`.
+ *
+ * macOS PCs (PLAN §8.7) run on MineVibe's own Lume (LumeRuntime + LumeMacDriver) on Apple Silicon when the Lume pins are
+ * in `vendor.lock.json`; `MINEVIBE_MACOS=0` turns them off. Its root is `MineVibe-dev/lume` in dev and play, and
+ * `<appSupport>/lume` in MineVibe.app; nothing of it starts until a macOS PC does.
  */
 
 export interface PcModuleOptions {
@@ -53,6 +61,8 @@ export interface PcModuleOptions {
   readonly bundleInstallRoot?: string;
   /** The stub's native dialogs (MineVibe.app): `host.pick_folder` opens its NSOpenPanel. */
   readonly dialogs?: HostDialogs | null;
+  /** macOS PCs on Lume (default: on Apple Silicon unless `MINEVIBE_MACOS=0`). */
+  readonly macos?: boolean;
 }
 
 /** Everything the module runs on; `buildPcParts` makes the real ones, tests pass fakes. */
@@ -120,6 +130,46 @@ export function containerRootsFor(
   return resolveContainerRoots({ appSupportContainer: devContainerRoots().appRoot, env });
 }
 
+/** MineVibe's Lume root for a mode: `MineVibe-dev/lume` in dev and play, `<appSupport>/lume` in the app (PLAN §8.7). */
+export function lumeRootFor(
+  ctx: Pick<RuntimeContext, 'mode' | 'paths'>,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const override = env.MINEVIBE_LUME_ROOT?.trim();
+  if (override) return resolve(override);
+  if (ctx.mode === 'app' && !tccProtectedReason(ctx.paths.lume)) return ctx.paths.lume;
+  return devLumeRoot();
+}
+
+/** The macOS VM driver, or null when macOS PCs are off here (not Apple Silicon, no Lume pins, `MINEVIBE_MACOS=0`). */
+export function buildMacDriver(
+  ctx: RuntimeContext,
+  opts: PcModuleOptions,
+  locks: LumeLocks | null,
+  log: Logger,
+): MacPcDriver | null {
+  const enabled =
+    opts.macos ??
+    (process.env.MINEVIBE_MACOS !== '0' && process.platform === 'darwin' && process.arch === 'arm64');
+  if (!enabled || !locks) return null;
+  // MineVibe.app ships the notarized lume.app in Helpers (PLAN §9.1) once build-app bundles it; until then (and in dev)
+  // the pinned release is provisioned under the Lume root.
+  const layout = ctx.mode === 'app' ? appBundleLayout() : null;
+  const bundled = layout ? join(layout.bundle, 'Contents', 'Helpers', 'lume.app') : null;
+  const runtime = new LumeRuntime({
+    root: lumeRootFor(ctx),
+    locks,
+    ...(bundled && existsSync(bundled) ? { bundledApp: bundled } : {}),
+    cacheDir:
+      ctx.mode === 'app'
+        ? join(ctx.paths.caches, 'vendor')
+        : join(homedir(), 'Library', 'Caches', 'MineVibe-dev', 'vendor'),
+    logger: log,
+    leaseHolder: `minevibe-server ${ctx.mode}`,
+  });
+  return new LumeMacDriver(runtime, { logger: log });
+}
+
 /** Builds the real PC stack for a runtime context. */
 export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModuleParts {
   const log = ctx.log.child({ component: 'pcs' });
@@ -164,9 +214,15 @@ export function buildPcParts(ctx: RuntimeContext, opts: PcModuleOptions): PcModu
     context && existsSync(join(context, 'Containerfile'))
       ? { contextDir: context, file: join(context, 'Containerfile') }
       : undefined;
+  const lockFiles = [
+    ...(layout ? [join(layout.bundle, 'Contents', 'Resources', 'vendor.lock.json')] : []),
+    ...(repo ? [join(repo, 'packaging', 'vendor.lock.json')] : []),
+  ];
+  const macDriver = buildMacDriver(ctx, opts, loadLumeLocks(lockFiles), log);
   const manager = new PcManager({
     stateDir: ctx.paths.state,
     driver,
+    macDriver,
     pool,
     logger: log,
     diskPath,
@@ -225,6 +281,7 @@ export class PcModuleImpl implements PcModule {
       client: (pcId) => parts.pool.client(pcId),
       sweep: (pcId, name, value) => this.pcApi.sweep(pcId, name, value),
       logger: this.#log,
+      osOf: (pcId) => (this.manager.get(pcId)?.type === 'macos' ? 'macos' : 'linux'),
     });
   }
 

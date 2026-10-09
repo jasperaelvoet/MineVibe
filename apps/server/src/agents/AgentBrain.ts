@@ -543,7 +543,8 @@ export class AgentBrain {
     this.fsm = new SeatFSM({ now: () => env.now() });
     const home = env.agentEnv().HOME ?? '';
     this.plans = new PlanCapture(
-      [home, '/home/cua'].filter((h) => h.length > 0),
+      // The PC users' homes: Linux (`cua`) and macOS (`lume`) guests.
+      [home, '/home/cua', '/Users/lume'].filter((h) => h.length > 0),
       { now: () => env.now() },
     );
     this.turnText = new TurnText(() => env.now());

@@ -63,7 +63,7 @@ export function parseModifiers(text: string | undefined): KeyParse {
   if (bad) {
     return {
       ok: false,
-      error: `"${text}" is not a modifier. Use "shift", "ctrl", "alt" or "super", joined with + ("ctrl+shift").`,
+      error: `"${text}" is not a modifier. Use "shift", "ctrl", "alt" or "super" ("cmd" on macOS), joined with + ("ctrl+shift").`,
     };
   }
   return { ok: true, chords: [keys] };
