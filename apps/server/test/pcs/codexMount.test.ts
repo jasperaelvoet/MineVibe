@@ -142,23 +142,32 @@ describe('the Codex export in every Linux PC (PLAN §6.6)', () => {
     expect(driver.log).toEqual([`start ${cname('linux-1')}`]);
   });
 
-  it('refuses an export the engine cannot mount: PCs run without it', async () => {
+  it('names why an export cannot be mounted', () => {
     const home = join(dir, 'home');
     const tcc = join(home, 'Documents', 'MineVibe', '.minevibe-dev', 'codex-export');
     const driver = new FakeDriver();
     expect(codexMountProblem(tcc, driver, { home, platform: 'darwin' })).toMatch(/inside ~\/Documents/);
+    expect(codexMountProblem(tcc, driver, { home, platform: 'linux' })).toBeNull();
     expect(codexMountProblem(tcc, { kind: 'docker' }, { home, platform: 'darwin' })).toBeNull();
     expect(codexMountProblem('/x/a=b', driver, { home, platform: 'darwin' })).toMatch(/equals sign/);
     expect(codexMountProblem('relative', driver, { home })).toMatch(/absolute/);
-
-    const { m, health } = manager({ driver, codexExport: tcc });
-    await m.init();
-    await m.start('linux-1');
-    expect(m.codexExport).toBeNull();
-    expect(m.codexPathOf('linux-1')).toBeNull();
-    expect(driver.containers.get(cname('linux-1'))?.spec.binds).toEqual([]);
-    expect(health.runs).toEqual([]);
   });
+
+  // PcManager checks TCC against the host it runs on, and TCC only exists on macOS.
+  it.runIf(process.platform === 'darwin')(
+    'refuses an export the engine cannot mount: PCs run without it',
+    async () => {
+      const tcc = join(dir, 'home', 'Documents', 'MineVibe', '.minevibe-dev', 'codex-export');
+      const driver = new FakeDriver();
+      const { m, health } = manager({ driver, codexExport: tcc });
+      await m.init();
+      await m.start('linux-1');
+      expect(m.codexExport).toBeNull();
+      expect(m.codexPathOf('linux-1')).toBeNull();
+      expect(driver.containers.get(cname('linux-1'))?.spec.binds).toEqual([]);
+      expect(health.runs).toEqual([]);
+    },
+  );
 
   it('PcApi.info names /mnt/codex only when the PC has it', async () => {
     const { m } = manager({ codexExport: join(dir, 'codex-export') });
