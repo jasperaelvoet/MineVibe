@@ -54,6 +54,7 @@ interface TurnRecord {
   tools: string[];
   /** The first line of the user message that started the turn. */
   opened: string;
+  /** The session cost so far (`total_cost_usd` adds up over the session). */
   costUsd: number;
   ms: number;
   text: string;
@@ -206,7 +207,8 @@ async function liveCrew(dir: string, cap: number) {
       swaps,
       modelTurns: results.length,
       queryMessages: queries.n,
-      costUsd: results.reduce((n, r) => n + (r.total_cost_usd ?? 0), 0),
+      // `total_cost_usd` adds up over the session: its last value is the session cost.
+      sessionCostUsd: results.at(-1)?.total_cost_usd ?? null,
       banners: sent.filter((m) => m.text.includes(' MODE] ')).map((m) => m.text.split('\n')[0]),
       denials: observations
         .filter((o) => o.behavior === 'deny')

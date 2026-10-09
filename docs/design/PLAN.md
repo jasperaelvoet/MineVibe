@@ -235,14 +235,16 @@ query({ prompt: gatedInbox, options: {
 | EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
 
 - **Tools per mode (spike S3b, `agents/modes.ts`).** On top of the rows above, every agent is in one of three
-  mode profiles. They are defined by tags in the tool catalog: an untagged mc tool is wander-only and an untagged pc
-  tool seated-only, so a new tool never leaks into another mode.
+  mode profiles. They are defined by tags in the tool catalog (`MC_TOOL_MODES`, `PC_TOOL_MODES`,
+  `BUILTIN_TOOL_MODES`) for both mc tool sets: an untagged mc tool is wander-only and an untagged pc tool seated-only,
+  so a new tool never leaks into another mode. Whole tools are tagged, never actions: v2's `items{eat}` or
+  `craft{plan}` stay Minecraft-mode tools, like v1's `eat` and `recipe`.
 
-  | Mode | Seat states (`modeForSeat`) | Tools |
+  | Mode | Seat states (`modeForSeat`) | Tools (v1 / v2 mc names) |
   |---|---|---|
   | `wander` (Minecraft mode) | `wandering`, `walking_to_seat`, `standing_pending_swap` | every `mc__*`; AskUserQuestion. No `pc__*`, no Bash/Read/… aliases, no web. |
-  | `seated` (PC mode) | PC seat: `seated_pending_swap`, `seated`, `away_from_seat` | every `pc__*` (with the Bash/Read/Edit/Write/Glob/Grep aliases), WebSearch, WebFetch, AskUserQuestion, ExitPlanMode (plan-first only), and from `mc__` only `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task`. No movement, mining, crafting or building. |
-  | `meeting` (Meeting mode) | meeting seat: `seated` | `mc__` `say`, `tell`, `emote`, `remember`, `codex_*`, `calendar_*`, `report_task`, `stand_up`; AskUserQuestion |
+  | `seated` (PC mode) | PC seat: `seated_pending_swap`, `seated`, `away_from_seat` | every `pc__*` (with the Bash/Read/Edit/Write/Glob/Grep/TaskStop aliases), WebSearch, WebFetch, AskUserQuestion, ExitPlanMode (plan-first only), and from `mc__` only v1 `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task` / v2 `observe`, `stand_up`, `say`, `tell`, `remember`, `codex`, `calendar`. No movement, mining, crafting or building. |
+  | `meeting` (Meeting mode) | meeting seat: `seated` | `mc__` v1 `say`, `tell`, `emote`, `remember`, `codex_*`, `calendar_*`, `report_task`, `stand_up` / v2 `say`, `tell`, `remember`, `codex`, `calendar`, `stand_up`; AskUserQuestion |
 
   - **The model is offered every tool in every mode.** CC 2.1.293 pins the tool list to the conversation's first
     request, and the pin survives `resume`. Later `setMcpServers` or MCP `tools/list_changed` changes only arrive as
@@ -257,7 +259,9 @@ query({ prompt: gatedInbox, options: {
     return (S3b M1). `FORBIDDEN_INIT_TOOLS` stays valid (it covers built-ins only).
   - `system/init.tools` is the CLI's current list and `getContextUsage().mcpTools` ignores deny rules: neither shows
     what the model is offered.
-  - Size (tools v2 catalog, `apps/server/scripts/tool-tokens.ts`): see `docs/design/EVALS.md` "Mode profiles".
+  - Size (`apps/server/scripts/tool-tokens.ts`, `docs/design/EVALS.md` "Mode profiles"): every request carries the
+    full list, 26.2k tokens with v1 mc tools and 17.8k with v2 (per `getContextUsage`), in every mode. The profiles
+    let through 16.4k / 8.0k (Minecraft mode), 13.6k / 12.5k (PC mode) and 3.6k / 2.2k (Meeting mode).
 
 - **All file and shell work happens inside the PC.** `pc__read/write/edit/glob/grep` run in the guest through spacesd (`rg`, upload/download, an exact-string edit with the same semantics as Edit). The host never opens a path an agent controls, so there's no symlink race.
 - **`pc__bash`** uses spacesd `spawn` as the `cua` user (root as a fallback if bind-mount permissions require it [U S5]). Details:
@@ -298,13 +302,13 @@ query({ prompt: gatedInbox, options: {
 - **Debounce.** A stand and re-sit on the same PC within 60 s skips the swap.
 - **Mode switch (spike S3b).** The mode (6.2 "Tools per mode") follows the seat, and the model hears about it at the
   same boundary as the swap:
-  1. The swap changes only model and effort. The tool list and the system prompt stay byte-identical across modes and
-     agents' sessions (the persona carries a short, mode-independent "## Modes" section; the world, PC and meeting
-     guidance moved into the banners). The up-swap rewrites the Opus prefix anyway; nothing else is invalidated.
+  1. The swap changes only model and effort. The tool list and the system prompt stay byte-identical across modes
+     (the persona carries a short, mode-independent "## Modes" section; the world-only lines and the "Computers"
+     section moved into the banners). The up-swap rewrites the Opus prefix anyway; nothing else is invalidated.
   2. The first turn after the boundary opens with the new mode's **MODE banner**, in the same user message as the
      kickoff (sit) or the next wake (stand, kick, damage, meeting): `[MV:<nonce> MODE] PC mode: you sit at an office
-     PC.`, the mode's persona section (stable within a mode), "Available now: …" and "Blocked until you stand up: …".
-     About 160–340 tokens per switch, appended, so the cache prefix survives.
+     PC.`, the mode's persona section (stable within a mode), "Available now: …" and "Blocked until you stand up: …",
+     named in the agent's mc tool set. About 155–320 tokens per switch, appended, so the cache prefix survives.
   3. Mid-turn edges (stand_up, kick, damage, survival, PC down) take effect in ToolGate at once, because it holds
      each call to the seat's current mode; the banner follows with the next turn. `away_from_seat` keeps PC mode (the
      turn is in flight). Death, world end and dismissal stop the brain: no banner.
