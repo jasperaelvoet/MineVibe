@@ -895,7 +895,7 @@ async function step3Scripted(r: StepResult): Promise<void> {
     500,
   );
   // Oak if there is any within 48 blocks (the radius the harness's `find` uses), else the nearest other log, so every
-  // seed measures reach on some tree.
+  // seed measures reach on some tree. `collect` is given the same radius (its default is 32, as `find`'s).
   type Match = { distance?: number; block?: string };
   const oak = (await find(boss.agentId, 'minecraft:oak_log', 48).catch(() => ({}))) as Json;
   let matches = (oak.matches as Match[] | undefined) ?? [];
@@ -950,6 +950,9 @@ async function step3Scripted(r: StepResult): Promise<void> {
   r.numbers.unreachableTargets = gaveUp;
   const reached = typeof result.mined === 'number' ? result.mined : Math.min(10, logs);
   r.numbers.mined = reached;
+  // Logs kept of those felled (the mod reports `kept` since the gathering polish; before, the bag is all there is).
+  r.numbers.kept = typeof result.kept === 'number' ? result.kept : logs;
+  r.numbers.logsLeftHigh = typeof result.logsLeftHigh === 'number' ? result.logsLeftHigh : 0;
   r.numbers.reachRate = reached + gaveUp > 0 ? round(reached / (reached + gaveUp), 2) : null;
   check(r, logs >= 9, `about 10 logs collected (${logs} ${log})`);
   check(r, table >= 1, `a crafting table crafted (${table})`);

@@ -3,13 +3,16 @@ package dev.minevibe.agent.job;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.nav.AgentNavigator;
 import dev.minevibe.agent.nav.NavBlocks;
+import dev.minevibe.agent.nav.NavDebug;
 import dev.minevibe.agent.perception.Compass;
 import dev.minevibe.agent.perception.Reach;
 import dev.minevibe.agent.perception.Sources;
 import dev.minevibe.agent.perception.Trees;
 import dev.minevibe.agent.skill.Refs;
 import dev.minevibe.world.provenance.Protection;
+import dev.minevibe.world.provenance.Provenance;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -17,15 +20,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -40,11 +44,17 @@ import org.jspecify.annotations.Nullable;
  *   <li><b>Blocks</b> that are protected (player-built, in the Base) are never targets; they are remembered so a job
  *       that finds nothing else can say so ({@link #candidates}).</li>
  *   <li><b>Trees</b> ({@code treeMode}: the request is for logs): the nearest natural tree the agent can walk to (a
- *       quick A* per tree; with no walking way to any, the nearest tree at all) is felled whole, bottom-up. Every
- *       target is walked to with Tier-2 navigation ({@link Walk#toMine}), which digs, pillars and bridges where no
- *       walk leads. Logs it cannot reach are tried by stepping into the cut trunk, then by pillaring up at most
- *       {@value #MAX_PILLAR} blocks (with dirt or cobblestone in the bag); that pillar is mined away afterwards. Drops are picked up when the tree is done, and a sapling of the same kind is planted
- *       on the stump when asked ({@code replant}).</li>
+ *       quick A* per tree; with no walking way to any, the nearest tree at all) is felled whole, bottom-up, the logs in
+ *       reach first. A log a walk reaches from the ground is walked to with Tier-2 navigation ({@link Walk#toMine}),
+ *       which digs, pillars and bridges where no walk leads. A log higher up is felled from a pillar beside the trunk
+ *       ({@link TreeClimb}: dirt dug nearby when the bag has no scaffold, at most {@value TreeClimb#MAX_HEIGHT} blocks
+ *       high, never in water or by lava, down again below {@value TreeClimb#RETREAT_HEALTH} health); a log higher than
+ *       any climb reaches is left without a search ({@code logsLeftHigh}). A log no walk reaches is tried again from a
+ *       climb, then once more when the rest of the tree is down; the other logs go on meanwhile. Three failed walks in
+ *       a row (or six on one tree) give up the rest of that tree.</li>
+ *   <li><b>After a tree</b> its pillars come down, its logs are picked up all over its crown (a log caught in the
+ *       leaves: the leaf under it is broken, so it falls), the holes dug for scaffold are filled again, and a sapling of
+ *       the same kind is planted on the stump when asked ({@code replant}).</li>
  * </ul>
  */
 public final class Miner {
@@ -58,10 +68,21 @@ public final class Miner {
 	private static final int MAX_SKIPS = 8;
 	/** Ticks to pick up the drops of a broken block (M2: 100, was 40, which lost drops that bounced away). */
 	private static final int COLLECT_TICKS = 100;
-	private static final int TREE_COLLECT_TICKS = 100;
-	private static final int MAX_PILLAR = 2;
 	private static final int MAX_REACH_CHECKS = 6;
 	private static final int MAX_CANDIDATES = 8;
+	/** Logs at most this high above the stump are in reach from the ground beside the trunk. */
+	static final int GROUND_REACH = 4;
+	/** Logs at most this high above the stump are in reach from a Tier-2 pillar (3 blocks) beside the trunk. */
+	static final int TIER2_HIGH = 7;
+	/** Failed walks to logs of one tree, in a row, before the rest of the tree is given up. */
+	private static final int MAX_WALK_FAILS_IN_A_ROW = 3;
+	/** Failed walks to logs of one tree in all (each costs a full Tier-2 search) before the rest is given up. */
+	private static final int MAX_WALK_FAILS_PER_TREE = 6;
+	private static final int MAX_CLIMBS_PER_TREE = 4;
+	/** Drops are looked for this far around a felled tree's logs. */
+	private static final int SWEEP_MARGIN = 3;
+	/** A drop lying higher than this above the stump is in the canopy: the leaf under it is broken. */
+	private static final double CANOPY_DROP = 2.0;
 
 	private final Predicate<BlockState> match;
 	private final @Nullable BlockPos center;
@@ -74,7 +95,6 @@ public final class Miner {
 	private @Nullable BlockPos target;
 	private @Nullable BlockPos collectAt;
 	private int collectTicks;
-	private double collectRadius = 5.0;
 	private int mined;
 	private int mineTicks;
 	private String failureCode = "FAILED";
@@ -94,21 +114,46 @@ public final class Miner {
 	private boolean lastTree;
 	private final Map<BlockPos, Reach.Result> reachable = new HashMap<>();
 	private int treesFelled;
-	private int logsLeftHigh;
+	/** Logs left standing because no climb (and no Tier-2 pillar) reaches them. */
+	private final Set<BlockPos> leftHigh = new HashSet<>();
+	/** Scaffold this job placed (Tier-2 pillars and the climbs'), bottom first: cleared when the tree is down. */
 	private final List<BlockPos> pillar = new ArrayList<>();
 	/** The pillars earlier walks left (a goto, another job) were dropped: only this job's own are cleared. */
 	private boolean pillarBacklogDropped;
-	private @Nullable BlockPos pillarFrom;
-	private int climbTicks;
-	private boolean triedColumn;
-	private boolean climbing;
-	private boolean finishedJustNow;
-	private @Nullable BlockPos pendingCollect;
+	private int choreTicks;
 	private boolean cleaning;
+	private @Nullable TreeClimb climb;
+	/** Holes dug for scaffold, filled again when the tree is down. */
+	private final List<BlockPos> dug = new ArrayList<>();
 	private @Nullable BlockPos replantAt;
 	private @Nullable Item sapling;
 	private int replanted;
 	private int pillarsBuilt;
+	// the tree being felled
+	/** Logs no walk reached yet: tried once more when the rest of the tree is down. */
+	private final Set<BlockPos> deferred = new HashSet<>();
+	/** Logs on their second try: a second failure gives them up. */
+	private final Set<BlockPos> retried = new HashSet<>();
+	/** Logs a climb was planned for (one plan each). */
+	private final Set<BlockPos> climbTried = new HashSet<>();
+	/** Logs whose walk failed in this try (counted once toward giving the tree up). */
+	private final Set<BlockPos> failedLogs = new HashSet<>();
+	private int walkFailsInARow;
+	private int walkFails;
+	private int climbs;
+	/** Climbing is off for this tree (low health, a hazard, no scaffold to be had). */
+	private boolean noClimb;
+	// the drop sweep after a tree
+	private @Nullable AABB sweepBox;
+	private int sweepTicks;
+	private int sweepStumpY;
+	private @Nullable ItemEntity sweepItem;
+	private @Nullable BlockPos sweepLeaf;
+	private int sweepItemTicks;
+	private final Set<ItemEntity> sweepIgnored = Collections.newSetFromMap(new WeakHashMap<>());
+	private boolean sweeping;
+	/** Where pillar blocks were mined away: their drops are picked up before the holes are filled. */
+	private final List<BlockPos> scaffoldDrops = new ArrayList<>();
 
 	public Miner(final Predicate<BlockState> match, final @Nullable BlockPos center, final int radius) {
 		this(match, center, radius, null, false);
@@ -130,7 +175,7 @@ public final class Miner {
 		return this.mined;
 	}
 
-	/** Targets given up on so far (no way to them, or too slow to break). */
+	/** Targets given up on so far (no way to them, out of every climb's reach, or too slow to break). */
 	public int unreachable() {
 		return this.skip.size();
 	}
@@ -171,7 +216,7 @@ public final class Miner {
 
 	/** Logs left standing because they were out of reach even after climbing. */
 	public int logsLeftHigh() {
-		return this.logsLeftHigh;
+		return this.leftHigh.size();
 	}
 
 	/**
@@ -183,10 +228,10 @@ public final class Miner {
 		this.lastTree = true;
 	}
 
-	/** True while a tree is half felled (or its pillar not yet cleared): the job should let it finish. */
+	/** True while a tree is half felled (or its pillar, drops, holes or sapling not done): the job should let it finish. */
 	public boolean busy() {
-		return this.tree != null || !this.pillar.isEmpty() || this.cleaning || this.pendingCollect != null || this.replantAt != null
-			|| this.treeMode() && this.collectAt != null;
+		return this.tree != null || this.climb != null || !this.pillar.isEmpty() || this.cleaning || this.sweepBox != null || !this.dug.isEmpty()
+			|| !this.scaffoldDrops.isEmpty() || this.replantAt != null || this.treeMode() && this.collectAt != null;
 	}
 
 	/** True while it picks up the drops of the block it broke last. */
@@ -220,6 +265,22 @@ public final class Miner {
 		return this.toolNeededFor;
 	}
 
+	/**
+	 * How many of the items a job gained ({@code gained}, item id to count, as {@link Inv#gained}) are blocks the miner
+	 * takes ({@code match}): for logs, the logs kept of those felled.
+	 */
+	public static int kept(final Map<String, Integer> gained, final Predicate<BlockState> match) {
+		int n = 0;
+		for (Map.Entry<String, Integer> e : gained.entrySet()) {
+			Identifier id = Identifier.tryParse(e.getKey());
+			Item item = id == null ? null : BuiltInRegistries.ITEM.getValue(id);
+			if (item instanceof BlockItem b && match.test(b.getBlock().defaultBlockState())) {
+				n += e.getValue();
+			}
+		}
+		return n;
+	}
+
 	/** A plain block was broken: counted under its kind. */
 	private void countBlock(final BlockPos at) {
 		String id = this.targetId;
@@ -235,13 +296,13 @@ public final class Miner {
 	/** After a preemption: re-plan the walk. */
 	public void reset() {
 		this.walk.reset();
-		this.climbTicks = 0;
+		this.choreTicks = 0;
 	}
 
 	/** Only picks up the drops of the last broken block; false once there are none left (or it gave up). */
 	public boolean collecting(final AgentPlayer agent) {
 		if (this.collectAt != null) {
-			if (this.collectTicks-- > 0 && collectNear(agent, this.walk, this.collectAt, this.collectRadius, s -> true)) {
+			if (this.collectTicks-- > 0 && collectNear(agent, this.walk, this.collectAt, 5.0, s -> true)) {
 				return true;
 			}
 			this.collectAt = null;
@@ -250,19 +311,10 @@ public final class Miner {
 	}
 
 	public Tick tick(final AgentPlayer agent) {
-		ServerLevel level = agent.level();
 		if (this.treeMode()) {
-			// Pillars the walk built (Tier 2) are cleared with the tree, like the miner's own. Those built before this job
-			// started (any walk's: the navigator keeps them until a felling job takes them) are not this job's to clear: it
-			// would walk back to wherever they were and mine whatever stands there by now.
-			List<BlockPos> placed = agent.navigator().drainPlacedPillars();
-			if (!this.pillarBacklogDropped) {
-				this.pillarBacklogDropped = true;
-			} else if (!placed.isEmpty()) {
-				this.pillar.addAll(placed);
-				this.pillarsBuilt += placed.size();
-			}
+			return this.treeTick(agent);
 		}
+		ServerLevel level = agent.level();
 		if (this.collecting(agent)) {
 			return Tick.WORKING;
 		}
@@ -271,10 +323,8 @@ public final class Miner {
 			if (this.mineTicks > 0) {
 				this.mined++;
 				this.countBlock(this.target);
-				if (!this.treeMode()) {
-					this.collectAt = this.target;
-					this.collectTicks = COLLECT_TICKS;
-				}
+				this.collectAt = this.target;
+				this.collectTicks = COLLECT_TICKS;
 			}
 			this.target = null;
 			if (this.collecting(agent)) {
@@ -282,28 +332,13 @@ public final class Miner {
 			}
 		}
 		if (this.target == null) {
-			if (this.treeMode()) {
-				Tick t = this.treeChores(agent);
-				if (t != null) {
-					return t;
-				}
-				this.target = this.nextTreeLog(agent);
-				if (this.target == null && this.finishedJustNow) {
-					// A tree was just finished: clear its pillar, pick up its logs and replant before the next one.
-					this.finishedJustNow = false;
-					return Tick.WORKING;
-				}
-			} else {
-				this.target = this.nextBlock(agent);
-			}
+			this.target = this.nextBlock(agent);
 			if (this.target == null) {
 				return Tick.NONE_LEFT;
 			}
 			this.targetId = Refs.blockId(level.getBlockState(this.target).getBlock());
 			this.mineTicks = 0;
 			this.walk.reset();
-			this.triedColumn = false;
-			this.climbTicks = 0;
 		}
 		BlockPos t = this.target;
 		if (Protection.check(level, t, agent.agentId()) != null) {
@@ -315,39 +350,18 @@ public final class Miner {
 		// In reach only at the top of a jump (a pillar being built) is not in reach yet: let the walk finish. The block
 		// under the feet is never mined (no digging straight down): the walk steps aside first.
 		if (!Walk.inReach(agent, t) || Walk.standsOn(agent, t) || !Walk.settled(agent) && agent.navigator().isMoving()) {
-			if (this.climbing) {
-				return this.climbToward(agent, t);
-			}
 			// Tier 2 straight away ("reach a block to mine"): digs, pillars and bridges where no walk leads.
 			Walk.State s = this.walk.toMine(agent, t);
 			if (s == Walk.State.MOVING) {
 				return Tick.WORKING;
 			}
 			if (s == Walk.State.FAILED) {
-				Trees.Tree current = this.tree;
-				if (this.treeMode() && current != null && this.digOnly.remove(current.base())) {
-					// No walk led there and Tier 2 found no way either: unreachable, like any tree no walk reaches.
-					this.reject(agent, current.base(), "unreachable", current.species() + " tree");
-					this.doneTrees.add(current.base());
-					this.tree = null;
-					this.skipTarget();
-					return this.skip.size() > MAX_SKIPS ? this.failed("UNREACHABLE", "cannot reach any matching block (" + this.walk.failure() + ")") : Tick.WORKING;
-				}
-				if (this.treeMode() && this.tree != null && t.getY() > agent.getBlockY()) {
-					// Stay on this tree: no more walking around under it (that would step off a pillar).
-					this.climbing = true;
-					return this.climbToward(agent, t);
-				}
 				this.skipTarget();
 				return this.skip.size() > MAX_SKIPS ? this.failed("UNREACHABLE", "cannot reach any matching block (" + this.walk.failure() + ")") : Tick.WORKING;
 			}
 		} else {
 			this.walk.stop(agent);
 			agent.controls().setJumping(false);
-		}
-		if (this.tree != null) {
-			// Got there: from now on this tree's logs fail one by one, like any other tree's.
-			this.digOnly.remove(this.tree.base());
 		}
 		BlockState state = level.getBlockState(t);
 		if (BlockOps.wouldDropNothing(agent, state)) {
@@ -362,10 +376,8 @@ public final class Miner {
 			this.mined++;
 			this.countBlock(t);
 			this.target = null;
-			if (!this.treeMode()) {
-				this.collectAt = t;
-				this.collectTicks = COLLECT_TICKS;
-			}
+			this.collectAt = t;
+			this.collectTicks = COLLECT_TICKS;
 		}
 		return Tick.WORKING;
 	}
@@ -405,77 +417,424 @@ public final class Miner {
 
 	// ---------------------------------------------------------------- trees
 
-	/** The next log of the tree being felled, or of the nearest reachable natural tree; null when none is left. */
-	private @Nullable BlockPos nextTreeLog(final AgentPlayer agent) {
+	private Tick treeTick(final AgentPlayer agent) {
 		ServerLevel level = agent.level();
-		for (int attempts = 0; attempts < 16; attempts++) {
-			if (this.tree != null) {
-				for (BlockPos log : this.tree.logs()) {
-					if (!this.skip.contains(log) && this.match.test(level.getBlockState(log)) && Protection.check(level, log, agent.agentId()) == null) {
-						return log;
-					}
-				}
-				this.treeDone(agent);
-				return null;
+		// Pillars the walk built (Tier 2) are cleared with the tree, like the climbs'. Those built before this job started
+		// (any walk's: the navigator keeps them until a felling job takes them) are not this job's to clear: it would walk
+		// back to wherever they were and mine whatever stands there by now.
+		List<BlockPos> placed = agent.navigator().drainPlacedPillars();
+		if (!this.pillarBacklogDropped) {
+			this.pillarBacklogDropped = true;
+		} else if (!placed.isEmpty()) {
+			this.pillar.addAll(placed);
+			this.pillarsBuilt += placed.size();
+		}
+		if (this.target != null && !this.match.test(level.getBlockState(this.target))) {
+			// Broken by the held attack at the end of the last tick (or by someone else while we hit it).
+			if (this.mineTicks > 0) {
+				this.logMined(this.target);
+			}
+			this.target = null;
+		}
+		if (this.tree == null) {
+			Tick chores = this.treeChores(agent);
+			if (chores != null) {
+				return chores;
 			}
 			if (this.lastTree) {
-				// The job has what it asked for: this tree was the last one.
-				return null;
+				// The job has what it asked for: the last tree was the last one.
+				return Tick.NONE_LEFT;
 			}
 			Trees.Tree next = this.pickTree(agent);
 			if (next == null) {
-				return null;
+				return Tick.NONE_LEFT;
 			}
-			this.tree = next;
-			this.treeStartMined = this.mined;
+			this.startTree(next);
+			debug(agent, "fell", "tree", next.species() + "@" + next.base().toShortString(), "logs", next.logs().size(), "height", next.height());
 		}
-		return null;
+		TreeClimb c = this.climb;
+		if (c != null && c.descending()) {
+			if (c.descendTick(agent) == TreeClimb.Result.WORKING) {
+				return Tick.WORKING;
+			}
+			this.climb = null;
+		}
+		if (this.target == null) {
+			BlockPos next = this.nextLog(agent);
+			if (next == null) {
+				if (this.climb != null) {
+					// The tree is down as far as it goes: off the pillar first.
+					this.climb.descend();
+					return Tick.WORKING;
+				}
+				this.treeDone(agent);
+				return Tick.WORKING;
+			}
+			this.setTarget(level, next);
+		}
+		BlockPos t = this.target;
+		if (Protection.check(level, t, agent.agentId()) != null) {
+			// Became protected (a zone was added, a player placed it again): never touch it.
+			this.noteProtected(level, t);
+			this.skipTarget();
+			return Tick.WORKING;
+		}
+		// In reach only at the top of a jump (a pillar being built) is not in reach yet: let the walk or climb finish. The
+		// block under the feet is never mined (no digging straight down): the walk steps aside first.
+		boolean ready = Walk.inReach(agent, t) && !Walk.standsOn(agent, t) && (Walk.settled(agent) || this.climb == null && !agent.navigator().isMoving());
+		if (!ready) {
+			return this.approach(agent, t);
+		}
+		this.walk.stop(agent);
+		agent.controls().setJumping(false);
+		Trees.Tree current = this.tree;
+		if (current != null) {
+			// Got there: from now on this tree's logs fail one by one, like any other tree's.
+			this.digOnly.remove(current.base());
+		}
+		this.walkFailsInARow = 0;
+		BlockState state = level.getBlockState(t);
+		if (BlockOps.wouldDropNothing(agent, state)) {
+			this.toolNeededFor = state;
+			return this.failed("NEEDS_TOOL", "breaking " + Refs.blockId(state.getBlock()) + " drops nothing without the right tool");
+		}
+		if (++this.mineTicks > 20 * 30) {
+			this.skipTarget();
+			return Tick.WORKING;
+		}
+		if (BlockOps.mineTick(agent, t)) {
+			this.logMined(t);
+			this.target = null;
+		}
+		return Tick.WORKING;
 	}
 
-	/** Chores between logs: clear the pillar, pick up the drops, replant. Null when there are none. */
+	private void setTarget(final ServerLevel level, final BlockPos log) {
+		this.target = log.immutable();
+		this.targetId = Refs.blockId(level.getBlockState(log).getBlock());
+		this.mineTicks = 0;
+		this.walk.reset();
+	}
+
+	private void logMined(final BlockPos log) {
+		this.mined++;
+		this.countBlock(log);
+		this.deferred.remove(log);
+		this.skip.remove(log);
+		this.leftHigh.remove(log);
+	}
+
+	/** Gets {@code t} into reach: from the climb under way, a new climb (a high log), or a Tier-2 walk. */
+	private Tick approach(final AgentPlayer agent, final BlockPos t) {
+		Trees.Tree tr = this.tree;
+		if (tr == null) {
+			return Tick.WORKING;
+		}
+		TreeClimb c = this.climb;
+		if (c != null) {
+			if (!c.serves(agent, t)) {
+				// Out of this column's reach (a low branch to the side): down first, then walk to it.
+				c.descend();
+				return Tick.WORKING;
+			}
+			return switch (c.tick(agent, t)) {
+				case WORKING, REACHED -> Tick.WORKING;
+				case HEAD_LOG -> {
+					BlockPos head = c.headLog();
+					if (head != null) {
+						this.skip.remove(head);
+						this.deferred.remove(head);
+						this.setTarget(agent.level(), head);
+					}
+					yield Tick.WORKING;
+				}
+				case STOPPED -> this.climbStopped(agent, t, c);
+				case DONE -> {
+					this.climb = null;
+					yield Tick.WORKING;
+				}
+			};
+		}
+		int stump = tr.base().getY();
+		int limit = this.noClimb ? 0 : TreeClimb.limit(agent);
+		if (t.getY() > stump + Math.max(TIER2_HIGH, limit == 0 ? 0 : TreeClimb.highestReachable(0, limit))) {
+			// Higher than any climb or Tier-2 pillar reaches: no search (each such search ran out at 20 000 nodes).
+			debug(agent, "left_high", "log", t.toShortString(), "why", "beyond_any_climb", "limit", limit);
+			this.leftHigh(t);
+			return Tick.WORKING;
+		}
+		boolean high = t.getY() > stump + GROUND_REACH;
+		if (high && this.startClimb(agent, t)) {
+			return Tick.WORKING;
+		}
+		if (high && (t.getY() > stump + TIER2_HIGH || NavBlocks.scaffoldCount(agent.getInventory()) == 0)) {
+			// No column to climb, and no Tier-2 pillar gets there either.
+			debug(agent, "left_high", "log", t.toShortString(), "why", "no_column");
+			this.leftHigh(t);
+			return Tick.WORKING;
+		}
+		// Tier 2 straight away ("reach a block to mine"): digs, pillars and bridges where no walk leads.
+		Walk.State s = this.walk.toMine(agent, t);
+		if (s != Walk.State.FAILED) {
+			return Tick.WORKING;
+		}
+		return this.walkFailed(agent, t);
+	}
+
+	/** Plans a climb to {@code t} (once per log); true when one is under way. */
+	private boolean startClimb(final AgentPlayer agent, final BlockPos t) {
+		Trees.Tree tr = this.tree;
+		if (tr == null || this.noClimb || this.climbs >= MAX_CLIMBS_PER_TREE || TreeClimb.limit(agent) == 0 || !this.climbTried.add(t)) {
+			return false;
+		}
+		TreeClimb plan = TreeClimb.plan(agent, tr, t, this.remainingLogs(agent.level(), agent), this.walk, this.pillar, this.dug, this.scaffoldDrops,
+			() -> this.pillarsBuilt++);
+		if (plan == null) {
+			debug(agent, "climb_none", "log", t.toShortString());
+			return false;
+		}
+		debug(agent, "climb", "log", t.toShortString(), "plan", plan.describe());
+		this.walk.stop(agent);
+		this.climb = plan;
+		this.climbs++;
+		return true;
+	}
+
+	/** The climb cannot bring {@code t} into reach. */
+	private Tick climbStopped(final AgentPlayer agent, final BlockPos t, final TreeClimb c) {
+		String why = c.stopReason();
+		debug(agent, "climb_stop", "why", why, "log", t.toShortString(), "at", agent.blockPosition().toShortString());
+		if (TreeClimb.fatal(why)) {
+			c.descend();
+			if ("low_health".equals(why) || "hazard".equals(why)) {
+				this.noClimb = true;
+			}
+		}
+		if ("no_scaffold".equals(why)) {
+			// Nothing to pillar with and no dirt around: no climb on this tree will do better.
+			this.noClimb = true;
+		}
+		if ("no_way".equals(why)) {
+			// The column was out of reach: as a failed walk (a dig-only tree is unreachable after all).
+			return this.walkFailed(agent, t);
+		}
+		if ("below".equals(why)) {
+			// Below the pillar's top and out of reach: down, then a walk.
+			c.descend();
+			return Tick.WORKING;
+		}
+		this.leftHigh(t);
+		return Tick.WORKING;
+	}
+
+	/** A walk to {@code t} found no way: another standpoint (a climb), else this log waits and the others go on. */
+	private Tick walkFailed(final AgentPlayer agent, final BlockPos t) {
+		Trees.Tree tr = this.tree;
+		if (tr == null) {
+			return Tick.WORKING;
+		}
+		if (this.digOnly.remove(tr.base())) {
+			// No walk led there and Tier 2 found no way either: unreachable, like any tree no walk reaches.
+			this.reject(agent, tr.base(), "unreachable", tr.species() + " tree");
+			this.giveUpTree(agent);
+			return Tick.WORKING;
+		}
+		if (this.failedLogs.add(t)) {
+			// Once per log and try: its walk and its climb's walk failing count as one.
+			this.walkFailsInARow++;
+			this.walkFails++;
+		}
+		if (t.getY() > agent.getBlockY() && this.startClimb(agent, t)) {
+			return Tick.WORKING;
+		}
+		this.target = null;
+		debug(agent, "walk_failed", "log", t.toShortString(), "why", this.walk.failure(), "in_a_row", this.walkFailsInARow, "on_tree", this.walkFails,
+			"then", this.retried.contains(t) ? "given_up" : "later");
+		if (this.retried.contains(t)) {
+			this.skip.add(t);
+		} else {
+			this.deferred.add(t);
+		}
+		if (this.walkFailsInARow >= MAX_WALK_FAILS_IN_A_ROW || this.walkFails >= MAX_WALK_FAILS_PER_TREE) {
+			// Walled off from here: every further search would run out the same way.
+			if (this.mined == this.treeStartMined) {
+				this.reject(agent, tr.base(), "unreachable", tr.species() + " tree");
+			}
+			this.giveUpTree(agent);
+		}
+		return Tick.WORKING;
+	}
+
+	/** Gives up the logs of the tree still standing; its pillars, drops and holes are still seen to. */
+	private void giveUpTree(final AgentPlayer agent) {
+		Trees.Tree tr = this.tree;
+		if (tr == null) {
+			return;
+		}
+		ServerLevel level = agent.level();
+		for (BlockPos log : tr.logs()) {
+			if (this.match.test(level.getBlockState(log))) {
+				this.skip.add(log);
+			}
+		}
+		this.deferred.clear();
+		this.target = null;
+		debug(agent, "tree_given_up", "tree", tr.base().toShortString());
+		TreeClimb c = this.climb;
+		if (c != null && !c.descending()) {
+			// Off the pillar first; the tree ends once down (no log is left to pick).
+			c.descend();
+			return;
+		}
+		if (c != null) {
+			return;
+		}
+		this.treeDone(agent);
+	}
+
+	private void leftHigh(final BlockPos t) {
+		this.leftHigh.add(t.immutable());
+		this.skip.add(t);
+		if (t.equals(this.target)) {
+			this.target = null;
+		}
+	}
+
+	/** The tree's logs still to fell, lowest first: not given up, not waiting for a second try, still logs, nobody's. */
+	private List<BlockPos> remainingLogs(final ServerLevel level, final AgentPlayer agent) {
+		List<BlockPos> out = new ArrayList<>();
+		Trees.Tree tr = this.tree;
+		if (tr == null) {
+			return out;
+		}
+		for (BlockPos log : tr.logs()) {
+			if (!this.skip.contains(log) && !this.deferred.contains(log) && this.match.test(level.getBlockState(log))
+				&& Protection.check(level, log, agent.agentId()) == null) {
+				out.add(log);
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * The next log of the tree being felled: one in reach (lowest first), else the lowest one the climb under way serves,
+	 * else the lowest. When only logs no walk reached are left, they get a second try. Null when none is left.
+	 */
+	private @Nullable BlockPos nextLog(final AgentPlayer agent) {
+		ServerLevel level = agent.level();
+		List<BlockPos> left = this.remainingLogs(level, agent);
+		if (left.isEmpty() && !this.deferred.isEmpty()) {
+			// The rest is down: once more for the logs no walk reached (a face may be open now, the agent stands elsewhere).
+			this.retried.addAll(this.deferred);
+			this.deferred.clear();
+			this.failedLogs.clear();
+			this.walkFailsInARow = 0;
+			left = this.remainingLogs(level, agent);
+		}
+		if (left.isEmpty()) {
+			return null;
+		}
+		for (BlockPos log : left) {
+			if (Walk.inReach(agent, log) && !Walk.standsOn(agent, log)) {
+				return log;
+			}
+		}
+		TreeClimb c = this.climb;
+		if (c != null && !c.descending()) {
+			for (BlockPos log : left) {
+				if (c.serves(agent, log)) {
+					return log;
+				}
+			}
+		}
+		return left.getFirst();
+	}
+
+	private void startTree(final Trees.Tree next) {
+		this.tree = next;
+		this.treeStartMined = this.mined;
+		this.deferred.clear();
+		this.retried.clear();
+		this.climbTried.clear();
+		this.failedLogs.clear();
+		this.walkFailsInARow = 0;
+		this.walkFails = 0;
+		this.climbs = 0;
+		this.noClimb = false;
+	}
+
+	/** Chores between trees: clear the pillars, pick up the drops, fill the holes, replant. Null when there are none. */
 	private @Nullable Tick treeChores(final AgentPlayer agent) {
 		if (this.tree != null) {
 			return null;
 		}
-		if (!this.pillar.isEmpty()) {
+		ServerLevel level = agent.level();
+		// The felling's pillars come down first. Those the sweep's own walks build (a short pillar to a drop on a ledge)
+		// wait until it is done: clearing each at once would drop the body off it before it got there, over and over.
+		if (!this.pillar.isEmpty() && !this.sweeping) {
 			this.cleaning = true;
 			BlockPos top = this.pillar.getLast();
-			if (!NavBlocks.isScaffoldBlock(agent.level().getBlockState(top))) {
+			if (!NavBlocks.isScaffoldBlock(level.getBlockState(top))) {
 				// Gone (or replaced by something that is no pillar block since): nothing of ours to clear there.
 				this.pillar.removeLast();
+				if (level.getBlockState(top).isAir()) {
+					this.scaffoldDrops.add(top);
+				}
 				return Tick.WORKING;
 			}
 			if (!Walk.inReach(agent, top) && this.walk.toBlock(agent, top) == Walk.State.MOVING) {
 				return Tick.WORKING;
 			}
 			boolean broke = BlockOps.mineTick(agent, top);
-			if (broke || ++this.climbTicks > 20 * 20) {
+			if (broke || ++this.choreTicks > 20 * 20) {
 				if (broke) {
-					NavBlocks.forgetScaffold(agent.level(), top);
+					NavBlocks.forgetScaffold(level, top);
+					this.scaffoldDrops.add(top);
 				}
 				this.pillar.removeLast();
-				this.climbTicks = 0;
+				this.choreTicks = 0;
 			}
 			return Tick.WORKING;
 		}
 		if (this.cleaning) {
 			this.cleaning = false;
+			this.choreTicks = 0;
 			agent.controls().stopMining();
 		}
-		if (this.pendingCollect != null) {
-			// Back on the ground: pick up the tree's logs (they fell around the stump).
-			this.collectAt = this.pendingCollect;
-			this.collectRadius = 5.0;
-			this.collectTicks = TREE_COLLECT_TICKS;
-			this.pendingCollect = null;
+		if (!this.scaffoldDrops.isEmpty()) {
+			// The cleared blocks' drops: the dirt goes back into the holes it came from.
+			BlockPos at = this.scaffoldDrops.getLast();
+			ItemEntity drop = ++this.choreTicks <= 20 * 3 ? nearestItem(agent, Vec3.atCenterOf(at), 3.0, NavBlocks::isScaffoldItem) : null;
+			if (drop != null && safeToFetch(drop)) {
+				if (agent.position().distanceTo(drop.position()) > 0.6) {
+					this.walk.toItem(agent, drop.position());
+				}
+				return Tick.WORKING;
+			}
+			this.scaffoldDrops.removeLast();
+			this.choreTicks = 0;
+			return Tick.WORKING;
+		}
+		if (this.sweepTick(agent)) {
+			this.sweeping = true;
+			return Tick.WORKING;
+		}
+		if (this.sweeping) {
+			this.sweeping = false;
+			if (!this.pillar.isEmpty()) {
+				return Tick.WORKING;
+			}
+		}
+		// The holes last: the scaffold is back in the bag by now (a sweep may still need it for a log on a ledge).
+		if (this.refillTick(agent)) {
 			return Tick.WORKING;
 		}
 		if (this.replantAt != null) {
 			BlockPos at = this.replantAt;
 			Item item = this.sapling;
-			if (item == null || Inv.count(agent, item) == 0 || !agent.level().getBlockState(at).isAir() || ++this.climbTicks > 20 * 15) {
+			if (item == null || Inv.count(agent, item) == 0 || !level.getBlockState(at).isAir() || ++this.choreTicks > 20 * 15) {
 				this.replantAt = null;
-				this.climbTicks = 0;
+				this.choreTicks = 0;
 				return Tick.WORKING;
 			}
 			if (!Walk.inReach(agent, at) && this.walk.toBlock(agent, at) == Walk.State.MOVING) {
@@ -485,7 +844,7 @@ public final class Miner {
 			if (r == BlockOps.Place.PLACED) {
 				this.replanted++;
 				this.replantAt = null;
-				this.climbTicks = 0;
+				this.choreTicks = 0;
 			} else if (r == BlockOps.Place.SELF_IN_WAY) {
 				WorldJobs.stepAside(agent, at, this.walk);
 			} else if (r != BlockOps.Place.RETRY) {
@@ -499,27 +858,231 @@ public final class Miner {
 	private void treeDone(final AgentPlayer agent) {
 		Trees.Tree t = this.tree;
 		this.tree = null;
+		this.target = null;
+		this.climb = null;
 		if (t == null) {
 			return;
 		}
 		this.doneTrees.add(t.base());
-		this.treesFelled++;
-		this.sources.put("tree@" + t.base().toShortString(), new Source("tree", t.species(), t.base(), Math.max(0, this.mined - this.treeStartMined)));
-		this.finishedJustNow = true;
-		this.climbing = false;
+		int n = this.mined - this.treeStartMined;
+		debug(agent, "tree_done", "tree", t.base().toShortString(), "mined", n, "of", t.logs().size(), "left_high", this.leftHigh.size(), "pillar",
+			this.pillar.size(), "holes", this.dug.size());
+		if (n > 0) {
+			this.treesFelled++;
+			this.sources.put("tree@" + t.base().toShortString(), new Source("tree", t.species(), t.base(), n));
+		}
+		this.deferred.clear();
 		agent.controls().setJumping(false);
-		this.pillarFrom = null;
-		this.climbTicks = 0;
-		this.pendingCollect = t.base();
+		this.choreTicks = 0;
+		if (n > 0) {
+			// Every drop in and under the crown, not only by the stump: a big tree keeps most of them in its leaves.
+			int x0 = Integer.MAX_VALUE;
+			int x1 = Integer.MIN_VALUE;
+			int z0 = Integer.MAX_VALUE;
+			int z1 = Integer.MIN_VALUE;
+			int y1 = Integer.MIN_VALUE;
+			for (BlockPos p : t.logs()) {
+				x0 = Math.min(x0, p.getX());
+				x1 = Math.max(x1, p.getX());
+				z0 = Math.min(z0, p.getZ());
+				z1 = Math.max(z1, p.getZ());
+				y1 = Math.max(y1, p.getY());
+			}
+			int y0 = t.base().getY();
+			this.sweepBox = new AABB(x0 - SWEEP_MARGIN, y0 - SWEEP_MARGIN, z0 - SWEEP_MARGIN, x1 + 1 + SWEEP_MARGIN, y1 + 1 + SWEEP_MARGIN, z1 + 1 + SWEEP_MARGIN);
+			this.sweepTicks = Math.min(20 * 60, 20 * 10 + 30 * n);
+			this.sweepStumpY = y0;
+			this.sweepItem = null;
+			this.sweepLeaf = null;
+		}
 		if (this.replant) {
 			Item s = saplingOf(t.species());
 			BlockState below = agent.level().getBlockState(t.base().below());
-			if (s != null && Inv.count(agent, s) > 0 && (below.is(Blocks.DIRT) || below.is(Blocks.GRASS_BLOCK) || below.is(Blocks.PODZOL)
+			if (s != null && (below.is(Blocks.DIRT) || below.is(Blocks.GRASS_BLOCK) || below.is(Blocks.PODZOL)
 				|| below.is(Blocks.COARSE_DIRT) || below.is(Blocks.ROOTED_DIRT) || below.is(Blocks.MUD) || below.is(Blocks.MOSS_BLOCK))) {
+				// The sapling may still come with the drops: checked when it is time to plant.
 				this.sapling = s;
 				this.replantAt = t.base();
 			}
 		}
+	}
+
+	/**
+	 * One tick of picking up a felled tree's logs (and its sapling, to replant) anywhere in and under its crown. A
+	 * drop caught in the canopy is not climbed to: the leaf under it is broken (leaves are natural and break at once),
+	 * so it falls, and is picked up below. A drop no walk reaches (inside a block) is left. False once none is left or
+	 * the time is up.
+	 */
+	private boolean sweepTick(final AgentPlayer agent) {
+		AABB box = this.sweepBox;
+		if (box == null) {
+			return false;
+		}
+		ServerLevel level = agent.level();
+		ItemEntity item = this.sweepItem;
+		if (this.sweepTicks-- <= 0) {
+			debug(agent, "sweep_end", "why", "time", "left", this.nextSweepItem(agent, box) != null);
+			this.endSweep(agent);
+			return false;
+		}
+		if (item == null || !item.isAlive() || this.sweepIgnored.contains(item) || !box.contains(item.position())) {
+			item = this.nextSweepItem(agent, box);
+			this.sweepItem = item;
+			this.sweepLeaf = null;
+			this.sweepItemTicks = 0;
+			this.walk.reset();
+			if (item == null) {
+				this.endSweep(agent);
+				return false;
+			}
+		}
+		if (++this.sweepItemTicks > 20 * 20) {
+			this.ignoreSweepItem(agent, item);
+			return true;
+		}
+		BlockPos leaf = this.sweepLeaf;
+		if (leaf != null && !Trees.isNaturalLeaf(level.getBlockState(leaf))) {
+			agent.controls().stopMining();
+			leaf = null;
+			this.sweepLeaf = null;
+		}
+		if (leaf == null && item.getY() - this.sweepStumpY > CANOPY_DROP) {
+			BlockPos under = BlockPos.containing(item.getX(), item.getY() - 0.1, item.getZ());
+			BlockState s = level.getBlockState(under);
+			if (Trees.isNaturalLeaf(s) && NavBlocks.mayBreak(level, under, s, agent.agentId())) {
+				leaf = under;
+				this.sweepLeaf = under;
+			}
+		}
+		if (leaf != null) {
+			if (!Walk.inReach(agent, leaf) || !Walk.settled(agent)) {
+				if (this.walk.toMine(agent, leaf) == Walk.State.FAILED) {
+					this.ignoreSweepItem(agent, item);
+				}
+				return true;
+			}
+			this.walk.stop(agent);
+			if (BlockOps.mineTick(agent, leaf)) {
+				agent.controls().stopMining();
+				this.sweepLeaf = null;
+			}
+			return true;
+		}
+		if (agent.position().distanceTo(item.position()) > 0.6 && this.walk.toItem(agent, item.position()) == Walk.State.FAILED) {
+			this.ignoreSweepItem(agent, item);
+		}
+		return true;
+	}
+
+	/**
+	 * The nearest drop worth fetching: a log the miner takes, or the sapling it will plant. Sticks, apples and other
+	 * saplings are left to the pickup reflex (chasing them through a crown breaks more leaves, which drop more).
+	 */
+	private @Nullable ItemEntity nextSweepItem(final AgentPlayer agent, final AABB box) {
+		Item plant = this.replantAt != null ? this.sapling : null;
+		List<ItemEntity> items = agent.level().getEntitiesOfClass(ItemEntity.class, box,
+			e -> e.isAlive() && !this.sweepIgnored.contains(e) && Tossed.pickableBy(e, agent) && Inv.hasRoomFor(agent, e.getItem()) && safeToFetch(e)
+				&& (e.getItem().getItem() instanceof BlockItem b && this.match.test(b.getBlock().defaultBlockState()) || plant != null && e.getItem().is(plant)));
+		return items.stream().min(Comparator.comparingDouble(e -> e.distanceToSqr(agent))).orElse(null);
+	}
+
+	/**
+	 * A drop worth walking to: not fallen under the ground (into a cave: a walk after it can end in a water pocket with no
+	 * air above), nor in water with a roof. Under ground means ground over it: a solid block within 6 above that is no
+	 * leaf, log or scaffold. A drop on a hillside below the stump, in a canopy or floating in an open pond is fine.
+	 */
+	private static boolean safeToFetch(final ItemEntity e) {
+		if (!(e.level() instanceof ServerLevel level)) {
+			return false;
+		}
+		BlockPos.MutableBlockPos p = e.blockPosition().mutable();
+		if (e.isInWater()) {
+			// Floating in open water (air right over the surface) is fine to swim to; water with a roof is not.
+			BlockPos.MutableBlockPos up = p.mutable();
+			boolean open = false;
+			for (int i = 0; i < 3 && !open; i++) {
+				up.move(net.minecraft.core.Direction.UP);
+				BlockState s = level.getBlockState(up);
+				open = s.getFluidState().isEmpty() && s.getCollisionShape(level, up).isEmpty();
+			}
+			if (!open) {
+				return false;
+			}
+		}
+		for (int i = 0; i < 6; i++) {
+			p.move(net.minecraft.core.Direction.UP);
+			BlockState s = level.getBlockState(p);
+			if (!s.getCollisionShape(level, p).isEmpty() && !s.is(net.minecraft.tags.BlockTags.LEAVES) && !s.is(net.minecraft.tags.BlockTags.LOGS)
+				&& !NavBlocks.isScaffold(level, p, s)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private void ignoreSweepItem(final AgentPlayer agent, final ItemEntity item) {
+		debug(agent, "drop_left", "item", item.getItem(), "at", item.blockPosition().toShortString(), "why", this.walk.failure());
+		this.sweepIgnored.add(item);
+		this.sweepItem = null;
+		this.sweepLeaf = null;
+		agent.controls().stopMining();
+		this.walk.stop(agent);
+	}
+
+	private void endSweep(final AgentPlayer agent) {
+		this.sweepBox = null;
+		this.sweepItem = null;
+		this.sweepLeaf = null;
+		agent.controls().stopMining();
+		this.walk.stop(agent);
+	}
+
+	/** One tick of filling the holes dug for scaffold with dirt (natural ground again, nobody's); false when done. */
+	private boolean refillTick(final AgentPlayer agent) {
+		ServerLevel level = agent.level();
+		while (!this.dug.isEmpty()) {
+			BlockPos hole = this.dug.getLast();
+			BlockState s = level.getBlockState(hole);
+			boolean open = s.isAir() || s.canBeReplaced() && s.getFluidState().isEmpty();
+			if (!open || !NavBlocks.isFloor(level, hole.below(), level.getBlockState(hole.below())) || Inv.count(agent, TreeClimb::isDirtItem) == 0
+				|| Protection.checkZoneCell(level, hole, agent.agentId()) != null) {
+				if (open) {
+					debug(agent, "hole_left", "at", hole.toShortString(), "dirt", Inv.count(agent, TreeClimb::isDirtItem));
+				}
+				this.dug.removeLast();
+				this.choreTicks = 0;
+				continue;
+			}
+			if (++this.choreTicks > 20 * 10) {
+				debug(agent, "hole_left", "at", hole.toShortString(), "why", "timeout");
+				this.dug.removeLast();
+				this.choreTicks = 0;
+				return true;
+			}
+			if (!Walk.inReach(agent, hole) || !Walk.settled(agent)) {
+				if (this.walk.toBlock(agent, hole) == Walk.State.FAILED) {
+					debug(agent, "hole_left", "at", hole.toShortString(), "why", this.walk.failure());
+					this.dug.removeLast();
+					this.choreTicks = 0;
+				}
+				return true;
+			}
+			this.walk.stop(agent);
+			BlockOps.Place r = BlockOps.placeTick(agent, hole, TreeClimb::isDirtItem);
+			if (r == BlockOps.Place.PLACED) {
+				// The ground as it was: natural, nobody's build.
+				Provenance.unmark(level, hole);
+				this.dug.removeLast();
+				this.choreTicks = 0;
+			} else if (r == BlockOps.Place.SELF_IN_WAY) {
+				WorldJobs.stepAside(agent, hole, this.walk);
+			} else if (r != BlockOps.Place.RETRY) {
+				this.dug.removeLast();
+				this.choreTicks = 0;
+			}
+			return true;
+		}
+		return false;
 	}
 
 	/** The nearest natural tree around the centre that the agent can walk to, or null. */
@@ -605,87 +1168,6 @@ public final class Miner {
 		return null;
 	}
 
-	/** A log above reach: step into the cut trunk, then pillar up; give the log up when neither helps. */
-	private Tick climbToward(final AgentPlayer agent, final BlockPos log) {
-		Trees.Tree t = this.tree;
-		if (t == null) {
-			this.skipTarget();
-			return Tick.WORKING;
-		}
-		ServerLevel level = agent.level();
-		if (log.getY() <= agent.getBlockY()) {
-			// Not above us (a low branch out of reach): climbing does not help, walking might.
-			this.climbing = false;
-			agent.controls().setJumping(false);
-			return Tick.WORKING;
-		}
-		BlockPos column = new BlockPos(t.base().getX(), agent.getBlockY(), t.base().getZ());
-		boolean inColumn = agent.getBlockX() == column.getX() && agent.getBlockZ() == column.getZ();
-		if (!inColumn && !this.triedColumn && level.getBlockState(column).isAir() && level.getBlockState(column.above()).isAir()) {
-			Walk.State s = this.walk.to(agent, Vec3.atBottomCenterOf(column), 0.3);
-			if (s == Walk.State.MOVING && ++this.climbTicks < 20 * 10) {
-				return Tick.WORKING;
-			}
-			this.triedColumn = true;
-			this.climbTicks = 0;
-			this.walk.stop(agent);
-			return Tick.WORKING;
-		}
-		if (this.pillar.size() >= MAX_PILLAR || !this.hasPillarBlock(agent)) {
-			this.logsLeftHigh++;
-			this.skipTarget();
-			return Tick.WORKING;
-		}
-		return this.pillarStep(agent);
-	}
-
-	/** One tick of "jump and put a block under your feet". */
-	private Tick pillarStep(final AgentPlayer agent) {
-		if (++this.climbTicks > 20 * 6) {
-			agent.controls().setJumping(false);
-			this.pillarFrom = null;
-			this.climbTicks = 0;
-			this.logsLeftHigh++;
-			this.skipTarget();
-			return Tick.WORKING;
-		}
-		if (this.pillarFrom == null) {
-			if (!agent.onGround()) {
-				return Tick.WORKING;
-			}
-			this.pillarFrom = agent.blockPosition();
-		}
-		BlockPos at = this.pillarFrom;
-		if (agent.getY() < at.getY() + 1.05) {
-			agent.controls().setJumping(true);
-			return Tick.WORKING;
-		}
-		agent.controls().setJumping(false);
-		BlockOps.Place r = BlockOps.placeTick(agent, at, Miner::pillarBlock);
-		if (r == BlockOps.Place.PLACED) {
-			// Scaffold: if it is ever left standing, navigation may break it again (never a crew build).
-			NavBlocks.noteScaffold(agent.level(), at);
-			this.pillar.add(at);
-			this.pillarsBuilt++;
-			this.pillarFrom = null;
-			this.climbTicks = 0;
-		} else if (r != BlockOps.Place.RETRY && r != BlockOps.Place.SELF_IN_WAY) {
-			this.pillarFrom = null;
-			this.logsLeftHigh++;
-			this.skipTarget();
-		}
-		return Tick.WORKING;
-	}
-
-	private boolean hasPillarBlock(final AgentPlayer agent) {
-		return Inv.count(agent, Miner::pillarBlock) > 0;
-	}
-
-	/** Cheap full blocks for a pillar: dirt, cobblestone, cobbled deepslate, netherrack. */
-	static boolean pillarBlock(final ItemStack s) {
-		return s.is(Items.DIRT) || s.is(Items.COBBLESTONE) || s.is(Items.COBBLED_DEEPSLATE) || s.is(Items.NETHERRACK);
-	}
-
 	static @Nullable Item saplingOf(final String species) {
 		for (String id : new String[] {species + "_sapling", species + "_propagule", species + "_fungus"}) {
 			Identifier key = Identifier.withDefaultNamespace(id);
@@ -749,6 +1231,13 @@ public final class Miner {
 	}
 
 	// ---------------------------------------------------------------- helpers
+
+	/** A line about tree felling with {@code MINEVIBE_NAV_DEBUG=1} (how the acceptance runs are diagnosed). */
+	static void debug(final AgentPlayer agent, final String what, final Object... kv) {
+		if (NavDebug.ENABLED) {
+			NavDebug.log(agent.agentId(), what, kv);
+		}
+	}
 
 	private void skipTarget() {
 		if (this.target != null) {

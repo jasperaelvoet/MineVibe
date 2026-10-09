@@ -59,7 +59,8 @@ import org.jspecify.annotations.Nullable;
  *       filled down to the ground (at most {@value OfficePlan#MAX_FOUNDATION_DEPTH} blocks) under every cell, and
  *       only the room inside the walls is cleared. The one exception: when the ground in front of the porch stands
  *       higher than a step, stairs are cut up through it (natural blocks only; water, lava, sand and gravel the cut
- *       would expose are sealed with cobblestone first), so the office always has a way out. Blocks are set without
+ *       would expose are sealed with cobblestone first), and when it lies lower than a step (a cliff side), stairs
+ *       are built down to it on cobblestone treads, so the office always has a way out. Blocks are set without
  *       neighbour updates, so nothing outside reacts (no redstone), but shapes still connect (panes, doors, beds).</li>
  *   <li><b>Workstations.</b> Both slots are marked with polished andesite on the floor and reported as
  *       {@code workstation} slots. The PC blocks install a {@link WorkstationPlacer} ({@code PcModInit}) that puts
@@ -210,8 +211,10 @@ public final class OfficeBuilder {
 				}
 			}
 		}
-		// 2b. A way out when the ground in front of the porch stands higher than a step.
-		cutExit(level, origin);
+		// 2b. A way out when the ground in front of the porch stands higher than a step, or lower (a cliff side).
+		if (cutExit(level, origin) == 0) {
+			stairsDown(level, origin);
+		}
 		// 3. Furniture, then what hangs on walls and the roof.
 		List<OfficeLayout.Slot> slots = new ArrayList<>();
 		for (Kind pass : List.of(Kind.DOOR, Kind.WINDOW, Kind.MEETING_TABLE, Kind.MEETING_CHAIR, Kind.BED, Kind.FURNACE, Kind.CRAFTING_TABLE,
@@ -354,7 +357,7 @@ public final class OfficeBuilder {
 		}
 	}
 
-	/** At most this many steps of exit stairs are cut in front of the porch. */
+	/** At most this many steps of exit stairs are cut (or built) in front of the porch. */
 	static final int MAX_EXIT_STEPS = 12;
 
 	/**
@@ -365,9 +368,9 @@ public final class OfficeBuilder {
 	 * where the ground has a hole. Only natural ground, stone, plants and trees nobody placed are cut; anything else ends
 	 * the stairs. What a cut would let in is sealed with cobblestone first: water or lava beside or above a cut block
 	 * (the blocks are set with shape updates, so a lake would pour down the stairs onto the porch at once), and sand or
-	 * gravel resting on one (it would fall onto the steps, or onto whoever climbs them).
+	 * gravel resting on one (it would fall onto the steps, or onto whoever climbs them). Returns the steps cut.
 	 */
-	private static void cutExit(final ServerLevel level, final BlockPos origin) {
+	private static int cutExit(final ServerLevel level, final BlockPos origin) {
 		int feet = origin.getY() + 1;
 		int doorX = origin.getX() + OfficePlan.DOOR_X;
 		for (int i = 1; i <= MAX_EXIT_STEPS; i++) {
@@ -378,7 +381,7 @@ public final class OfficeBuilder {
 			}
 			if (ground <= feet + 1) {
 				// At most a step up from here: the way out is open.
-				return;
+				return i - 1;
 			}
 			feet++;
 			int stepZ = origin.getZ() + z;
@@ -394,7 +397,7 @@ public final class OfficeBuilder {
 						continue;
 					}
 					if (!cuttable(level, p, s)) {
-						return;
+						return i - 1;
 					}
 					cut.add(p);
 				}
@@ -402,7 +405,7 @@ public final class OfficeBuilder {
 				BlockState t = level.getBlockState(tread);
 				if (t.getCollisionShape(level, tread).isEmpty()) {
 					if (!t.isAir() && !cuttable(level, tread, t) && !fillable(t)) {
-						return;
+						return i - 1;
 					}
 					treads.add(tread);
 				}
@@ -420,7 +423,7 @@ public final class OfficeBuilder {
 					if (!ns.getFluidState().isEmpty()) {
 						if (!fillable(ns)) {
 							// Waterlogged leaves or the like: no sealing that, so no stairs here.
-							return;
+							return i - 1;
 						}
 						seal.add(n);
 					} else if (d == Direction.UP && ns.getBlock() instanceof FallingBlock) {
@@ -438,6 +441,83 @@ public final class OfficeBuilder {
 				set(level, p, Blocks.AIR.defaultBlockState());
 			}
 		}
+		return MAX_EXIT_STEPS;
+	}
+
+	/**
+	 * The mirror of {@link #cutExit}: stairs down from a porch that stands high above the ground in front (a cliff side:
+	 * the floor follows the median of the terrain samples, so a slope falling away in front leaves the porch over a
+	 * drop that hurts at more than 3 blocks, and no walk ever comes back up a 2-block step). One step down per block
+	 * outward, 3 wide, on cobblestone treads filled down to the ground like the foundation, until the ground in front
+	 * is at most a step below, at most {@value #MAX_EXIT_STEPS} steps. Only air, plants, snow and natural leaves are
+	 * cleared over the treads; a fluid, a block somebody placed or anything else in the way ends the stairs.
+	 */
+	private static void stairsDown(final ServerLevel level, final BlockPos origin) {
+		int feet = origin.getY() + 1;
+		for (int i = 1; i <= MAX_EXIT_STEPS; i++) {
+			int z = OfficePlan.PORCH_Z + i;
+			int landing = Integer.MIN_VALUE;
+			for (int dx = -1; dx <= 1; dx++) {
+				landing = Math.max(landing, landingHeight(level, at(origin, OfficePlan.DOOR_X + dx, 0, z), feet));
+			}
+			if (landing >= feet - 1) {
+				// At most a step down from here: the way out is open.
+				return;
+			}
+			int step = feet - 1;
+			List<BlockPos> treads = new ArrayList<>();
+			List<BlockPos> clear = new ArrayList<>();
+			for (int dx = -1; dx <= 1; dx++) {
+				BlockPos tread = at(origin, OfficePlan.DOOR_X + dx, step - 1 - origin.getY(), z);
+				BlockState t = level.getBlockState(tread);
+				if (!t.getCollisionShape(level, tread).isEmpty()) {
+					if (t.hasBlockEntity() || Provenance.ownerAt(level, tread) != null) {
+						return;
+					}
+				} else if (!t.isAir() && !fillable(t) && !cuttable(level, tread, t)) {
+					return;
+				} else {
+					treads.add(tread);
+				}
+				for (int y = 0; y < 3; y++) {
+					BlockPos p = tread.above(1 + y);
+					BlockState s = level.getBlockState(p);
+					if (s.isAir()) {
+						continue;
+					}
+					if (!s.getFluidState().isEmpty() || !(s.canBeReplaced() || s.is(BlockTags.LEAVES) || s.is(BlockTags.SNOW)) || !cuttable(level, p, s)) {
+						return;
+					}
+					clear.add(p);
+				}
+			}
+			for (BlockPos t : treads) {
+				set(level, t, FOUNDATION);
+				foundation(level, t);
+			}
+			for (BlockPos p : clear) {
+				set(level, p, Blocks.AIR.defaultBlockState());
+			}
+			feet = step;
+		}
+	}
+
+	/**
+	 * Where a body stepping off at the column of {@code at} from feet height {@code from} lands: the first height at or
+	 * below {@code from} whose block below is solid or a fluid ({@code from} itself when the cell is not free).
+	 */
+	private static int landingHeight(final ServerLevel level, final BlockPos at, final int from) {
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		if (!free(level, p.set(at.getX(), from, at.getZ()))) {
+			return from;
+		}
+		for (int y = from; y > from - 40 && y > level.getMinY(); y--) {
+			BlockState below = level.getBlockState(p.set(at.getX(), y - 1, at.getZ()));
+			if (!below.getCollisionShape(level, p).isEmpty() || !below.getFluidState().isEmpty()) {
+				return y;
+			}
+		}
+		return from - 40;
 	}
 
 	/** Plain water or lava (source or flowing), or a plant growing in it: cobblestone may take its place. */

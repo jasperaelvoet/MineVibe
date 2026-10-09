@@ -836,6 +836,201 @@ public final class NavGameTests {
 		});
 	}
 
+	// ------------------------------------------------------------------ tall trees, their drops, and the cliff-side office
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 3000)
+	public void navFellsNineLogOakKeepingTheDrops(final GameTestHelper helper) {
+		// A 9-log oak: its top logs stand higher than any walk reaches (and than a Tier-2 pillar: base + 7). Nothing but an
+		// axe in the bag: the miner digs dirt nearby, pillars in the cut trunk, fells it whole, comes down, picks up the
+		// logs, and fills the holes it dug.
+		tree(helper, 20, 1, 16, 9);
+		List<BlockPos> logs = column(helper, 20, 1, 16, 9);
+		AgentPlayer agent = spawnAgent(helper, "Feller", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		this.fellAndCheck(helper, agent, "oak_log", logs, Blocks.OAK_LOG, Items.OAK_LOG, "nav_tall_oak");
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 6000)
+	public void navFellsBigSpruceKeepingTheDrops(final GameTestHelper helper) {
+		// A 2x2 spruce, 12 high (48 logs) in a cone of needles: the top is 11 blocks over the ground. Felled whole from a
+		// pillar in its cut trunk, with dirt dug nearby; at least 90% of the logs end up in the bag.
+		List<BlockPos> logs = new ArrayList<>();
+		for (int x = 20; x <= 21; x++) {
+			for (int z = 16; z <= 17; z++) {
+				fill(helper, x, 1, z, x, 12, z, Blocks.SPRUCE_LOG);
+				logs.addAll(column(helper, x, 1, z, 12));
+			}
+		}
+		for (int y = 6; y <= 13; y++) {
+			int r = y == 13 ? 1 : y % 2 == 0 ? 3 : 2;
+			for (int x = 20 - r; x <= 21 + r; x++) {
+				for (int z = 16 - r; z <= 17 + r; z++) {
+					BlockPos p = new BlockPos(x, y, z);
+					if (helper.getBlockState(p).isAir() && Math.abs(x - 20.5) + Math.abs(z - 16.5) <= r + 1.5) {
+						leaf(helper, p, Blocks.SPRUCE_LEAVES);
+					}
+				}
+			}
+		}
+		AgentPlayer agent = spawnAgent(helper, "Spruce", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		this.fellAndCheck(helper, agent, "spruce_log", logs, Blocks.SPRUCE_LOG, Items.SPRUCE_LOG, "nav_big_spruce");
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 4000)
+	public void navTreeWithOneBlockedLogYieldsTheRest(final GameTestHelper helper) {
+		// An 8-log oak with a branch at y 3 reaching east over a 2-high obsidian block: no walk gets within reach of its
+		// far end (27, 3, 16), and nothing natural leads there. That one log fails; the rest of the tree must not (the
+		// miner used to stay "climbing" after one failed walk, and with no dirt gave the trunk's top up as high logs).
+		tree(helper, 20, 1, 16, 8);
+		fill(helper, 24, 1, 10, 31, 2, 22, Blocks.OBSIDIAN);
+		for (int x = 21; x <= 27; x++) {
+			helper.setBlock(new BlockPos(x, 3, 16), Blocks.OAK_LOG);
+		}
+		BlockPos blocked = helper.absolutePos(new BlockPos(27, 3, 16));
+		List<BlockPos> logs = new ArrayList<>(column(helper, 20, 1, 16, 8));
+		for (int x = 21; x <= 26; x++) {
+			logs.add(helper.absolutePos(new BlockPos(x, 3, 16)));
+		}
+		AgentPlayer agent = spawnAgent(helper, "Blocked", AgentRole.MINER, 12, 1, 16);
+		agent.getInventory().setItem(0, new ItemStack(Items.IRON_AXE));
+		long start = helper.getTick();
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("blocked"), "collect", "{\"item\":\"oak_log\",\"count\":14,\"radius\":16}", 120_000);
+		AtomicInteger reported = new AtomicInteger();
+		helper.succeedWhen(() -> {
+			String s = status(r);
+			if ("failed".equals(s) || "cancelled".equals(s)) {
+				helper.fail("collect " + s + ": " + error(r) + " " + result(r));
+			}
+			helper.assertTrue("done".equals(s), "still collecting (" + s + ") at " + agent.blockPosition().toShortString());
+			if (reported.getAndIncrement() == 0) {
+				new AgentTestSupport.Report("nav_blocked_log").add("ticks", helper.getTick() - start).add("result", result(r)).print();
+			}
+			ServerLevel level = helper.getLevel();
+			for (BlockPos p : logs) {
+				helper.assertFalse(level.getBlockState(p).is(Blocks.OAK_LOG), "a log of the rest still stands at " + p.toShortString() + ": " + result(r));
+			}
+			helper.assertTrue(result(r).get("mined").getAsInt() >= logs.size(), "mined " + result(r));
+			helper.assertTrue(agent.getInventory().countItem(Items.OAK_LOG) >= 12, "logs kept: " + agent.getInventory().countItem(Items.OAK_LOG));
+			helper.assertTrue(level.getBlockState(blocked).is(Blocks.OAK_LOG) || result(r).get("mined").getAsInt() == logs.size() + 1,
+				"the blocked log, if mined, is counted");
+		});
+	}
+
+	/**
+	 * Fells the tree of {@code logs} with {@code collect} and checks the whole tree came down, at least 90% of the logs
+	 * were kept, the pillar and the holes dug for its scaffold are gone, and nobody got hurt.
+	 */
+	private void fellAndCheck(final GameTestHelper helper, final AgentPlayer agent, final String item, final List<BlockPos> logs, final Block logBlock,
+		final net.minecraft.world.item.Item logItem, final String name) {
+		long start = helper.getTick();
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId(name), "collect",
+			"{\"item\":\"" + item + "\",\"count\":" + logs.size() + ",\"radius\":16}", 120_000);
+		ServerLevel level = helper.getLevel();
+		AtomicReference<Float> lowest = new AtomicReference<>(agent.getHealth());
+		AtomicInteger highest = new AtomicInteger(Integer.MIN_VALUE);
+		helper.startSequence().thenExecuteFor(6000, () -> {
+			lowest.set(Math.min(lowest.get(), agent.getHealth()));
+			highest.set(Math.max(highest.get(), agent.getBlockY()));
+		});
+		AtomicInteger reported = new AtomicInteger();
+		helper.succeedWhen(() -> {
+			String s = status(r);
+			if ("failed".equals(s) || "cancelled".equals(s)) {
+				helper.fail("collect " + s + ": " + error(r) + " " + result(r));
+			}
+			helper.assertTrue("done".equals(s), "still felling (" + s + ") at " + agent.blockPosition().toShortString() + ", "
+				+ agent.getInventory().countItem(logItem) + " kept");
+			int kept = agent.getInventory().countItem(logItem);
+			if (reported.getAndIncrement() == 0) {
+				new AgentTestSupport.Report(name)
+					.add("ticks", helper.getTick() - start)
+					.add("logs", logs.size())
+					.add("mined", result(r).get("mined"))
+					.add("kept", kept)
+					.add("pillared", result(r).get("pillared"))
+					.add("left_high", result(r).get("logsLeftHigh"))
+					.add("top_feet", highest.get() - helper.absolutePos(BlockPos.ZERO).getY())
+					.add("hp_min", lowest.get())
+					.print();
+			}
+			for (BlockPos p : logs) {
+				helper.assertFalse(level.getBlockState(p).is(logBlock), "a log still stands at " + p.toShortString() + ": " + result(r));
+			}
+			helper.assertValueEqual(result(r).get("mined").getAsInt(), logs.size(), "logs mined");
+			helper.assertTrue(kept * 10 >= logs.size() * 9, "kept " + kept + " of " + logs.size() + " logs: " + result(r));
+			helper.assertValueEqual(result(r).get("kept").getAsInt(), kept, "kept, as the result says");
+			// The pillar is gone and the ground is whole again: no scaffold above it, no hole in it.
+			for (int x = 4; x <= 32; x++) {
+				for (int z = 4; z <= 28; z++) {
+					helper.assertFalse(helper.getBlockState(new BlockPos(x, 0, z)).isAir(), "a hole left at " + helper.absolutePos(new BlockPos(x, 0, z)).toShortString());
+					for (int y = 1; y <= 14; y++) {
+						BlockState b = helper.getBlockState(new BlockPos(x, y, z));
+						helper.assertFalse(b.is(Blocks.DIRT) || b.is(Blocks.COBBLESTONE), "scaffold left at " + helper.absolutePos(new BlockPos(x, y, z)).toShortString());
+					}
+				}
+			}
+			helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "hurt: hp " + lowest.get());
+		});
+	}
+
+	@GameTest(environment = NAV, structure = FIELD, maxTicks = 600)
+	public void navCliffOfficeHasStairsDown(final GameTestHelper helper) {
+		// The office on a 6-high plateau whose edge is its porch (a cliff side): the ground in front lies 7 below the
+		// porch. The builder adds stairs down (the mirror of the cut-up stairs of a sunk office): the body walks down them
+		// on Tier 1 alone, unhurt, and back up to the porch; no block of the office changes.
+		ServerLevel level = helper.getLevel();
+		fill(helper, 0, 1, 0, 32, 6, 4 + OfficePlan.PORCH_Z, Blocks.DIRT);
+		BlockPos origin = helper.absolutePos(new BlockPos(6, 7, 4));
+		dev.minevibe.org.office.OfficeLayout layout = OfficeBuilder.build(level, origin, null);
+		dev.minevibe.org.office.OfficeService.overrideLayout(level.getServer(), layout);
+		AgentTestSupport.onTestEnd(helper, () -> dev.minevibe.org.office.OfficeService.overrideLayout(level.getServer(), null));
+		List<BlockPos> office = new ArrayList<>();
+		List<Block> before = new ArrayList<>();
+		for (BlockPos p : BlockPos.betweenClosed(origin, origin.offset(OfficePlan.WIDTH - 1, OfficePlan.ROOF, OfficePlan.PORCH_Z))) {
+			office.add(p.immutable());
+			before.add(level.getBlockState(p).getBlock());
+		}
+		int doorX = 6 + OfficePlan.DOOR_X;
+		int porchZ = 4 + OfficePlan.PORCH_Z;
+		// Treads one down per block out: feet 7 (porch 8) at the first step, down to the ground's.
+		for (int i = 1; i <= 6; i++) {
+			int tread = 7 - i;
+			for (int x = doorX - 1; x <= doorX + 1; x++) {
+				helper.assertTrue(helper.getBlockState(new BlockPos(x, tread, porchZ + i)).is(Blocks.COBBLESTONE),
+					"a tread at " + helper.absolutePos(new BlockPos(x, tread, porchZ + i)).toShortString());
+				helper.assertTrue(helper.getBlockState(new BlockPos(x, tread + 1, porchZ + i)).isAir(), "room over the tread " + i);
+			}
+		}
+		helper.assertTrue(helper.getBlockState(new BlockPos(doorX, 1, porchZ + 7)).isAir(), "the stairs end on the ground");
+		AgentPlayer agent = spawnAgent(helper, "Cliffy", AgentRole.MINER, doorX, 8, porchZ);
+		agent.brain().setEnabled(false);
+		AtomicReference<Float> lowest = new AtomicReference<>(agent.getHealth());
+		helper.startSequence().thenExecuteFor(600, () -> lowest.set(Math.min(lowest.get(), agent.getHealth())));
+		agent.navigator().moveTo(helper.absoluteVec(new Vec3(doorX + 0.5, 1.0, porchZ + 12.5)), 1.0);
+		helper.startSequence()
+			.thenWaitUntil(() -> {
+				AgentNavigator nav = agent.navigator();
+				helper.assertTrue(nav.status() != AgentNavigator.Status.FAILED, "no walking way down: " + nav.failureReason());
+				helper.assertTrue(nav.status() == AgentNavigator.Status.ARRIVED, "walking down, at " + agent.blockPosition().toShortString());
+			})
+			.thenExecute(() -> agent.navigator().moveTo(helper.absoluteVec(new Vec3(doorX + 0.5, 8.0, porchZ + 0.5)), 1.0))
+			.thenWaitUntil(() -> {
+				AgentNavigator nav = agent.navigator();
+				helper.assertTrue(nav.status() != AgentNavigator.Status.FAILED, "no walking way back up: " + nav.failureReason());
+				helper.assertTrue(nav.status() == AgentNavigator.Status.ARRIVED, "walking up, at " + agent.blockPosition().toShortString());
+			})
+			.thenExecute(() -> {
+				helper.assertValueEqual(agent.navigator().digPlans(), 0, "Tier 2 plans");
+				helper.assertTrue(lowest.get() >= agent.getMaxHealth(), "hurt on the way: hp " + lowest.get());
+				for (int i = 0; i < office.size(); i++) {
+					Block now = level.getBlockState(office.get(i)).getBlock();
+					helper.assertTrue(now == before.get(i), "office block changed at " + office.get(i).toShortString() + ": " + before.get(i) + " -> " + now);
+				}
+			})
+			.thenSucceed();
+	}
+
 	// ------------------------------------------------------------------ perf
 
 	@GameTest(environment = NAV, structure = FIELD, maxTicks = 600)
@@ -938,7 +1133,20 @@ public final class NavGameTests {
 	 * updates (a shape update would recompute the distance, find no log, and let the leaf decay).
 	 */
 	static void leaf(final GameTestHelper helper, final BlockPos rel) {
-		BlockState leaf = Blocks.OAK_LEAVES.defaultBlockState().setValue(LeavesBlock.DISTANCE, 1).setValue(LeavesBlock.PERSISTENT, false);
+		leaf(helper, rel, Blocks.OAK_LEAVES);
+	}
+
+	static void leaf(final GameTestHelper helper, final BlockPos rel, final Block kind) {
+		BlockState leaf = kind.defaultBlockState().setValue(LeavesBlock.DISTANCE, 1).setValue(LeavesBlock.PERSISTENT, false);
 		helper.getLevel().setBlock(helper.absolutePos(rel), leaf, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+	}
+
+	/** The absolute positions of a column of {@code height} blocks from relative (x, y, z) up. */
+	static List<BlockPos> column(final GameTestHelper helper, final int x, final int y, final int z, final int height) {
+		List<BlockPos> out = new ArrayList<>();
+		for (int i = 0; i < height; i++) {
+			out.add(helper.absolutePos(new BlockPos(x, y + i, z)));
+		}
+		return out;
 	}
 }

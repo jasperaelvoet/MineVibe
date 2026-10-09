@@ -64,7 +64,7 @@ public final class Observations {
 			// Up to 48 (cap obs.look_around.48, tools-v2-mc.md M7): the v2 observe scene radius.
 			case "look_around" -> Scene.lookAround(agent, intArg(args, "radius", 16, 1, 48), "full".equals(choiceArg(args, "detail", "brief", "brief", "full")));
 			case "inventory" -> inventory(agent);
-			case "find" -> find(agent, stringArg(args, "what"), intArg(args, "radius", 32, 1, 64), intArg(args, "limit", 5, 1, 10),
+			case "find" -> find(agent, stringArg(args, "what"), intArg(args, "radius", SkillFactory.GATHER_RADIUS, 1, 64), intArg(args, "limit", 5, 1, 10),
 				choiceArg(args, "filter", "any", "any", "natural", "built"));
 			case "recipe" -> boolArg(args, "tree") ? recipeTree(agent, stringArg(args, "item"), intArg(args, "count", 1, 1, 2304))
 				: recipe(agent, stringArg(args, "item"));

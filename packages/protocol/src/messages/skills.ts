@@ -105,6 +105,7 @@ const BASE_SKILL_ARGS = {
     block: ItemId,
     count: Count,
     near: BlockPos.optional(),
+    /** Blocks around `near` or the body; default 32 (as `find`). */
     radius: Radius.optional(),
     allow_protected: AllowProtected,
   }),
@@ -116,6 +117,7 @@ const BASE_SKILL_ARGS = {
   collect: z.object({
     item: ItemId,
     count: Count,
+    /** Blocks around `near` or the body; default 32 (as `find`). */
     radius: Radius.optional(),
     replant: z.boolean().optional(),
     allow_protected: AllowProtected,

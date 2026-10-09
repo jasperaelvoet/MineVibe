@@ -33,6 +33,12 @@ import org.jspecify.annotations.Nullable;
  */
 public final class SkillFactory {
 	private static final int MAX_COUNT = 2304;
+	/**
+	 * The default search radius of {@code mine}, {@code collect} and {@code find} (protocol §7.4.2): one number, so a
+	 * source {@code find} shows is one a gather without {@code radius} reaches (it was 24 against find's 32). Capped at
+	 * 64 like find's.
+	 */
+	public static final int GATHER_RADIUS = 32;
 
 	private SkillFactory() {
 	}
@@ -52,11 +58,11 @@ public final class SkillFactory {
 				}
 				case "mine" -> {
 					Args.Mine a = read(args, Args.Mine.class);
-					yield new GatherJobs.Mine(Refs.block(required(a.block(), "block")), count(a.count()), pos(a.near()), radius(a.radius(), 24, 64));
+					yield new GatherJobs.Mine(Refs.block(required(a.block(), "block")), count(a.count()), pos(a.near()), radius(a.radius(), GATHER_RADIUS, 64));
 				}
 				case "collect" -> {
 					Args.Collect a = read(args, Args.Collect.class);
-					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), 24, 64),
+					yield new GatherJobs.Collect(Refs.item(required(a.item(), "item")), count(a.count()), radius(a.radius(), GATHER_RADIUS, 64),
 						Boolean.TRUE.equals(a.replant()), pos(a.near()), Boolean.TRUE.equals(a.make_tools()));
 				}
 				case "hunt" -> {
