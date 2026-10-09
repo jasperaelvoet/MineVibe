@@ -1,5 +1,5 @@
 {
-  "$comment": "Vendored binaries and pinned images (PLAN §9.1). Binaries are shipped byte-identical (never re-signed); every value here is verified before use. packaging/build-app.ts downloads each archive, checks size and sha256, copies the contents byte-identically (so the vendors' own code signatures stay valid) and checks teamId on every extracted Mach-O. container.installRootFiles is what the bundled install root must hold (the PC manager's isProvisioned() checks it). Bump a pin only after checking the new archive by hand (packaging/README.md, spikes/s5-container/result.md).",
+  "$comment": "Vendored binaries and pinned images (PLAN §9.1). Binaries are shipped byte-identical (never re-signed); every value here is verified before use. packaging/build-app.ts downloads each archive, checks size and sha256, copies the contents byte-identically (so the vendors' own code signatures stay valid) and checks teamId on every extracted Mach-O. container.installRootFiles is what the bundled install root must hold (the PC manager's isProvisioned() checks it). lume.appFiles is the notarized lume.app byte for byte (provisioned for dev under MineVibe-dev/lume, checked with codesign and spctl, never re-signed); images.cua-macos pins the macOS image by tag and manifest digest (Lume records the pulled digest in <vm>/.manifest-digest). Bump a pin only after checking the new archive by hand (packaging/README.md, spikes/s5-container/result.md).",
   "version": 1,
   "node": {
     "name": "Node.js",
@@ -53,6 +53,43 @@
       "libexec/container/plugins/machine-apiserver/resources/init": "77a7f83faca9f8656ef129d8f91ddc4e770c80478d07b805a2530b9a902bf15a"
     }
   },
+  "lume": {
+    "name": "Lume",
+    "version": "0.6.1",
+    "url": "https://github.com/trycua/cua/releases/download/lume-v0.6.1/lume-0.6.1-darwin-arm64.tar.gz",
+    "size": 6112964,
+    "sha256": "2675b7981b7d3eb525cd27f40a385c986052eb71b3360c0b2579644725f1bad8",
+    "sha256Source": "GitHub release asset digest and release-manifest.json of lume-v0.6.1",
+    "archive": "tar.gz",
+    "extract": "lume.app",
+    "teamId": "YCK386LBJ7",
+    "signer": "Developer ID Application: Cua AI, Inc. (YCK386LBJ7)",
+    "notarized": true,
+    "appFiles": {
+      "Contents/CodeResources": "64db4519cb2d7b05f39a22bf5ce58ed2da72b40db07f468f073fa496f7e8a29a",
+      "Contents/Info.plist": "6186d21f487970f186fa53ed37ed840539a3d6482d51df561e9a8802bf2e6318",
+      "Contents/MacOS/lume": "a369d63746690afe79626e357241df2f95b523e7f6f60ac9bc7665762abfc904",
+      "Contents/Resources/AppIcon.icns": "75ab3f9c6e7ad1f022468636306cae181d3b6a873dfc34b0304be6938ad83779",
+      "Contents/Resources/lume_lume.bundle/unattended-presets/sequoia.yml": "2c9f2630e67c7d74015e2eb7344b58c62d8f1e714bb50aef84438b642aa51629",
+      "Contents/Resources/lume_lume.bundle/unattended-presets/tahoe.yml": "2c9f2630e67c7d74015e2eb7344b58c62d8f1e714bb50aef84438b642aa51629",
+      "Contents/_CodeSignature/CodeResources": "7dc74094ad03f88c8322817118d7a8ebfac49b2b4b4729c87ae1da3dc528a8d0",
+      "Contents/embedded.provisionprofile": "f047651b29f28e2322e4845e413acf039e2a9e362b7acb4e15799ab27783091d"
+    },
+    "license": "MIT"
+  },
+  "ripgrep": {
+    "name": "ripgrep",
+    "version": "15.2.0",
+    "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+    "size": 1764284,
+    "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+    "sha256Source": "GitHub release asset digest of ripgrep 15.2.0",
+    "archive": "tar.gz",
+    "extract": "ripgrep-15.2.0-aarch64-apple-darwin/rg",
+    "binarySha256": "a326a1fb48074202e9ad41e4cd1e389eeea372c8c6f7d7e80da81176d5d9430e",
+    "purpose": "Installed into macOS PCs (PcApi glob and grep); the macOS image has no ripgrep.",
+    "license": "MIT OR Unlicense"
+  },
   "images": {
     "cua-linux": {
       "ref": "ghcr.io/trycua/linux:24.04",
@@ -65,6 +102,15 @@
       "digest": null,
       "localTag": "minevibe/linux-pc:dev",
       "containerfile": "images/linux-pc/Containerfile"
+    },
+    "cua-macos": {
+      "ref": "ghcr.io/trycua/macos:26-20261003-a7b1e34",
+      "lumeRef": "macos:26-20261003-a7b1e34",
+      "digest": "sha256:d6d864fe6bba6ada8b2e5cd9d7f1ba4f64b1e5ca8a2ef7edc1d1530e356437df",
+      "downloadBytes": 23825217508,
+      "diskBytes": 161061273600,
+      "guest": "macOS 26.5.2 (25F84)",
+      "created": "2026-10-03"
     }
   }
 }
