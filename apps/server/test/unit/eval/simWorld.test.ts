@@ -304,7 +304,7 @@ describe('SimWorld jobs', () => {
     expect(res.error).toEqual({ code: 'UNREACHABLE', msg: 'no path to -20, 72, -2 (no_path)' });
   });
 
-  it('builds a shelter like BuildJob: logs are no building blocks, 71 blocks, a torch last', async () => {
+  it('builds a shelter like BuildJob: logs are no building blocks, 71 blocks, a torch last if carried', async () => {
     const origin = { x: 2, y: 64, z: -2 };
     // Logs have an axis: BuildJob.isBuildingBlock refuses them.
     const logs = setup({ inventory: [[`${NS}oak_log`, 80]] });
@@ -350,16 +350,29 @@ describe('SimWorld jobs', () => {
     expect(ok.world.block({ x: 2, y: 66, z: -4 }).id).not.toBe('minecraft:air'); // above the door
     expect(ok.world.player.sheltered).toBe(true);
 
-    // Without a torch the last step fails, as in the mod; the hut stands and shelters.
+    // Without a torch the hut still stands, shelters and ends done with a note, as in the mod (the torch only lights
+    // the inside); it used to fail "out of torches after 71 blocks", which sent agents looking for coal at night.
     const dark = setup({ inventory: [[`${NS}cobblestone`, 71]] });
-    const short = await dark.api.runSkill({
+    const unlit = await dark.api.runSkill({
       agentId: A,
       skill: 'build',
       args: { blueprint: 'shelter', origin },
       waitMs: 120_000,
     });
-    expect(short.error).toEqual({ code: 'NO_MATERIAL', msg: 'out of torches after 71 blocks' });
+    expect(unlit.status).toBe('done');
+    expect(unlit.result).toMatchObject({ placed: 71, note: 'no torch carried: the inside stays dark' });
+    expect(dark.world.block({ x: 3, y: 64, z: -1 }).id).toBe('minecraft:air'); // no torch inside
     expect(dark.world.player.sheltered).toBe(true);
+
+    // A torch ring still needs its torches up front.
+    const ring = setup({ inventory: [[`${NS}torch`, 2]] });
+    const noTorches = await ring.api.runSkill({
+      agentId: A,
+      skill: 'build',
+      args: { blueprint: 'torch_ring', origin },
+      waitMs: 120_000,
+    });
+    expect(noTorches.error).toEqual({ code: 'NO_MATERIAL', msg: 'torch_ring needs 8 torches, have 2' });
   });
 
   it("a shelter clears its inside first, even when that is Jasper's wall", async () => {

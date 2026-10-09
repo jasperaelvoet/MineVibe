@@ -22,7 +22,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * {@code build{blueprint, origin, rotation?}}: builds one of the simple built-in blueprints at {@code origin} (the
- * agent's floor level), block by block like a player: {@code shelter} (5x5 hut with a door gap and a roof),
+ * agent's floor level), block by block like a player: {@code shelter} (5x5 hut with a door gap, a roof and a torch
+ * inside; without a torch it still ends done, with a {@code note}),
  * {@code wall_ring} (9x9 ring, 2 high), {@code torch_ring} (8 torches 5 blocks out), {@code bridge} (8 blocks straight
  * ahead at foot level), {@code stairs_down} (an 8-step staircase dug downwards) and {@code farm_plot} (9x9 field with a
  * water source in the middle, tilled and planted). Walls take any plain building block in the inventory (dirt,
@@ -249,6 +250,14 @@ public final class BuildJob extends SkillJob {
 				switch (r) {
 					case PLACED -> this.placed++;
 					case NO_ITEM -> {
+						if (step.kind() == Kind.TORCH && !"torch_ring".equals(this.blueprint)) {
+							// A shelter's torch only lights the inside: the walls and roof are the shelter. Without one the
+							// build still ends done (with a note), not "out of torches" after every wall stands (tool eval, after v2).
+							this.put("note", "no torch carried: the inside stays dark");
+							this.index++;
+							this.stepTicks = 0;
+							return Status.RUNNING;
+						}
 						return this.finishShort("NO_MATERIAL", step.kind() == Kind.TORCH ? "out of torches" : "out of building blocks");
 					}
 					case SELF_IN_WAY -> WorldJobs.stepAside(agent, step.pos(), this.walk);

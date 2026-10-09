@@ -89,6 +89,23 @@ public final class SkillMoreGameTests {
 		});
 	}
 
+	@GameTest(structure = ARENA, maxTicks = 3600)
+	public void skillBuildShelterWithoutTorch(final GameTestHelper helper) {
+		// A shelter's torch only lights the inside: without one the hut still stands and the build ends done with a note.
+		AgentPlayer agent = spawnAgent(helper, "Hutter", AgentRole.BUILDER, 8, 1, 4);
+		agent.getInventory().setItem(0, new ItemStack(Items.COBBLESTONE, 64));
+		agent.getInventory().setItem(1, new ItemStack(Items.DIRT, 7));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, jobId("hut"), "build", "{\"blueprint\":\"shelter\",\"origin\":" + rel(helper, 8, 1, 8) + "}", 120_000);
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "build shelter");
+			helper.assertValueEqual(result(r).get("placed").getAsInt(), 71, "walls and roof placed");
+			helper.assertTrue(result(r).get("note").getAsString().contains("no torch"), "note " + result(r));
+			helper.assertTrue(helper.getBlockState(new BlockPos(10, 4, 10)).is(Blocks.COBBLESTONE) || helper.getBlockState(new BlockPos(10, 4, 10)).is(Blocks.DIRT), "roof corner");
+			helper.assertFalse(helper.getBlockState(new BlockPos(9, 1, 9)).is(Blocks.TORCH), "no torch inside");
+			helper.assertValueEqual(Inv.count(agent, Items.COBBLESTONE) + Inv.count(agent, Items.DIRT), 0, "blocks used");
+		});
+	}
+
 	@GameTest(maxTicks = 300)
 	public void skillRideAndDismount(final GameTestHelper helper) {
 		AgentPlayer agent = spawnAgent(helper, "Rider", AgentRole.ENGINEER, 1, 0, 1);

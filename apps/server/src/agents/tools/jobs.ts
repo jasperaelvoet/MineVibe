@@ -125,6 +125,18 @@ export class JobRegistry {
     return this.#current;
   }
 
+  /**
+   * Whether the end of a job the tools started is due a `[JOB DONE]` / `[JOB FAILED]` wake: not when the agent itself
+   * stopped or replaced it (its tool result said so), and not when a `job{wait}` was waiting for it (that result
+   * carries the end). The brain and the tool eval both ask here, so the eval never wakes where production would not.
+   */
+  wakeDue(jobId: string, status: EndedJob['status']): boolean {
+    const job = this.#known.get(jobId);
+    if (!job) return false;
+    if (status === 'cancelled' && job.cancelledBy) return false;
+    return !job.awaited;
+  }
+
   /** Milliseconds since a job started, on this registry's clock (game time in the eval world). */
   elapsed(jobId: string): number | null {
     const job = this.#known.get(jobId);

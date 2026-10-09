@@ -433,6 +433,8 @@ export function describeResult(
       if (skipped) facts.push(`skipped ${skipped}`);
       const need = num(r.needBlocks);
       if (need !== null && placed === null) facts.push(`needs ${need} blocks`);
+      const note = typeof r.note === 'string' ? singleLine(r.note, 80) : null;
+      if (note) facts.push(note);
       break;
     }
     case 'farm': {

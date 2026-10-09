@@ -72,6 +72,12 @@ describe('v2 result format basics (tools-v2-mc.md §6.2)', () => {
     expect(parsePos('12 64 -30')).toEqual({ x: 12, y: 64, z: -30 });
     expect(parsePos(' 12,64,-30 ')).toEqual({ x: 12, y: 64, z: -30 });
     expect(parsePos('12, 64, -30')).toEqual({ x: 12, y: 64, z: -30 });
+    // Copied quotes or brackets around the position are tolerated (Haiku wrote at:"\"-4 64 -4\"" in the live eval).
+    expect(parsePos('"-4 64 -4"')).toEqual({ x: -4, y: 64, z: -4 });
+    expect(parsePos("'-4 64 -4'")).toEqual({ x: -4, y: 64, z: -4 });
+    expect(parsePos('[12, 64, -30]')).toEqual({ x: 12, y: 64, z: -30 });
+    expect(parsePos('(12 64 -30)')).toEqual({ x: 12, y: 64, z: -30 });
+    expect(parsePos('"12 64')).toBeNull();
     expect(parsePos('12 64')).toBeNull();
     expect(parsePos({ x: 1, y: 2, z: 3 })).toBeNull();
     const host = {
@@ -297,6 +303,27 @@ describe('v2 job results (§5.4, §6.1)', () => {
       ctx,
     );
     expect(cancelled.head).toBe('cancelled: gather oak_log 4/10 (stop) | kept oak_log 4');
+  });
+
+  it("build: a shelter built without a torch says so (BuildJob's note)", () => {
+    const build: JobMeta = { tool: 'build', skill: 'build', what: 'build shelter at -4 64 -4' };
+    const r = renderOutcome(
+      build,
+      {
+        status: 'done',
+        result: {
+          blueprint: 'shelter',
+          placed: 71,
+          dug: 0,
+          skipped: 0,
+          note: 'no torch carried: the inside stays dark',
+        },
+        durationMs: 2_000,
+      },
+      ctx,
+    );
+    expect(r.isError).toBe(false);
+    expect(compose(r, null)).toContain('placed 71 | no torch carried: the inside stays dark');
   });
 
   it('do: one line per step; a failed step names its code and the rest are skipped', () => {
@@ -607,5 +634,23 @@ describe('JobRegistry (§7)', () => {
     expect(jobs.meta('j1')).toEqual(gatherMeta);
     now += 120_000;
     expect(jobs.section()).toBe('jobs: no job running | last j8 gather oak_log done 2m ago');
+  });
+
+  it('wakeDue: no wake for a job the agent stopped or replaced, or one a job{wait} reported', () => {
+    const jobs = new JobRegistry(() => 0);
+    expect(jobs.wakeDue('unknown', 'done')).toBe(false);
+    jobs.started('j1', gatherMeta);
+    expect(jobs.wakeDue('j1', 'done')).toBe(true);
+    expect(jobs.wakeDue('j1', 'failed')).toBe(true);
+    const job = jobs.get('j1');
+    if (job) job.awaited = true;
+    expect(jobs.wakeDue('j1', 'done')).toBe(false);
+    expect(jobs.wakeDue('j1', 'failed')).toBe(false);
+    jobs.started('j2', gatherMeta);
+    jobs.markCancelled('stop');
+    expect(jobs.wakeDue('j2', 'cancelled')).toBe(false);
+    // A job cancelled by anything but the agent's own stop or replace still wakes it.
+    jobs.started('j3', gatherMeta);
+    expect(jobs.wakeDue('j3', 'cancelled')).toBe(true);
   });
 });

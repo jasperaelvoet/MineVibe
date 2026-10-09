@@ -1040,6 +1040,12 @@ function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
       };
     }
     const material = st.kind === 'torch' ? (id: string) => id === `${NS}torch` : isBuildMaterial;
+    if (world.count(material) === 0 && st.kind === 'torch' && name !== 'torch_ring') {
+      // BuildJob: a shelter's torch only lights the inside; without one the build goes on and ends done with a note.
+      result.note = 'no torch carried: the inside stays dark';
+      i++;
+      return { dt: 1, progress };
+    }
     if (world.count(material) === 0) {
       // BuildJob.finishShort: what stands stays.
       shelterIfStanding();
