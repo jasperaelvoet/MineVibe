@@ -67,8 +67,9 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
     expect(run?.result.transcript.some((l) => /= done: do 2\/2 steps/.test(l))).toBe(true);
   }, 60_000);
 
-  it('--tools and --mod select the tool set and the simulated mod', () => {
-    expect(parseCli([]).tools).toBe('v1');
+  it('--tools and --mod select the tool set and the simulated mod (default v2, like production)', () => {
+    expect(parseCli([])).toMatchObject({ tools: 'v2', mod: 'v2' });
+    expect(parseCli(['--tools', 'v1'])).toMatchObject({ tools: 'v1', mod: 'v1' });
     expect(parseCli(['--tools', 'v2'])).toMatchObject({ tools: 'v2', mod: 'v2' });
     expect(parseCli(['--tools', 'v2', '--mod', 'v1'])).toMatchObject({ tools: 'v2', mod: 'v1' });
     expect(() => parseCli(['--tools', 'v3'])).toThrow(/--tools/);

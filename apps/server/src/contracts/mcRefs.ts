@@ -5,9 +5,12 @@
  * replies stay byte-stable.
  */
 
-/** Which `mc` tool set agents get: `MINEVIBE_MC_TOOLS=v1|v2` (the v1/v2 A/B; tools-v2-mc.md §14). */
+/**
+ * Which `mc` tool set agents get: `MINEVIBE_MC_TOOLS=v1|v2`. v2 is the default since phase C of tools-v2-mc.md §14
+ * (2026-10-09); `MINEVIBE_MC_TOOLS=v1` keeps the 54 v1 tools as a fallback.
+ */
 export type McToolsVersion = 'v1' | 'v2';
-export const DEFAULT_MC_TOOLS: McToolsVersion = 'v1';
+export const DEFAULT_MC_TOOLS: McToolsVersion = 'v2';
 
 export function mcToolsVersion(
   env: Readonly<Record<string, string | undefined>> = process.env,

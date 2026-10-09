@@ -392,7 +392,7 @@ describe('org module: calendar → CrewHooks.deliver and calendar.fired', () => 
         agentId: 'bram-1',
         kind: 'scheduled',
         text: expect.stringMatching(
-          /^Calendar task \[ev-[0-9a-f]+\] due Day 3 06:00; what and where are below\. When finished, call mcp__mc__report_task\{event_id:/,
+          /^Calendar task \[ev-[0-9a-f]+\] due Day 3 06:00; what and where are below\. When finished, call mcp__mc__calendar\{"action":"report","id":"ev-/,
         ),
       },
     ]);

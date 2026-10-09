@@ -5,6 +5,9 @@
  */
 
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isApiError } from '../../../contracts/common.js';
 import {
   type GuestWindow,
@@ -16,12 +19,24 @@ import {
 import type { PcToolName } from '../catalog.js';
 import { type CallToolResult, errorFrom, errorResult } from '../results.js';
 import { BatchBook } from './batch.js';
-import { BATCH_HALT, MIRROR_KEEP, NOT_SEATED, playerTookOver } from './formats.js';
+import { BATCH_HALT, MIRROR_KEEP, NOT_SEATED, playerTookOver, redactHostPaths } from './formats.js';
 import { geometryFor, type ScreenGeometry } from './geometry.js';
 import { PcJobBook } from './jobs.js';
 import { ReadState } from './readState.js';
 import { RefBook } from './refs.js';
 import type { PcHost } from './types.js';
+
+/** Where MineVibe's own host paths live (its home and temp folders): PC errors never show them (DEBT, P1). */
+const HOST_ROOTS: readonly string[] = (() => {
+  // Application Support has a space: named whole, so a MineVibe folder in it is redacted whole.
+  const roots = new Set([homedir(), join(homedir(), 'Library', 'Application Support'), tmpdir()]);
+  try {
+    roots.add(realpathSync(tmpdir()));
+  } catch {
+    // the temp folder's real path is a nicety (macOS /private/var)
+  }
+  return [...roots].filter((r) => r.length > 1);
+})();
 
 export interface Seat {
   readonly pcId: string;
@@ -157,13 +172,20 @@ export class PcToolContext {
     return guardResult(result);
   }
 
-  /** An error of the PC layer as the agent should read it. */
+  /**
+   * An error of the PC layer as the agent should read it. A failure on MineVibe's side (the PC is down, or an
+   * unexpected host error: a socket, a temp file) names no host path; the guest's own errors keep theirs (its paths,
+   * and the Vault folders, which have the same path in the guest).
+   */
   errorOf(pcId: string, err: unknown): CallToolResult {
-    if (isApiError(err, PC_ERROR_CODES.PC_DOWN)) return errorResult(`${pcId} is down: ${err.message}`);
+    const keep = this.#infos.get(pcId)?.mounts.map((m) => m.hostPath) ?? [];
+    const clean = (text: string) => redactHostPaths(text, HOST_ROOTS, keep);
+    if (isApiError(err, PC_ERROR_CODES.PC_DOWN)) return errorResult(clean(`${pcId} is down: ${err.message}`));
     if (isApiError(err, PC_ERROR_CODES.DENIED) && /player sits|no longer sits|took over/i.test(err.message)) {
       return errorResult(playerTookOver(this.host.playerName?.() ?? 'The player', pcId));
     }
-    return errorFrom(err);
+    if (isApiError(err)) return errorFrom(err);
+    return errorResult(clean(`Error: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   // ------------------------------------------------------------------------------------------- guest facts

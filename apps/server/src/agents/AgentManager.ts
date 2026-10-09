@@ -933,11 +933,17 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       agentId,
     });
     if (brain) {
+      // v1 asks for the consent with allow_protected; the v2 tools have no such argument: Node attaches the token when
+      // the refused call is repeated exactly (tools-v2-mc.md §8 PROTECTED).
+      const retry =
+        brain.mcTools === 'v2'
+          ? 'Repeat the exact call that was refused now (once)'
+          : 'Retry that same job now with allow_protected:true (once)';
       brain.context(
         control(
           brain.record.nonce,
           'CONSENT',
-          `${this.#o.playerName()} allowed you to change the ${scope} you were refused, for ${minutes} min. Retry that same job now with allow_protected:true (once); nothing else protected is unlocked.`,
+          `${this.#o.playerName()} allowed you to change the ${scope} you were refused, for ${minutes} min. ${retry}; nothing else protected is unlocked.`,
         ),
       );
     }

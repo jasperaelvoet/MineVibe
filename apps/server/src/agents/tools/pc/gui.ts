@@ -28,6 +28,13 @@ const REF = z.string().max(16).describe('A ui element ref (ref_12) to act on ins
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Claude Code (persistSession) follows every MCP image with a `[Image: source: <host path>]` text block: a file on
+ * MineVibe's host, which the PC does not have (prompts/kickoff.ts `HOST_PATHS_RULE`).
+ */
+export const IMAGE_NOTE =
+  'A "[Image: source: …]" note after the image names a file on MineVibe\'s host, not on this PC: ignore it.';
+
 type Point = { x: number; y: number };
 
 /** A coordinate (image pixels) as screen pixels, or the out-of-bounds teaching error. */
@@ -122,7 +129,7 @@ export function guiTools(ctx: PcToolContext): Def[] {
   return defs(
     tool(
       'screenshot',
-      'Take a screenshot of the PC screen. Coordinates in every tool are pixels of this image, origin top-left.',
+      `Take a screenshot of the PC screen. Coordinates in every tool are pixels of this image, origin top-left. ${IMAGE_NOTE}`,
       {},
       (_args, extra) =>
         ctx.run(
@@ -144,7 +151,7 @@ export function guiTools(ctx: PcToolContext): Def[] {
     ),
     tool(
       'zoom',
-      'See a region of the screen enlarged, for small text and dense UI. region is [x0, y0, x1, y1] in screenshot pixels; coordinates stay in full-screenshot space afterwards.',
+      `See a region of the screen enlarged, for small text and dense UI. region is [x0, y0, x1, y1] in screenshot pixels; coordinates stay in full-screenshot space afterwards. ${IMAGE_NOTE}`,
       { region: z.array(z.number().int().min(0)).length(4) },
       (args, extra) =>
         ctx.run(

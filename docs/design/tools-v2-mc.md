@@ -1,7 +1,8 @@
 # MC tools v2: fewer, composite, token-efficient `mcp__mc__*` tools
 
-Status: design spec (task A1), implemented behind `MINEVIBE_MC_TOOLS=v2` (track B1; default still v1). Date: 2026-10-09.
-Where the implementation differs from or goes beyond this spec: section 16.
+Status: design spec (task A1), implemented (track B1) and the default since phase C (track P1, 2026-10-09);
+`MINEVIBE_MC_TOOLS=v1` keeps v1 as a fallback. Date: 2026-10-09.
+Where the implementation differs from or goes beyond this spec: section 16 (16.10: the after-v2 eval fixes).
 Scope: the `mc` in-process MCP server used by every agent session (wandering on Haiku 5.5 at xhigh, seated on Opus 5.5 at medium).
 Code: apps/server/src/agents/tools/{mcServer,catalog,results}.ts, apps/server/src/contracts/SkillApi.ts, packages/protocol/src/messages/skills.ts, apps/mod `dev.minevibe.agent.{skill,job}`.
 Related: PLAN §6.2 (ToolGate), §6.5 (footer, wakes, long jobs), §7.4 (skill API); protocol.md §7.4, §7.4.1, §7.4.2; apps/mod/docs/SKILLS.md.
@@ -615,9 +616,9 @@ Schema:
 {"type":"object","properties":{"steps":{"minItems":2,"maxItems":8,"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","enum":["goto","gather","craft","build","use","items"]},"args":{"type":"object","propertyNames":{"type":"string"},"additionalProperties":{}}},"required":["tool","args"]}},"stop_on_fail":{"type":"boolean"}},"required":["steps"]}
 ```
 
-Semantics:
+Semantics (as built, §16.10: one step is accepted, `minItems` 1, and runs as that tool; the description says so):
 1. Node validates each step with that tool's schema and the same handler rules. Errors name the step: `BAD_ARGS: step 2 craft: item is required. Example: …`.
-2. `craft{plan}` and `items{list}` are not allowed in steps.
+2. `craft{plan}` and `items{list}` are not allowed in steps (a lone step of either answers as its tool).
 3. Node translates each step through the same v2→wire table (§10) and resolves Codex places and positions.
 4. Node attaches consent per step (W2) and sends one `skill.run{skill:"sequence", args:{steps:[{skill,args}…], stop_on_fail}}` (M1).
 5. Progress text: `step 1/2 collect 4/10 oak_log`.
@@ -860,7 +861,7 @@ Failures render as `failed: <what> <progress> | <CODE>: <msg>`, then detail line
 | NO_NATURAL_SOURCE | W1 mod | Only built, protected or unreachable sources; candidates and reasons listed | ask Player (AskUserQuestion: go further / use X instead / skip); never substitute | **yes** |
 | PROTECTED | W1 mod | Target is player-built or Base (`what`, `owner`, pos) | ask Player first; if they agree, repeat the same call (Node attaches consent) | **yes** |
 | OTHER_DIMENSION | mod | Target in another dimension | goto a portal, or ask | no |
-| NEEDS_TOOL | mod | Block drops nothing without the tool and gather could not make one | `craft{"item":"wooden_pickaxe"}` (or the stone/iron tier named in msg) | no |
+| NEEDS_TOOL | mod | Block drops nothing without the tool and gather could not make one | as built (§16.10): the tier the block needs, `craft{"item":"wooden_pickaxe","gather_missing":true}` with the craft tree; on an older mod, what to get first by the inventory | no |
 | MISSING_INGREDIENTS | mod (craft) | Raw materials missing (tree, `result.missing`) | `craft{…,"gather_missing":true}` or `gather{…}` | no |
 | NO_RECIPE | mod | Not craftable or smeltable | `gather{"item":…}` (it is gathered, not crafted) | no |
 | NEEDS_TABLE / NO_TABLE / NEEDS_FURNACE / NO_FURNACE / FURNACE_BUSY | mod (craft) | Station problem the tree could not solve | `craft{…,"gather_missing":true}` or `station:"x y z"` | no |
@@ -1082,6 +1083,8 @@ Out of scope but flagged: the pc server (20 tools, ≈2.2k tok) is always loaded
   - Default stays v1.
 - **Phase B (mod):** M1–M9. Node switches to the native paths per `hello.caps`.
 - **Phase C:** default v2. v1 definitions are removed one release later. Optional deferral (§13).
+  - Done 2026-10-09 (track P1, §16.10) on the after-v2 eval (docs/design/EVALS.md "After v2": mc 9/15 → 14/15,
+    house intact 15/15), not on the full N=5 A/B gate below; `MINEVIBE_MC_TOOLS=v1` stays as the fallback.
 - **Eval** (extends W2's `eval:world` harness: fake SkillApi plus incident-modelled scene; Haiku 5.5 at xhigh via the bundled binary; v1 vs v2, N=5 runs per scenario):
   - S1: "collect 10 oak logs and make a crafting table" (reachable oak 28 m S, unreachable oak 11 m NE, player cabin 2 m).
   - S2: same, but no reachable natural trees.
@@ -1165,10 +1168,11 @@ until the §14 gates are met. No live model run was allowed in this track, so th
 
 ### 16.1 Switching
 
-- `MINEVIBE_MC_TOOLS=v1|v2` (`contracts/mcRefs.ts`, default `v1`), or `AgentManager({ mcTools })`.
-- `npm run eval:tools -- --suite mc --tools v2 [--mod v1]` replays the scenarios with the v2 scripts; `--mod v1`
-  simulates a mod without caps.
-- `npm run eval:world -- --tools v2` runs W2's live scenarios with v2 (`MINEVIBE_MC_TOOLS` otherwise).
+- `MINEVIBE_MC_TOOLS=v1|v2` (`contracts/mcRefs.ts`, default `v2` since phase C; it was `v1` until §16.10), or
+  `AgentManager({ mcTools })`.
+- `npm run eval:tools -- --suite mc [--tools v1] [--mod v1]` replays the scenarios with the v2 scripts (default) or
+  the v1 ones; `--mod v1` simulates a mod without caps. PC scenarios have one script either way.
+- `npm run eval:world [-- --tools v1]` runs W2's live scenarios (`MINEVIBE_MC_TOOLS` otherwise, default v2).
 - `npm run measure:mc-tools -w apps/server` prints the §13 numbers for both sets. It makes no model calls.
 - v1 is frozen in `tools/mcServerV1.ts` as main had it after W1 and W2. `tools/mcServer.ts` picks the set.
 - Every text that names a tool goes through `mcRefs(version)`: the persona, the Codex digest and its hints, calendar
@@ -1212,8 +1216,11 @@ until the §14 gates are met. No live model run was allowed in this track, so th
   ask with AskUserQuestion. When the player picks an "Allow" option, W2's ConsentLedger has a grant.
 - The model then repeats the exact call. Only that call, with a grant present, goes out with `allow_protected: true`
   and the token in `skill.run.consent`. Any other call goes out without them.
-- On a mod without `skill.sequence`, the Node macro gives the single-use token to the first block-changing step only.
-  The mod's own sequence covers every step.
+- On a mod without `skill.sequence`, the Node macro gives the single-use token to the step the mod refused (it
+  remembers which step each offered token came from); only for a token it never saw, to the first block-changing
+  step. The mod's own sequence covers every step. (Before §16.10 it was always the first block-changing step.)
+- Every skill whose args take `allow_protected` (protocol `CONSENT_SKILLS`) carries the consent, `use_block` and
+  `menu_click` included since §16.10.
 - Node's own Base guard (W2's `baseConflict`) runs only when the mod reports no zone, as in v1.
 
 ### 16.5 Older mods (no caps)
@@ -1271,15 +1278,13 @@ Every v1 and v2 script behaves: good runs pass and bad runs fail. The incident (
 
 ### 16.8 Open
 
-- **Default flip (phase C):** needs the live A/B of §14 (S1-S6, N=5, v1 vs v2), with `eval:world -- --tools v2` and
-  `eval:tools -- --mode live --tools v2`.
+- **Default flip (phase C):** done in §16.10 on the after-v2 eval; the live A/B of §14 (S1-S6, N=5, v1 vs v2) is still
+  to run, with `eval:world` and `eval:tools -- --mode live` (both v2 by default now).
 - **Deferral:** not done; all 20 tools are `alwaysLoad`. Tool search is still unverified for Haiku 5.5.
 - **M10:** one-tick `observe`.
 - **Entity provenance** for animals (§15 Q3).
-- **Consent on a Node macro** covers only its first block-changing step.
-- **Consent for right-clicks and menu clicks:** `use_block` and `menu_click` can be refused `PROTECTED` (W1) but take no
-  `allow_protected`, so no "Allow" unlocks them; their hint says to ask what to do instead.
-- The simulated mod's craft tree is a simplified `RecipeTree`: it does not reorder smelts and does not set fuel aside.
+- The simulated mod's craft tree is a simplified `RecipeTree`: it does not reorder smelts and does not set fuel aside,
+  and its gathering makes no tools (the mod's does).
 
 ### 16.9 Review fixes
 
@@ -1307,3 +1312,20 @@ Every v1 and v2 script behaves: good runs pass and bad runs fail. The incident (
   the Base and then put the table back inside, one block over the edge).
 - **Hints** that suggested an invalid call now suggest a valid one (`items{"action":"store"}` without an item;
   `codex` search with an empty query), checked by a test that runs every suggested call.
+
+### 16.10 Default switch and the after-v2 eval fixes (track P1, 2026-10-09)
+
+The after-v2 eval (docs/design/EVALS.md "After v2") and DEBT.md ("Found in the after-v2 tool eval") left these; all
+are fixed, each with a replay of the real session wiring against the simulated W1 mod
+(`apps/server/test/unit/eval/toolsV2Polish.test.ts`).
+
+| What | Fix |
+|---|---|
+| Default | `MINEVIBE_MC_TOOLS` defaults to `v2`; `v1` is the fallback. `eval:tools` and `eval:world` default to v2 as well (`--tools v1` for the old set). Tests that cover v1 pin it (`vi.stubEnv` or an explicit version); the default paths (AgentManager, the brainless e2e, calendar texts) now test v2. |
+| `do` with one step | `steps` takes 1-8 (`minItems` 1). One step runs as that tool: the same wire call, the same result and wake (`done: gather oak_log 10/10`, not `do 1/1`), a failure under the tool's own label (`failed: items give`), and a lone `craft{plan}` or `items{list}` answers as its tool. A mod `sequence` still holds 2-8. |
+| NEEDS_TOOL hint | Names the tier the block needs (`pickaxeFor`, vanilla's `needs_*_tool` tags: stone, coal and a redstone block wood; iron/copper/lapis and raw iron/copper blocks stone; gold/diamond/emerald, redstone ore and a raw gold block iron; obsidian diamond). With the craft tree: `craft{"item":"<tier>","gather_missing":true}` (it gathers the wood it lacks). On an older mod, Node reads the inventory for this one failure and says to gather logs first (none or too little carried: 3 planks for the head, 2 more for the sticks unless 2 are carried, 4 planks a log), to craft only the planks or sticks still missing, or to craft the pickaxe; a wake without that look says both ways. |
+| Host paths | Claude Code (persistSession) adds `[Image: source: <host path>]` after every MCP image, and its environment names the session's working directory, both on MineVibe's host. The seated primer has one rule (`HOST_PATHS_RULE`), `screenshot` and `zoom` one sentence (`IMAGE_NOTE`). A replay checks that PC results and kickoffs name no host path (home or temp directory); Vault mounts are path-identical by design. The check found one more way in: an unexpected host-side error (a socket, a temp file) or `PC_DOWN` reached the agent verbatim; `PcToolContext.errorOf` now replaces paths under the home, Application Support and temp folders with `<MineVibe host path>` (`redactHostPaths`), keeping the PC's Vault folders and the guest's own errors as they are. |
+| Consent for right-clicks | `use_block` and `menu_click` take `allow_protected` (protocol, additive; protocol `CONSENT_SKILLS` lists every skill that does, and Node's consent sets come from it). The mod already redeemed tokens for any skill's args; its records gained the field, and a GameTest allows Steve's pot and chest with a token. The "cannot be allowed" hint remains only for a skill without the field. The `CONSENT` notice of a grant tells a v2 agent to repeat the exact refused call (v1: "retry with allow_protected:true", an argument v2 does not have). |
+| Consent on Node's macro | The macro remembers which step each offered token came from and hands it to that step on the retry (before: the first block-changing step, so `do[gather, dig the wall]` spent the token on the gather). |
+| The eval's world | The simulated W1 mod now has the Base zone (the house plus 2 blocks, Jasper's), `Protection.check` (player-built, zone, under a player's roof, the running job's grant), `Consents` tokens, and the mod's shapes: `look_around` is a port of `Scene.lookAround` (Here, the zone, hazards, trees with reachability, `Built: Base …; Jasper's build (174 blocks) 7m SE`, people, resources, ground; brief ≤ 900, full ≤ 2500), `find` has provenance with owner and zone, reachability on the nearest three and `protectedNote`, `PROTECTED` is `refuseProtected`'s detail and message (container take, use_block on a pot, dig, place and build too), `NO_NATURAL_SOURCE` is `noNaturalSource`'s (candidates with distance and direction, too-far trees, 3 per kind), and status and the footer name the zone. `scripts/eval/worldEval.ts` (the `eval:world` fake) uses the same shapes for its W1 scenarios. |
+| Night safety | The world primer (v1 and v2): a shelter that stands beats building one; ask the player into the Base or their house and walk there together; call them safe only once the scene shows them `under cover`; until then follow them (guard mode holds the spot where it was set), then guard there. The mod's People line says so for players (`Jasper (player) 4m S, in Base, under cover` / `…, in the open`; `Scene.shelterWords`; the roof is the `MOTION_BLOCKING_NO_LEAVES` heightmap, so a tree's leaves are no cover). `observe`, `build` and `set_mode` descriptions follow; a done `build shelter` says to bring the player in and check, and its `NO_MATERIAL` points at the shelter that stands. `mc.dark_safe`'s v2 script asks, checks and guards; a soft `checked_player_inside` check reports whether a live run looked. No gameplay shortcut: the player still walks in on their own. |

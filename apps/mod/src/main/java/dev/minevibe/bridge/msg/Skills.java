@@ -116,7 +116,8 @@ public final class Skills {
 
 		public record Place(String block, BlockPos pos, @Nullable Boolean allow_protected) {}
 
-		public record UseBlock(BlockPos pos) {}
+		/** {@code allow_protected} (W1): a right-click that takes from or retunes a protected block, with Node's consent. */
+		public record UseBlock(BlockPos pos, @Nullable Boolean allow_protected) {}
 
 		public record UseItem(@Nullable String item, @Nullable BlockPos pos, @Nullable String entity, @Nullable Boolean allow_protected) {}
 
@@ -152,8 +153,11 @@ public final class Skills {
 		/** Exactly one of {@code pos} / {@code entity}. */
 		public record OpenMenu(@Nullable BlockPos pos, @Nullable String entity) {}
 
-		/** {@code type}: pickup, quick_move, swap, clone, throw, quick_craft, pickup_all. */
-		public record MenuClick(int slot, int button, String type) {}
+		/**
+		 * {@code type}: pickup, quick_move, swap, clone, throw, quick_craft, pickup_all. {@code allow_protected} (W1): a
+		 * click that takes from the player's chest, with Node's consent.
+		 */
+		public record MenuClick(int slot, int button, String type, @Nullable Boolean allow_protected) {}
 
 		public record MenuClose() {}
 

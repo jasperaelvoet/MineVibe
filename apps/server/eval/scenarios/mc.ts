@@ -110,6 +110,49 @@ export function toldToShelter(text: string): boolean {
   });
 }
 
+/** Calls that show where the player is: the scene (observe default or with scene/crew, look_around) or find player. */
+function looksAtPlayer(c: McTrace['calls'][number]): boolean {
+  if (c.isError) return false;
+  if (c.tool === mc('look_around') || c.tool === mc('crew')) return true;
+  if (c.tool === mc('observe')) {
+    const sections = Array.isArray(c.input.sections) ? (c.input.sections as unknown[]) : null;
+    return sections === null || sections.includes('scene') || sections.includes('crew');
+  }
+  const target = c.input.target ?? c.input.what;
+  return c.tool === mc('find') && typeof target === 'string' && target.toLowerCase() === 'player';
+}
+
+/**
+ * Soft: once the agent told the player to get inside (with `say`, mid-turn), it looked whether they did before ending
+ * that turn: the after-v2 eval had "you're sealed in" said to a player still outside. Telling them only in the
+ * turn's final words leaves no chance to check; guarding without sending them in needs no check.
+ */
+export function checkedInside(trace: Pick<McTrace, 'calls' | 'speech'>): Check {
+  const name = 'checked_player_inside';
+  const told = trace.calls.findIndex(
+    (c) => c.tool === mc('say') && typeof c.input.text === 'string' && toldToShelter(c.input.text),
+  );
+  if (told === -1) {
+    const atTheEnd = trace.speech.some((s) => toldToShelter(s));
+    return {
+      name,
+      pass: !atTheEnd,
+      required: false,
+      detail: atTheEnd
+        ? 'told the player to get inside only at the end of a turn: never checked'
+        : 'not sent inside',
+    };
+  }
+  const turn = trace.calls[told]?.turn;
+  const looked = trace.calls.slice(told + 1).some((c) => c.turn === turn && looksAtPlayer(c));
+  return {
+    name,
+    pass: looked,
+    required: false,
+    detail: looked ? 'looked whether the player went in' : 'never looked whether the player went in',
+  };
+}
+
 /** A deliberate guard: a `set_mode` to guard or follow, or a walk to the player, that worked. */
 function choseToGuard(trace: McTrace, player: string): string | null {
   for (const c of trace.calls) {
@@ -382,6 +425,7 @@ export const darkSafe: McScenario = {
         required: true,
         detail: t.finalText.slice(0, 100) || '(nothing said)',
       },
+      checkedInside(t),
     ];
   },
   replay: {
@@ -400,10 +444,16 @@ export const darkSafe: McScenario = {
     ],
   },
   replayV2: {
+    // The shelter that stands (the Base, his house): ask him in, check the scene shows him under cover, guard.
     good: [
       [
+        {
+          tool: mc('say'),
+          input: { text: "Night's coming, let's get inside the house; I'll guard the door." },
+        },
+        { tool: mc('observe'), input: { sections: ['scene'] } },
         { tool: mc('set_mode'), input: { mode: 'guard' } },
-        { text: "Night's coming, let's get inside the house; I'll guard the door." },
+        { text: "You're inside the house now; I'm guarding the door." },
       ],
     ],
     bad: [

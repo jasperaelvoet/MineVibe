@@ -182,23 +182,27 @@ describe('AgentManager: chat and wakes', () => {
   });
 
   it('mc tool calls from the session reach the SkillApi; a running job wakes the agent with [JOB DONE]', async () => {
+    // The default tool set is v2 (MINEVIBE_MC_TOOLS unset): gather is the production call.
     const w = await freshWorld();
     const q = w.query(0);
     await w.manager.deliverChat({ to: 'all', text: '@ada get logs' });
     await w.until(() => w.texts(q).some((t) => t.includes('get logs')), 'wake');
     w.skills.skillHandler = () => ({ status: 'running' });
-    q.assistantToolUse('mcp__mc__mine', { block: 'oak_log', count: 10, wait_s: 1 });
-    const out = await q.callTool('mcp__mc__mine', { block: 'oak_log', count: 10, wait_s: 1 });
+    q.assistantToolUse('mcp__mc__gather', { item: 'oak_log', count: 10 });
+    const out = await q.callTool('mcp__mc__gather', { item: 'oak_log', count: 10 });
     expect(out.kind).toBe('allowed');
-    expect(resultText(out)).toMatch(/is running/);
-    expect(w.skills.runs[0]).toMatchObject({ agentId: w.ceoId, skill: 'mine' });
+    expect(resultText(out)).toMatch(/^running: gather oak_log \(job /);
+    expect(w.skills.runs[0]).toMatchObject({ agentId: w.ceoId, skill: 'collect' });
     q.assistantText('On it, mining logs.');
     q.result();
     await w.until(() => w.manager.brain(w.ceoId)?.status === 'idle', 'idle');
     const jobId = w.skills.runningJobs()[0] ?? '';
-    w.skills.finish(jobId, { status: 'done', result: { summary: '10 oak_log' } });
+    w.skills.finish(jobId, {
+      status: 'done',
+      result: { item: 'minecraft:oak_log', got: 10, have: 10 },
+    });
     await w.until(() => w.texts(q).some((t) => t.includes('JOB DONE')), 'job done wake');
-    expect(w.texts(q).at(-1)).toContain(`${jobId} mine oak_log ×10: 10 oak_log`);
+    expect(w.texts(q).at(-1)).toContain(`${jobId} gather oak_log 10/10`);
     expect(
       w.events.some(
         (e) => e.type === 'chat' && (e.payload as { entry: { kind: string } }).entry.kind === 'activity',

@@ -12,6 +12,14 @@ import { geometryFor } from '../tools/pc/geometry.js';
 /** Largest CLAUDE.md excerpt in a kickoff (≈2k tokens). */
 export const CLAUDE_MD_EXCERPT_CHARS = 8_000;
 
+/**
+ * Claude Code's own notes name paths on MineVibe's host, which the PC does not have: with `persistSession` on it adds
+ * a `[Image: source: <host path>]` text block after every MCP image (screenshots, zooms), and its environment section
+ * names the session's working directory. A seated agent reading or cd-ing there only gets "No such file".
+ */
+export const HOST_PATHS_RULE =
+  'Claude Code\'s own notes name paths on MineVibe\'s host, not on this PC: "[Image: source: …]" after an image, and its working directory. Ignore them; never read, open or cd there.';
+
 export interface KickoffInput {
   readonly nonce: string;
   readonly playerName: string;
@@ -89,6 +97,7 @@ export function pcPrimer(pc: PcGuestInfo, playerName: string): string {
     '- open starts a URL, file or app and waits for its window; wait_for waits for text, a window or a still screen.',
     '- Code and files: bash, read, edit, write, grep, glob, not the GUI. Long commands: bash run_in_background (you are notified when they end).',
     `- What you open closes when you stand up. Leave the "Shell: …" window open: ${playerName} watches your commands there.`,
+    `- ${HOST_PATHS_RULE}`,
   ].join('\n');
 }
 

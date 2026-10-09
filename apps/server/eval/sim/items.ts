@@ -95,6 +95,8 @@ const more: [string, BlockSpec][] = [
   ['spruce_door', spec(`${NS}spruce_door`, 3, 'axe', { solid: false })],
   ['red_bed', spec(`${NS}red_bed`, 0.2, null, { solid: false })],
   ['glass_pane', spec(null, 0.3, null, { solid: false })],
+  ['flower_pot', spec(`${NS}flower_pot`, 0, null, { solid: false })],
+  ['potted_poppy', spec(`${NS}flower_pot`, 0, null, { solid: false })],
   ['torch', spec(`${NS}torch`, 0, null, { solid: false })],
   ['water', spec(null, -1, null, { solid: false })],
   ['bedrock', spec(null, -1, null)],

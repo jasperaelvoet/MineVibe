@@ -37,9 +37,12 @@ function recorder(q: FakeQuery): string[] {
   return log;
 }
 
-/** A fresh world whose CEO is idle after its welcome turn. */
+/**
+ * A fresh world whose CEO is idle after its welcome turn. The tool names below are v1's, so the tool set is v1 unless a
+ * test asks for v2 (v2 is the process default since tools-v2-mc.md §16.10).
+ */
 async function world(options: Parameters<typeof createHarness>[0] = {}) {
-  h = await createHarness(options);
+  h = await createHarness({ mcTools: 'v1', ...options });
   await h.manager.openWorld({ worldId: 'w1', gen: 1 });
   const id = h.manager.listAgents()[0]?.agentId ?? '';
   const q = h.query(0);

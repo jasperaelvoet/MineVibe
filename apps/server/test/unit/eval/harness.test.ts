@@ -21,7 +21,7 @@ import { FakeQuery, userText } from '../../helpers/fakeSdk.js';
 
 const BUNDLED = { source: 'bundled' as const, path: undefined, version: null };
 
-/** One scripted run of `scenario`; returns its checks by name. */
+/** One scripted run of `scenario` with the v1 tools (these scripts call v1 names); returns its checks by name. */
 async function replay(scenario: Scenario, script: Replay) {
   const r = await runScenario(scenario, {
     mode: 'replay',
@@ -33,6 +33,7 @@ async function replay(scenario: Scenario, script: Replay) {
     maxRunTurns: script.length + 1,
     turnTimeoutMs: 30_000,
     requireSubscription: false,
+    tools: 'v1',
   });
   return { r, check: (name: string) => r.checks.find((c) => c.name === name) };
 }
@@ -40,8 +41,8 @@ async function replay(scenario: Scenario, script: Replay) {
 const mcTool = (name: string) => `mcp__mc__${name}`;
 
 describe('replay mode (scripted model through the real session wiring)', () => {
-  it('every good script passes and every bad script fails its checks', async () => {
-    const outcomes = await runReplays(selectScenarios('all', []));
+  it('every good script passes and every bad script fails its checks (v1 tools, the fallback)', async () => {
+    const outcomes = await runReplays(selectScenarios('all', []), { tools: 'v1' });
     const wrong = outcomes.filter((o) => o.result.success !== o.expected);
     expect(wrong.map((o) => `${o.scenario}/${o.variant}: ${JSON.stringify(o.result.checks)}`)).toEqual([]);
     expect(outcomes).toHaveLength(16);
@@ -96,6 +97,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       maxRunTurns: 3,
       turnTimeoutMs: 30_000,
       requireSubscription: false,
+      tools: 'v1',
     });
     expect(r).toMatchObject({ turns: 1, stop: 'budget', success: false });
     expect(budget.remaining).toBe(1);
@@ -130,6 +132,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
         maxRunTurns: 1,
         turnTimeoutMs: 30_000,
         requireSubscription: true,
+        tools: 'v1',
       }),
     ).rejects.toThrow(FatalEvalError);
     expect((fake as FakeQuery | null)?.interrupted).toBeGreaterThan(0);
@@ -180,6 +183,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       maxRunTurns: 1,
       turnTimeoutMs: 30_000,
       requireSubscription: false,
+      tools: 'v1',
     });
     expect(r).toMatchObject({ toolCalls: 3, failedCalls: 2, deniedCalls: 2, success: true });
     expect(r.transcript.join('\n')).toMatch(/stand up first/);

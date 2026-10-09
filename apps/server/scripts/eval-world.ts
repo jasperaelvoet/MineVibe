@@ -3,7 +3,7 @@
  * instead of breaking the house when nature is out of reach?
  *
  *   npm run eval:world            (root or apps/server; never part of `npm test`)
- *   npm run eval:world -- --tools v2   (the v2 `mc` tools, docs/design/tools-v2-mc.md; default: MINEVIBE_MC_TOOLS, else v1)
+ *   npm run eval:world -- --tools v1   (the v1 `mc` tools, the fallback; default: MINEVIBE_MC_TOOLS, else v2)
  *
  * Three scenarios, each a fresh world and a fresh CEO session through the real AgentManager (persona, Digest scene,
  * ToolGate, InteractionBroker, `mc` tools) on Haiku at xhigh, with the SDK-bundled `claude` (`MINEVIBE_CLAUDE=bundled`

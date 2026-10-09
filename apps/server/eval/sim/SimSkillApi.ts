@@ -31,7 +31,7 @@ import { TypedEmitter } from '../../src/util/TypedEmitter.js';
 import { buildJobLogic } from './jobs.js';
 import { observe } from './observe.js';
 import { SIM_V2_CAPS } from './v2.js';
-import { type SimJob, type SimWorld, TPS } from './world.js';
+import { type Box, type SimJob, type SimWorld, TPS } from './world.js';
 
 /** Game ticks per real millisecond of waiting (20 tps). */
 function msToTicks(ms: number): number {
@@ -46,6 +46,8 @@ export interface SimCall {
   readonly name: string;
   readonly args: Readonly<Record<string, unknown>>;
   readonly at: number;
+  /** A `skill.run` that carried the player's consent token (`skill.run.consent`). */
+  readonly consent?: boolean | undefined;
 }
 
 export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
@@ -53,17 +55,26 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   /** Every call, in order (scenario checks read it). */
   readonly calls: SimCall[] = [];
   readonly #ended = new Map<string, JobEnd>();
+  readonly #withoutCaps: ReadonlySet<string>;
 
-  constructor(world: SimWorld, options: { readonly mod?: 'v1' | 'v2' } = {}) {
+  /**
+   * @param options.mod The simulated mod (v1: no provenance; v2: W1 and the v2 skills).
+   * @param options.withoutCaps Caps a v2 mod leaves out of `hello.caps` (e.g. `skill.sequence`: Node's macro).
+   */
+  constructor(
+    world: SimWorld,
+    options: { readonly mod?: 'v1' | 'v2'; readonly withoutCaps?: readonly string[] } = {},
+  ) {
     super();
     this.world = world;
     if (options.mod) world.mod = options.mod;
+    this.#withoutCaps = new Set(options.withoutCaps ?? []);
     world.onJobEnd = (job) => this.#ended_(job);
   }
 
-  /** The simulated mod's `hello.caps`: none for the v1 mod, every v2 cap for the v2 one. */
+  /** The simulated mod's `hello.caps`: none for the v1 mod, every v2 cap for the v2 one (less `withoutCaps`). */
   caps(): ReadonlySet<string> {
-    return new Set(this.world.mod === 'v2' ? SIM_V2_CAPS : []);
+    return new Set(this.world.mod === 'v2' ? SIM_V2_CAPS.filter((c) => !this.#withoutCaps.has(c)) : []);
   }
 
   #check(agentId: string): void {
@@ -76,6 +87,8 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   }
 
   #ended_(job: SimJob): void {
+    // Consents.deactivate: the grant ends with its job.
+    if (this.world.grant?.jobId === job.jobId) this.world.grant = null;
     const end: JobEnd = {
       jobId: job.jobId,
       agentId: this.world.agent.agentId,
@@ -91,9 +104,27 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   async runSkill<S extends SkillName>(request: SkillRunRequest<S>): Promise<SkillRunResult> {
     this.#check(request.agentId);
     const args = validateSkillArgs(request.skill, request.args) as Record<string, unknown>;
-    this.calls.push({ kind: 'skill', name: request.skill, args, at: this.world.clock });
+    this.calls.push({
+      kind: 'skill',
+      name: request.skill,
+      args,
+      at: this.world.clock,
+      ...(request.consent ? { consent: true } : {}),
+    });
     const w = this.world;
     if (w.current && !request.replace) throw new ApiError(ERROR_CODES.BUSY, `${request.agentId} is busy`);
+    // W1 (SkillService.consentFor): with allow_protected, Node's token is redeemed once; an unknown one is BAD_ARGS.
+    // A token without allow_protected is ignored and kept.
+    let grant: Box | null = null;
+    if (request.consent && args.allow_protected === true && w.mod === 'v2') {
+      grant = w.redeemConsent(request.consent.token);
+      if (!grant) {
+        throw new ApiError(
+          ERROR_CODES.BAD_ARGS,
+          'the consent token is unknown, expired or for another agent: ask the player again',
+        );
+      }
+    }
     // The v2 mod names the job its replace cancelled (cap run.replaced, M9).
     const prev = w.current;
     const replaced =
@@ -102,6 +133,7 @@ export class SimSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
         : undefined;
     if (w.current) w.cancelJob('replaced by a new job');
     const jobId = request.jobId ?? newJobId();
+    if (grant) w.grant = { box: grant, jobId };
     const logic = buildJobLogic(w, request.skill, args);
     const job = w.startJob(jobId, request.skill, args, logic);
     const waitMs = Math.min(request.waitMs ?? 20_000, MOD_WAIT_CAP_MS);

@@ -122,7 +122,7 @@ export const MC_V2_DEFERRABLE: ReadonlySet<McV2ToolName> = new Set([
 /** The tool descriptions (§5), verbatim: when to use the tool, and one example. */
 export const MC_V2_DESCRIPTIONS: Readonly<Record<McV2ToolName, string>> = {
   observe:
-    'See yourself and the world in one call: use it before multi-step work and whenever you are unsure where you are or what is around. Read-only, safe in parallel. sections (default status+scene): status = body, place, zone, job, held item; scene = zone (Base, player builds), natural resources with direction, distance and reachability, stations, hazards, mobs, players; inventory; crew = crew and player, where and doing what; jobs = current and recent jobs; events = what happened to you lately; pcs = office PCs and who sits there; menu = the open menu\'s slots and buttons.\nExample: {"sections":["scene","inventory"]}',
+    'See yourself and the world in one call: use it before multi-step work and whenever you are unsure where you are or what is around. Read-only, safe in parallel. sections (default status+scene): status = body, place, zone, job, held item; scene = zone (Base, player builds), natural resources with direction, distance and reachability, stations, hazards, mobs, players (under cover or in the open); inventory; crew = crew and player, where and doing what; jobs = current and recent jobs; events = what happened to you lately; pcs = office PCs and who sits there; menu = the open menu\'s slots and buttons.\nExample: {"sections":["scene","inventory"]}',
   find: 'Find the nearest blocks, mobs or dropped items of one kind, with distance, direction, reachability and natural vs player-built. Read-only. Use it to pick a spot or to check that something exists; gather and craft find their own sources.\nExample: {"target":"iron_ore"}',
   goto: 'Walk somewhere. to: "x y z", "player", a crew @handle, a mob type, or a place: office, home, spawn, bed, chest, crafting_table, furnace, codex, pc:<id>, or a Codex places page title. A job.\nExample: {"to":"crafting_table"}',
   gather:
@@ -130,15 +130,15 @@ export const MC_V2_DESCRIPTIONS: Readonly<Record<McV2ToolName, string>> = {
   craft:
     'Use for any "make / craft / smelt X" request. Makes count of an item and resolves the whole recipe tree: crafts intermediates (logs to planks to sticks), smelts in a furnace when needed, and uses a nearby crafting table or furnace, or places one (crafting it first if needed). gather_missing:true also gathers missing raw materials from nature. plan:true only shows the tree and what is missing. A job.\nExample: {"item":"crafting_table"}',
   build:
-    'Build, clear or farm an area. blueprint builds a built-in plan at "x y z": shelter, wall_ring, torch_ring, bridge, stairs_down, farm_plot. dig clears every block in the box from..to (at most 1024). farm tills, plants and harvests the box. Never changes player-built blocks or the Base. A job.\nExample: {"action":"blueprint","blueprint":"shelter","at":"10 64 -3"}',
+    'Build, clear or farm an area. blueprint builds a built-in plan at "x y z": shelter, wall_ring, torch_ring, bridge, stairs_down, farm_plot (a shelter takes 71 blocks: when the Base or a house is near, take the player there instead). dig clears every block in the box from..to (at most 1024). farm tills, plants and harvests the box. Never changes player-built blocks or the Base. A job.\nExample: {"action":"blueprint","blueprint":"shelter","at":"10 64 -3"}',
   use: 'One hands-on action. place item at target "x y z"; break the one block at target; interact (right-click) a block or entity: door, lever, bed, chest, villager; use_item (item, or the held one), optionally on target: bucket, bone_meal, flint_and_steel; attack target until it dies; ride / dismount; sleep in the nearest bed (or target) at night. Player-built blocks and the Base are refused unless the player agreed. A job.\nExample: {"action":"place","item":"crafting_table","target":"6 66 1"}',
   items:
     'What you carry: equip (hand or armor slot), eat (best food, or item), drop, give (walks to to: "player" or @handle), store / take with a container (nearest chest, or container "x y z"), list a container.\nExample: {"action":"give","item":"oak_log","count":5,"to":"player"}',
   menu: 'Block and entity menus: villager trades, enchanting, anvil, brewing, stonecutter. open target, state lists slots and buttons, click a slot (or button), close. For crafting and chests use craft and items.\nExample: {"action":"open","target":"minecraft:villager"}',
-  do: 'Run 2-8 world steps as ONE job, in order, without waking you between them. Use it when a request has several known steps ("get logs, then make a table"). Each step is {tool, args} with the args of goto, gather, craft, build, use or items. Stops at the first failed step unless stop_on_fail is false.\nExample: {"steps":[{"tool":"gather","args":{"item":"oak_log","count":10}},{"tool":"craft","args":{"item":"crafting_table"}}]}',
+  do: 'Run up to 8 world steps as ONE job, in order, without waking you between them. Use it when a request has several known steps ("get logs, then make a table"); one step just runs as that tool. Each step is {tool, args} with the args of goto, gather, craft, build, use or items. Stops at the first failed step unless stop_on_fail is false.\nExample: {"steps":[{"tool":"gather","args":{"item":"oak_log","count":10}},{"tool":"craft","args":{"item":"crafting_table"}}]}',
   job: 'Your world jobs: status (current, or job_id), wait up to seconds for it to end and get its result, stop cancels it. A world tool that answers "running" keeps working after your turn: prefer ending your turn, [JOB DONE] wakes you.\nExample: {"action":"stop"}',
   set_mode:
-    'What your body does between jobs: follow the player, stay, guard an area (around anchor), or wander.\nExample: {"mode":"guard","anchor":"0 66 3"}',
+    'What your body does between jobs: follow the player, stay, guard an area (around anchor; at night, by the player\'s shelter), or wander.\nExample: {"mode":"guard","anchor":"0 66 3"}',
   say: 'Say something out loud now (a bubble above your head) without ending your turn, and/or play an emote.\nExample: {"text":"On my way!","emote":"wave"}',
   tell: 'Send a private message to one crew member (@handle, name or "ceo"). Only they get it.\nExample: {"to":"@bram","text":"Need 10 cobblestone at the office."}',
   remember:
@@ -262,9 +262,10 @@ const SHAPES = {
     click: z.enum(['pickup', 'quick_move', 'swap', 'throw', 'pickup_all']).optional(),
   },
   do: {
+    // One step is accepted and runs as that tool (a mod `sequence` holds 2-8; DEBT "do with one step").
     steps: z
       .array(z.object({ tool: z.enum(STEP_TOOLS), args: z.record(z.string(), z.unknown()) }))
-      .min(2)
+      .min(1)
       .max(8),
     stop_on_fail: z.boolean().optional(),
   },
@@ -323,6 +324,9 @@ const SHAPES = {
   },
 } as const satisfies Record<McV2ToolName, z.ZodRawShape>;
 
+/** `craft`'s own input schema, for a lone `do` step `craft{plan}` (do step args are free-form). */
+const CRAFT_INPUT = z.object(SHAPES.craft);
+
 const READ_ONLY = { annotations: { readOnlyHint: true } } as const;
 const DESTRUCTIVE = { annotations: { destructiveHint: true } } as const;
 
@@ -359,6 +363,22 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
     const { result, footer } = splitFooter(await host.skills.obsQuery(host.agentId, query, args));
     return { result: result ?? {}, footer };
   };
+  /**
+   * The render context of a job's end. A NEEDS_TOOL hint on a mod without the craft tree depends on what is carried
+   * (make the pickaxe, or get wood first), so Node looks; any other end needs nothing more.
+   */
+  const ctxForEnd = async (code: string | undefined): Promise<RenderContext> => {
+    const c = ctx();
+    if (code !== 'NEEDS_TOOL' || c.craftTree !== false) return c;
+    try {
+      const totals = obj((await obs('inventory')).result.totals) ?? {};
+      const carried: Record<string, number> = {};
+      for (const [id, n] of Object.entries(totals)) if (typeof n === 'number') carried[short(id)] = n;
+      return { ...c, carried };
+    } catch {
+      return c;
+    }
+  };
   const translateHost: TranslateHost = {
     playerName: () => host.playerName(),
     crewMember: (ref) => host.crewMember?.(ref) ?? null,
@@ -386,7 +406,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
     const code = isApiError(err) ? err.code : 'INTERNAL';
     const msg = err instanceof Error ? err.message : String(err);
     const m: JobMeta = meta ?? { tool: what.split(' ')[0] ?? what, skill: '', what, args };
-    const next = code === 'BAD_ARGS' ? null : hintFor(code, m, ctx());
+    const next = code === 'BAD_ARGS' ? null : hintFor(code, m, ctx(), { msg });
     const lines = [`failed: ${what} | ${code}: ${singleLine(msg, 400)}`];
     if (next) lines.push(nextLine(next));
     return { text: lines.join('\n'), isError: true, footer: footer ? nodeFooter() : null };
@@ -497,7 +517,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
         error: res.error,
         durationMs: elapsed(),
       },
-      ctx(),
+      await ctxForEnd(res.error?.code),
     );
     host.jobs?.ended(res.jobId, res.status, rendered, res.error?.code);
     return {
@@ -717,7 +737,10 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       MC_V2_DESCRIPTIONS.do,
       SHAPES.do,
       (args) =>
-        run(`do ${args.steps.length} steps`, true, async () => {
+        run(doLabel(args.steps), true, async () => {
+          // One step is no sequence (the mod's holds 2-8): it runs as that tool, with that tool's result.
+          const [only] = args.steps;
+          if (args.steps.length === 1 && only) return runSingleStep(only);
           const calls: WireCall[] = [];
           for (const [i, step] of args.steps.entries())
             calls.push(await translateStep(i, step, translateHost));
@@ -740,6 +763,32 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
       DESTRUCTIVE,
     ),
   );
+
+  /**
+   * A `do` with one step, run as that tool: the same wire call, the same result text, and the reads a step may not be
+   * (`craft{plan}`, `items{list}`) answered as their tool would.
+   */
+  const runSingleStep = async (step: { tool: string; args: Record<string, unknown> }): Promise<Out> => {
+    const a = step.args ?? {};
+    if (step.tool === 'craft' && a.plan === true) {
+      // The step's args were never checked against craft's own input schema (a do step's are free-form): its item and
+      // count bounds (1-640) hold here as they do for craft{plan} itself.
+      const parsed = CRAFT_INPUT.safeParse(a);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
+        throw badArgs(`step 1 craft: ${where}${issue?.message ?? 'bad arguments'}`, CRAFT_EXAMPLE);
+      }
+      return planCraft(parsed.data.item, parsed.data.count ?? 1);
+    }
+    const okText = step.tool === 'items' && ['list', 'equip', 'eat'].includes(String(a.action));
+    const wire =
+      step.tool === 'items' && a.action === 'list'
+        ? await translateItems(a, translateHost)
+        : await translateStep(0, step, translateHost);
+    const out = await runWire(wire);
+    return okText ? { ...out, text: out.text.replace(/^done: /, 'ok: ') } : out;
+  };
 
   /** `craft{plan:true}`: the recipe tree without acting (§5.5, M5). */
   const planCraft = async (rawItem: string, count: number): Promise<Out> => {
@@ -811,7 +860,7 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
               const rendered = renderOutcome(
                 meta,
                 { status: end.status, result, error: end.error, durationMs: end.durationMs },
-                ctx(),
+                await ctxForEnd(end.error?.code),
               );
               jobs?.ended(id, end.status, rendered, end.error?.code);
               return {
@@ -958,6 +1007,29 @@ const EMOTE_PAST: Readonly<Record<string, string>> = {
   cheer: 'cheered',
   facepalm: 'facepalmed',
 };
+
+/** The argument each step tool's own failure line names (`gather oak_log`, `goto player`, `items give`). */
+const STEP_LABEL_ARG: Readonly<Record<string, string>> = {
+  goto: 'to',
+  gather: 'item',
+  craft: 'item',
+  build: 'action',
+  use: 'action',
+  items: 'action',
+};
+
+/**
+ * A `do` call's label for its failure line: `do 3 steps`, or, for one step, the label that tool's own call has
+ * (`gather oak_log`, `items give`), so a one-step `do` fails in the same words as the tool.
+ */
+function doLabel(steps: readonly { tool: string; args: Record<string, unknown> }[]): string {
+  const [only] = steps;
+  if (steps.length !== 1 || !only) return `do ${steps.length} steps`;
+  const value = only.args?.[STEP_LABEL_ARG[only.tool] ?? ''];
+  if (typeof value !== 'string') return only.tool;
+  const shown = only.tool === 'gather' || only.tool === 'craft' ? short(value) : value;
+  return `${only.tool} ${singleLine(shown, 40)}`;
+}
 
 function orgOut(result: OrgToolResult): Out {
   return { text: result.text, isError: !result.ok };

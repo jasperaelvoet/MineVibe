@@ -3,7 +3,7 @@
  * the player granted it (never from tool input), look_around as readable text, and the zone in the status footer.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { statusFooter } from '../../../src/agents/AgentBrain.js';
 import { personaPrompt } from '../../../src/agents/prompts/persona.js';
 import { createMcServer, type McHost } from '../../../src/agents/tools/mcServer.js';
@@ -13,6 +13,14 @@ import { perceiveFind } from '../../../src/agents/world/perception.js';
 import { agentActor } from '../../../src/contracts/common.js';
 import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
+
+// The mc tools here are the v1 set, the fallback behind MINEVIBE_MC_TOOLS=v1 (v2's consent: toolsV2*.test.ts).
+beforeAll(() => {
+  vi.stubEnv('MINEVIBE_MC_TOOLS', 'v1');
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 type Registered = Record<
   string,

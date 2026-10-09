@@ -1,13 +1,15 @@
 /**
  * `obs.query` answers of the simulated world, in the mod's formats (`dev.minevibe.agent.skill.Observations`): the
  * same keys, the same notable-block categories, the same limits and `BAD_ARGS` messages. The footer is added by
- * SimSkillApi. Like the mod, nothing here says who placed a block.
+ * SimSkillApi. Like the v1 mod, nothing here says who placed a block; the v2 mod (W1) answers `look_around` with the
+ * mod's scene (scene.ts), `find` with provenance (v2.ts `findBlocks`) and `status` with the zone.
  */
 
 import { ERROR_CODES } from '@minevibe/protocol';
 import { ApiError } from '../../src/contracts/common.js';
 import { CRAFTING, isKnownBlock, matches, NS, normId, SMELTING, TAGS, toolOf } from './items.js';
 import { craftable, ingredientsOf } from './jobs.js';
+import { lookAroundV2 } from './scene.js';
 import { findBlocks, recipeTree } from './v2.js';
 import {
   AIR,
@@ -81,9 +83,12 @@ function status(world: SimWorld): Record<string, unknown> {
     biome: 'minecraft:plains',
     time: dayAndTime(world.clock),
     weather: 'clear',
-    light: world.isNight() ? 4 : 15,
-    mode: a.mode,
   };
+  // W1: the footer's zone words ("in Base", "12m from Base").
+  const zone = world.mod === 'v2' ? world.zoneWords(a.pos) : null;
+  if (zone) o.zone = zone;
+  o.light = world.isNight() ? 4 : 15;
+  o.mode = a.mode;
   if (a.anchor) o.anchor = pos(a.anchor);
   o.activity = world.activity();
   if (world.current) o.job = withElapsed(world, world.current);
@@ -339,8 +344,13 @@ export function observe(
   switch (query) {
     case 'status':
       return status(world);
-    case 'look_around':
-      return lookAround(world, intArg(args, 'radius', 16, 1, world.mod === 'v2' ? 48 : 32));
+    case 'look_around': {
+      const radius = intArg(args, 'radius', 16, 1, world.mod === 'v2' ? 48 : 32);
+      if (world.mod !== 'v2') return lookAround(world, radius);
+      const detail = args.detail ?? 'brief';
+      if (detail !== 'brief' && detail !== 'full') throw badArgs('detail must be one of brief, full');
+      return lookAroundV2(world, radius, detail === 'full');
+    }
     case 'inventory':
       return inventory(world);
     case 'find': {
@@ -351,11 +361,17 @@ export function observe(
         const o = find(world, what, radius, limit);
         if (o.kind === 'block') {
           const filter = typeof args.filter === 'string' ? args.filter : 'any';
+          if (!['any', 'natural', 'built'].includes(filter))
+            throw badArgs('filter must be one of any, natural, built');
           o.filter = filter;
-          o.matches = findBlocks(world, normId(what), radius, limit, filter);
-          if ((o.matches as unknown[]).length === 0)
-            o.note = `none within ${radius} blocks (only loaded chunks are searched)`;
-          else delete o.note;
+          const found = findBlocks(world, normId(what), radius, limit, filter);
+          o.matches = found.matches;
+          if (found.protectedNote) o.protectedNote = found.protectedNote;
+          if (found.matches.length === 0) {
+            const which =
+              filter === 'natural' ? ' that are natural' : filter === 'built' ? ' that are built' : '';
+            o.note = `none within ${radius} blocks${which} (only loaded chunks are searched)`;
+          } else delete o.note;
         }
         return o;
       }

@@ -8,7 +8,7 @@ import { personaPrompt } from '../../../src/agents/prompts/persona.js';
 import { decideTool, type GateContext } from '../../../src/agents/ToolGate.js';
 import { toolsUpdatedNote } from '../../../src/agents/tools/toolRefs.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
-import { mcRefs, mcToolsVersion } from '../../../src/contracts/mcRefs.js';
+import { DEFAULT_MC_TOOLS, mcRefs, mcToolsVersion } from '../../../src/contracts/mcRefs.js';
 import { SequenceFallbackSkillApi } from '../../../src/contracts/SequenceFallback.js';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
 import { resultText } from '../../helpers/fakeSdk.js';
@@ -168,6 +168,29 @@ describe('v2 tools in the agent runtime', () => {
     });
   }
 
+  for (const mcTools of ['v1', 'v2'] as const) {
+    it(`a player's grant tells the agent how to retry in its own tool set (${mcTools})`, async () => {
+      const { h, q, ceoId } = await v2World(undefined, mcTools);
+      h.manager.consents.noteRefusal(ceoId, {
+        positions: [{ x: 6, y: 66, z: -6 }],
+        blocks: ['stripped_spruce_log'],
+        zone: 'built',
+        consentId: '0123456789abcdef0123456789abcdef',
+      });
+      await h.manager.deliverChat({ to: 'all', text: '@ada yes, break the stripped spruce log' });
+      await h.until(() => h.texts(q).some((t) => t.includes('CONSENT')), 'consent note');
+      const note = h.texts(q).find((t) => t.includes('CONSENT')) ?? '';
+      expect(note).toContain('allowed you to change the 1 protected block you were refused');
+      if (mcTools === 'v2') {
+        // The v2 tools take no allow_protected: Node attaches the token to the exact refused call.
+        expect(note).toContain('Repeat the exact call that was refused now (once)');
+        expect(note).not.toContain('allow_protected');
+      } else {
+        expect(note).toContain('Retry that same job now with allow_protected:true (once)');
+      }
+    });
+  }
+
   it('a session resumed under the other tool set is told the new names once', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-v2-resume-'));
     dirs.push(dir);
@@ -188,10 +211,13 @@ describe('v2 tools in the agent runtime', () => {
 });
 
 describe('v2 texts and gate', () => {
-  it('texts name the tool set of the process', () => {
-    expect(mcToolsVersion({})).toBe('v1');
+  it('texts name the tool set of the process (v2 by default, v1 selectable as the fallback)', () => {
+    expect(DEFAULT_MC_TOOLS).toBe('v2');
+    expect(mcToolsVersion({})).toBe('v2');
     expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'V2' })).toBe('v2');
-    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'v3' })).toBe('v1');
+    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: ' v1 ' })).toBe('v1');
+    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'v3' })).toBe('v2');
+    expect(mcRefs()).toBe(mcRefs('v2'));
     expect(mcRefs('v2').reportTaskWith('ev-3')).toBe(
       'mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}',
     );

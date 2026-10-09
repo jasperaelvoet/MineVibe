@@ -679,7 +679,8 @@ describe('status footer contract (protocol §7.3)', () => {
     const skills = new FakeSkillApi();
     skills.skillHandler = () => ({ status: 'done', result: { mined: 4, footer: MOD } });
     skills.observations.set('inventory', { items: ['oak_log x4'], footer: MOD });
-    const reg = registry(createMcServer(mcHost(skills, 'NODE FOOTER')));
+    // The v1 set (the fallback); v2's footer policy is in toolsV2Format.test.ts.
+    const reg = registry(createMcServer(mcHost(skills, 'NODE FOOTER'), 'v1'));
     const mine = await call(reg, 'mine', { block: 'oak_log', count: 4 });
     expect(mine.text).toBe(`Done: mine oak_log ×4. {"mined":4}\n${MOD}`);
     const inv = await call(reg, 'inventory', {});

@@ -2,7 +2,14 @@
  * What the `mc` tools (v1 and v2) need from the agent runtime, and helpers both versions share.
  */
 
-import type { AgentBody, AgentRole, Place, SkillConsent, SkillName } from '@minevibe/protocol';
+import {
+  type AgentBody,
+  type AgentRole,
+  CONSENT_SKILLS,
+  type Place,
+  type SkillConsent,
+  type SkillName,
+} from '@minevibe/protocol';
 import type { Actor } from '../../contracts/common.js';
 import { ApiError, isApiError } from '../../contracts/common.js';
 import type { OrgApi } from '../../contracts/OrgApi.js';
@@ -78,28 +85,20 @@ export interface McHost {
   body?(): AgentBody | null;
 }
 
-/** Skills whose jobs may break or replace blocks: they carry the agent's consent, when there is one. */
-export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set([
-  'mine',
-  'collect',
-  'dig',
-  'place',
-  'build',
-  'farm',
-  'use_item',
-  'attack',
-  'container',
-]);
+/**
+ * Skills whose jobs may break, replace or take from protected blocks (protocol `CONSENT_SKILLS` less `craft` and
+ * `sequence`, which v1 never offers): they carry the agent's consent, when there is one. Right-clicks (`use_block`:
+ * the player's flower pot, lectern) and menu clicks (`menu_click`: taking from the player's chest) included.
+ */
+export const BLOCK_CHANGING_SKILLS: ReadonlySet<SkillName> = new Set(
+  CONSENT_SKILLS.filter((s) => s !== 'craft' && s !== 'sequence'),
+);
 
 /**
  * v2 also sends consent with `craft` (its recipe tree may place a station and gather) and `sequence` (whose steps
  * change blocks): the consent stays scoped to the refused positions or zone, so it never widens.
  */
-export const CONSENT_SKILLS_V2: ReadonlySet<SkillName> = new Set([
-  ...BLOCK_CHANGING_SKILLS,
-  'craft',
-  'sequence',
-]);
+export const CONSENT_SKILLS_V2: ReadonlySet<SkillName> = new Set(CONSENT_SKILLS);
 
 /**
  * Splits the mod's status `footer` off a skill or observation result (protocol §7.3): the rest is the result the

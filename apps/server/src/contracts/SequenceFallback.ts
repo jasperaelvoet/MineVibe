@@ -9,7 +9,13 @@
  * Unlike the mod's job, a macro does not survive a Node restart.
  */
 
-import { MOD_CAPS, type SequenceStepSkill, type SkillName, type SkillRunResult } from '@minevibe/protocol';
+import {
+  CONSENT_SKILLS,
+  MOD_CAPS,
+  type SequenceStepSkill,
+  type SkillName,
+  type SkillRunResult,
+} from '@minevibe/protocol';
 import { TypedEmitter } from '../util/TypedEmitter.js';
 import { ApiError } from './common.js';
 import {
@@ -21,22 +27,22 @@ import {
   validateSkillArgs,
 } from './SkillApi.js';
 
-/** Skills whose jobs may change protected blocks (they can carry the player's consent). */
-const CONSENT_STEPS: ReadonlySet<string> = new Set([
-  'mine',
-  'collect',
-  'dig',
-  'place',
-  'build',
-  'farm',
-  'use_item',
-  'attack',
-  'container',
-  'craft',
-]);
+/** Skills whose jobs may change protected blocks (they can carry the player's consent; protocol `CONSENT_SKILLS`). */
+const CONSENT_STEPS: ReadonlySet<string> = new Set(CONSENT_SKILLS);
 
 /** How long one step may run before the macro gives up on it (the mod caps a sequence at 40 min). */
 const STEP_TIMEOUT_MS = 40 * 60_000;
+/** The mod's consent tokens live 10 minutes (`Consents.TTL_MS`); a refused step is remembered as long. */
+const REFUSED_STEP_TTL_MS = 10 * 60_000;
+/** Refused steps remembered at most (the mod keeps 64 offers). */
+const REFUSED_STEPS_MAX = 64;
+
+/** The consent token a step's `PROTECTED` refusal offered (`result.protected.consentId`), or null. */
+function offeredToken(result: Record<string, unknown> | undefined): string | null {
+  const p = result?.protected;
+  const detail = p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+  return typeof detail?.consentId === 'string' ? detail.consentId : null;
+}
 
 let macroSeq = 0;
 export function newMacroId(): string {
@@ -79,6 +85,11 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
   readonly #ended = new Map<string, JobEnd>();
   /** Child job id → its macro (progress is re-emitted for the macro). */
   readonly #children = new Map<string, Macro>();
+  /**
+   * The macro step the mod refused with each consent token it offered: the player's "Allow" is for that step, so the
+   * retry of the same `do` hands the single-use token to exactly that step, not to the first one that changes blocks.
+   */
+  readonly #refusedSteps = new Map<string, { agentId: string; index: number; skill: string; at: number }>();
   readonly #off: (() => void)[] = [];
 
   constructor(inner: SkillApi) {
@@ -181,6 +192,9 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
       request.consent && (request.args as { allow_protected?: boolean }).allow_protected === true
         ? request.consent
         : null;
+    // The step the player's token was offered for (a refusal of an earlier run of this macro). Unknown (the refusal
+    // came from elsewhere, or Node restarted): the first step that changes blocks, as before.
+    const refused = consent ? this.#refusedStep(consent.token, macro.agentId) : null;
     let failure: { code: string; msg: string } | null = null;
     for (const [i, step] of steps.entries()) {
       if (macro.cancelled) break;
@@ -194,9 +208,12 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
       const childId = newJobId();
       macro.childId = childId;
       this.#children.set(childId, macro);
-      // The player's single-use consent (W1 token) goes with the first step that changes blocks: separate jobs, unlike
-      // the mod's own sequence, cannot share it.
-      const withConsent = consent !== null && CONSENT_STEPS.has(step.skill);
+      // The player's single-use consent (W1 token) goes with the step it was offered for (separate jobs, unlike the
+      // mod's own sequence, cannot share it); without that record, with the first step that changes blocks.
+      const withConsent =
+        consent !== null &&
+        CONSENT_STEPS.has(step.skill) &&
+        (refused === null || (i === refused.index && step.skill === refused.skill));
       let end: JobEnd;
       try {
         const res = await this.#inner.runSkill({
@@ -240,6 +257,8 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
         outcome.msg = end.error.msg;
       }
       outcomes.push(outcome);
+      const offered = end.error?.code === 'PROTECTED' ? offeredToken(result) : null;
+      if (offered) this.#noteRefusedStep(offered, macro.agentId, i, step.skill);
       if (end.status === 'cancelled') {
         macro.cancelled ??= end.error?.msg ?? 'cancelled';
         break;
@@ -282,6 +301,26 @@ export class SequenceFallbackSkillApi extends TypedEmitter<SkillEvents> implemen
     }
     macro.finish(end);
     this.emit('result', end);
+  }
+
+  #noteRefusedStep(token: string, agentId: string, index: number, skill: string): void {
+    const now = Date.now();
+    for (const [t, r] of this.#refusedSteps)
+      if (now - r.at > REFUSED_STEP_TTL_MS) this.#refusedSteps.delete(t);
+    this.#refusedSteps.set(token, { agentId, index, skill, at: now });
+    while (this.#refusedSteps.size > REFUSED_STEPS_MAX) {
+      const oldest = this.#refusedSteps.keys().next().value;
+      if (oldest === undefined) break;
+      this.#refusedSteps.delete(oldest);
+    }
+  }
+
+  /** The step a token was offered for (taken: the token is single use), or null when this macro never saw it. */
+  #refusedStep(token: string, agentId: string): { index: number; skill: string } | null {
+    const r = this.#refusedSteps.get(token);
+    this.#refusedSteps.delete(token);
+    if (!r || r.agentId !== agentId || Date.now() - r.at > REFUSED_STEP_TTL_MS) return null;
+    return { index: r.index, skill: r.skill };
   }
 
   #cancelMacro(macro: Macro, reason: string): void {

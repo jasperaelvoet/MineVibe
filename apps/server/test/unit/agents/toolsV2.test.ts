@@ -571,7 +571,49 @@ describe('v2 do (§5.10)', () => {
       'BAD_ARGS: step 2 craft: item is required. Example: craft{"item":"crafting_table"}',
     );
     expect(fake.runs).toHaveLength(0);
-    expect((await call(reg, 'do', { steps: [steps[0]] })).invalid).toBe(true);
+    expect((await call(reg, 'do', { steps: [] })).invalid).toBe(true);
+  });
+
+  it('one step is valid and runs as that tool (no sequence): same wire call, same result text', async () => {
+    const { reg, fake } = v2Host();
+    fake.skillHandler = () => ({
+      status: 'done',
+      result: { item: 'minecraft:oak_log', got: 10, have: 10, footer: FOOTER },
+    });
+    const one = await call(reg, 'do', { steps: [steps[0]] });
+    expect(one.invalid).toBe(false);
+    expect(fake.runs.map((r) => r.skill)).toEqual(['collect']);
+    expect(fake.runs[0]?.args).toMatchObject({ item: 'oak_log', count: 10, make_tools: true });
+    const direct = await call(reg, 'gather', { item: 'oak_log', count: 10 });
+    expect(one.text).toBe(direct.text);
+    expect(one.text.split('\n')[0]).toBe('done: gather oak_log 10/10 | have oak_log 10');
+    // The reads a step may not be answer as their tool would; a bad single step names its tool.
+    fake.observations.set('recipe', { item: 'minecraft:stick', tree: true, steps: [], missing: [] });
+    const plan = await call(reg, 'do', { steps: [{ tool: 'craft', args: { item: 'stick', plan: true } }] });
+    expect(plan.text).toMatch(/^plan: stick ×1/);
+    expect(fake.runs).toHaveLength(2);
+    const bad = await call(reg, 'do', { steps: [{ tool: 'gather', args: { item: 'oak_log' } }] });
+    expect(bad.text).toMatch(/^failed: gather oak_log \| BAD_ARGS: step 1 gather: count must be 1-640/);
+  });
+
+  it("a lone craft{plan} step keeps craft's own input bounds (count 1-640, an item), checked before the mod is asked", async () => {
+    const { reg, fake } = v2Host();
+    fake.observations.set('recipe', { item: 'minecraft:stick', tree: true, steps: [], missing: [] });
+    const huge = await call(reg, 'do', {
+      steps: [{ tool: 'craft', args: { item: 'stick', plan: true, count: 100_000 } }],
+    });
+    expect(huge.isError).toBe(true);
+    expect(huge.text).toMatch(/^failed: craft stick \| BAD_ARGS: step 1 craft: count: /);
+    const noItem = await call(reg, 'do', { steps: [{ tool: 'craft', args: { plan: true } }] });
+    expect(noItem.text).toMatch(/^failed: craft \| BAD_ARGS: step 1 craft: item: /);
+    expect(fake.obsCalls.filter((c) => c.query === 'recipe')).toHaveLength(0);
+    const ok = await call(reg, 'do', {
+      steps: [{ tool: 'craft', args: { item: 'stick', plan: true, count: 4 } }],
+    });
+    expect(ok.text).toMatch(/^plan: stick ×4/);
+    expect(fake.obsCalls.filter((c) => c.query === 'recipe').map((c) => c.args)).toEqual([
+      { item: 'stick', count: 4, tree: true },
+    ]);
   });
 
   it('without the mod cap Node runs the steps as one macro job; stop_on_fail stops at the first failure', async () => {

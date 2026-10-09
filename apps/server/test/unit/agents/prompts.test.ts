@@ -122,7 +122,12 @@ describe('persona (stable system prompt)', () => {
     // "Allow" is for what the player asked to change, never offered as a substitute.
     expect(p).toContain('Never offer Base blocks as an option.');
     expect(p).toContain('ask with an option "Allow: <what>" that names them');
-    expect(worldPrimer('Jasper').join('\n').length).toBeLessThan(1_500);
+    // Night safety (EVALS "keep me safe"): the shelter that stands, and the player checked indoors.
+    expect(p).toContain('a shelter that stands beats building one. Ask Jasper into the Base');
+    expect(p).toContain(
+      'Call Jasper safe only once mcp__mc__look_around shows "Jasper (player) … under cover"',
+    );
+    expect(worldPrimer('Jasper').join('\n').length).toBeLessThan(1_900);
     // Stable: the primer has no per-world or per-turn values (the prompt cache stays warm).
     expect(personaPrompt({ ...base, role: 'miner', ceo: false })).toBe(p);
   });
