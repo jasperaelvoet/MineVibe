@@ -22,7 +22,7 @@ import { HandoffNotes } from '../../../src/agents/memory.js';
 import { PlanCapture } from '../../../src/agents/PlanCapture.js';
 import { HOST_PATHS_RULE, kickoffMessage, pcPrimer } from '../../../src/agents/prompts/kickoff.js';
 import { personaPrompt } from '../../../src/agents/prompts/persona.js';
-import { hintFor } from '../../../src/agents/tools/format.js';
+import { hintFor, pickaxeFor } from '../../../src/agents/tools/format.js';
 import { HOST_PATH, redactHostPaths } from '../../../src/agents/tools/pc/formats.js';
 import { IMAGE_NOTE } from '../../../src/agents/tools/pc/gui.js';
 import { pcToolDefinitions } from '../../../src/agents/tools/pcServer.js';
@@ -577,4 +577,109 @@ describe('(g) night safety: the shelter that stands, and the player checked insi
       /^failed: build shelter at 2 64 0 \| PROTECTED: Building there changes part of Jasper's base — ask Jasper/,
     );
   }, 60_000);
+});
+
+describe('review fixes (tools-v2 polish)', () => {
+  const ctx = (carried: Record<string, number>) => ({
+    here: null,
+    playerName: 'Jasper',
+    craftTree: false,
+    carried,
+  });
+  const coal = {
+    tool: 'gather',
+    skill: 'collect',
+    what: 'gather coal',
+    want: { item: 'coal', count: 3 },
+  };
+  const needs = (block: string) => ({
+    msg: `breaking minecraft:${block} drops nothing without the right tool`,
+  });
+
+  it('NEEDS_TOOL on an older mod counts the wood carried: too little is not "no wood", and planks or sticks in hand are not crafted again', () => {
+    const gather = 'gather{"item":"oak_log","count":3}';
+    const make = 'craft{"item":"wooden_pickaxe"}';
+    // One log makes 4 planks: 3 for the head, but no sticks.
+    expect(hintFor('NEEDS_TOOL', coal, ctx({ oak_log: 1 }), needs('coal_ore'))).toBe(
+      `${gather} first (you carry too little wood), then craft planks, sticks and wooden_pickaxe; then retry`,
+    );
+    expect(hintFor('NEEDS_TOOL', coal, ctx({}), needs('coal_ore'))).toBe(
+      `${gather} first (you carry no wood), then craft planks, sticks and wooden_pickaxe; then retry`,
+    );
+    // With 2 sticks carried, that one log is enough.
+    expect(hintFor('NEEDS_TOOL', coal, ctx({ oak_log: 1, stick: 2 }), needs('coal_ore'))).toBe(
+      `craft planks, then ${make}; then retry`,
+    );
+    // Planks enough for head and sticks: only the sticks are missing.
+    expect(hintFor('NEEDS_TOOL', coal, ctx({ oak_planks: 5 }), needs('coal_ore'))).toBe(
+      `craft sticks, then ${make}; then retry`,
+    );
+    expect(hintFor('NEEDS_TOOL', coal, ctx({ oak_log: 3 }), needs('coal_ore'))).toBe(
+      `craft planks, then sticks, then ${make}; then retry`,
+    );
+    expect(hintFor('NEEDS_TOOL', coal, ctx({ oak_planks: 3, stick: 2 }), needs('coal_ore'))).toBe(
+      `${make}, then retry`,
+    );
+  });
+
+  it("NEEDS_TOOL names vanilla's tier: a redstone block takes any pickaxe, a raw gold block an iron one", () => {
+    expect(pickaxeFor('minecraft:redstone_block')).toBe('wooden_pickaxe');
+    expect(pickaxeFor('minecraft:deepslate_redstone_ore')).toBe('iron_pickaxe');
+    expect(pickaxeFor('minecraft:raw_gold_block')).toBe('iron_pickaxe');
+    expect(pickaxeFor('minecraft:raw_iron_block')).toBe('stone_pickaxe');
+    expect(pickaxeFor('minecraft:raw_copper_block')).toBe('stone_pickaxe');
+    expect(pickaxeFor('minecraft:gold_block')).toBe('iron_pickaxe');
+    expect(pickaxeFor('minecraft:nether_gold_ore')).toBe('wooden_pickaxe');
+    expect(hintFor('NEEDS_TOOL', coal, { here: null, playerName: 'Jasper' }, needs('raw_gold_block'))).toBe(
+      'craft{"item":"iron_pickaxe","gather_missing":true} (gathers what it needs from nature), then retry',
+    );
+  });
+
+  it("a one-step do fails under the tool's own label (items give, not items diamond)", async () => {
+    // No `to`: refused before it reaches the mod, under the call's label.
+    const give = { action: 'give', item: 'diamond' };
+    const { trace } = await play(logsAndTable, [
+      [
+        { tool: mc('items'), input: give },
+        { tool: mc('do'), input: { steps: [{ tool: 'items', args: give }] } },
+        { tool: mc('do'), input: { steps: [{ tool: 'goto', args: { to: 'nowhere_at_all' } }] } },
+        { text: 'No diamonds.' },
+      ],
+    ]);
+    const [direct, viaDo, gotoDo] = texts(trace);
+    expect(direct).toMatch(/^failed: items give \| BAD_ARGS: give needs item and to/);
+    expect(viaDo).toMatch(/^failed: items give \| BAD_ARGS: step 1 items: give needs item and to/);
+    expect(gotoDo).toMatch(/^failed: goto nowhere_at_all \| /);
+  }, 60_000);
+
+  it('the People line: leaves are no roof (a player under a tree at night is in the open), a roof is', () => {
+    const world = buildWorld({ clock: 12_200 });
+    world.mod = 'v2';
+    const at = { x: -20, y: 64, z: 20 };
+    world.player.pos = at;
+    const people = () =>
+      String(lookAroundV2(world, 24, true).scene)
+        .split('\n')
+        .find((l) => l.startsWith('People: ')) ?? '';
+    world.set({ x: at.x, y: at.y + 3, z: at.z }, `${NS}oak_leaves`);
+    expect(people()).toMatch(/^People: Jasper \(player\) [^,]+ at -20 64 20, in the open\.$/);
+    world.set({ x: at.x, y: at.y + 4, z: at.z }, `${NS}oak_planks`, 'player');
+    expect(people()).toMatch(/^People: Jasper \(player\) [^,]+ at -20 64 20, under cover\.$/);
+  });
+
+  it('night safety: follow the player on the way (guard holds the spot it was set at), then guard there', () => {
+    for (const mcTools of ['v1', 'v2'] as const) {
+      const p = personaPrompt({
+        name: 'Ada',
+        handle: 'ada',
+        role: 'ceo',
+        ceo: true,
+        playerName: 'Jasper',
+        nonce: 'abcdef',
+        mcTools,
+      });
+      expect(p).toContain('until then stay by Jasper (follow mode), then guard there.');
+      expect(p).not.toContain('in guard mode');
+    }
+  });
 });

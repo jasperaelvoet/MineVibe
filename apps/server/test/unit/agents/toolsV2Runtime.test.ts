@@ -168,6 +168,29 @@ describe('v2 tools in the agent runtime', () => {
     });
   }
 
+  for (const mcTools of ['v1', 'v2'] as const) {
+    it(`a player's grant tells the agent how to retry in its own tool set (${mcTools})`, async () => {
+      const { h, q, ceoId } = await v2World(undefined, mcTools);
+      h.manager.consents.noteRefusal(ceoId, {
+        positions: [{ x: 6, y: 66, z: -6 }],
+        blocks: ['stripped_spruce_log'],
+        zone: 'built',
+        consentId: '0123456789abcdef0123456789abcdef',
+      });
+      await h.manager.deliverChat({ to: 'all', text: '@ada yes, break the stripped spruce log' });
+      await h.until(() => h.texts(q).some((t) => t.includes('CONSENT')), 'consent note');
+      const note = h.texts(q).find((t) => t.includes('CONSENT')) ?? '';
+      expect(note).toContain('allowed you to change the 1 protected block you were refused');
+      if (mcTools === 'v2') {
+        // The v2 tools take no allow_protected: Node attaches the token to the exact refused call.
+        expect(note).toContain('Repeat the exact call that was refused now (once)');
+        expect(note).not.toContain('allow_protected');
+      } else {
+        expect(note).toContain('Retry that same job now with allow_protected:true (once)');
+      }
+    });
+  }
+
   it('a session resumed under the other tool set is told the new names once', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-v2-resume-'));
     dirs.push(dir);

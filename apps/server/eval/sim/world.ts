@@ -486,9 +486,16 @@ export class SimWorld {
     return box;
   }
 
-  /** Whether a roof is over `p` (the mod's heightmap test: a block above the head). */
-  covered(p: Pos): boolean {
-    for (let y = p.y + 1; y <= p.y + 32; y++) if (!this.isAir({ x: p.x, y, z: p.z })) return true;
+  /**
+   * Whether a roof is over `p` (the mod's heightmap test: a block above the head). `noLeaves`: leaves are no roof (the
+   * People line's `MOTION_BLOCKING_NO_LEAVES`: a player under a tree is in the open).
+   */
+  covered(p: Pos, options: { readonly noLeaves?: boolean } = {}): boolean {
+    for (let y = p.y + 1; y <= p.y + 32; y++) {
+      const id = this.block({ x: p.x, y, z: p.z }).id;
+      if (id === AIR || (options.noLeaves && id.endsWith('_leaves'))) continue;
+      return true;
+    }
     return false;
   }
 

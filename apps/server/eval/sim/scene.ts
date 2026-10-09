@@ -62,10 +62,11 @@ function boxText(z: Zone): string {
   return `${min.x} ${min.y} ${min.z}..${max.x} ${max.y} ${max.z}`;
 }
 
-/** The mod's `Scene.shelter`: whether someone at `feet` is in a protected zone and under a roof. */
+/** The mod's `Scene.shelterWords`: whether someone at `feet` is in a protected zone and under a roof (not leaves). */
 export function shelterWords(world: SimWorld, feet: Pos): string {
   const zone = world.zoneAt(feet);
-  return `${zone ? `in ${zone.name}, ` : ''}${world.covered(feet) ? 'under cover' : 'in the open'}`;
+  const roofed = world.covered(feet, { noLeaves: true });
+  return `${zone ? `in ${zone.name}, ` : ''}${roofed ? 'under cover' : 'in the open'}`;
 }
 
 interface Tree {

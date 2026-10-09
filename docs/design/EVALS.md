@@ -505,3 +505,14 @@ showed the house as `logs ×77`; with W1's scene and the new guidance the scenar
 its success rate means anything. The live runs also play out differently from the after-v2 table: the Base zone now
 protects the ground around the house (dirt for a shelter comes from farther out), Jasper's chest refuses `take`, and a
 shelter that reaches into the Base is refused.
+
+**Review of P1** (the same day). Fixed with replays in the same test file: a player under a tree read `under cover`
+(the People line's roof now ignores leaves, mod and sim); the night line told the agent to "stay by Jasper in guard
+mode", but guard holds the spot it was set at (now: follow him, then guard there); the NEEDS_TOOL hint said "you carry
+no wood" with one log carried and asked to craft planks that were already there, and put a redstone block at the iron
+tier and a raw gold block at the stone one; a v2 agent was told after the player's "Allow" to retry "with
+allow_protected:true", an argument the v2 tools do not have (now: repeat the exact refused call); a lone `do` step
+`craft{plan}` skipped craft's input bounds, and a lone step failed under another label than its tool's
+(`items diamond` for `items give`). One `eval:world` run happened during the review (N = 1, v2, $0.013): `unreachable`
+passed; `reachable` and `legacy` failed only `lookedBeforeGathering` (Haiku went straight to `do[gather, craft]`, which
+v2's `gather` allows), and the fake mod advertises no v2 caps, so `craft` had no tree (DEBT.md).

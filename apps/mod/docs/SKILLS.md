@@ -115,9 +115,10 @@ What the agents know about the world around them, and what they must leave alone
   candidates it saw (unreachable, too far, protected, not a tree); it never substitutes another block.
 - **Perception** (`Scene`). `look_around` answers a scene, most important first: position, cover and time; the zone;
   hazards; natural trees with trunk, distance, compass direction and reachability; what players and agents built
-  (clusters of marks); people (a player with whether they stand in a zone and under a roof: `Jasper (player) 4m S, in
-  Base, under cover`, or `…, in the open`); water, exposed ores, crops; terrain. Brief ≤ 900 characters, full ≤ 2500. `find`
-  labels block matches with their provenance, tree and reachability, and filters `natural` / `built`.
+  (clusters of marks); people (a player with whether they stand in a zone and under a roof, leaves not counting:
+  `Jasper (player) 4m S, in Base, under cover`, or `…, in the open`); water, exposed ores, crops; terrain. Brief ≤ 900
+  characters, full ≤ 2500. `find` labels block matches with their provenance, tree and reachability, and filters
+  `natural` / `built`.
 
 ## Reflexes (zero tokens, every tick)
 

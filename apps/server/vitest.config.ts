@@ -10,5 +10,8 @@ export default defineConfig({
   },
   test: {
     include: ['test/**/*.test.ts'],
+    // Hermetic: the tests of the default paths see the default `mc` tool set (v2) even when the shell selects the
+    // v1 fallback (`MINEVIBE_MC_TOOLS=v1`); tests of v1 pin it themselves (vi.stubEnv or an explicit version).
+    env: { MINEVIBE_MC_TOOLS: '' },
   },
 });

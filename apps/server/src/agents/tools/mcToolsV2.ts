@@ -324,6 +324,9 @@ const SHAPES = {
   },
 } as const satisfies Record<McV2ToolName, z.ZodRawShape>;
 
+/** `craft`'s own input schema, for a lone `do` step `craft{plan}` (do step args are free-form). */
+const CRAFT_INPUT = z.object(SHAPES.craft);
+
 const READ_ONLY = { annotations: { readOnlyHint: true } } as const;
 const DESTRUCTIVE = { annotations: { destructiveHint: true } } as const;
 
@@ -768,10 +771,15 @@ export function mcToolDefinitionsV2(host: McHost): Def[] {
   const runSingleStep = async (step: { tool: string; args: Record<string, unknown> }): Promise<Out> => {
     const a = step.args ?? {};
     if (step.tool === 'craft' && a.plan === true) {
-      if (typeof a.item !== 'string' || a.item.trim().length === 0) {
-        throw badArgs('step 1 craft: item is required', CRAFT_EXAMPLE);
+      // The step's args were never checked against craft's own input schema (a do step's are free-form): its item and
+      // count bounds (1-640) hold here as they do for craft{plan} itself.
+      const parsed = CRAFT_INPUT.safeParse(a);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
+        throw badArgs(`step 1 craft: ${where}${issue?.message ?? 'bad arguments'}`, CRAFT_EXAMPLE);
       }
-      return planCraft(a.item, typeof a.count === 'number' && Number.isInteger(a.count) ? a.count : 1);
+      return planCraft(parsed.data.item, parsed.data.count ?? 1);
     }
     const okText = step.tool === 'items' && ['list', 'equip', 'eat'].includes(String(a.action));
     const wire =
@@ -1000,13 +1008,27 @@ const EMOTE_PAST: Readonly<Record<string, string>> = {
   facepalm: 'facepalmed',
 };
 
-/** A `do` call's label for its failure line: `do 3 steps`, or its one step's tool (`gather oak_log`). */
+/** The argument each step tool's own failure line names (`gather oak_log`, `goto player`, `items give`). */
+const STEP_LABEL_ARG: Readonly<Record<string, string>> = {
+  goto: 'to',
+  gather: 'item',
+  craft: 'item',
+  build: 'action',
+  use: 'action',
+  items: 'action',
+};
+
+/**
+ * A `do` call's label for its failure line: `do 3 steps`, or, for one step, the label that tool's own call has
+ * (`gather oak_log`, `items give`), so a one-step `do` fails in the same words as the tool.
+ */
 function doLabel(steps: readonly { tool: string; args: Record<string, unknown> }[]): string {
   const [only] = steps;
   if (steps.length !== 1 || !only) return `do ${steps.length} steps`;
-  const a = only.args ?? {};
-  const detail = [a.item, a.to, a.action].find((v) => typeof v === 'string');
-  return detail ? `${only.tool} ${singleLine(short(String(detail)), 40)}` : only.tool;
+  const value = only.args?.[STEP_LABEL_ARG[only.tool] ?? ''];
+  if (typeof value !== 'string') return only.tool;
+  const shown = only.tool === 'gather' || only.tool === 'craft' ? short(value) : value;
+  return `${only.tool} ${singleLine(shown, 40)}`;
 }
 
 function orgOut(result: OrgToolResult): Out {

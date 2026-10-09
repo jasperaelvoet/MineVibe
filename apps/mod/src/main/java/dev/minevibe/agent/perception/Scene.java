@@ -368,7 +368,8 @@ public final class Scene {
 
 	/**
 	 * Where someone stands for shelter: {@code in Base, under cover}, {@code under cover}, {@code in Base, in the open},
-	 * {@code in the open}. {@code zone}: the protected zone they are in, or null; {@code covered}: a block above the head.
+	 * {@code in the open}. {@code zone}: the protected zone they are in, or null; {@code covered}: a block above the head
+	 * (leaves don't count).
 	 */
 	static String shelterWords(final @org.jspecify.annotations.Nullable String zone, final boolean covered) {
 		return (zone != null ? "in " + zone + ", " : "") + (covered ? "under cover" : "in the open");
@@ -385,10 +386,11 @@ public final class Scene {
 			if (p.level() != level) {
 				parts.add(p.getGameProfile().name() + " (player) in " + p.level().dimension().identifier().getPath());
 			} else {
-				// Whether the player is indoors (in the Base, under a roof): what "keep me safe" at night checks.
+				// Whether the player is indoors (in the Base, under a roof): what "keep me safe" at night checks. Leaves are
+				// no roof: a player under a tree at night is in the open.
 				BlockPos feet = p.blockPosition();
 				Zones.Zone in = Zones.at(level, feet);
-				boolean covered = level.getHeight(Heightmap.Types.MOTION_BLOCKING, feet.getX(), feet.getZ()) > feet.getY() + 1;
+				boolean covered = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, feet.getX(), feet.getZ()) > feet.getY() + 1;
 				parts.add(p.getGameProfile().name() + " (player) " + Compass.where(here, feet) + (full ? " at " + Compass.xyz(feet) : "")
 					+ ", " + shelterWords(in == null ? null : in.name(), covered));
 			}

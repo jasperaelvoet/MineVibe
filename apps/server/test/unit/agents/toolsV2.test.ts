@@ -596,6 +596,26 @@ describe('v2 do (§5.10)', () => {
     expect(bad.text).toMatch(/^failed: gather oak_log \| BAD_ARGS: step 1 gather: count must be 1-640/);
   });
 
+  it("a lone craft{plan} step keeps craft's own input bounds (count 1-640, an item), checked before the mod is asked", async () => {
+    const { reg, fake } = v2Host();
+    fake.observations.set('recipe', { item: 'minecraft:stick', tree: true, steps: [], missing: [] });
+    const huge = await call(reg, 'do', {
+      steps: [{ tool: 'craft', args: { item: 'stick', plan: true, count: 100_000 } }],
+    });
+    expect(huge.isError).toBe(true);
+    expect(huge.text).toMatch(/^failed: craft stick \| BAD_ARGS: step 1 craft: count: /);
+    const noItem = await call(reg, 'do', { steps: [{ tool: 'craft', args: { plan: true } }] });
+    expect(noItem.text).toMatch(/^failed: craft \| BAD_ARGS: step 1 craft: item: /);
+    expect(fake.obsCalls.filter((c) => c.query === 'recipe')).toHaveLength(0);
+    const ok = await call(reg, 'do', {
+      steps: [{ tool: 'craft', args: { item: 'stick', plan: true, count: 4 } }],
+    });
+    expect(ok.text).toMatch(/^plan: stick ×4/);
+    expect(fake.obsCalls.filter((c) => c.query === 'recipe').map((c) => c.args)).toEqual([
+      { item: 'stick', count: 4, tree: true },
+    ]);
+  });
+
   it('without the mod cap Node runs the steps as one macro job; stop_on_fail stops at the first failure', async () => {
     const { reg, fake } = v2Host({}, []);
     fake.skillHandler = (r) =>

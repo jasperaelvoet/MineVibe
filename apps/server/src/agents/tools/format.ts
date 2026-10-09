@@ -562,13 +562,16 @@ export function failureDetails(
   return out;
 }
 
-/** The pickaxe tier a block needs (vanilla's `needs_*_tool` tags, for the blocks agents meet). */
+/**
+ * The pickaxe tier a block needs (vanilla's `needs_*_tool` tags, for the blocks agents meet): a redstone block takes
+ * any pickaxe, its ore an iron one; a raw gold block an iron one, raw iron and copper blocks a stone one.
+ */
 export function pickaxeFor(block: string | null): string {
   const b = short(block ?? '').replace(/^deepslate_/, '');
   if (/^(obsidian|crying_obsidian|ancient_debris|respawn_anchor|netherite_block)$/.test(b))
     return 'diamond_pickaxe';
-  if (/^(diamond|gold|emerald|redstone)_(ore|block)$/.test(b)) return 'iron_pickaxe';
-  if (/^(iron|copper|lapis)_(ore|block)$|^raw_(iron|copper|gold)_block$/.test(b)) return 'stone_pickaxe';
+  if (/^(diamond|gold|emerald)_(ore|block)$|^redstone_ore$|^raw_gold_block$/.test(b)) return 'iron_pickaxe';
+  if (/^(iron|copper|lapis)_(ore|block)$|^raw_(iron|copper)_block$/.test(b)) return 'stone_pickaxe';
   return 'wooden_pickaxe';
 }
 
@@ -601,8 +604,14 @@ function needsToolHint(ctx: RenderContext, msg: string | undefined): string {
       return `${make} with 3 planks and 2 sticks; with no wood, ${call('gather', { item: 'oak_log', count: 3 })} first; then retry`;
     }
     if (wood >= 3 && sticks >= 2) return `${make}, then retry`;
-    if (wood + 4 * logs >= 5) return `craft planks, then sticks, then ${make}; then retry`;
-    return `${call('gather', { item: 'oak_log', count: 3 })} first (you carry no wood), then craft planks, sticks and ${tool}; then retry`;
+    // 3 planks for the head, 2 more for the sticks unless 2 are carried; a log makes 4 planks.
+    const planksNeeded = 3 + (sticks >= 2 ? 0 : 2);
+    if (wood + 4 * logs >= planksNeeded) {
+      const first = [wood < planksNeeded ? 'planks' : null, sticks < 2 ? 'sticks' : null].filter((s) => s);
+      return `craft ${first.join(', then ')}, then ${make}; then retry`;
+    }
+    const carried = wood + logs > 0 ? 'too little wood' : 'no wood';
+    return `${call('gather', { item: 'oak_log', count: 3 })} first (you carry ${carried}), then craft planks, sticks and ${tool}; then retry`;
   }
   const material =
     tool === 'stone_pickaxe' ? 'cobblestone' : tool === 'iron_pickaxe' ? 'iron_ingot' : 'diamond';
@@ -647,7 +656,8 @@ export function hintFor(
     case 'NO_NATURAL_SOURCE':
       return `ask ${p} (AskUserQuestion: go further / use something else / skip). Never take ${item ? short(item) : 'it'} from buildings.`;
     case 'PROTECTED':
-      // Right-clicks and menu clicks carry no consent (protocol §7.4.3): an "Allow" could not unlock them.
+      // Only skills whose args take allow_protected can carry the player's consent (protocol `CONSENT_SKILLS`, right-
+      // clicks and menu clicks included); for any other an "Allow" could not unlock it.
       return meta.skill && !CONSENT_SKILLS_V2.has(meta.skill as SkillName)
         ? `ask ${p} with AskUserQuestion what to do instead: this one cannot be allowed through you (${p} can do it). Never work around it.`
         : `ask ${p} with AskUserQuestion; only an option starting "Allow" lets you repeat this exact call. Never work around it.`;

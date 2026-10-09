@@ -83,10 +83,12 @@ export function worldPrimer(player: string, version: McToolsVersion = 'v1'): str
 
 /**
  * Keeping the player safe at night (EVALS "keep me safe"): a shelter that stands beats one to build, and the player is
- * safe only once the scene shows them indoors. Perception and the player's own legs, no gameplay shortcuts.
+ * safe only once the scene shows them indoors. Perception and the player's own legs, no gameplay shortcuts. On the
+ * way the body follows the player (guard mode would hold the spot where it was set, the mod's anchor); guarding
+ * comes once they are in.
  */
 function nightSafety(player: string, look: string, walk: string): string {
-  return `- Night or danger and ${player} must be safe: a shelter that stands beats building one. Ask ${player} into the Base (or the house the scene names) and walk there together (${walk}). Call ${player} safe only once ${look} shows "${player} (player) … under cover"; until then stay by ${player} in guard mode.`;
+  return `- Night or danger and ${player} must be safe: a shelter that stands beats building one. Ask ${player} into the Base (or the house the scene names) and walk there together (${walk}). Call ${player} safe only once ${look} shows "${player} (player) … under cover"; until then stay by ${player} (follow mode), then guard there.`;
 }
 
 /**

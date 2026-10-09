@@ -712,10 +712,11 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   time and cover; the zone (`Inside Base (...)` or `Base 12m SW`); hazards (hostiles with distance and direction,
   lava, sheer drops, air under water); natural trees by species with trunk position, distance, compass direction
   and `reachable` / `unreachable` / `far`; what players and agents built nearby (clusters with owner, size and box);
-  the player (with whether they stand in a zone and under a roof: `Steve (player) 4m S, in Base, under cover`, or
-  `…, in the open`) and the crew; water, exposed ores and crops; the ground. `detail: brief` (default) stays within 900
-  characters, `full` within 2500 (more trees, animals, loose items, workstations). `zone` and `trees` repeat the key
-  facts as data. The status footer names the zone after the position: `| in Base |` or `| 12m from Base |`.
+  the player (with whether they stand in a zone and under a roof, leaves not counting: `Steve (player) 4m S, in Base,
+  under cover`, or `…, in the open`) and the crew; water, exposed ores and crops; the ground. `detail: brief`
+  (default) stays within 900 characters, `full` within 2500 (more trees, animals, loose items, workstations). `zone`
+  and `trees` repeat the key facts as data. The status footer names the zone after the position: `| in Base |` or
+  `| 12m from Base |`.
 - **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus
   stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds. Like `mine`, it only breaks natural
   blocks (section 7.4.3). With cap `collect.gather` (M2): `near` searches around a spot instead of the agent;

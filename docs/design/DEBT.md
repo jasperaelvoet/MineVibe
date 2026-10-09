@@ -56,6 +56,12 @@ shapes (also in `worldEval.ts`).
   `ThreadedLevelLightEngine` on a worker thread) two seconds into the 124-test batch, then logged nothing for 20
   minutes until the server was killed; the re-run passed all 124. A race between the batch's block edits and the light
   thread, it seems. Add a GameTest timeout or a watchdog on the server thread so a crash fails the run instead.
+- **`eval:world` runs the v2 tools against a fake mod without the v2 caps.** `EvalWorldSkills` has W1's shapes but
+  an empty `hello.caps`, so with v2 (now its default) `craft` has no recipe tree (`MISSING_INGREDIENTS` for the table,
+  then planks by hand) and `do` is Node's macro. Its `lookedBeforeGathering` check predates v2, whose `gather` finds
+  natural sources itself: in the one review run (N = 1) `reachable` and `legacy` failed on that check alone. Give the
+  W1 scenarios the v2 caps (and the fake the craft tree and `sequence`), and score v2 on the outcome (natural oak, the
+  house intact, a card when nothing is reachable) before the §14 gates use it.
 - **The sim's craft-tree gathering makes no tools.** `craft{stone_pickaxe, gather_missing}` gathers cobblestone
   without a pickaxe in the sim (the mod's makes one): a NEEDS_TOOL replay above the wooden tier fails in the sim only.
 
