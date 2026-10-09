@@ -636,6 +636,24 @@ describe('one merged transcript with session tags', () => {
       ),
     ).toBe(true);
   });
+
+  it('a (silent) reply, as the DESK REPORT invites, leaves no transcript line and no bubble', async () => {
+    const { w, id, q } = await world();
+    await wake(w, q, 'fix it');
+    const d = await sitAtDesk(w, q, id);
+    expect(await standAndReport(w, d, q, 'All green.')).toMatch(/or reply \(silent\)/);
+    q.assistantText('(silent)');
+    q.assistantText('Back outside.');
+    await w.until(
+      () => w.manager.transcripts.tail(id, 50).some((e) => e.text === 'Back outside.'),
+      'body line',
+    );
+    expect(w.manager.transcripts.tail(id, 50).filter((e) => /silent/i.test(e.text))).toEqual([]);
+    const shown = w.events.filter(
+      (e) => (e.type === 'chat' || e.type === 'say') && /\(silent\)/i.test(JSON.stringify(e.payload)),
+    );
+    expect(shown).toEqual([]);
+  });
 });
 
 describe('outbound redaction of account identifiers (agents/redact.ts)', () => {

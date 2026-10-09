@@ -1562,8 +1562,9 @@ export class AgentBrain {
 
   #onText(session: AgentSession, kind: SessionKind, text: string): void {
     const trimmed = text.trim();
-    this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed, ...this.#tag(kind) });
+    // "(silent)" means saying nothing (the persona, heartbeats, the DESK REPORT): no bubble and no transcript line.
     if (/^\(?silent\)?\.?$/i.test(trimmed)) return;
+    this.#env.transcripts.append(this.agentId, { kind: 'agent', text: trimmed, ...this.#tag(kind) });
     const desk = this.#desk;
     if (kind === 'desk' && desk?.session === session) desk.turnTexts.push(trimmed);
     this.turnText.text(trimmed);
