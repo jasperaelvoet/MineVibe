@@ -119,8 +119,8 @@ Look at the PC's monitor or its config screen (sneak + right-click the desk):
 | Status | Meaning | What to do |
 | --- | --- | --- |
 | `no_capacity` | Not enough memory or CPU left in your budget | Stop or shrink another PC. See [Resources and budget](/MineVibe/pcs-and-vault/#resources-and-budget). |
-| `macos_slots_full` | Two macOS PCs are already running, Apple's limit | Stop one of them |
-| `awaiting_consent` | A large download (such as the 24 GB macOS image) needs your OK | Open the config screen and confirm |
+| `macos_slots_full` | Two macOS VMs are already running, Apple's limit (another app's macOS VMs count too) | Stop one of them, or quit the other app's VM |
+| `awaiting_consent` | A large download (such as the 24 GB macOS image) needs your OK | Sneak + right-click the desk and choose Download |
 | `engine_down` | The container engine is not running | See [Container engine down](#container-engine-down) |
 | `error` | Something else failed | Check the logs, then Restart. Reimage is the last resort: it resets the PC, including its home folder, but never touches your Vault folders on the Mac. |
 

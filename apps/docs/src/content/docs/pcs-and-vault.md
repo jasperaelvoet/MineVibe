@@ -4,12 +4,12 @@ description: In-game PCs are real Linux containers and macOS VMs. How they are s
 ---
 
 :::caution[Partly built]
-- **Built:** the Linux PC manager in Node (Apple `container` and Docker drivers, the budget, the Vault, live
-  frames and input, measured in spikes S4 and S5 and in `npm run test:pcs`), and the PC blocks, monitors,
-  PcControlScreen and PcConfigScreen in the mod.
-- **Being wired together:** the two halves, so that a PC on a desk in the game is a running Linux PC; and agents
-  at PCs (milestone M5).
-- **Planned:** macOS PCs (milestone M9, after spike S6). Items marked "untested" have not been measured yet.
+- **Built:** the PC manager in Node for Linux PCs (Apple `container` and Docker drivers) and macOS PCs (Lume), the
+  budget, the Vault, live frames and input, agents at PCs (measured in spikes S4, S5 and S6 and in
+  `npm run test:pcs`), and the PC blocks, monitors, PcControlScreen, PcConfigScreen and the download prompt in the
+  mod.
+- **Not yet:** MineVibe.app does not bundle Lume yet, so it downloads MineVibe's pinned copy (6 MB) the first time
+  you start a macOS PC. Items marked "untested" have not been measured yet.
 :::
 
 Every PC in the world is a **real computer**: a Linux container or a macOS virtual machine running on your
@@ -23,7 +23,7 @@ time.
 | --- | --- | --- | --- | --- |
 | `linux` | Apple `container` 1.5.0 (bundled); each container is its own lightweight VM | `ghcr.io/jasperaelvoet/minevibe-linux-pc`: cua's `ghcr.io/trycua/linux:24.04` desktop plus tmux, ripgrep, git and build-essential, pinned by digest | 2 vCPU, 4 GiB | Your budget |
 | `linux-slim` | Same | Built from cua's `24.04-slim` | 1 vCPU, 2 GiB | Your budget |
-| `macos` | Lume 0.6.x (bundled) | cua's `ghcr.io/trycua/macos:26`, about 24 GB to download, needs 40 GB free disk | 4 vCPU, 8 GiB | **2 running**: Apple allows at most 2 macOS VMs at once |
+| `macos` | MineVibe's own Lume 0.6.1 (notarized by its maker, never modified), as a full macOS VM | cua's `ghcr.io/trycua/macos:26` (macOS 26.5), pinned by digest: a 24 GB download once, about 29 GB on disk, shared by every macOS PC; needs 40 GB free disk to create one | 4 vCPU, 8 GiB | **2 running**: Apple allows at most 2 macOS VMs at once, and other apps' macOS VMs count too |
 | `windows` | Not available | cua's Windows image is amd64 only, so it would need slow emulation | | Shown greyed out |
 
 Each PC runs cua's `cua-spacesd` daemon, which MineVibe uses for screenshots, live video, mouse and keyboard
@@ -46,6 +46,26 @@ service. For development and CI, a Docker or OrbStack driver can stand in for Ap
 A PC's status shows on its monitor, on its status LED, in the hover line and in its config screen: `off`,
 downloading, awaiting consent, booting, `running`, stopping, remounting, reimaging, `no_capacity`,
 `macos_slots_full`, `engine_down` or `error`.
+
+### macOS PCs
+
+- **The download asks first.** The first macOS PC needs cua's macOS image, a 24 GB download. Its monitor shows
+  "Download needs your OK" until you sneak + right-click the desk and choose **Download** in the prompt (it shows the
+  size and your free disk space). The monitor then shows the download's progress, and every macOS PC you make later
+  starts from the same image without asking again. **Not now** leaves the PC off; starting it asks again.
+- **Fast after the download.** A new macOS PC is a copy-on-write clone of the image: it is ready 20 to 30 seconds
+  after you place it, and a stopped one starts again in about 20 seconds.
+- **Apple's limit.** macOS allows two macOS virtual machines at a time on one Mac. A third shows "Apple allows 2
+  macOS VMs" (`macos_slots_full`), also when another app (another VM tool, a second MineVibe) runs one.
+- **Inside**, the user is `lume` (home `/Users/lume`), with the command-line developer tools (git, Python, Swift,
+  `jq`) and ripgrep, but no Homebrew. Agents work there as they do on Linux, with Cmd as `cmd` in key names.
+- **Resizing restarts it**; nothing is lost, because a macOS PC's disk is the PC. **Reimage** gives it a fresh copy of
+  the image (everything on it is lost, your Vault folders on the Mac are not).
+- **Keys and mouse.** Cmd is sent as Cmd. macOS's PC daemon cannot hold a key or a button down, so MineVibe presses a
+  key each time your keyboard repeats it, clicks where you pressed the button (double clicks by timing) and drags when
+  you release after moving: you see a drag happen when you let go.
+- **The PC stops with MineVibe.** macOS PCs run inside MineVibe's own `lume serve`, which quits within about 10 s of
+  the last MineVibe that uses it, even if MineVibe crashed.
 
 ## Resources and budget
 
@@ -123,14 +143,19 @@ The **Vault** is the set of folders on your Mac that you mount into PCs, so agen
 projects. Add folders in a PC's config screen with **Browse...** (a native folder picker).
 
 - **Same path inside.** On Linux PCs a folder appears at the same absolute path as on your Mac. On macOS PCs
-  it is a shared folder with a symlink at the same path.
+  it is a shared folder (`/Volumes/My Shared Files/<name>`) with a symlink at the same path as on your Mac.
 - **Read-only or read-write**, per folder.
-- **Build folders stay separate.** `node_modules`, `.venv`, `target`, `build` and `.gradle` inside a mount are
-  overlaid with per-PC volumes, so Linux build output doesn't land in your folder on the Mac.
+- **Build folders stay separate on Linux PCs.** `node_modules`, `.venv`, `target`, `build` and `.gradle` inside a
+  mount are overlaid with per-PC volumes, so Linux build output doesn't land in your folder on the Mac. A macOS PC
+  shares the folder as it is: what it builds there is a Mac build anyway.
+- **Edits on your Mac reach a macOS PC with a delay.** The macOS PC's view of a shared folder caches files, so
+  MineVibe watches your Vault folders and refreshes that view before an agent's next file or shell command. Apps
+  running inside the PC may show the old version of a file you changed on the Mac until then.
 - **Refused folders:** your home folder itself, `/`, `~/Library`, any folder that is or contains `~/.ssh`,
   `~/.aws`, `~/.config`, `~/.claude`, `~/.gnupg` or `~/.docker`, and dotfile-config folders. Git repositories
   are recommended.
-- The shared Codex is mounted read-only at `/mnt/codex` in every Linux PC, with a `~/codex` link to it:
+- The shared Codex is mounted read-only at `/mnt/codex` in every Linux PC (`/Volumes/My Shared Files/codex` on
+  macOS PCs), with a `~/codex` link to it:
   `lasting/` (pages that survive world death) and `world/` (this world only). Agents write pages with their Codex
   tools, never in the folder; a new world replaces `world/` as a whole.
 - The Vault survives world death. The Game Over screen shows how many commits each folder got in that world.
@@ -153,8 +178,10 @@ and what does not.
 - **Loopback only, with tokens.** The bridge between the game and MineVibe's Node process listens on
   `127.0.0.1` only, requires a random token and rejects any request that carries a browser `Origin` header.
   Each Linux PC's daemon is published on `127.0.0.1` only, with its own 24-byte token. macOS PCs are reached
-  on their private VM address, also with a token. On macOS PCs the default password is rotated and VNC stays
-  off.
+  on their private VM address (only your Mac can reach it), with a new token at every start, handed over in a
+  read-only shared folder. On macOS PCs VNC, Remote Login and sharing stay off; MineVibe's `lume serve` listens on
+  `127.0.0.1` only, where the PCs cannot reach it. The image's well-known password (`lume`) is not changed: nothing
+  that could use it from outside is on, and agents in the PC have `sudo` anyway.
 - **Your credentials stay with `claude`.** MineVibe never reads, stores or forwards your Claude login. It
   starts each `claude` with an allowlisted environment, so variables from your shell (API keys, base URLs)
   don't leak into agents.
@@ -190,6 +217,8 @@ git hooks and `.git/config` entries that your own git will honour. MineVibe's tr
 - **Bind mounts have known quirks** (measured in spike S5): files a PC writes land on your Mac as your user and
   `chown` inside the PC fails, edits made on the Mac don't raise file-change events inside the PC (watch-mode
   tools in a PC miss them), and creating a write-only (mode 0200) file fails but leaves an empty file behind.
+  On macOS PCs (spike S6) files the PC writes also land as your user, and edits made on the Mac raise no
+  file-change events inside the PC and are cached until MineVibe refreshes the PC's view (see the Vault above).
   These are usability limits more than security ones.
 
 ### Recommendations

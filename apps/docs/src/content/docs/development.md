@@ -135,7 +135,7 @@ exits.
 | `npm test` | vitest in every workspace: unit tests, the protocol fixtures, contract tests against a fake mod over a real socket, the agent runtime with a fake SDK, the org services, the packaging tests (on macOS they compile the Swift stub). Uses zero tokens. | CI and local |
 | `cd apps/mod && ./gradlew build` | JUnit (protocol fixtures, key map, JPEG decode, fragmented WebSocket receive, ...) and, only with the EULA accepted, the server GameTests | CI and local |
 | `cd apps/mod && ./gradlew runClientGameTest` | Client GameTests (screens, UI), with the EULA accepted. Opens a game window. | Local |
-| `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation, the Codex at `/mnt/codex`, orphaned instances | Local only |
+| `npm run test:pcs -w apps/server` | Real PC drivers: create, health, frames, input, mounts, budget refusal, guest isolation, the Codex at `/mnt/codex`, orphaned instances. With `MINEVIBE_TEST_MACOS=1` also macOS PCs on MineVibe's own Lume (`macPc.int.ts`): the download consent, boot, the Vault and its refresh, the pc tools, input, ShellMirror, Apple's 2-VM limit, adoption, stop/start/resize/reimage. It needs the macOS image in the dev Lume storage (about 24 GB; `MINEVIBE_TEST_MACOS_PULL=1` downloads it) and boots two 8/4 GiB VMs. | Local only |
 | `npm run test:live` | A small live smoke test of the Claude Agent SDK. **Uses a little of your subscription quota.** | Local only |
 | `node spikes/s7-boot/run.mjs` | The end-to-end scenario (E2E mode): boot, death, Begin, a Node restart, a kill on Game Over | Local only |
 | `node --conditions=source --import tsx scripts/e2e/run-scenario.ts` | The live acceptance run through `npm run play`: boot, the CEO, a task, a question, the PC flow and model swaps, a kick, the Codex and the calendar, death, quit with no orphans ([ACCEPTANCE.md](https://github.com/jasperaelvoet/MineVibe/blob/main/docs/design/ACCEPTANCE.md)). **Uses your subscription quota**; `--crew scripted` runs the zero-token part (step 3 then has the mod's own jobs collect 10 logs and craft a table, and reports how many targets the body reached; `MINEVIBE_NAV_DEBUG=1` adds terrain maps of failed walks to the game log). | Local only |
@@ -179,8 +179,8 @@ matched the worktree's own path, so lint there passed without checking a single 
 
 Before milestone M1, each risky assumption got a throwaway **spike** in `spikes/sN/`. Every spike ends with
 a `result.md` that records what was measured, and the design was updated from it (the results log is
-Appendix A of `docs/design/PLAN.md`). Spike code is never imported by the apps. S6 (Lume) still comes before
-milestone M9; the packaging checks of S9 became the app shell and its CI job.
+Appendix A of `docs/design/PLAN.md`). Spike code is never imported by the apps (S6's M9 debugging tools import
+the server's code instead); the packaging checks of S9 became the app shell and its CI job.
 
 | Spike | Proves |
 | --- | --- |

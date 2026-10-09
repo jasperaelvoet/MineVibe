@@ -12,8 +12,7 @@ longer reference, with fact-checks and critiques, is
 Most components below exist in the repository and are tested on their own: the bridge, the launcher, the world
 lifecycle, the agent runtime, the PC manager, the Codex, Calendar and meeting services, the Swift stub, and on the
 game side the bodies, reflexes, skills, screens, PC blocks and the starter office. They are being composed into
-one runtime now. Still **planned**: `LumeMacDriver` (macOS PCs), the digging and bridging path planner, the
-first-run setup steps and the startup reaper.
+one runtime now. Still **planned**: the first-run setup steps and the startup reaper.
 :::
 
 ## Processes
@@ -128,8 +127,8 @@ at the user's `claude` binary. Exactly one of them is active at a time.
 ## PCs
 
 `PcManager` owns the PC lifecycle with three drivers behind one interface: `AppleContainerDriver` (Linux,
-bundled Apple `container`), `LumeMacDriver` (macOS, `lume serve` on a random loopback port) and
-`DockerDriver` (fallback for development and CI). `SpacesdPool` talks to each PC's `spacesd` with the
+bundled Apple `container`), `LumeMacDriver` (macOS VMs on MineVibe's own `lume serve`, on a random loopback port, which
+stops by itself once no MineVibe uses it) and `DockerDriver` (fallback for development and CI). `SpacesdPool` talks to each PC's `spacesd` with the
 `@trycua/cua` client, `FrameService` picks a frame rate per PC (from 30 fps when you are seated down to 0 when
 nobody can see it), and `InputRouter` forwards mouse and keyboard input from whoever occupies the chair. See
 [PCs and the Vault](/MineVibe/pcs-and-vault/).
