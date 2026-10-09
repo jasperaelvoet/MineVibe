@@ -101,7 +101,8 @@ What the agents know about the world around them, and what they must leave alone
 - **Consent** (`Consents`). A `PROTECTED` failure offers a 32-hex token bound to the agent and the box of the
   protected blocks, valid 10 minutes, single use. `skill.run{args.allow_protected:true, consent:{token}}` redeems it
   (else `BAD_ARGS`) and the job runs with a grant `Protection` honours inside that box until the job ends.
-  `allow_protected` alone does nothing; Node attaches `consent` only after the player agreed.
+  `allow_protected` alone does nothing; Node attaches `consent` only after the player agreed. Every skill that can be
+  refused takes it, right-clicks (`use_block`: the player's pot) and menu clicks (`menu_click`: their chest) included.
 - **Natural resources** (`agent.perception`). Tags leave out building variants (`Sources.naturalTag`: stripped logs,
   wood, hyphae, planks); `collect` of planks, stripped logs or wood finds nothing in nature (`NO_NATURAL_SOURCE`:
   craft them). Requests for logs work on natural trees (`Trees`: log clusters touching non-persistent leaves, nobody's
@@ -114,7 +115,8 @@ What the agents know about the world around them, and what they must leave alone
   candidates it saw (unreachable, too far, protected, not a tree); it never substitutes another block.
 - **Perception** (`Scene`). `look_around` answers a scene, most important first: position, cover and time; the zone;
   hazards; natural trees with trunk, distance, compass direction and reachability; what players and agents built
-  (clusters of marks); people; water, exposed ores, crops; terrain. Brief ≤ 900 characters, full ≤ 2500. `find`
+  (clusters of marks); people (a player with whether they stand in a zone and under a roof: `Jasper (player) 4m S, in
+  Base, under cover`, or `…, in the open`); water, exposed ores, crops; terrain. Brief ≤ 900 characters, full ≤ 2500. `find`
   labels block matches with their provenance, tree and reachability, and filters `natural` / `built`.
 
 ## Reflexes (zero tokens, every tick)

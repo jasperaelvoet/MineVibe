@@ -702,7 +702,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
     respawn anchor. `build` refuses walls, roofs and water inside a zone even into air ("Building there changes part
     of Steve's base — …"); torches are allowed. `hunt` and `attack` never target tamed or name-tagged animals or
     golems a player built (`attack` on one: `BAD_TARGET`).
-  - `args.allow_protected: true` (on those skills) counts only with a valid top-level `consent: { token }` on the
+  - `args.allow_protected: true` (on those skills: `CONSENT_SKILLS` lists every skill whose args take it, `use_block`
+    and `menu_click` included since 2026-10-09, additive) counts only with a valid top-level `consent: { token }` on the
     same `skill.run`. The token is the `consentId` of an earlier `PROTECTED` failure of the same agent (32 hex, valid
     10 minutes, single use); it lets that one job change the blocks in the box of the protected blocks it was offered
     for. Node attaches it only after the player explicitly agreed, never from tool input: a model cannot authorize
@@ -711,7 +712,8 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   time and cover; the zone (`Inside Base (...)` or `Base 12m SW`); hazards (hostiles with distance and direction,
   lava, sheer drops, air under water); natural trees by species with trunk position, distance, compass direction
   and `reachable` / `unreachable` / `far`; what players and agents built nearby (clusters with owner, size and box);
-  the player and the crew; water, exposed ores and crops; the ground. `detail: brief` (default) stays within 900
+  the player (with whether they stand in a zone and under a roof: `Steve (player) 4m S, in Base, under cover`, or
+  `…, in the open`) and the crew; water, exposed ores and crops; the ground. `detail: brief` (default) stays within 900
   characters, `full` within 2500 (more trees, animals, loose items, workstations). `zone` and `trees` repeat the key
   facts as data. The status footer names the zone after the position: `| in Base |` or `| 12m from Base |`.
 - **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus

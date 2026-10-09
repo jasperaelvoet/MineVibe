@@ -12,7 +12,10 @@ missing `/mnt/codex` in PCs, the mod's `ok` replies dropping nested nulls, plan 
 leaking PC instances (`npm run doctor -- --clean-orphans`, and the E2E harness removes its own instance on exit), the
 lint no-op inside worktrees, the monitor stopping strays while `bootAll` runs, and a `devServer` contract test that
 booted a real linux-1 from `npm test`; the doubled status footer had already been fixed (Node splits the mod's
-`footer` off, `mcServer.ts` `splitFooter`).
+`footer` off, `mcServer.ts` `splitFooter`). Track P1 of 2026-10-09 (tools-v2-mc.md §16.10) made v2 the default and
+fixed the after-v2 leftovers: a one-step `do`, the NEEDS_TOOL hint, the `[Image: source: …]` host paths, consent for
+`use_block` / `menu_click` and for the refused step of Node's `do` macro, and the eval sim's missing W1 scene and
+shapes (also in `worldEval.ts`).
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
 - **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
@@ -22,26 +25,34 @@ booted a real linux-1 from `npm test`; the doubled status footer had already bee
   even called `mcp__pc__wait` while standing in a field. **Fix:** attach the `pc` server only while seated (the SDK's
   dynamic MCP server update at sit / stand, if it keeps the cache prefix stable enough), or defer the pc tools behind
   tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8).
-- **"Keep me safe" is still unsolved.** With v2, every `mc.dark_safe` run built a shelter from gathered dirt or
-  planks (71 blocks) instead of sending Jasper into his house next door and guarding: 33 calls and ~1.2M prompt
-  tokens per run (40.7 and 1.0M before); after the `033c096` fixes 22 calls and 613k, but 1/3 passed: gathering takes
-  two to three game hours, the zombie reached Jasper first in one run, and in another Haiku told him "you're sealed
-  in" a shelter he never entered. The eval cannot show W1's scene: `eval/sim/observe.ts` has no `Scene.java`
-  text, so `observe{scene}` renders the house as `logs ×77 nearest 7m SE` with no owner, and the trees without
-  reachability. **Fix:** port `Scene.lookAround`'s lines (zone, trees, buildings with owners, people) into the
-  simulated mod so the eval measures W1's perception, then re-run dark_safe; if Haiku still builds, give the night
-  case a composite or a hint (`set_mode guard` + "tell the player to get inside").
-- **`do` with one step fails input validation.** The schema requires 2-8 steps; Haiku sent
-  `do{steps:[{tool:"goto",...}]}` once and got an MCP `too_small` error. Accept one step (run it as that tool).
-- **The NEEDS_TOOL hint suggests a craft that cannot work.** It says `craft{"item":"wooden_pickaxe"}`; with no wood
-  carried that fails `MISSING_INGREDIENTS` (dark_safe run 3). With `craft.tree` it should say
-  `craft{"item":"wooden_pickaxe","gather_missing":true}`.
+- **"Keep me safe" is unmeasured since the fixes.** With v2, every `mc.dark_safe` run built a shelter from gathered
+  dirt or planks (71 blocks) instead of sending Jasper into his house next door and guarding (1/3 after `033c096`;
+  in one run Haiku told him "you're sealed in" a shelter he never entered). P1 ported W1's scene into the sim (the
+  house is now `Base … ; Jasper's build`, the People line says whether he is `under cover`), and the primer, tool
+  texts and hints now prefer the shelter that stands and say to check he went in (EVALS.md "After-v2 polish").
+  **Next:** a live `eval:tools -- --suite mc --scenario mc.dark_safe --mode live --runs 3`; if Haiku still builds,
+  give the night case a composite (`set_mode guard` + "ask the player inside" as one call).
 - **Two turns per long composite.** `gather`/`craft`/`do` answer `running` after 20 s and the agent ends its turn,
   so the incident and the iron task take a second (cheap, one round trip) turn for the `[JOB DONE]` report: 2 turns
   per run against 1.7-2.3 before. By design (tools-v2-mc.md §7); a longer first wait would trade turns for latency.
 - **The v1/v2 split of the gain is unmeasured.** The after-v2 run used the v2 tools on the simulated W1 + v2 mod;
-  a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. Production still defaults to
-  v1 (`MINEVIBE_MC_TOOLS`); the §14 flip gates call for N=5 runs per scenario and `eval:world -- --tools v2`.
+  a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. Production defaults to v2
+  since P1, on the after-v2 eval rather than the §14 gates (N=5 runs per scenario and `eval:world`), which are still
+  to run.
+
+## Found in track P1 (2026-10-09, tools-v2-mc.md §16.10)
+- **Claude Code names its working directory, a host path.** The preset system prompt's environment section has the
+  agent's home on the host; `excludeDynamicSections` only moves it into the first user message. A seated agent could
+  `cd` there in the PC. The seated primer's `HOST_PATHS_RULE` tells it not to; nothing removes the path.
+- **The persona and the gate still fall back to v1.** `personaPrompt` without `mcTools` and a `GateContext` without
+  `mcTools` assume v1 (`?? 'v1'`), while the process default is v2. Every production caller passes the session's set,
+  so only tests rely on it; a caller that forgets gets v1 texts or a v1 gate for v2 tools. Make the field required.
+- **A one-step `do` is gated as a world tool.** `do{steps:[{tool:"craft",args:{plan:true}}]}` runs as `craft{plan}`
+  (a read) but the gate decides by tool name, so a seated agent is denied what `craft{plan}` alone would be allowed.
+- **The People line's cover is not covered by a GameTest.** `Scene.shelterWords` is unit-tested; the heightmap test
+  and the zone lookup for a real player need a client GameTest (server GameTests have no player).
+- **The sim's craft-tree gathering makes no tools.** `craft{stone_pickaxe, gather_missing}` gathers cobblestone
+  without a pickaxe in the sim (the mod's makes one): a NEEDS_TOOL replay above the wooden tier fails in the sim only.
 
 ## Found in the live acceptance run (2026-10-09)
 - **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to

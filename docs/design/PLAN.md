@@ -362,7 +362,7 @@ query({ prompt: gatedInbox, options: {
     - Full history lives in AgentScreen and the Crew log.
 - **Layer 1: reflexes** in Java (7.3) act at zero tokens.
 - **Layer 2: Digest.** Info and notable events are prepended to the next turn as one block of about 60 tokens. Every `mc` tool result also ends with a 25-token status footer.
-  - **v2 tools (`MINEVIBE_MC_TOOLS=v2`, docs/design/tools-v2-mc.md §6.4).** The footer ends only world tools, `do`, `job`, `find`, `menu` and `observe` without `status`. Social, memory, mode, Codex, calendar and hire results carry none, because the Digest already has the body state.
+  - **v2 tools (the default; docs/design/tools-v2-mc.md §6.4).** The footer ends only world tools, `do`, `job`, `find`, `menu` and `observe` without `status`. Social, memory, mode, Codex, calendar and hire results carry none, because the Digest already has the body state.
   - The block opens with a one-line **scene** on every turn (at most about 50 tokens): `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no threats`, built from `agent.state` (with its `zone`), the clock, the office and the trees the agent's own `look_around` / `find` showed (protocol §7.4.3).
 - **Layer 3: wake rules.**
 
@@ -584,9 +584,9 @@ Bubbles show the speaker, and the other attendees turn to look at whoever is tal
 - **Barks** are scripted, zero-token lines with cooldowns. The "Hmm, one sec…" bark fires instantly when a brain wake starts, which hides LLM latency.
 
 ### 7.4 Skill API (`mcp__mc__*`)
-Long jobs use `wait_s` and return `running` plus `job_id`.
+Long jobs use `wait_s` and return `running` plus `job_id` (v1); v2 tools answer within 20 s and `running` jobs wake the agent with `[JOB DONE]`.
 
-**Tools v2** (docs/design/tools-v2-mc.md; `MINEVIBE_MC_TOOLS=v2`, default still v1 until the live A/B):
+**Tools v2** (docs/design/tools-v2-mc.md): **the default since 2026-10-09** (phase C, after the after-v2 eval in docs/design/EVALS.md). `MINEVIBE_MC_TOOLS=v1` keeps the 54 v1 tools below as a fallback; a resumed session that used the other set gets a one-time `TOOLS UPDATED` note.
 - **Fewer tools.** 20 composite tools replace the 54 below:
 
   | Tools | Kind |
@@ -596,12 +596,13 @@ Long jobs use `wait_s` and return `running` plus `job_id`.
   | `job`, `set_mode`, `say`, `tell`, `remember`, `sit_at_pc`, `stand_up`, `request_hire`, `codex`, `calendar` | the rest |
 
 - **Composite intents run as one job in the mod.**
-  - `do` → `sequence`.
+  - `do` → `sequence` (one step runs as that tool; without the mod cap Node runs the steps, and a consent goes to the step the mod refused).
   - `gather` → `collect` with natural sources, the tools it needs, and animal drops.
   - `craft` → the craft tree, which crafts intermediates, smelts, places a station outside protected zones, and with `gather_missing` gathers what is missing.
   - The mod lists these in `hello.caps`; Node falls back with older mods.
-- **Results are compact text with a `next:` hint.**
-- **The model never handles consent tokens.** After the player allows it, the model repeats the exact refused call.
+- **Results are compact text with a `next:` hint** that works from where the agent stands (a missing pickaxe: craft it with `gather_missing`, or get wood first on an older mod).
+- **The model never handles consent tokens.** After the player allows it, the model repeats the exact refused call (right-clicks and menu clicks included).
+- **Night safety.** The persona prefers the shelter that stands (the Base, the player's house) to building one, and calls the player safe only once the scene's People line shows them `under cover`.
 
 | Group | Tools |
 |---|---|
