@@ -3,24 +3,34 @@
  * first turn after a mode switch, and ToolGate's teaching text for a tool outside the current mode.
  *
  * Everything here is built from Node-controlled values only (the session nonce, the player's validated name, the
- * catalog), and a mode's banner is the same text every time that agent enters the mode, so it never varies within a
- * mode (the PC, the task and the meeting arrive in their own messages).
+ * catalog of the agent's mc tool set), and a mode's banner is the same text every time that agent enters the mode, so
+ * it never varies within a mode (the PC, the task and the meeting arrive in their own messages).
  */
 
-import { TOOL_ALIASES } from '../constants.js';
+import { type McToolsVersion, TOOL_ALIASES } from '../constants.js';
 import { control } from '../envelope.js';
 import {
   type BrainMode,
   hasEveryMcTool,
   hasEveryPcTool,
   hiddenMcTools,
-  MODE_PROFILES,
   type ModeProfile,
+  modeProfile,
 } from '../modes.js';
 import { MC_PREFIX, PC_PREFIX } from '../tools/catalog.js';
 
+/** How the persona sections name the seated body's eyes, per mc tool set. */
+const LOOK: Readonly<Record<McToolsVersion, string>> = {
+  v1: 'mcp__mc__status and mcp__mc__look_around show',
+  v2: 'mcp__mc__observe shows',
+};
+
 /** The persona section of each mode (what the system prompt's "## Modes" section points at). */
-export function modeSection(mode: BrainMode, playerName: string): readonly string[] {
+export function modeSection(
+  mode: BrainMode,
+  playerName: string,
+  version: McToolsVersion = 'v1',
+): readonly string[] {
   const p = playerName;
   switch (mode) {
     case 'wander':
@@ -33,7 +43,7 @@ export function modeSection(mode: BrainMode, playerName: string): readonly strin
       return [
         'You sit at a real computer in the office and drive it. Bash, Read, Edit, Write, Glob and Grep run inside this PC (there is no shell anywhere else); the kickoff says how to work it.',
         `You work on ${p}'s Vault folders, which have the same path inside the PC.`,
-        'Your body stays in the chair. Its reflexes still guard it, and you are stood up at once when you are attacked or starving; mcp__mc__status and mcp__mc__look_around show what goes on around you.',
+        `Your body stays in the chair. Its reflexes still guard it, and you are stood up at once when you are attacked or starving; ${LOOK[version]} what goes on around you.`,
         `When you finish, tell ${p} the result in 1-2 sentences, then call mcp__mc__stand_up.`,
         // USER DECISION 2026-10-08: no automatic plan mode (EnterPlanMode is gone; ExitPlanMode is for plan-first only).
         `You never switch yourself into plan mode. Only when ${p} turns on Plan-first for you does a PC session start in plan mode; the kickoff then says so, and ExitPlanMode shows ${p} your plan. Otherwise just do the work.`,
@@ -59,8 +69,8 @@ const BLOCKED_UNTIL: Readonly<Record<BrainMode, string>> = {
   meeting: 'Blocked until the meeting ends or you stand up',
 };
 
-/** World tools named as examples of what a mode leaves out, in this order. */
-const EXAMPLES = ['goto', 'mine', 'craft', 'build', 'sit_at_pc', 'inventory'];
+/** World tools named as examples of what a mode leaves out (both sets), at most four, in this order. */
+const EXAMPLES = ['goto', 'mine', 'gather', 'craft', 'build', 'sit_at_pc', 'inventory', 'items'];
 
 /** The `mcp__mc__` tools of a mode as one short list: `status, look_around, stand_up, …`. */
 function mcList(p: ModeProfile): string {
@@ -99,7 +109,7 @@ export function blockedText(p: ModeProfile): string {
   const parts: string[] = [];
   const hidden = hiddenMcTools(p);
   if (hidden.length > 0) {
-    const examples = EXAMPLES.filter((t) => (hidden as readonly string[]).includes(t));
+    const examples = EXAMPLES.filter((t) => (hidden as readonly string[]).includes(t)).slice(0, 4);
     const eg = examples.length > 0 ? ` (${examples.join(', ')}, …)` : '';
     parts.push(p.mc.length > 0 ? `every other ${MC_PREFIX}* tool${eg}` : `every ${MC_PREFIX}* tool`);
   }
@@ -112,6 +122,8 @@ export function blockedText(p: ModeProfile): string {
 export interface ModeBannerInput {
   readonly nonce: string;
   readonly playerName: string;
+  /** The agent's mc tool set (default v1). */
+  readonly mcTools?: McToolsVersion | undefined;
 }
 
 /**
@@ -119,9 +131,10 @@ export interface ModeBannerInput {
  * available now and what is blocked until when. It opens the first turn after a mode switch.
  */
 export function modeBanner(mode: BrainMode, input: ModeBannerInput): string {
-  const p = MODE_PROFILES[mode];
+  const version = input.mcTools ?? 'v1';
+  const p = modeProfile(mode, version);
   const lines = [control(input.nonce, 'MODE', `${p.title}: ${WHERE[mode]}.`)];
-  for (const line of modeSection(mode, input.playerName)) lines.push(`- ${line}`);
+  for (const line of modeSection(mode, input.playerName, version)) lines.push(`- ${line}`);
   lines.push(`Available now: ${availableText(p)}.`);
   const blocked = blockedText(p);
   if (blocked.length > 0) lines.push(`${BLOCKED_UNTIL[mode]}: ${blocked}.`);
@@ -129,8 +142,8 @@ export function modeBanner(mode: BrainMode, input: ModeBannerInput): string {
 }
 
 /** ToolGate's teaching text for `toolName` outside `mode` (a call the seat rules alone would have allowed). */
-export function outsideModeText(mode: BrainMode, toolName: string): string {
-  const p = MODE_PROFILES[mode];
+export function outsideModeText(mode: BrainMode, toolName: string, version: McToolsVersion = 'v1'): string {
+  const p = modeProfile(mode, version);
   switch (mode) {
     case 'seated':
       return `${toolName} is not available in PC mode. Stand up first (mcp__mc__stand_up). Here you have the computer tools, ${p.builtins.filter((b) => b !== 'ExitPlanMode').join(', ')} and from ${MC_PREFIX} only ${mcList(p)}.`;

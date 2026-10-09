@@ -13,8 +13,11 @@ import {
 import {
   BRAIN_MODES,
   type BrainMode,
+  MC_TOOL_SETS,
   MODE_PROFILES,
+  mcToolsIn,
   modeForSeat,
+  modeProfile,
   profileToolNames,
   toolInMode,
 } from '../../../src/agents/modes.js';
@@ -25,14 +28,16 @@ import { SeatFSM, type SeatSnapshot } from '../../../src/agents/SeatFSM.js';
 import { decideTool, type GateContext } from '../../../src/agents/ToolGate.js';
 import {
   MC_TOOL_MODES,
-  MC_TOOLS,
+  MC_TOOLS_V1,
+  MC_TOOLS_V2,
   type McToolName,
   mcToolModes,
   PC_TOOLS,
   pcToolModes,
 } from '../../../src/agents/tools/catalog.js';
 
-const ALL_MC = Object.keys(MC_TOOLS) as McToolName[];
+const ALL_MC = Object.keys(MC_TOOLS_V1) as McToolName[];
+const ALL_MC_V2 = Object.keys(MC_TOOLS_V2) as McToolName[];
 
 /** The minimal mc set of PC mode (the idea's SEATED profile). */
 const SEATED_MC = [
@@ -52,6 +57,9 @@ const SEATED_MC = [
   'calendar_cancel',
   'report_task',
 ];
+/** The same for the v2 tool set (tools-v2-mc.md): observe, and the codex / calendar action tools. */
+const SEATED_MC_V2 = ['observe', 'say', 'tell', 'remember', 'stand_up', 'codex', 'calendar'];
+const MEETING_MC_V2 = ['say', 'tell', 'remember', 'stand_up', 'codex', 'calendar'];
 /** Meeting mode: social + Codex/calendar + stand_up. */
 const MEETING_MC = [
   'stand_up',
@@ -72,8 +80,10 @@ const MEETING_MC = [
 
 describe('ModeProfile registry (tool metadata)', () => {
   it('wander: every mc tool, no pc tools, no aliases, no web; Haiku/xhigh', () => {
-    const p = MODE_PROFILES.wander;
+    const p = modeProfile('wander');
+    expect(p).toBe(MODE_PROFILES.v1.wander);
     expect([...p.mc].sort()).toEqual([...ALL_MC].sort());
+    expect([...modeProfile('wander', 'v2').mc].sort()).toEqual([...ALL_MC_V2].sort());
     expect(p.pc).toEqual([]);
     expect(p.aliases).toEqual([]);
     expect(p.builtins).toEqual(['AskUserQuestion']);
@@ -82,7 +92,7 @@ describe('ModeProfile registry (tool metadata)', () => {
   });
 
   it('seated: every pc tool, the Bash…Grep aliases, web, and only the minimal mc set; Opus/medium', () => {
-    const p = MODE_PROFILES.seated;
+    const p = modeProfile('seated');
     expect([...p.pc].sort()).toEqual([...PC_TOOLS].sort());
     expect([...p.aliases].sort()).toEqual(Object.keys(TOOL_ALIASES).sort());
     expect([...p.builtins].sort()).toEqual(['AskUserQuestion', 'ExitPlanMode', 'WebFetch', 'WebSearch']);
@@ -90,24 +100,37 @@ describe('ModeProfile registry (tool metadata)', () => {
     for (const hidden of ['goto', 'mine', 'craft', 'build', 'sit_at_pc', 'inventory', 'request_hire'])
       expect(p.mc, hidden).not.toContain(hidden);
     expect(p.brain).toBe(SEATED_PROFILE);
+    const v2 = modeProfile('seated', 'v2');
+    expect([...v2.mc].sort()).toEqual([...SEATED_MC_V2].sort());
+    expect(v2.pc).toEqual(p.pc);
+    // Whole tools are tagged, never actions: items{eat} and craft{plan} stay in Minecraft mode.
+    for (const hidden of ['goto', 'gather', 'craft', 'build', 'use', 'items', 'menu', 'do', 'job', 'find'])
+      expect(v2.mc, hidden).not.toContain(hidden);
   });
 
   it('meeting: social, Codex, calendar and stand_up only', () => {
-    const p = MODE_PROFILES.meeting;
+    const p = modeProfile('meeting');
     expect([...p.mc].sort()).toEqual([...MEETING_MC].sort());
+    expect([...modeProfile('meeting', 'v2').mc].sort()).toEqual([...MEETING_MC_V2].sort());
     expect(p.pc).toEqual([]);
     expect(p.aliases).toEqual([]);
     expect(p.builtins).toEqual(['AskUserQuestion']);
   });
 
   it('defaults conservatively: an untagged mc tool is wander-only, an untagged pc tool seated-only', () => {
-    for (const t of ALL_MC) {
+    for (const t of new Set([...ALL_MC, ...ALL_MC_V2])) {
       if (!Object.hasOwn(MC_TOOL_MODES, t)) expect(mcToolModes(t), t).toEqual(['wander']);
       // Every tag names known modes, and every mc tool is reachable in Minecraft mode.
       for (const m of mcToolModes(t)) expect(BRAIN_MODES).toContain(m);
       expect(mcToolModes(t), t).toContain('wander');
     }
     for (const t of PC_TOOLS) expect(pcToolModes(t), t).toEqual(['seated']);
+    // Every tag names a tool of some set (no stale names after a rename).
+    for (const t of Object.keys(MC_TOOL_MODES))
+      expect(
+        MC_TOOL_SETS.some((v) => (mcToolsIn(v) as string[]).includes(t)),
+        t,
+      ).toBe(true);
   });
 
   it('toolInMode: mcp names by tag, aliases by their pc target, built-ins by table; unknown tools nowhere', () => {
@@ -214,7 +237,7 @@ describe('modeForSeat', () => {
     ] as const;
     for (const state of states) {
       const fsm = fsmIn(state);
-      const tier = MODE_PROFILES[modeForSeat(fsm.snapshot)].brain.tier;
+      const tier = modeProfile(modeForSeat(fsm.snapshot)).brain.tier;
       expect(tier === 'opus', state).toBe(fsm.wantsOpus(later));
     }
     // Within the debounce the model stays Opus while the mode is Minecraft mode already (debounce rules unchanged).
@@ -228,13 +251,16 @@ describe('MODE banner and persona sections', () => {
   const input = { nonce: 'abc123', playerName: 'Jasper' };
 
   it('is deterministic per mode and carries the control tag, the persona section and the lists', () => {
-    for (const m of BRAIN_MODES) {
-      const b = modeBanner(m, input);
-      expect(modeBanner(m, input)).toBe(b);
-      expect(b.startsWith(`[MV:abc123 MODE] ${MODE_PROFILES[m].title}:`)).toBe(true);
-      for (const line of modeSection(m, 'Jasper')) expect(b).toContain(line);
-      expect(b).toMatch(/\nAvailable now: /);
+    for (const v of MC_TOOL_SETS) {
+      for (const m of BRAIN_MODES) {
+        const b = modeBanner(m, { ...input, mcTools: v });
+        expect(modeBanner(m, { ...input, mcTools: v })).toBe(b);
+        expect(b.startsWith(`[MV:abc123 MODE] ${modeProfile(m, v).title}:`)).toBe(true);
+        for (const line of modeSection(m, 'Jasper', v)) expect(b).toContain(line);
+        expect(b).toMatch(/\nAvailable now: /);
+      }
     }
+    expect(modeBanner('seated', input)).toBe(modeBanner('seated', { ...input, mcTools: 'v1' }));
   });
 
   it('Minecraft mode: every mc tool now, the PC tools and the web wait for a PC', () => {
@@ -252,10 +278,16 @@ describe('MODE banner and persona sections', () => {
     expect(b).toContain(
       'Available now: Bash, Read, Edit, Write, Glob, Grep, TaskStop and every other mcp__pc__* tool, all running inside the PC; AskUserQuestion, WebSearch, WebFetch; ',
     );
-    expect(b).toContain(`from mcp__mc__ only ${MODE_PROFILES.seated.mc.join(', ')}.`);
+    expect(b).toContain(`from mcp__mc__ only ${modeProfile('seated').mc.join(', ')}.`);
     expect(b).toMatch(
-      /Blocked until you stand up \(mcp__mc__stand_up\): every other mcp__mc__\* tool \(goto, mine, craft, build, sit_at_pc, inventory, …\)\./,
+      /Blocked until you stand up \(mcp__mc__stand_up\): every other mcp__mc__\* tool \(goto, mine, craft, build, …\)\./,
     );
+    expect(b).toContain('mcp__mc__status and mcp__mc__look_around show what goes on around you');
+    // The v2 tool set: observe, and the codex / calendar action tools.
+    const v2 = modeBanner('seated', { ...input, mcTools: 'v2' });
+    expect(v2).toContain('from mcp__mc__ only observe, say, tell, remember, stand_up, codex, calendar.');
+    expect(v2).toContain('(goto, gather, craft, build, …)');
+    expect(v2).toContain('mcp__mc__observe shows what goes on around you');
     // ExitPlanMode is only for plan-first sessions: the kickoff names it then, the list never does.
     expect(b.split('\n').find((l) => l.startsWith('Available now:'))).not.toContain('ExitPlanMode');
     expect(b).toContain("Jasper's Vault folders");
@@ -264,6 +296,9 @@ describe('MODE banner and persona sections', () => {
   it('Meeting mode: talk, notes and calendar; everything else waits', () => {
     const b = modeBanner('meeting', input);
     expect(b).toContain(`Available now: AskUserQuestion; from mcp__mc__ only ${MEETING_MC.join(', ')}.`);
+    expect(modeBanner('meeting', { ...input, mcTools: 'v2' })).toContain(
+      'Available now: AskUserQuestion; from mcp__mc__ only say, tell, remember, stand_up, codex, calendar.',
+    );
     expect(b).toMatch(
       /Blocked until the meeting ends or you stand up: every other mcp__mc__\* tool .*the PC tools/,
     );

@@ -425,7 +425,7 @@ export async function decideTool(
 function inMode(decision: GateDecision, toolName: string, ctx: GateContext): GateDecision {
   if (decision.behavior !== 'allow') return decision;
   const mode = modeForSeat(ctx.seat);
-  return toolInMode(mode, toolName) ? decision : deny('mode', outsideModeText(mode, toolName));
+  return toolInMode(mode, toolName) ? decision : deny('mode', outsideModeText(mode, toolName, ctx.mcTools));
 }
 
 /** What the gate hook reports for every decision (activity, caps, effort). */

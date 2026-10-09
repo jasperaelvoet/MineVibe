@@ -4,15 +4,17 @@
  *   node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts          # offline estimate
  *   node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts --cli    # + the CLI's own counts
  *
- * Offline: builds the real `mc` / `pc` tool definitions, renders each one the way the API receives it
- * (`{name, description, input_schema}`), and estimates tokens as characters / 4. `--cli` starts the SDK-bundled claude
- * with the production session options and reads `getContextUsage()` (per-tool token counts and the system prompt),
- * using a `shouldQuery:false` message, so no model turn runs (spike S3b, "zero-turn preflight").
+ * Offline: builds the real `mc` (both tool sets) and `pc` tool definitions, renders each one the way the API receives
+ * it (`{name, description, input_schema}`), and estimates tokens as characters / 4. `--cli` starts the SDK-bundled
+ * claude with the production session options once per mc tool set and reads `getContextUsage()` (per-tool token
+ * counts, the system prompt), using a `shouldQuery:false` message, so no model turn runs (spike S3b, "zero-turn
+ * preflight").
  *
- * Prints a JSON report: the full list every session is offered (pinned to its first request, spike S3b), the subset
- * each mode profile allows, the persona and the MODE banners.
+ * Prints a JSON report per tool set: the full list every session is offered (pinned to its first request, spike S3b),
+ * the subset each mode profile allows, the persona and the MODE banners.
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,12 +22,13 @@ import { createSdkMcpServer, query, type SDKUserMessage } from '@anthropic-ai/cl
 import { z } from 'zod';
 import { agentEnv } from '../src/agents/agentEnv.js';
 import { resolveClaudeBinary } from '../src/agents/claudeBinary.js';
-import { BRAIN_MODES, type BrainMode, MODE_PROFILES, toolInMode } from '../src/agents/modes.js';
+import type { McToolsVersion } from '../src/agents/constants.js';
+import { BRAIN_MODES, MC_TOOL_SETS, modeProfile, toolInMode } from '../src/agents/modes.js';
 import { modeBanner } from '../src/agents/prompts/modes.js';
 import { personaPrompt } from '../src/agents/prompts/persona.js';
 import { buildSessionOptions } from '../src/agents/sessionOptions.js';
 import { MC_PREFIX, PC_PREFIX } from '../src/agents/tools/catalog.js';
-import { type McHost, mcToolDefinitions } from '../src/agents/tools/mcServer.js';
+import { type McHost, mcServerOptions, mcToolDefinitions } from '../src/agents/tools/mcServer.js';
 import { type PcHost, pcToolDefinitions } from '../src/agents/tools/pcServer.js';
 import { SERVER_VERSION } from '../src/version.js';
 
@@ -48,8 +51,9 @@ interface Rendered {
 
 /** One tool as the API sees it. */
 function render(prefix: string, def: { name: string; description: string; inputSchema: unknown }): Rendered {
-  const shape = def.inputSchema as z.ZodRawShape;
-  const inputSchema = z.toJSONSchema(z.object(shape), { io: 'input', unrepresentable: 'any' });
+  const schema = def.inputSchema as z.ZodType | z.ZodRawShape;
+  const object = schema instanceof z.ZodType ? schema : z.object(schema);
+  const inputSchema = z.toJSONSchema(object, { io: 'input', unrepresentable: 'any' });
   const json = JSON.stringify({
     name: `${prefix}${def.name}`,
     description: def.description,
@@ -60,28 +64,34 @@ function render(prefix: string, def: { name: string; description: string; inputS
 
 const approx = (chars: number) => Math.round(chars / 4);
 
-const persona = personaPrompt({
-  name: 'Ada',
-  handle: 'ada',
-  role: 'ceo',
-  ceo: true,
-  playerName: 'Jasper',
-  nonce: 'abc123',
-});
+function persona(version: McToolsVersion): string {
+  return personaPrompt({
+    name: 'Ada',
+    handle: 'ada',
+    role: 'ceo',
+    ceo: true,
+    playerName: 'Jasper',
+    nonce: 'abc123',
+    mcTools: version,
+  });
+}
 
-const tools: Rendered[] = [
-  ...mcToolDefinitions(inert<McHost>()).map((d) => render(MC_PREFIX, d)),
-  ...pcToolDefinitions(inert<PcHost>()).map((d) => render(PC_PREFIX, d)),
-];
+function tools(version: McToolsVersion): Rendered[] {
+  return [
+    ...mcToolDefinitions(inert<McHost>(), version).map((d) => render(MC_PREFIX, d)),
+    ...pcToolDefinitions(inert<PcHost>()).map((d) => render(PC_PREFIX, d)),
+  ];
+}
 
-/** The CLI's per-tool counts, when `--cli` is given. */
-async function cliCounts(): Promise<{
+interface CliCounts {
   tools: Map<string, number>;
-  systemTools: Map<string, number>;
+  systemTools: number;
   categories: { name: string; tokens: number }[];
-  sections: { name: string; tokens: number }[];
   model: string;
-}> {
+}
+
+/** The CLI's per-tool counts for one tool set (`--cli`): a session that never runs a model turn. */
+async function cliCounts(version: McToolsVersion): Promise<CliCounts> {
   const env = process.env;
   const claude = await resolveClaudeBinary({
     env,
@@ -94,17 +104,15 @@ async function cliCounts(): Promise<{
     env: agentEnv({ version: SERVER_VERSION, source: env }),
     cwd: dir,
     resume: null,
-    sessionId: crypto.randomUUID(),
-    persona,
+    sessionId: randomUUID(),
+    persona: persona(version),
     mc: createSdkMcpServer({
-      name: 'mc',
-      version: '1.0.0',
-      alwaysLoad: true,
-      tools: mcToolDefinitions(inert<McHost>()),
+      ...mcServerOptions(version),
+      tools: mcToolDefinitions(inert<McHost>(), version),
     }),
     pc: createSdkMcpServer({
       name: 'pc',
-      version: '1.0.0',
+      version: '2.0.0',
       alwaysLoad: true,
       tools: pcToolDefinitions(inert<PcHost>()),
     }),
@@ -148,13 +156,13 @@ async function cliCounts(): Promise<{
     } as SDKUserMessage);
     await init;
     const u = await q.getContextUsage({ detail: 'summary' });
+    const categories = u.categories
+      .filter((c) => c.kind === 'used')
+      .map((c) => ({ name: c.name, tokens: c.tokens }));
     return {
       tools: new Map(u.mcpTools.map((t) => [t.name, t.tokens])),
-      systemTools: new Map((u.systemTools ?? []).map((t) => [t.name, t.tokens])),
-      categories: u.categories
-        .filter((c) => c.kind === 'used')
-        .map((c) => ({ name: c.name, tokens: c.tokens })),
-      sections: (u.systemPromptSections ?? []).map((s) => ({ name: s.name, tokens: s.tokens })),
+      systemTools: categories.find((c) => c.name === 'System tools')?.tokens ?? 0,
+      categories,
       model: u.model,
     };
   } finally {
@@ -165,55 +173,50 @@ async function cliCounts(): Promise<{
   }
 }
 
-const cli = process.argv.includes('--cli') ? await cliCounts() : null;
+const withCli = process.argv.includes('--cli');
 
-function sizeOf(names: readonly string[]) {
-  const chars = names.reduce((n, name) => n + (tools.find((t) => t.name === name)?.chars ?? 0), 0);
-  const cliTokens = cli ? names.reduce((n, name) => n + (cli.tools.get(name) ?? 0), 0) : null;
-  return { tools: names.length, chars, approxTokens: approx(chars), cliTokens };
+async function report(version: McToolsVersion) {
+  const rendered = tools(version);
+  const cli = withCli ? await cliCounts(version) : null;
+  const sizeOf = (names: readonly string[]) => {
+    const chars = names.reduce((n, name) => n + (rendered.find((t) => t.name === name)?.chars ?? 0), 0);
+    const cliTokens = cli ? names.reduce((n, name) => n + (cli.tools.get(name) ?? 0), 0) : null;
+    return { tools: names.length, chars, approxTokens: approx(chars), cliTokens };
+  };
+  const all = rendered.map((t) => t.name);
+  const text = persona(version);
+  return {
+    everyMode: {
+      ...sizeOf(all),
+      mc: sizeOf(all.filter((n) => n.startsWith(MC_PREFIX))),
+      pc: sizeOf(all.filter((n) => n.startsWith(PC_PREFIX))),
+      builtinsCliTokens: cli?.systemTools ?? null,
+    },
+    perMode: Object.fromEntries(
+      BRAIN_MODES.map((m) => [
+        m,
+        { ...sizeOf(all.filter((n) => toolInMode(m, n))), builtins: modeProfile(m, version).builtins },
+      ]),
+    ),
+    persona: { chars: text.length, approxTokens: approx(text.length) },
+    banners: Object.fromEntries(
+      BRAIN_MODES.map((m) => {
+        const banner = modeBanner(m, { nonce: 'abc123', playerName: 'Jasper', mcTools: version });
+        return [m, { chars: banner.length, approxTokens: approx(banner.length) }];
+      }),
+    ),
+    cli: cli
+      ? {
+          model: cli.model,
+          categories: cli.categories,
+          largestTools: [...cli.tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6),
+        }
+      : null,
+  };
 }
 
-const all = tools.map((t) => t.name);
-const perMode = Object.fromEntries(
-  BRAIN_MODES.map((m: BrainMode) => {
-    const names = all.filter((n) => toolInMode(m, n));
-    const builtins = MODE_PROFILES[m].builtins;
-    return [
-      m,
-      {
-        ...sizeOf(names),
-        builtins,
-        builtinCliTokens: cli ? builtins.reduce((n, b) => n + (cli.systemTools.get(b) ?? 0), 0) : null,
-      },
-    ];
-  }),
-);
-const banners = Object.fromEntries(
-  BRAIN_MODES.map((m) => {
-    const text = modeBanner(m, { nonce: 'abc123', playerName: 'Jasper' });
-    return [m, { chars: text.length, approxTokens: approx(text.length) }];
-  }),
-);
-
-const report = {
+const out: Record<string, unknown> = {
   note: 'approxTokens = chars / 4 of the rendered {name, description, input_schema}; cliTokens from getContextUsage()',
-  everyMode: {
-    ...sizeOf(all),
-    mc: sizeOf(all.filter((n) => n.startsWith(MC_PREFIX))),
-    pc: sizeOf(all.filter((n) => n.startsWith(PC_PREFIX))),
-    builtinCliTokens: cli ? [...cli.systemTools.values()].reduce((a, b) => a + b, 0) : null,
-  },
-  perMode,
-  persona: { chars: persona.length, approxTokens: approx(persona.length) },
-  banners,
-  cli: cli
-    ? {
-        model: cli.model,
-        categories: cli.categories,
-        systemPromptSections: cli.sections,
-        systemTools: Object.fromEntries(cli.systemTools),
-        largestTools: [...cli.tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
-      }
-    : null,
 };
-console.log(JSON.stringify(report, null, 2));
+for (const version of MC_TOOL_SETS) out[version] = await report(version);
+console.log(JSON.stringify(out, null, 2));

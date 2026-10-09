@@ -25,7 +25,7 @@ import { AgentManager, type ToolObservation } from '../../src/agents/AgentManage
 import type { SwapResult } from '../../src/agents/AgentSession.js';
 import { agentEnv } from '../../src/agents/agentEnv.js';
 import { resolveClaudeBinary } from '../../src/agents/claudeBinary.js';
-import { MODE_PROFILES } from '../../src/agents/modes.js';
+import { modeProfile } from '../../src/agents/modes.js';
 import { type QueryFactory, type SDKResultMessage, sdkQueryFactory } from '../../src/agents/sdk.js';
 import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../src/contracts/FakeSkillApi.js';
@@ -237,7 +237,7 @@ describe('live mode switch (subscription, ≤ 6 turns)', () => {
       expect(kickoff.tools).toContain('mc__inventory:deny(mode)');
       expect(kickoff.tools).toContain('mc__status:allow');
       expect(kickoff.tools).toContain('mc__stand_up:allow');
-      const listed = MODE_PROFILES.seated.mc.filter((t) => kickoff.text.includes(t));
+      const listed = modeProfile('seated', brain()?.mcTools).mc.filter((t) => kickoff.text.includes(t));
       await waitFor(() => brain()?.fsm.state === 'wandering', 'stood up', 30_000);
       await waitFor(() => brain()?.model === 'haiku', 'swap back to haiku', 30_000);
 

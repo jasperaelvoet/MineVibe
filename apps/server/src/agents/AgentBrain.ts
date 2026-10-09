@@ -1116,7 +1116,11 @@ export class AgentBrain {
    */
   #modeBanner(mode: BrainMode): string | null {
     if (mode === this.#announcedMode) return null;
-    return modeBanner(mode, { nonce: this.record.nonce, playerName: this.#env.playerName() });
+    return modeBanner(mode, {
+      nonce: this.record.nonce,
+      playerName: this.#env.playerName(),
+      mcTools: this.mcTools,
+    });
   }
 
   #onTurnEnd(result: SDKResultMessage): void {

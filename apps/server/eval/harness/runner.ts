@@ -536,7 +536,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       });
     }
     // As in production (AgentBrain), the first turn opens with the mode banner: Minecraft mode for mc, PC mode for pc.
-    text = `${modeBanner(modeForSeat(seat), { nonce, playerName: PLAYER })}\n\n${text}`;
+    text = `${modeBanner(modeForSeat(seat), { nonce, playerName: PLAYER, mcTools: tools })}\n\n${text}`;
     for (let t = 0; ; t++) {
       if (t >= opts.maxRunTurns) {
         stop = 'turn_cap';

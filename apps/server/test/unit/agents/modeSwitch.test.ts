@@ -267,6 +267,23 @@ describe('mode switch at the turn boundary', () => {
     expect(brain?.announcedMode).toBe('seated');
   });
 
+  it('the v2 tool set: the PC-mode banner names its tools, and the gate holds its action tools to the mode', async () => {
+    const { w, id, q, nonce } = await world({ mcTools: 'v2' });
+    expect(w.manager.brain(id)?.mcTools).toBe('v2');
+    await wake(w, q, 'fix the failing test');
+    await sitAndKickoff(w, q, id);
+    const kickoff = lastText(w, q);
+    expect(kickoff.startsWith(modeLine(nonce, 'PC mode'))).toBe(true);
+    expect(kickoff).toContain('from mcp__mc__ only observe, say, tell, remember, stand_up, codex, calendar.');
+    expect(kickoff).toContain('mcp__mc__observe shows what goes on around you');
+    expect((await q.callTool('mcp__mc__observe', {})).kind).toBe('allowed');
+    // items{eat} is a read-ish action, but items is a Minecraft-mode tool.
+    expect(await q.callTool('mcp__mc__items', { action: 'eat' })).toMatchObject({
+      kind: 'denied',
+      reason: expect.stringMatching(/mcp__mc__items is not available in PC mode.*only observe, say/),
+    });
+  });
+
   it('a compaction makes the next turn announce the mode again', async () => {
     const { w, id, q, nonce } = await world();
     q.emit({

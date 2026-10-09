@@ -256,12 +256,24 @@ describe('v2 texts and gate', () => {
     });
     const decide = (tool: string, input: Record<string, unknown>, over?: Partial<GateContext>) =>
       decideTool(`mcp__mc__${tool}`, input, ctx(over));
-    expect((await decide('items', { action: 'eat' })).behavior).toBe('allow');
-    expect((await decide('items', { action: 'give', item: 'x', to: 'player' })).behavior).toBe('deny');
-    expect((await decide('craft', { item: 'stick', plan: true })).behavior).toBe('allow');
-    expect((await decide('craft', { item: 'stick' })).behavior).toBe('deny');
-    expect((await decide('menu', { action: 'state' })).behavior).toBe('allow');
+    // The action decides the category: walking to a chair (Minecraft mode), reads run and world actions wait.
+    const walking = { seat: { ...seat, state: 'walking_to_seat' } } as Partial<GateContext>;
+    expect((await decide('items', { action: 'eat' }, walking)).behavior).toBe('allow');
+    expect((await decide('items', { action: 'give', item: 'x', to: 'player' }, walking)).behavior).toBe(
+      'deny',
+    );
+    expect((await decide('craft', { item: 'stick', plan: true }, walking)).behavior).toBe('allow');
+    expect((await decide('craft', { item: 'stick' }, walking)).behavior).toBe('deny');
+    expect((await decide('menu', { action: 'state' }, walking)).behavior).toBe('allow');
+    // Seated (PC mode, agents/modes.ts): only observe, talk, notes, Codex, calendar and stand_up of the mc tools.
+    expect(await decide('items', { action: 'eat' })).toMatchObject({ behavior: 'deny', code: 'mode' });
+    expect(await decide('craft', { item: 'stick', plan: true })).toMatchObject({
+      behavior: 'deny',
+      code: 'mode',
+    });
+    expect(await decide('menu', { action: 'state' })).toMatchObject({ behavior: 'deny', code: 'mode' });
     expect((await decide('observe', {})).behavior).toBe('allow');
+    expect((await decide('codex', { action: 'search', query: 'x' })).behavior).toBe('allow');
     expect((await decide('mine', { block: 'oak_log', count: 1 })).behavior).toBe('deny');
     // Scheduling others is the CEO's: without assignees v2 schedules for the caller.
     const wandering = {

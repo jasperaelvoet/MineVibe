@@ -284,18 +284,22 @@ const WANDER_SEATED: readonly BrainMode[] = ['wander', 'seated'];
 const WANDER_MEETING: readonly BrainMode[] = ['wander', 'meeting'];
 
 /**
- * The modes each `mc` tool belongs to. **An untagged mc tool is wander-only** (the conservative default): a new world
- * tool never shows up in PC mode or at the meeting table by accident. Seated agents keep a minimal set (their body and
- * the scene around it, stand up, talk, memory, Codex, calendar); meetings keep talk, notes, calendar and stand_up.
+ * The modes each `mc` tool belongs to, for both tool sets (a name the sets share means the same in both). **An
+ * untagged mc tool is wander-only** (the conservative default): a new world tool never shows up in PC mode or at the
+ * meeting table by accident. Seated agents keep a minimal set (their body and the scene around it, stand up, talk,
+ * memory, Codex, calendar); meetings keep talk, notes, Codex, calendar and stand_up. Whole tools are tagged, never
+ * actions: v2's `items{eat}` or `craft{plan}` stay Minecraft-mode tools like v1's `eat` and `recipe`.
  */
 export const MC_TOOL_MODES: Readonly<Partial<Record<McToolName, readonly BrainMode[]>>> = {
-  status: WANDER_SEATED,
-  look_around: WANDER_SEATED,
+  // Both sets
   stand_up: EVERY_MODE,
   say: EVERY_MODE,
   tell: EVERY_MODE,
-  emote: WANDER_MEETING,
   remember: EVERY_MODE,
+  // v1
+  status: WANDER_SEATED,
+  look_around: WANDER_SEATED,
+  emote: WANDER_MEETING,
   codex_search: EVERY_MODE,
   codex_read: EVERY_MODE,
   codex_write: EVERY_MODE,
@@ -305,6 +309,10 @@ export const MC_TOOL_MODES: Readonly<Partial<Record<McToolName, readonly BrainMo
   calendar_update: EVERY_MODE,
   calendar_cancel: EVERY_MODE,
   report_task: EVERY_MODE,
+  // v2 (observe is v1's status + look_around + the rest of the reads; calendar includes report)
+  observe: WANDER_SEATED,
+  codex: EVERY_MODE,
+  calendar: EVERY_MODE,
 };
 
 /** The modes each `pc` tool belongs to. **An untagged pc tool is seated-only**: no tool reaches a PC you don't sit at. */
