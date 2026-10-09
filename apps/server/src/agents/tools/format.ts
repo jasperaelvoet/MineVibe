@@ -201,6 +201,11 @@ export interface RenderContext {
    * says to make the ingredients first instead of offering `gather_missing`. Absent: assume it does.
    */
   readonly craftTree?: boolean;
+  /**
+   * What the agent carries now (item ids without `minecraft:` → count), when Node looked because a hint depends on it
+   * (NEEDS_TOOL on a mod without the craft tree). Absent or null: unknown.
+   */
+  readonly carried?: Readonly<Record<string, number>> | null | undefined;
 }
 
 /** A rendered job: the first line, detail lines and an optional `next:` hint. */
@@ -474,7 +479,12 @@ export function renderDone(meta: JobMeta, outcome: JobOutcome, ctx: RenderContex
     outcome.durationMs !== undefined && outcome.durationMs >= 1000 ? ` in ${dur(outcome.durationMs)}` : '';
   const { facts, details } = describeResult(meta, r, ctx);
   const head = [`done: ${meta.what}${progress ? ` ${progress}` : ''}${time}`, ...facts].join(' | ');
-  return { head, details, next: null, isError: false };
+  // A shelter keeps no one safe until they are in it (after-v2 eval: "you're sealed in" to a player still outside).
+  const next =
+    meta.skill === 'build' && /^build shelter\b/.test(meta.what)
+      ? `ask ${ctx.playerName} inside; call them safe only once ${call('observe', { sections: ['scene'] })} shows "${ctx.playerName} (player) … under cover"`
+      : null;
+  return { head, details, next, isError: false };
 }
 
 /** Failure detail lines: what is missing, where the candidates are, what is protected. */
@@ -552,8 +562,68 @@ export function failureDetails(
   return out;
 }
 
-/** What `next:` says after a failure (§8). `meta.args` lets hints repeat or adjust the call. */
-export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string | null {
+/** The pickaxe tier a block needs (vanilla's `needs_*_tool` tags, for the blocks agents meet). */
+export function pickaxeFor(block: string | null): string {
+  const b = short(block ?? '').replace(/^deepslate_/, '');
+  if (/^(obsidian|crying_obsidian|ancient_debris|respawn_anchor|netherite_block)$/.test(b))
+    return 'diamond_pickaxe';
+  if (/^(diamond|gold|emerald|redstone)_(ore|block)$/.test(b)) return 'iron_pickaxe';
+  if (/^(iron|copper|lapis)_(ore|block)$|^raw_(iron|copper|gold)_block$/.test(b)) return 'stone_pickaxe';
+  return 'wooden_pickaxe';
+}
+
+/** The block a `NEEDS_TOOL` message names ("breaking minecraft:coal_ore drops nothing without the right tool"). */
+function blockOfNeedsTool(msg: string | undefined): string | null {
+  const m = /breaking (?:minecraft:)?([a-z0-9_]+) drops nothing/.exec(msg ?? '');
+  return m?.[1] ?? null;
+}
+
+/**
+ * `NEEDS_TOOL`: the pickaxe the block needs, and a way to it that works from where the agent stands. With the craft
+ * tree the mod gathers what is missing on the way (`gather_missing`); `craft{tool}` alone fails `MISSING_INGREDIENTS`
+ * with no wood carried (DEBT, after-v2 eval). An older mod crafts one level, so the hint says what to get first, by
+ * what Node saw in the inventory (`ctx.carried`), or both ways when it did not look.
+ */
+function needsToolHint(ctx: RenderContext, msg: string | undefined): string {
+  const tool = pickaxeFor(blockOfNeedsTool(msg));
+  if (ctx.craftTree !== false) {
+    return `${call('craft', { item: tool, gather_missing: true })} (gathers what it needs from nature), then retry`;
+  }
+  const have = ctx.carried ?? null;
+  const n = (pred: (id: string) => boolean) =>
+    have ? Object.entries(have).reduce((sum, [id, c]) => sum + (pred(short(id)) ? c : 0), 0) : null;
+  const wood = n((id) => id.endsWith('_planks')) ?? 0;
+  const logs = n((id) => /_(log|stem)$/.test(id)) ?? 0;
+  const sticks = n((id) => id === 'stick') ?? 0;
+  const make = call('craft', { item: tool });
+  if (tool === 'wooden_pickaxe') {
+    if (have === null) {
+      return `${make} with 3 planks and 2 sticks; with no wood, ${call('gather', { item: 'oak_log', count: 3 })} first; then retry`;
+    }
+    if (wood >= 3 && sticks >= 2) return `${make}, then retry`;
+    if (wood + 4 * logs >= 5) return `craft planks, then sticks, then ${make}; then retry`;
+    return `${call('gather', { item: 'oak_log', count: 3 })} first (you carry no wood), then craft planks, sticks and ${tool}; then retry`;
+  }
+  const material =
+    tool === 'stone_pickaxe' ? 'cobblestone' : tool === 'iron_pickaxe' ? 'iron_ingot' : 'diamond';
+  const got = n((id) => id === material);
+  if (got !== null && got >= 3) return `${make} (3 ${material}, 2 sticks), then retry`;
+  if (material === 'cobblestone') {
+    return `${call('gather', { item: 'cobblestone', count: 3 })} first (it needs a wooden_pickaxe), then ${make}; then retry`;
+  }
+  return `${make} needs 3 ${material} and 2 sticks${material === 'iron_ingot' ? ' (smelt raw_iron)' : ''}: get them first, then retry`;
+}
+
+/**
+ * What `next:` says after a failure (§8). `meta.args` lets hints repeat or adjust the call; `detail.msg` is the
+ * failure's message (NEEDS_TOOL names the block there).
+ */
+export function hintFor(
+  code: string,
+  meta: JobMeta,
+  ctx: RenderContext,
+  detail: { readonly msg?: string | undefined } = {},
+): string | null {
   const p = ctx.playerName;
   const item = meta.want?.item ?? (typeof meta.args?.item === 'string' ? meta.args.item : null);
   const count = meta.want?.count ?? 1;
@@ -584,7 +654,7 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
     case 'OTHER_DIMENSION':
       return `goto a portal, or ask ${p}`;
     case 'NEEDS_TOOL':
-      return `${call('craft', { item: 'wooden_pickaxe' })} (or the stone/iron tier the message names), then retry`;
+      return needsToolHint(ctx, detail.msg);
     case 'MISSING_INGREDIENTS':
     case 'NEEDS_TABLE':
     case 'NO_TABLE':
@@ -606,6 +676,10 @@ export function hintFor(code: string, meta: JobMeta, ctx: RenderContext): string
       return item ? `${call('gather', { item, count })} (it is gathered, not crafted)` : null;
     case 'NO_ITEM':
     case 'NO_MATERIAL':
+      // A shelter for the night: the one that stands (the Base, a house) needs no blocks and no game hours of gathering.
+      if (meta.skill === 'build' && /^build shelter\b/.test(meta.what)) {
+        return `a shelter that stands needs no blocks: ask ${p} into the Base or a house and ${call('set_mode', { mode: 'guard' })} there; else gather 71 dirt`;
+      }
       return `${call('observe', { sections: ['inventory'] })}, then gather or craft it`;
     case 'INVENTORY_FULL':
       return `store what you don't need in the nearest chest, e.g. ${call('items', { action: 'store', item: 'dirt' })}, or drop it`;
@@ -683,7 +757,12 @@ export function renderFailed(meta: JobMeta, outcome: JobOutcome, ctx: RenderCont
     `${code}: ${msg}`,
     ...(partial ? facts.slice(0, 2) : []),
   ].join(' | ');
-  return { head, details: failureDetails(code, r, ctx), next: hintFor(code, meta, ctx), isError: true };
+  return {
+    head,
+    details: failureDetails(code, r, ctx),
+    next: hintFor(code, meta, ctx, { msg: outcome.error?.msg }),
+    isError: true,
+  };
 }
 
 /** A done, failed or cancelled job. */
@@ -763,7 +842,7 @@ export function renderSequence(meta: JobMeta, outcome: JobOutcome, ctx: RenderCo
   return {
     head: `failed: do step ${idx + 1}/${n} ${step?.tool ?? ''} | ${code}: ${msg}`.replace('  |', ' |'),
     details: [...details, ...extra],
-    next: step ? hintFor(code, step, ctx) : null,
+    next: step ? hintFor(code, step, ctx, { msg }) : null,
     isError: true,
   };
 }

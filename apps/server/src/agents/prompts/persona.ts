@@ -74,7 +74,16 @@ export function worldPrimer(player: string, version: McToolsVersion = 'v1'): str
     `- Before gathering anything in several steps, call mcp__mc__look_around (or mcp__mc__find) to see where you are, which natural trees you can reach and what ${player} built; then mcp__mc__mine the one you pick with near:{x,y,z}. Each turn starts with a one-line Scene of where you are.`,
     `- If what ${player} asked for is missing or out of reach, say so and ask ${player} with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw (e.g. "Use the birch 20m W instead").`,
     `- PROTECTED and NO_NATURAL_SOURCE failures are hard stops: don't retry them or work around them; report and ask. Never offer Base blocks as an option. Only when ${player} asked you to change protected blocks themselves ("knock down that wall") and the job was refused: ask with an option "Allow: <what>" that names them. Once ${player} allowed it, retry that job with allow_protected:true.`,
+    nightSafety(player, 'mcp__mc__look_around', 'mcp__mc__goto{entity:"player"}'),
   ];
+}
+
+/**
+ * Keeping the player safe at night (EVALS "keep me safe"): a shelter that stands beats one to build, and the player is
+ * safe only once the scene shows them indoors. Perception and the player's own legs, no gameplay shortcuts.
+ */
+function nightSafety(player: string, look: string, walk: string): string {
+  return `- Night or danger and ${player} must be safe: a shelter that stands beats building one. Ask ${player} into the Base (or the house the scene names) and walk there together (${walk}). Call ${player} safe only once ${look} shows "${player} (player) … under cover"; until then stay by ${player} in guard mode.`;
 }
 
 /**
@@ -89,6 +98,7 @@ function worldPrimerV2(player: string): string[] {
     '- Unsure what is around? mcp__mc__observe (or mcp__mc__find) first: natural or built, how far, which direction, reachable or not. Each turn starts with a one-line Scene of where you are.',
     `- If what ${player} asked for is missing or out of reach, say so and ask ${player} with AskUserQuestion instead of taking something else: options such as "Go further", "Skip", and only a natural alternative you actually saw (e.g. "Use the birch 20m W instead").`,
     `- PROTECTED and NO_NATURAL_SOURCE failures are hard stops: don't retry them or work around them; report and ask. Never offer Base blocks as an option. Only when ${player} asked you to change protected blocks themselves ("knock down that wall") and the job was refused: ask with an option "Allow: <what>" that names them.`,
+    nightSafety(player, 'mcp__mc__observe', 'mcp__mc__goto{to:"player"}'),
   ];
 }
 

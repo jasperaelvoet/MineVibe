@@ -741,6 +741,61 @@ public final class ProtectionGameTests {
 			.thenSucceed();
 	}
 
+	/**
+	 * Consent covers right-clicks and menu clicks like every other block-changing skill: with Node's token from the
+	 * refusal (and {@code allow_protected}), {@code use_block} takes the poppy from Steve's pot, and {@code menu_click}
+	 * takes his diamonds, once each.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 800)
+	public void consentAllowsARightClickAndAMenuClick(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		BlockPos chestAt = helper.absolutePos(new BlockPos(17, 1, 20));
+		steves(helper, chestAt, Blocks.CHEST.defaultBlockState());
+		ChestBlockEntity chest = (ChestBlockEntity)level.getBlockEntity(chestAt);
+		chest.setItem(0, new ItemStack(Items.DIAMOND, 3));
+		BlockPos potAt = helper.absolutePos(new BlockPos(17, 1, 23));
+		steves(helper, potAt, Blocks.POTTED_POPPY.defaultBlockState());
+		AgentPlayer agent = spawnAgent(helper, "Ada", AgentRole.CEO, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		String potArgs = "{\"pos\":" + pos(potAt) + ",\"allow_protected\":true}";
+		String clickArgs = "{\"slot\":0,\"button\":0,\"type\":\"quick_move\",\"allow_protected\":true}";
+		CompletableFuture<Map<String, Object>> refused = run(helper, agent, "use_block", potArgs);
+		AtomicReference<CompletableFuture<Map<String, Object>>> pot = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> open = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> click = new AtomicReference<>();
+		AtomicReference<CompletableFuture<Map<String, Object>>> allowedClick = new AtomicReference<>();
+		helper.startSequence()
+			.thenWaitUntil(() -> helper.assertTrue(status(refused) != null, "use_block still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, refused, "PROTECTED", "allow_protected alone on Steve's pot");
+				String token = result(refused).getAsJsonObject("protected").get("consentId").getAsString();
+				pot.set(service(helper).run(new Skills.SkillRun(jobId("pot"), agent.agentId(), "use_block", SkillTestSupport.json(potArgs), 120_000,
+					true, new Skills.Consent(token))));
+			})
+			.thenWaitUntil(() -> assertDone(helper, pot.get(), "use_block with consent"))
+			.thenExecute(() -> {
+				helper.assertTrue(level.getBlockState(potAt).is(Blocks.FLOWER_POT), "the allowed poppy was taken: " + level.getBlockState(potAt));
+				open.set(run(helper, agent, "use_block", "{\"pos\":" + pos(chestAt) + "}"));
+			})
+			.thenWaitUntil(() -> assertDone(helper, open.get(), "use_block on the chest"))
+			.thenExecute(() -> click.set(run(helper, agent, "menu_click", clickArgs)))
+			.thenWaitUntil(() -> helper.assertTrue(ended(click), "menu_click still running"))
+			.thenExecute(() -> {
+				assertFailed(helper, click.get(), "PROTECTED", "allow_protected alone on Steve's diamonds");
+				helper.assertValueEqual(chest.countItem(Items.DIAMOND), 3, "diamonds in Steve's chest");
+				String token = result(click.get()).getAsJsonObject("protected").get("consentId").getAsString();
+				allowedClick.set(service(helper).run(new Skills.SkillRun(jobId("click"), agent.agentId(), "menu_click",
+					SkillTestSupport.json(clickArgs), 120_000, true, new Skills.Consent(token))));
+			})
+			.thenWaitUntil(() -> assertDone(helper, allowedClick.get(), "menu_click with consent"))
+			.thenExecute(() -> {
+				helper.assertValueEqual(chest.countItem(Items.DIAMOND), 0, "diamonds left in Steve's chest");
+				helper.assertValueEqual(Inv.count(agent, Items.DIAMOND), 3, "diamonds the player allowed");
+				agent.closeContainer();
+				assertValid(helper, agent);
+			})
+			.thenSucceed();
+	}
+
 	/** Bessie, a named cow, is nobody's dinner: attacking her is refused, and hunting cows takes the other one. */
 	@GameTest(structure = FOREST, environment = DAY, maxTicks = 1200)
 	public void namedAnimalsAreNeverHunted(final GameTestHelper helper) {

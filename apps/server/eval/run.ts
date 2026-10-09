@@ -3,6 +3,7 @@
  *
  *   npm run eval:tools -- --suite mc|pc|all --mode replay|live [--budget N] [--runs N] [--scenario id,id]
  *   npm run eval:tools -- --report out/a.json,out/b.json      (one summary of saved live runs)
+ *   npm run eval:tools -- --tools v1 [--mod v1]                  (the v1 `mc` tools, the fallback; default v2)
  *
  * - `replay` (default) runs every scenario's scripted good run (must pass) and bad run (must fail) through the real
  *   session wiring with a scripted model: no model calls, deterministic, exits 1 when a script does not behave.
@@ -20,7 +21,12 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { agentEnv } from '../src/agents/agentEnv.js';
 import { type ResolvedClaude, resolveClaudeBinary } from '../src/agents/claudeBinary.js';
-import { type BrainProfile, SEATED_PROFILE, WANDERING_PROFILE } from '../src/agents/constants.js';
+import {
+  type BrainProfile,
+  DEFAULT_MC_TOOLS,
+  SEATED_PROFILE,
+  WANDERING_PROFILE,
+} from '../src/agents/constants.js';
 import { type QueryFactory, sdkQueryFactory } from '../src/agents/sdk.js';
 import { SERVER_VERSION } from '../src/version.js';
 import { formatRuns, formatTable, summarize } from './harness/metrics.js';
@@ -41,7 +47,7 @@ export interface CliOptions {
   readonly out: string | null;
   readonly firstRun: number;
   readonly report: readonly string[];
-  /** The `mc` tool set (`--tools`, default v1) and the simulated mod (`--mod`, default: the tool set's). */
+  /** The `mc` tool set (`--tools`, default v2 like production) and the simulated mod (`--mod`, default: the tool set's). */
   readonly tools: 'v1' | 'v2';
   readonly mod: 'v1' | 'v2';
 }
@@ -60,7 +66,7 @@ export function parseCli(argv: readonly string[]): CliOptions {
       out: { type: 'string' },
       'first-run': { type: 'string', default: '1' },
       report: { type: 'string' },
-      tools: { type: 'string', default: 'v1' },
+      tools: { type: 'string', default: DEFAULT_MC_TOOLS },
       mod: { type: 'string' },
     },
     allowPositionals: false,
@@ -135,13 +141,19 @@ export interface ReplayOutcome {
 /** Runs the scripted good and bad runs of each scenario (with the v1 or the v2 tools and their scripts). */
 export async function runReplays(
   scenarios: readonly Scenario[],
-  options: { readonly tools?: 'v1' | 'v2'; readonly mod?: 'v1' | 'v2' } = {},
+  options: {
+    readonly tools?: 'v1' | 'v2';
+    readonly mod?: 'v1' | 'v2';
+    /** Mod caps the simulated mod leaves out (a W1 mod without `skill.sequence`: Node's macro runs `do`). */
+    readonly withoutCaps?: readonly string[];
+  } = {},
 ): Promise<ReplayOutcome[]> {
   const out: ReplayOutcome[] = [];
-  const tools = options.tools ?? 'v1';
+  const tools = options.tools ?? DEFAULT_MC_TOOLS;
   for (const s of scenarios) {
     for (const variant of ['good', 'bad'] as const) {
-      const replay = tools === 'v2' ? s.replayV2?.[variant] : s.replay[variant];
+      // PC scenarios have one script: the `pc` tools have no v1/v2 split.
+      const replay = tools === 'v2' && s.suite === 'mc' ? s.replayV2?.[variant] : s.replay[variant];
       if (!replay) continue;
       const result = await runScenario(s, {
         mode: 'replay',
@@ -155,6 +167,7 @@ export async function runReplays(
         requireSubscription: false,
         tools,
         mod: options.mod ?? tools,
+        ...(options.withoutCaps ? { withoutCaps: options.withoutCaps } : {}),
       });
       out.push({ scenario: s.id, variant, expected: variant === 'good', result });
     }

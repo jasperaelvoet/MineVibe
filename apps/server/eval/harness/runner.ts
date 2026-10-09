@@ -21,7 +21,12 @@ import type { CardQuestion } from '@minevibe/protocol';
 import { AgentSession } from '../../src/agents/AgentSession.js';
 import { agentEnv } from '../../src/agents/agentEnv.js';
 import type { ResolvedClaude } from '../../src/agents/claudeBinary.js';
-import { type BrainProfile, MCP_TOOL_TIMEOUT_MS, type McToolsVersion } from '../../src/agents/constants.js';
+import {
+  type BrainProfile,
+  DEFAULT_MC_TOOLS,
+  MCP_TOOL_TIMEOUT_MS,
+  type McToolsVersion,
+} from '../../src/agents/constants.js';
 import { summarizeResult } from '../../src/agents/EventRouter.js';
 import { control, newNonce, singleLine } from '../../src/agents/envelope.js';
 import { createInteractionBroker } from '../../src/agents/InteractionBroker.js';
@@ -56,6 +61,8 @@ import {
   pcToolDefinitions,
 } from '../../src/agents/tools/pcServer.js';
 import type { CallToolResult } from '../../src/agents/tools/results.js';
+import { ConsentLedger } from '../../src/agents/world/consent.js';
+import { PROTECTED, refusalOf } from '../../src/agents/world/guard.js';
 import { agentActor } from '../../src/contracts/common.js';
 import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
 import { withSequenceFallback } from '../../src/contracts/SequenceFallback.js';
@@ -123,10 +130,12 @@ export interface RunOptions {
   readonly turnTimeoutMs: number;
   /** Abort the eval when the session's startup assertions fail (live: an API key, no subscription). */
   readonly requireSubscription: boolean;
-  /** The `mc` tool set (default v1). */
+  /** The `mc` tool set (default: production's, v2). */
   readonly tools?: McToolsVersion | undefined;
   /** The simulated mod: v1 (no provenance) or v2 (W1 + the v2 skills). Default: the tool set's. */
   readonly mod?: 'v1' | 'v2' | undefined;
+  /** Caps the simulated v2 mod leaves out (`skill.sequence`: Node's macro runs `do`). */
+  readonly withoutCaps?: readonly string[] | undefined;
   readonly log?: ((line: string) => void) | undefined;
 }
 
@@ -216,10 +225,20 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
   const nonce = newNonce();
   const seated = scenario.suite === 'pc';
   const world: SimWorld = scenario.suite === 'mc' ? scenario.world() : buildWorld();
-  const tools: McToolsVersion = opts.tools ?? 'v1';
-  const skills = new SimSkillApi(world, { mod: opts.mod ?? tools });
+  const tools: McToolsVersion = opts.tools ?? DEFAULT_MC_TOOLS;
+  const skills = new SimSkillApi(world, {
+    mod: opts.mod ?? tools,
+    ...(opts.withoutCaps ? { withoutCaps: opts.withoutCaps } : {}),
+  });
   // What production gives the tools: Node's `sequence` fallback when the mod lacks the cap.
   const toolSkills = withSequenceFallback(skills);
+  // The player's consent (protocol §7.4.3), as AgentManager keeps it: a PROTECTED job end is a refusal the player may
+  // allow; an answered question card whose "Allow" option names it grants the mod's token for the agent's retry.
+  const consents = new ConsentLedger();
+  const offConsent = toolSkills.on('result', (end) => {
+    if (end.agentId !== AGENT_ID || end.status !== 'failed' || end.error?.code !== PROTECTED) return;
+    consents.noteRefusal(AGENT_ID, refusalOf(end.result));
+  });
   const jobs = new JobRegistry(() => Math.round((world.clock * 1000) / TPS));
   const pc = new ScriptedPc();
   const metrics = new StreamMetrics();
@@ -282,6 +301,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     taskReported: () => {},
     jobs,
     body: () => null,
+    takeConsent: () => consents.take(AGENT_ID),
+    hasConsent: () => consents.active(AGENT_ID) !== null,
+    noteRefusal: (refusal) => consents.noteRefusal(AGENT_ID, refusal),
   };
   const plans = new PlanCapture([home, HOME]);
   // PC tools V2: the batch book is fed from the stream (as AgentBrain does), background jobs notify like the brain's
@@ -331,7 +353,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
           tool: `mcp__${server}__${d.name}`,
           input: args,
           isError: res.isError === true,
-          text: clip(firstText(res), 300),
+          // Long enough for a whole observe scene or a failure with its `next:` (checks read it; runs never save it).
+          text: clip(firstText(res), 3_000),
           turn,
         });
         return res;
@@ -403,6 +426,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         speech.push(q.question);
       }
       asked.push({ questions: card.questions, answers, turn });
+      const verdict = consents.fromCard(AGENT_ID, card, answers);
+      if (verdict.kind === 'granted') metrics.transcript.push('    ! consent granted');
       metrics.transcript.push(
         `    ? ${clip(
           Object.entries(answers)
@@ -600,6 +625,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     error = err instanceof Error ? err.message : String(err);
   }
   const wallMs = Date.now() - t0;
+  offConsent();
   await session.close().catch(() => {});
   if (scenario.suite === 'mc' && scenario.settleTicks) world.advance(world.clock + scenario.settleTicks);
 

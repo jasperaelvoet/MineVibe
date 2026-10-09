@@ -5,9 +5,17 @@
  */
 
 import type { AgentBody, PayloadOf } from '@minevibe/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
 import { type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
+
+// These sessions call the v1 mc tools, the fallback behind MINEVIBE_MC_TOOLS=v1 (v2: toolsV2Runtime.test.ts).
+beforeAll(() => {
+  vi.stubEnv('MINEVIBE_MC_TOOLS', 'v1');
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 let h: Harness | null = null;
 afterEach(async () => {

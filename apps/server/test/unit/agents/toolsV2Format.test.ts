@@ -228,13 +228,17 @@ describe('v2 job results (§5.4, §6.1)', () => {
     expect(r.details).toEqual(["stripped_spruce_log at 6 66 -6 is Jasper's (player-built)"]);
     expect(r.next).toContain('"Allow"');
     expect(r.next).toContain('repeat this exact call');
-    // A right-click or menu click carries no consent: no "Allow" that could never unlock it.
+    // Right-clicks and menu clicks take consent like every other block-changing skill (DEBT, after-v2 eval): the same
+    // "Allow" question. A skill that could not carry one would get no "Allow" that could never unlock it.
     for (const skill of ['use_block', 'menu_click']) {
       const hint = hintFor('PROTECTED', { tool: 'use', skill, what: 'interact 3 66 1' }, ctx) ?? '';
-      expect(hint, skill).not.toContain('Allow');
-      expect(hint, skill).toContain('cannot be allowed through you');
+      expect(hint, skill).toContain('"Allow"');
+      expect(hint, skill).toContain('repeat this exact call');
       expect(hint.length).toBeLessThanOrEqual(160);
     }
+    const other = hintFor('PROTECTED', { tool: 'menu', skill: 'open_menu', what: 'open 3 66 1' }, ctx) ?? '';
+    expect(other).not.toContain('Allow');
+    expect(other).toContain('cannot be allowed through you');
   });
 
   it('every failure code of §8 that has a next step renders one, at most 160 characters', () => {

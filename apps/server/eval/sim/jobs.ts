@@ -21,7 +21,7 @@ import {
   type SmeltRecipe,
   toolOf,
 } from './items.js';
-import { craftTreeJob, gatherJob, protectedIn, sequenceJob } from './v2.js';
+import { craftTreeJob, gatherJob, protectedIn, refuseProtected, sequenceJob } from './v2.js';
 import {
   AIR,
   dist,
@@ -34,6 +34,7 @@ import {
   round1,
   type SimWorld,
   TPS,
+  type Verdict,
   WALK_BPS,
 } from './world.js';
 
@@ -662,7 +663,10 @@ function useBlockJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
     [`${NS}crafting_table`]: 'minecraft:crafting',
     [`${NS}furnace`]: 'minecraft:furnace',
   };
-  const usable = menus[b.id] !== undefined || b.id.endsWith('_door') || b.id.endsWith('_bed');
+  // A potted plant comes out of its pot into the hand (vanilla FlowerPotBlock), the pot stays.
+  const potted = /^minecraft:potted_(.+)$/.exec(b.id)?.[1] ?? null;
+  const usable =
+    menus[b.id] !== undefined || b.id.endsWith('_door') || b.id.endsWith('_bed') || potted !== null;
   return oneShot(
     walkTicks(world.agent.pos, at) + 5,
     () =>
@@ -671,7 +675,13 @@ function useBlockJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
         result: usable ? 'used' : 'nothing happened',
         ...(menus[b.id] ? { menu: menus[b.id] } : {}),
       }),
-    () => (world.agent.pos = world.standSpot(at)),
+    () => {
+      world.agent.pos = world.standSpot(at);
+      if (potted) {
+        world.set(at, `${NS}flower_pot`, b.placedBy, b.structure);
+        world.give(`${NS}${potted}`, 1);
+      }
+    },
   );
 }
 
@@ -994,6 +1004,30 @@ function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
     if (!checked) {
       // BuildJob.precheck: enough building blocks (and torches for a torch ring) for the steps still to do.
       checked = true;
+      if (world.mod === 'v2') {
+        // W1: digging out or building over player-built or Base blocks, or walls, roofs and water inside a zone
+        // even into air (torches only light it), needs the player's consent.
+        const prot: Pos[] = [];
+        let nearest: Verdict | null = null;
+        for (const st of steps) {
+          if (satisfied(st)) continue;
+          const there = world.block(st.at);
+          const changes =
+            st.kind === 'clear' ? there.id !== AIR : there.id !== AIR && world.isReplaceable(st.at);
+          const v = changes
+            ? world.protectedAt(st.at)
+            : st.kind !== 'torch'
+              ? world.zoneCellVerdict(st.at)
+              : null;
+          if (!v) continue;
+          prot.push(st.at);
+          if (!nearest || dist(st.at, world.agent.pos) < dist(nearest.pos, world.agent.pos)) nearest = v;
+        }
+        if (nearest) {
+          result.blueprint = name;
+          return refuseProtected(world, nearest, prot, result, asked(world, args));
+        }
+      }
       const solids = steps.filter((st) => st.kind === 'solid' && !satisfied(st)).length;
       const torches = steps.filter((st) => st.kind === 'torch' && !satisfied(st)).length;
       const haveBlocks = world.count(isBuildMaterial);
@@ -1146,6 +1180,7 @@ function buildV2Logic(world: SimWorld, skill: string, args: Record<string, unkno
     case 'sequence':
       return sequenceJob(args, (s, a) => buildJobLogic(world, s, a));
     case 'dig': {
+      // DigJob checks the whole box first: nothing is dug when any of it is protected.
       const a = args.from as Pos;
       const b = args.to as Pos;
       const min = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: Math.min(a.z, b.z) };
@@ -1153,27 +1188,50 @@ function buildV2Logic(world: SimWorld, skill: string, args: Record<string, unkno
       const prot = protectedIn(world, min, max);
       return prot
         ? oneShot(2, () =>
-            fail(
-              'PROTECTED',
-              `${(prot.protected as { count: number }).count} block(s) in the box were built by ${world.player.name}`,
-              {
-                ...prot,
-                dug: 0,
-              },
-            ),
+            refuseProtected(world, prot.verdict, prot.positions, { dug: 0 }, asked(world, args)),
           )
         : null;
     }
     case 'place': {
+      // Placing replaces only what can be replaced (water, a plant): a protected one of those is refused.
       const at = args.pos as Pos;
-      const prot = protectedIn(world, at, at);
+      const prot = world.isAir(at) ? null : protectedIn(world, at, at);
       return prot
-        ? oneShot(2, () =>
-            fail('PROTECTED', `the block at ${short(at)} was built by ${world.player.name}`, prot),
-          )
+        ? oneShot(2, () => refuseProtected(world, prot.verdict, prot.positions, {}, asked(world, args)))
+        : null;
+    }
+    case 'container': {
+      // `container{take}` from a chest the player placed takes their things: refused (the Base's own chests are the
+      // crew's supply). Putting things in stays allowed.
+      if (args.action !== 'take') return null;
+      const at =
+        (args.pos as Pos | undefined) ??
+        nearestBlock(world, (id) => id === `${NS}chest` || id === `${NS}barrel`, 24) ??
+        null;
+      const v = at ? world.protectedAt(at) : null;
+      return v?.what === 'player-built'
+        ? oneShot(2, () => refuseProtected(world, v, [v.pos], { pos: pos(v.pos) }, asked(world, args)))
+        : null;
+    }
+    case 'use_block': {
+      // Protection.checkInteract: right-clicks that take from or retune a protected flower pot, lectern, cake, ...
+      const at = args.pos as Pos;
+      const id = world.block(at).id;
+      const takesOrTunes =
+        /(^minecraft:(flower_pot|lectern|chiseled_bookshelf|jukebox|decorated_pot|cake|repeater|comparator|daylight_detector|note_block|respawn_anchor)$)|^minecraft:potted_|_candle$|^minecraft:candle$/.test(
+          id,
+        );
+      const v = takesOrTunes ? world.protectedAt(at) : null;
+      return v
+        ? oneShot(2, () => refuseProtected(world, v, [v.pos], { block: id }, asked(world, args)))
         : null;
     }
     default:
       return null;
   }
+}
+
+/** The call set `allow_protected` without a consent the mod accepted (the refusal then says to ask first). */
+function asked(world: SimWorld, args: Record<string, unknown>): boolean {
+  return args.allow_protected === true && world.grant === null;
 }

@@ -80,6 +80,15 @@ class PerceptionLogicTest {
 		assertTrue(groups.stream().anyMatch(g -> g.size() == 2));
 	}
 
+	/** The People line says whether a player is indoors: what an agent checks before calling them safe at night. */
+	@Test
+	void playersAreInsideOrInTheOpen() {
+		assertEquals("in Base, under cover", Scene.shelterWords("Base", true));
+		assertEquals("in Base, in the open", Scene.shelterWords("Base", false));
+		assertEquals("under cover", Scene.shelterWords(null, true));
+		assertEquals("in the open", Scene.shelterWords(null, false));
+	}
+
 	@Test
 	void detailShapesMatchTheProtocol() {
 		JsonObject prot = JsonParser.parseString("""

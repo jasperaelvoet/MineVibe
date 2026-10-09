@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MC_TOOLS } from '../../../src/agents/tools/catalog.js';
 import {
   createMcServer,
@@ -10,6 +10,14 @@ import {
 import { agentActor } from '../../../src/contracts/common.js';
 import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
+
+// This file covers the v1 tool set, the fallback behind MINEVIBE_MC_TOOLS=v1 (the default is v2: toolsV2*.test.ts).
+beforeAll(() => {
+  vi.stubEnv('MINEVIBE_MC_TOOLS', 'v1');
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 type Registered = Record<
   string,

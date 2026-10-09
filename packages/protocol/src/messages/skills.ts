@@ -125,7 +125,8 @@ const BASE_SKILL_ARGS = {
   hunt: z.object({ entity: EntityRef, count: z.number().int().min(1).max(64), radius: Radius.optional() }),
   dig: z.object({ from: BlockPos, to: BlockPos, allow_protected: AllowProtected }),
   place: z.object({ block: ItemId, pos: BlockPos, allow_protected: AllowProtected }),
-  use_block: z.object({ pos: BlockPos }),
+  /** A right-click that takes from or retunes a protected block (a pot, a lectern) can be allowed (W1). */
+  use_block: z.object({ pos: BlockPos, allow_protected: AllowProtected }),
   use_item: z.object({
     item: ItemId.optional(),
     pos: BlockPos.optional(),
@@ -167,10 +168,12 @@ const BASE_SKILL_ARGS = {
   open_menu: z
     .object({ pos: BlockPos.optional(), entity: EntityRef.optional() })
     .refine(exactlyOne(['pos', 'entity']), 'exactly one of pos, entity'),
+  /** A click that takes from the player's chest can be allowed (W1). */
   menu_click: z.object({
     slot: z.number().int().min(-999).max(255),
     button: z.number().int().min(0).max(40),
     type: z.enum(['pickup', 'quick_move', 'swap', 'clone', 'throw', 'quick_craft', 'pickup_all']),
+    allow_protected: AllowProtected,
   }),
   menu_close: z.object({}),
   build: z.object({
@@ -234,6 +237,17 @@ export const SkillArgs = {
 
 /** The validated `args` of skill `S`. */
 export type SkillArgsOf<S extends SkillName> = z.infer<(typeof SkillArgs)[S]>;
+
+/**
+ * W1: the skills whose `args` take `allow_protected`, i.e. whose `PROTECTED` refusal the player can allow (Node then
+ * passes the mod's token as `skill.run.consent`): every skill that changes or takes from protected blocks, the
+ * right-click (`use_block`) and menu click (`menu_click`) included, plus `craft` (its tree's gathering) and
+ * `sequence` (its steps).
+ */
+export const CONSENT_SKILLS: readonly SkillName[] = SKILL_NAMES.filter((skill) => {
+  const schema = SkillArgs[skill] as unknown as { shape?: Record<string, unknown> };
+  return schema.shape !== undefined && Object.hasOwn(schema.shape, 'allow_protected');
+});
 
 /**
  * Job failure codes of the world guard (§7.4.3). `PROTECTED`: the job would break or replace a block of the Base or

@@ -113,7 +113,8 @@ const defaultScript: TurnScript = (text) => {
   if (/MEETING/.test(text)) return [{ say: 'Mined logs today. Next I build a hut. Then more.' }];
   if (/mine/i.test(text))
     return [
-      { tool: { name: 'mcp__mc__mine', input: { block: 'oak_log', count: 3 } } },
+      // The default (v2) mc tools: gather gets an item from nature.
+      { tool: { name: 'mcp__mc__gather', input: { item: 'oak_log', count: 3 } } },
       { say: 'Got 3 oak logs.' },
     ];
   return [{ say: 'Hello Jasper.' }];
@@ -424,19 +425,23 @@ describe('brainless end-to-end (scripted brain)', () => {
     const { runtime, sim, brain } = await start();
     const id = await bootWorld1(sim, runtime, brain);
     sim.skillHandler = (msg) =>
-      msg.skill === 'mine' ? { status: 'done', result: { mined: 3 } } : { status: 'done' };
+      msg.skill === 'collect'
+        ? { status: 'done', result: { item: 'minecraft:oak_log', got: 3, have: 3 } }
+        : { status: 'done' };
 
     const reply = await sim.request('chat.send', { to: 'all', text: '@ada please mine 3 oak logs' });
     expect(reply).toMatchObject({ t: 'ok', echo: 'You → Ada: please mine 3 oak logs' });
 
-    const run = await sim.next('skill.run', (m) => m.skill === 'mine');
-    expect(run).toMatchObject({ agentId: id, args: { block: 'oak_log', count: 3 }, replace: true });
+    const run = await sim.next('skill.run', (m) => m.skill === 'collect');
+    expect(run).toMatchObject({ agentId: id, args: { item: 'oak_log', count: 3 }, replace: true });
     await until(() => brain.tools.length > 0, 'the tool result');
     const tool = brain.tools[0];
     expect(tool?.outcome.kind).toBe('allowed');
-    expect(tool?.text).toBe(`Done: mine oak_log ×3. {"mined":3}\n${SIM_FOOTER}`);
+    // v2 text, ending with the mod's footer (the overworld left out).
+    const footer = `· ${SIM_FOOTER.replace(' overworld', '')}`;
+    expect(tool?.text).toBe(`done: gather oak_log 3/3 | have oak_log 3\n${footer}`);
     // The mod's footer is the only one (protocol §7.3).
-    expect(tool?.text.split(SIM_FOOTER)).toHaveLength(2);
+    expect(tool?.text.split(footer)).toHaveLength(2);
     expect(tool?.text).not.toContain('"footer"');
 
     const say = await sim.next('agent.say', (m) => m.agentId === id && m.text === 'Got 3 oak logs.');
@@ -451,7 +456,7 @@ describe('brainless end-to-end (scripted brain)', () => {
     expect(kinds).toEqual(
       expect.arrayContaining([
         'player:please mine 3 oak logs',
-        'activity:mine: oak_log ×3',
+        'activity:gather: oak_log ×3',
         'agent:Got 3 oak logs.',
       ]),
     );

@@ -47,7 +47,8 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
  * {@code obs.query look_around} (W1): a compact scene the agent can act on, instead of raw block hits. Lines, most
  * important first: where the agent is (and whether that is inside the Base), hazards, natural trees by species with
  * trunk position, distance, compass direction and whether the agent can walk there, what players and agents built
- * nearby, who is around, water, ores and crops, and the lie of the land. {@code brief} stays under
+ * nearby, who is around (players with whether they stand in a protected zone and under a roof), water, ores and crops,
+ * and the lie of the land. {@code brief} stays under
  * {@value #BRIEF_CHARS} characters, {@code full} under {@value #FULL_CHARS}; lower lines are dropped first.
  *
  * <p>The result also carries {@code zone} and {@code trees} as data, for programs.
@@ -365,6 +366,14 @@ public final class Scene {
 		}
 	}
 
+	/**
+	 * Where someone stands for shelter: {@code in Base, under cover}, {@code under cover}, {@code in Base, in the open},
+	 * {@code in the open}. {@code zone}: the protected zone they are in, or null; {@code covered}: a block above the head.
+	 */
+	static String shelterWords(final @org.jspecify.annotations.Nullable String zone, final boolean covered) {
+		return (zone != null ? "in " + zone + ", " : "") + (covered ? "under cover" : "in the open");
+	}
+
 	private static String people(final AgentPlayer agent, final boolean full) {
 		ServerLevel level = agent.level();
 		BlockPos here = agent.blockPosition();
@@ -376,7 +385,12 @@ public final class Scene {
 			if (p.level() != level) {
 				parts.add(p.getGameProfile().name() + " (player) in " + p.level().dimension().identifier().getPath());
 			} else {
-				parts.add(p.getGameProfile().name() + " (player) " + Compass.where(here, p.blockPosition()) + (full ? " at " + Compass.xyz(p.blockPosition()) : ""));
+				// Whether the player is indoors (in the Base, under a roof): what "keep me safe" at night checks.
+				BlockPos feet = p.blockPosition();
+				Zones.Zone in = Zones.at(level, feet);
+				boolean covered = level.getHeight(Heightmap.Types.MOTION_BLOCKING, feet.getX(), feet.getZ()) > feet.getY() + 1;
+				parts.add(p.getGameProfile().name() + " (player) " + Compass.where(here, feet) + (full ? " at " + Compass.xyz(feet) : "")
+					+ ", " + shelterWords(in == null ? null : in.name(), covered));
 			}
 		}
 		for (AgentPlayer a : AgentService.get(level.getServer()).agents()) {

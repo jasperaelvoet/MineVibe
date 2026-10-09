@@ -9,13 +9,16 @@
  *   (-6, 64, 16) (5), and oak E on top of a stone pillar at (-20, 70, -2) (5 logs, unreachable). A single
  *   `collect oak_log ×10` from Ada's home reaches 10 (C, then B; the miner searches 24 blocks around where it stands).
  * - A stone outcrop at x 16..18, z -3..3, y 64..67 with iron ore (4) and coal ore (3) on its exposed west face.
+ * - The Base (W1, read by the v2 mod only): the house's box plus the mod's 2-block margin, x 1..11, y 61..69, z 1..11,
+ *   Jasper's. The house stands where the starter office would: the shelter Jasper already has. Its blocks stay
+ *   player-built, so the scene names both ("Base 3m SE", "Jasper's build (… blocks) 4m SE").
  *
  * The house logs are the nearest logs to spawn: `mine #minecraft:logs` (or `collect` of the logs tag) takes them first.
  */
 
 import type { IdleMode } from '@minevibe/protocol';
 import { NS } from './items.js';
-import { type Box, type Pos, SimWorld } from './world.js';
+import { type Box, type Pos, SimWorld, type Zone } from './world.js';
 
 export const HOUSE = 'house';
 export const SPAWN: Pos = { x: 0, y: 64, z: 0 };
@@ -26,6 +29,12 @@ export const HOUSE_TABLE: Pos = { x: 5, y: 64, z: 8 };
 export const HOUSE_FURNACE: Pos = { x: 8, y: 64, z: 8 };
 export const HOUSE_BED: Pos = { x: 8, y: 64, z: 5 };
 export const HOUSE_INTERIOR: Box = { min: { x: 4, y: 64, z: 4 }, max: { x: 8, y: 66, z: 8 } };
+/** The Base zone: the house (x 3..9, y 63..67, z 3..9) plus the mod's 2-block margin (`Zones.BASE_MARGIN`). */
+export const BASE_ZONE: Zone = {
+  name: 'Base',
+  box: { min: { x: 1, y: 61, z: 1 }, max: { x: 11, y: 69, z: 11 } },
+  owner: null,
+};
 /** What Jasper keeps in his chest. */
 export const CHEST_ITEMS: readonly (readonly [string, number])[] = [
   [`${NS}bread`, 6],
@@ -78,6 +87,7 @@ function buildHouse(w: SimWorld): void {
     new Map(CHEST_ITEMS.map(([i, c]) => [i, c])),
   );
   w.shelters.push(HOUSE_INTERIOR);
+  w.zones.push(BASE_ZONE);
 }
 
 function buildTree(w: SimWorld, t: TreeSpec): void {

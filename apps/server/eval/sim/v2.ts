@@ -1,9 +1,11 @@
 /**
  * The simulated mod with world awareness (W1) and the v2 skill additions (docs/design/tools-v2-mc.md M1-M8), for the
- * eval of the v2 tools: `hello.caps`, natural-only gathering (`collect` / `mine` never take player-built blocks;
- * nothing natural in reach is `NO_NATURAL_SOURCE` with the candidates seen), `collect{near, make_tools}`, the craft
- * tree (`craft{tree, gather_missing}`, `recipe{tree}`), `sequence`, the nearest container, "give all", `PROTECTED`
- * for boxes and blocks a player built, and `find` with provenance. Result keys follow the mod's.
+ * eval of the v2 tools: `hello.caps`, natural-only gathering (`collect` / `mine` never take player-built blocks or
+ * the Base; nothing natural in reach is `NO_NATURAL_SOURCE` with the candidates seen), `collect{near, make_tools}`,
+ * the craft tree (`craft{tree, gather_missing}`, `recipe{tree}`), `sequence`, the nearest container, "give all",
+ * `PROTECTED` for what a player built and for the Base zone (with the mod's consent token), and `find` with
+ * provenance. Result keys and failure messages follow the mod's (`SkillJob.refuseProtected`, `noNaturalSource`,
+ * `Observations.find`); the scene of `look_around` is scene.ts.
  *
  * Simplifications: no loose items or animals to gather (this world has none), whole trees are felled as their
  * trunks, and tools are made from what is carried (one level of crafting).
@@ -24,6 +26,7 @@ import {
   TAGS,
   toolOf,
 } from './items.js';
+import { blocksApart, compassDir } from './scene.js';
 import {
   AIR,
   dist,
@@ -36,6 +39,8 @@ import {
   round1,
   type SimWorld,
   TPS,
+  type Verdict,
+  verdictHint,
   WALK_BPS,
 } from './world.js';
 
@@ -43,15 +48,6 @@ import {
 export const SIM_V2_CAPS: readonly string[] = Object.values(MOD_CAPS);
 
 const RADIUS = 48;
-const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
-
-function dir(from: Pos, to: Pos): string {
-  const dx = to.x - from.x;
-  const dz = to.z - from.z;
-  if (Math.abs(dx) < 1 && Math.abs(dz) < 1) return to.y > from.y ? 'above' : to.y < from.y ? 'below' : 'here';
-  const angle = (Math.atan2(dx, -dz) * 180) / Math.PI;
-  return COMPASS[Math.round((((angle % 360) + 360) % 360) / 45) % 8] ?? 'here';
-}
 
 function pos(p: Pos): { x: number; y: number; z: number } {
   return { x: p.x, y: p.y, z: p.z };
@@ -135,11 +131,64 @@ interface Candidate {
   pos: Pos;
   block: string;
   why: 'unreachable' | 'too_far' | 'protected' | 'not_natural';
+  owner?: string | undefined;
+}
+
+/** The mod's `Miner.MAX_CANDIDATES`: at most 8 candidates, 3 of each kind, nearest first. */
+const MAX_CANDIDATES = 8;
+
+/** The mod's `Sources.Candidate.describe`: `oak tree 9m W at 3 70 -2 (unreachable)`. */
+function describeCandidate(c: Candidate, from: Pos): string {
+  const reason =
+    c.why === 'unreachable'
+      ? 'unreachable'
+      : c.why === 'too_far'
+        ? 'out of range'
+        : c.why === 'protected'
+          ? c.owner
+            ? `${c.owner}'s, not touched`
+            : 'protected, not touched'
+          : 'not a natural tree';
+  return `${c.block} ${blocksApart(from, c.pos)}m ${compassDir(from, c.pos)} at ${c.pos.x} ${c.pos.y} ${c.pos.z} (${reason})`;
+}
+
+/**
+ * The mod's `SkillJob.refuseProtected`: `PROTECTED` with `result.protected` (the nearest refused block, whose it is,
+ * how many, the consent token for all of them, the teaching line) and the mod's message. `allowAsked`: the call set
+ * `allow_protected` without a valid consent.
+ */
+export function refuseProtected(
+  world: SimWorld,
+  v: Verdict,
+  all: readonly Pos[],
+  extra: Record<string, unknown> = {},
+  allowAsked = false,
+): { end: JobEndSpec } {
+  const positions = [...all];
+  if (!positions.some((q) => posKey(q) === posKey(v.pos))) positions.push(v.pos);
+  const token = world.offerConsent(positions);
+  const detail: Record<string, unknown> = {
+    pos: pos(v.pos),
+    what: v.what,
+    owner: v.owner,
+    block: v.block,
+    ...(v.zone ? { zone: v.zone } : {}),
+    count: positions.length,
+    ...(token ? { consentId: token } : {}),
+    hint: verdictHint(v),
+  };
+  const more = positions.length > 1 ? `, and ${positions.length - 1} more` : '';
+  const where = `${shortId(v.block)} at ${v.pos.x} ${v.pos.y} ${v.pos.z}`;
+  const tail = allowAsked
+    ? ` allow_protected only works once ${v.owner} has agreed: ask ${v.owner} first.`
+    : ` Nothing was changed. Ask ${v.owner}; only if they agree, retry with allow_protected.`;
+  return fail('PROTECTED', `${verdictHint(v)} (${where}${more}).${tail}`, { ...extra, protected: detail });
 }
 
 /**
  * `collect{item, count, radius?, near?, make_tools?}` (W1 + M2): natural sources only, whole trees, tools made from
- * what is carried, `NO_NATURAL_SOURCE` with the candidates seen when nothing natural is in reach.
+ * what is carried. Nothing natural in reach is `NO_NATURAL_SOURCE` with the candidates seen (unreachable, out of
+ * range, protected), in the mod's words; only protected blocks of a non-log kind is `PROTECTED` (`shortOfSources`).
  */
 export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill = 'collect'): JobLogic {
   const ref = normId(String(args.item ?? args.block));
@@ -151,11 +200,15 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
   const sources = isMine
     ? (sourcesOf(ref) ?? ((id: string) => matches(ref, id) && !buildingVariant(id)))
     : sourcesOf(ref);
+  // `Sources.treeMode`: every kind asked for is a natural log, so the job works on whole trees.
+  const kinds = ref.startsWith('#') ? (TAGS[ref.slice(1)] ?? []).filter((id) => !buildingVariant(id)) : [ref];
+  const treeMode = sources !== null && kinds.length > 0 && kinds.every((id) => id.endsWith('_log'));
   const match = (id: string) => matches(ref, id) && (!ref.startsWith('#') || !buildingVariant(id));
   const start = world.count(match);
   const before = new Map(world.agent.inventory);
   const skip = new Set<string>();
   const candidates = new Map<string, Candidate>();
+  const protectedSeen: Verdict[] = [];
   const used = new Map<string, { kind: string; what: string; pos: Pos; n: number }>();
   const toolsMade: string[] = [];
   let mined = 0;
@@ -170,27 +223,92 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
     ...(toolsMade.length > 0 ? { tools_made: toolsMade } : {}),
     items: gained(world, before),
   });
-  const noNatural = (): { end: JobEndSpec } => {
+  const noteProtected = (v: Verdict) => {
+    const k = posKey(v.pos);
+    if (candidates.has(k)) return;
+    protectedSeen.push(v);
+    candidates.set(k, { pos: v.pos, block: shortId(v.block), why: 'protected', owner: v.owner });
+  };
+  /** `Miner.candidates`: what was rejected, what was protected, and the nearest sources beyond the radius. */
+  const candidateList = (): Candidate[] => {
     const from = near ?? world.agent.pos;
-    const list = [...candidates.values()]
-      .sort((a, b) => dist(a.pos, from) - dist(b.pos, from))
-      .slice(0, 8)
-      .map((c) => ({
-        pos: pos(c.pos),
-        block: c.block,
-        distance: Math.round(dist(c.pos, world.agent.pos)),
-        dir: dir(world.agent.pos, c.pos),
-        why: c.why,
-        ...(c.why === 'protected' ? { owner: world.player.name } : {}),
-      }));
+    const list = [...candidates.values()];
+    if (sources) {
+      const far = Math.min(64, radius + 40);
+      const beyond = world
+        .scan(from, far, sources)
+        .filter(
+          (c) =>
+            dist(c.pos, from) > radius &&
+            blockSpec(c.block.id).hardness >= 0 &&
+            world.protectedAt(c.pos, { ignoreGrant: true }) === null,
+        )
+        .sort((a, b) => dist(a.pos, from) - dist(b.pos, from));
+      if (treeMode) {
+        const seen = new Set<string>();
+        for (const c of beyond) {
+          const t = c.block.structure;
+          if (!t?.startsWith('tree:') || seen.has(t) || seen.size >= 2) continue;
+          seen.add(t);
+          const base = world
+            .scan(c.pos, 8, (id) => id === c.block.id)
+            .filter((l) => l.block.structure === t)
+            .reduce((lo, l) => (l.pos.y < lo.y ? l.pos : lo), c.pos);
+          list.push({ pos: base, block: `${shortId(c.block.id).replace(/_log$/, '')} tree`, why: 'too_far' });
+        }
+      } else if (beyond[0]) {
+        list.push({ pos: beyond[0].pos, block: shortId(beyond[0].block.id), why: 'too_far' });
+      }
+    }
+    const here = world.agent.pos;
+    list.sort((a, b) => blocksApart(here, a.pos) - blocksApart(here, b.pos));
+    const kept: Candidate[] = [];
+    const perWhy = new Map<string, number>();
+    for (const c of list) {
+      if (kept.length >= MAX_CANDIDATES) break;
+      const n = (perWhy.get(c.why) ?? 0) + 1;
+      perWhy.set(c.why, n);
+      if (n <= 3) kept.push(c);
+    }
+    return kept;
+  };
+  /** `GatherJobs.shortOfSources`: PROTECTED when only protected blocks matched, else NO_NATURAL_SOURCE. */
+  const shortOf = (): { end: JobEndSpec } => {
+    const list = candidateList();
+    const first = protectedSeen.reduce<Verdict | null>(
+      (best, v) => (!best || dist(v.pos, world.agent.pos) < dist(best.pos, world.agent.pos) ? v : best),
+      null,
+    );
+    if (!treeMode && mined === 0 && first && list.every((c) => c.why === 'protected')) {
+      return refuseProtected(
+        world,
+        first,
+        protectedSeen.map((v) => v.pos),
+        report(),
+        args.allow_protected === true && world.grant === null,
+      );
+    }
     const what = shortId(ref);
-    return fail('NO_NATURAL_SOURCE', `no reachable natural ${what} within ${radius} blocks`, {
+    const here = world.agent.pos;
+    const player = world.player.name;
+    const hint = `Don't take anything else instead. Tell ${player} what you found and ask what to do (another place, or permission).`;
+    let msg = `No reachable natural ${what} within ${radius} blocks`;
+    if (list.length > 0) msg += `. Seen: ${list.map((c) => describeCandidate(c, here)).join('; ')}`;
+    msg += `. ${hint}`;
+    return fail('NO_NATURAL_SOURCE', msg, {
       ...report(),
       noNaturalSource: {
         what,
-        radius,
-        candidates: list,
-        hint: `Ask ${world.player.name} where to find natural ${what}, or what to use instead; never take built blocks.`,
+        radius: Math.max(1, Math.min(64, radius)),
+        candidates: list.map((c) => ({
+          pos: pos(c.pos),
+          block: c.block,
+          distance: blocksApart(here, c.pos),
+          dir: compassDir(here, c.pos),
+          why: c.why,
+          ...(c.owner ? { owner: c.owner } : {}),
+        })),
+        hint,
       },
     });
   };
@@ -198,17 +316,11 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
     next(): JobNext {
       if (got() >= count) return done(report());
       if (world.freeSlots() === 0) return fail('INVENTORY_FULL', `no room for more ${ref}`, report());
-      if (!sources) return noNatural();
+      if (!sources) return shortOf();
       const center = near ?? world.agent.pos;
-      const all = world.scan(center, radius, sources).filter((c) => blockSpec(c.block.id).hardness >= 0);
-      for (const c of all) {
-        const k = posKey(c.pos);
-        if (c.block.placedBy === 'player' && !candidates.has(k)) {
-          candidates.set(k, { pos: c.pos, block: shortId(c.block.id), why: 'protected' });
-        }
-      }
-      const natural = all
-        .filter((c) => c.block.placedBy !== 'player' && !skip.has(posKey(c.pos)) && world.exposed(c.pos))
+      const all = world
+        .scan(center, radius, sources)
+        .filter((c) => blockSpec(c.block.id).hardness >= 0)
         // The tree being felled first (bottom-up), then the nearest.
         .sort(
           (a, b) =>
@@ -217,8 +329,18 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
             (a.block.structure === tree && tree !== null ? a.pos.y - b.pos.y : 0) ||
             dist(a.pos, center) - dist(b.pos, center),
         );
-      const target = natural[0];
-      if (!target) return noNatural();
+      let target: (typeof all)[number] | undefined;
+      for (const c of all) {
+        if (skip.has(posKey(c.pos)) || !world.exposed(c.pos)) continue;
+        const v = world.protectedAt(c.pos);
+        if (v) {
+          noteProtected(v);
+          continue;
+        }
+        target = c;
+        break;
+      }
+      if (!target) return shortOf();
       if (world.isUnreachable(target.pos)) {
         skip.add(posKey(target.pos));
         const label = target.block.structure?.startsWith('tree:')
@@ -244,30 +366,31 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
           report(),
         );
       }
-      tree = target.block.structure?.startsWith('tree:') ? target.block.structure : null;
-      const dt = walkTicks(world.agent.pos, target.pos) + Math.round((t.seconds + 0.5) * TPS);
+      const chosen = target;
+      tree = chosen.block.structure?.startsWith('tree:') ? chosen.block.structure : null;
+      const dt = walkTicks(world.agent.pos, chosen.pos) + Math.round((t.seconds + 0.5) * TPS);
       return {
         dt,
         progress: [Math.min(1, Math.max(0, got()) / count), `${Math.max(0, got())}/${count} ${ref}`],
         effect: () => {
-          const now = world.block(target.pos);
+          const now = world.block(chosen.pos);
           if (now.id === AIR || !sources(now.id)) return;
-          world.agent.pos = world.standSpot(target.pos);
-          world.breakBlock(target.pos, skill);
+          world.agent.pos = world.standSpot(chosen.pos);
+          world.breakBlock(chosen.pos, skill);
           mined++;
           const drop = blockSpec(now.id).drop;
           if (drop && world.freeSlots() > 0) {
             world.give(drop, 1);
             world.agentEvent('picked_up', { item: drop, count: 1 });
           }
-          const key = now.structure ?? `${now.id}@${posKey(target.pos)}`;
+          const key = now.structure ?? `${now.id}@${posKey(chosen.pos)}`;
           const kind = now.structure?.startsWith('tree:')
             ? 'tree'
             : now.id.endsWith('_ore')
               ? 'ore'
               : 'stone';
           const what = kind === 'tree' ? shortId(now.id).replace(/_log$/, '') : shortId(now.id);
-          const s = used.get(key) ?? { kind, what, pos: target.pos, n: 0 };
+          const s = used.get(key) ?? { kind, what, pos: chosen.pos, n: 0 };
           s.n++;
           used.set(key, s);
         },
@@ -653,55 +776,55 @@ export function sequenceJob(
   );
 }
 
-/** W1: a box or block a player built is `PROTECTED` (the dig / place refusal). */
-export function protectedIn(world: SimWorld, min: Pos, max: Pos): Record<string, unknown> | null {
-  let first: Pos | null = null;
-  let firstId = '';
-  let n = 0;
+/**
+ * W1: the protected blocks of a box (the dig / place refusal): the nearest one's verdict and every protected position,
+ * or null when nothing in it is protected (or the running job's consent covers it).
+ */
+export function protectedIn(
+  world: SimWorld,
+  min: Pos,
+  max: Pos,
+): { verdict: Verdict; positions: Pos[] } | null {
+  const positions: Pos[] = [];
+  let nearest: Verdict | null = null;
   for (let x = min.x; x <= max.x; x++)
     for (let y = min.y; y <= max.y; y++)
       for (let z = min.z; z <= max.z; z++) {
-        const b = world.block({ x, y, z });
-        if (b.id !== AIR && b.placedBy === 'player') {
-          n++;
-          if (!first) {
-            first = { x, y, z };
-            firstId = b.id;
-          }
-        }
+        const v = world.protectedAt({ x, y, z });
+        if (!v) continue;
+        positions.push(v.pos);
+        if (!nearest || dist(v.pos, world.agent.pos) < dist(nearest.pos, world.agent.pos)) nearest = v;
       }
-  if (!first) return null;
-  return {
-    protected: {
-      pos: pos(first),
-      what: 'player-built',
-      owner: world.player.name,
-      block: firstId,
-      count: n,
-      hint: `${world.player.name} built this: ask before changing it.`,
-    },
-  };
+  return nearest ? { verdict: nearest, positions } : null;
 }
 
-/** `find` with W1 provenance, tree and reachability marks, and the natural / built filter. */
+/**
+ * `find` with W1 provenance (the mod's `Observations.find` for blocks): `provenance` natural / player-built / base /
+ * agent-built with the owner (and the zone), the natural tree a log belongs to, `reachable` for the nearest three
+ * unprotected matches only, and `protectedNote` when any match is protected. `filter` natural keeps natural blocks
+ * (logs: trees only), built keeps placed or protected ones.
+ */
 export function findBlocks(
   world: SimWorld,
   ref: string,
   radius: number,
   limit: number,
   filter: string,
-): Record<string, unknown>[] {
+): { matches: Record<string, unknown>[]; protectedNote?: string } {
   const a = world.agent.pos;
   const isTagged = ref.startsWith('#');
-  return world
+  const isNatural = (m: {
+    pos: Pos;
+    block: { id: string; placedBy: string; structure?: string | undefined };
+  }) =>
+    m.block.placedBy === 'natural' &&
+    world.protectedAt(m.pos, { ignoreGrant: true }) === null &&
+    (!m.block.id.endsWith('_log') || (m.block.structure?.startsWith('tree:') ?? false));
+  let reachChecks = 0;
+  let built = 0;
+  const matchesOut = world
     .scan(a, radius, (id) => matches(ref, id) && (!isTagged || filter !== 'natural' || !buildingVariant(id)))
-    .filter((m) =>
-      filter === 'natural'
-        ? m.block.placedBy !== 'player'
-        : filter === 'built'
-          ? m.block.placedBy === 'player'
-          : true,
-    )
+    .filter((m) => (filter === 'natural' ? isNatural(m) : filter === 'built' ? !isNatural(m) : true))
     .sort((x, y) => dist(x.pos, a) - dist(y.pos, a))
     .slice(0, limit)
     .map((m) => {
@@ -709,15 +832,23 @@ export function findBlocks(
         pos: pos(m.pos),
         block: m.block.id,
         distance: round1(dist(m.pos, a)),
-        dir: dir(a, m.pos),
+        dir: compassDir(a, m.pos),
         exposed: world.exposed(m.pos),
       };
-      if (m.block.placedBy === 'player') {
-        out.provenance = 'player-built';
-        out.owner = world.player.name;
+      const v = world.protectedAt(m.pos, { ignoreGrant: true });
+      if (m.block.placedBy === 'agent') {
+        out.provenance = 'agent-built';
+        out.owner = world.agent.name;
+      } else if (v) {
+        out.provenance = v.what;
+        out.owner = v.owner;
+        if (v.zone) out.zone = v.zone;
+        built++;
       } else {
-        out.provenance = m.block.placedBy === 'agent' ? 'agent-built' : 'natural';
-        const structure = m.block.structure;
+        out.provenance = 'natural';
+      }
+      const structure = m.block.structure;
+      if (m.block.id.endsWith('_log') && !v && m.block.placedBy === 'natural') {
         if (structure?.startsWith('tree:')) {
           const logs = world
             .scan(m.pos, 8, (id) => id === m.block.id)
@@ -728,13 +859,23 @@ export function findBlocks(
             trunk: pos(base),
             logs: logs.length,
           };
+        } else {
+          out.note = 'a log without natural leaves: not a tree';
         }
+      }
+      if (!v && reachChecks++ < 3) {
         out.reachable = world.isUnreachable(m.pos)
           ? 'unreachable'
-          : dist(m.pos, a) > 56
+          : Math.hypot(m.pos.x - a.x, m.pos.z - a.z) > 56
             ? 'far'
             : 'reachable';
       }
       return out;
     });
+  return built > 0
+    ? {
+        matches: matchesOut,
+        protectedNote: `Matches marked player-built or base belong to ${world.player.name}: never break or change them without asking.`,
+      }
+    : { matches: matchesOut };
 }

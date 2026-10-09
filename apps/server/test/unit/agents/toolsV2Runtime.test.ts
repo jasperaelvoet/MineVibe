@@ -8,7 +8,7 @@ import { personaPrompt } from '../../../src/agents/prompts/persona.js';
 import { decideTool, type GateContext } from '../../../src/agents/ToolGate.js';
 import { toolsUpdatedNote } from '../../../src/agents/tools/toolRefs.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
-import { mcRefs, mcToolsVersion } from '../../../src/contracts/mcRefs.js';
+import { DEFAULT_MC_TOOLS, mcRefs, mcToolsVersion } from '../../../src/contracts/mcRefs.js';
 import { SequenceFallbackSkillApi } from '../../../src/contracts/SequenceFallback.js';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
 import { resultText } from '../../helpers/fakeSdk.js';
@@ -188,10 +188,13 @@ describe('v2 tools in the agent runtime', () => {
 });
 
 describe('v2 texts and gate', () => {
-  it('texts name the tool set of the process', () => {
-    expect(mcToolsVersion({})).toBe('v1');
+  it('texts name the tool set of the process (v2 by default, v1 selectable as the fallback)', () => {
+    expect(DEFAULT_MC_TOOLS).toBe('v2');
+    expect(mcToolsVersion({})).toBe('v2');
     expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'V2' })).toBe('v2');
-    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'v3' })).toBe('v1');
+    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: ' v1 ' })).toBe('v1');
+    expect(mcToolsVersion({ MINEVIBE_MC_TOOLS: 'v3' })).toBe('v2');
+    expect(mcRefs()).toBe(mcRefs('v2'));
     expect(mcRefs('v2').reportTaskWith('ev-3')).toBe(
       'mcp__mc__calendar{"action":"report","id":"ev-3","status":"done"}',
     );

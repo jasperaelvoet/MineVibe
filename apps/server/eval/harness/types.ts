@@ -32,7 +32,7 @@ export interface ToolCallRecord {
   readonly tool: string;
   readonly input: Record<string, unknown>;
   readonly isError: boolean;
-  /** The first text block of the result (clipped). */
+  /** The first text block of the result (clipped at 3,000 characters). */
   readonly text: string;
   readonly turn: number;
 }

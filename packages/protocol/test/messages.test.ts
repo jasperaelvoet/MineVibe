@@ -5,6 +5,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import {
   CalendarEvent,
+  CONSENT_SKILLS,
   ConsentToken,
   createMessage,
   directionOf,
@@ -228,20 +229,31 @@ describe('W1: protection and perception', () => {
     };
 
   it('block-changing skills take allow_protected; collect takes replant', () => {
-    for (const skill of [
+    const changers = [
       'mine',
       'collect',
       'dig',
       'place',
+      'use_block',
       'use_item',
       'attack',
       'container',
+      'menu_click',
       'build',
       'farm',
-    ] as const) {
+    ] as const;
+    for (const skill of changers) {
       const shape = (SkillArgs[skill] as unknown as z.ZodObject<z.ZodRawShape>).shape;
       expect(Object.hasOwn(shape, 'allow_protected'), skill).toBe(true);
     }
+    // The consent path covers every skill the mod can refuse PROTECTED, right-clicks and menu clicks included.
+    expect([...CONSENT_SKILLS].sort()).toEqual([...changers, 'craft', 'sequence'].sort());
+    expect(SkillArgs.use_block.parse({ pos: { x: 1, y: 2, z: 3 }, allow_protected: true })).toMatchObject({
+      allow_protected: true,
+    });
+    expect(
+      SkillArgs.menu_click.parse({ slot: 0, button: 0, type: 'quick_move', allow_protected: true }),
+    ).toMatchObject({ allow_protected: true });
     expect(
       SkillArgs.collect.safeParse({ item: 'oak_log', count: 6, replant: true, allow_protected: false })
         .success,

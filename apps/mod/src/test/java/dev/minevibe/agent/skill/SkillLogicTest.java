@@ -108,6 +108,11 @@ class SkillLogicTest {
 			"{\"block\":\"oak_log\",\"count\":3,\"allow_protected\":true}")));
 		assertInstanceOf(dev.minevibe.agent.job.GatherJobs.Collect.class, SkillFactory.create("collect", json(
 			"{\"item\":\"oak_log\",\"count\":3,\"replant\":true}")));
+		// Right-clicks and menu clicks take the same consent (a protected pot, the player's chest).
+		assertInstanceOf(WorldJobs.UseBlock.class, SkillFactory.create("use_block", json(
+			"{\"pos\":{\"x\":1,\"y\":2,\"z\":3},\"allow_protected\":true}")));
+		assertInstanceOf(MenuJobs.MenuClick.class, SkillFactory.create("menu_click", json(
+			"{\"slot\":0,\"button\":0,\"type\":\"quick_move\",\"allow_protected\":true}")));
 		assertTrue(SkillService.allowProtected(json("{\"allow_protected\":true}")));
 		assertTrue(!SkillService.allowProtected(json("{\"allow_protected\":\"true\"}")), "only a real boolean asks");
 		assertTrue(!SkillService.allowProtected(json("{}")));

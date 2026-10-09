@@ -66,6 +66,41 @@ export interface Box {
   readonly max: Pos;
 }
 
+/** A protected zone (the mod's `Zones.Zone`): the Base is the office's box plus a 2-block margin. */
+export interface Zone {
+  readonly name: string;
+  readonly box: Box;
+  /** Whose it is; null means the world's player. */
+  readonly owner: string | null;
+}
+
+/**
+ * Why a block may not be changed (the mod's `Protection.Verdict`): player-built, or inside a protected zone (`base`).
+ * `lead` replaces "That's %s" in the hint (a natural block that holds up a protected one).
+ */
+export interface Verdict {
+  readonly pos: Pos;
+  readonly what: 'player-built' | 'base';
+  readonly owner: string;
+  /** The block id (`minecraft:stripped_spruce_log`). */
+  readonly block: string;
+  readonly zone: string | null;
+  readonly lead?: string | undefined;
+}
+
+/** The mod's `Verdict.hint()`: "That's part of Jasper's build — ask Jasper before changing it." */
+export function verdictHint(v: Verdict): string {
+  const thing =
+    v.what === 'base'
+      ? `part of ${v.owner}'s ${v.zone === null || v.zone === 'Base' ? 'base' : v.zone}`
+      : `part of ${v.owner}'s build`;
+  const head = v.lead ? v.lead.replace('%s', thing) : `That's ${thing}`;
+  return `${head} — ask ${v.owner} before changing it.`;
+}
+
+/** The mod's `Protection.ROOF_SCAN`: how far up a natural block looks for a player's roof. */
+const ROOF_SCAN = 6;
+
 export const AIR = 'minecraft:air';
 const AIR_BLOCK: Block = { id: AIR, placedBy: 'natural' };
 const GRASS: Block = { id: `${NS}grass_block`, placedBy: 'natural' };
@@ -201,6 +236,13 @@ export class SimWorld {
   readonly unreachable: Box[] = [];
   /** Interiors that shelter whoever stands in them (the house). */
   readonly shelters: Box[] = [];
+  /** Protected zones (W1; only the v2 mod reads them): the Base around the house. */
+  readonly zones: Zone[] = [];
+  /** Consent tokens offered with `PROTECTED` refusals (the mod's `Consents`): token → the refused box. */
+  readonly #consentOffers = new Map<string, Box>();
+  #consentSeq = 0;
+  /** The redeemed consent of the running job: it may change protected blocks inside `box`. */
+  grant: { readonly box: Box; readonly jobId: string } | null = null;
   readonly broken: BrokenBlock[] = [];
   readonly placed: { readonly pos: Pos; readonly id: string; readonly at: number }[] = [];
   readonly events: WorldEventLog[] = [];
@@ -336,6 +378,126 @@ export class SimWorld {
 
   isUnreachable(p: Pos): boolean {
     return this.unreachable.some((box) => inBox(p, box));
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // W1: zones, protection, consent (the mod's Zones, Protection and Consents)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** The zone that contains `p`, or null. */
+  zoneAt(p: Pos): Zone | null {
+    return this.zones.find((z) => inBox(p, z.box)) ?? null;
+  }
+
+  /** The nearest zone to `p` (0 inside), or null when there is none. */
+  nearestZone(p: Pos): Zone | null {
+    let best: Zone | null = null;
+    let d = Number.POSITIVE_INFINITY;
+    for (const z of this.zones) {
+      const dz = zoneDistance(z, p);
+      if (dz < d) {
+        d = dz;
+        best = z;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Why the block at `p` may not be changed by the agent, or null (the mod's `Protection.check`): air, a block an agent
+   * placed, a natural block outside zones (unless it is the floor under a player's roof), or a block the running job's
+   * consent covers. Simplification: natural blocks that hold up a protected one sideways are not looked for.
+   */
+  protectedAt(p: Pos, options: { readonly ignoreGrant?: boolean } = {}): Verdict | null {
+    const b = this.block(p);
+    if (b.id === AIR || b.placedBy === 'agent') return null;
+    const zone = this.zoneAt(p);
+    let roof: Verdict | null = null;
+    if (b.placedBy === 'natural' && !zone) {
+      roof = this.#underRoof(p, b.id);
+      if (!roof) return null;
+    }
+    if (!options.ignoreGrant && this.grant && inBox(p, this.grant.box)) return null;
+    if (roof) return roof;
+    if (b.placedBy === 'player') {
+      return { pos: p, what: 'player-built', owner: this.player.name, block: b.id, zone: zone?.name ?? null };
+    }
+    return {
+      pos: p,
+      what: 'base',
+      owner: zone?.owner ?? this.player.name,
+      block: b.id,
+      zone: zone?.name ?? 'Base',
+    };
+  }
+
+  /** The mod's `Protection.underRoof`: the first solid block above, at most 6 up, is the player's. */
+  #underRoof(p: Pos, id: string): Verdict | null {
+    for (let dy = 1; dy <= ROOF_SCAN; dy++) {
+      const q = { x: p.x, y: p.y + dy, z: p.z };
+      const above = this.block(q);
+      if (above.id === AIR || !blockSpec(above.id).solid) continue;
+      if (above.placedBy !== 'player') return null;
+      const what = `${shortId(above.id)} at ${q.x} ${q.y} ${q.z}`;
+      const lead = dy === 1 ? `That holds up %s (${what})` : `That's inside %s, under its roof (${what})`;
+      return { pos: p, what: 'player-built', owner: this.player.name, block: id, zone: null, lead };
+    }
+    return null;
+  }
+
+  /** The mod's `Protection.checkZoneCell`: a wall, roof or water placed into a zone changes it, even into air. */
+  zoneCellVerdict(p: Pos): Verdict | null {
+    const zone = this.zoneAt(p);
+    if (!zone || (this.grant && inBox(p, this.grant.box))) return null;
+    return {
+      pos: p,
+      what: 'base',
+      owner: zone.owner ?? this.player.name,
+      block: this.block(p).id,
+      zone: zone.name,
+      lead: 'Building there changes %s',
+    };
+  }
+
+  /** A consent token for changing `positions` (the mod's `Consents.offer`: 32 hex, single use). */
+  offerConsent(positions: readonly Pos[]): string | null {
+    if (positions.length === 0) return null;
+    const box: Box = {
+      min: {
+        x: Math.min(...positions.map((q) => q.x)),
+        y: Math.min(...positions.map((q) => q.y)),
+        z: Math.min(...positions.map((q) => q.z)),
+      },
+      max: {
+        x: Math.max(...positions.map((q) => q.x)),
+        y: Math.max(...positions.map((q) => q.y)),
+        z: Math.max(...positions.map((q) => q.z)),
+      },
+    };
+    const token = (++this.#consentSeq).toString(16).padStart(32, 'c');
+    this.#consentOffers.set(token, box);
+    return token;
+  }
+
+  /** Takes the box behind `token` once (the mod's `Consents.redeem`), or null for an unknown token. */
+  redeemConsent(token: string): Box | null {
+    const box = this.#consentOffers.get(token) ?? null;
+    this.#consentOffers.delete(token);
+    return box;
+  }
+
+  /** Whether a roof is over `p` (the mod's heightmap test: a block above the head). */
+  covered(p: Pos): boolean {
+    for (let y = p.y + 1; y <= p.y + 32; y++) if (!this.isAir({ x: p.x, y, z: p.z })) return true;
+    return false;
+  }
+
+  /** The footer's zone words (StatusFooter.zone): `in Base`, `12m from Base`, or null without zones. */
+  zoneWords(p: Pos): string | null {
+    const z = this.nearestZone(p);
+    if (!z) return null;
+    if (inBox(p, z.box)) return `in ${z.name}`;
+    return `${Math.round(zoneHorizontalDistance(z, p))}m from ${z.name}`;
   }
 
   isSheltered(p: Pos): boolean {
@@ -649,13 +811,15 @@ export class SimWorld {
     };
   }
 
-  /** The mod's status footer line. */
+  /** The mod's status footer line (the v2 mod names the zone after the position, W1). */
   footer(): string {
     const a = this.agent;
+    const zone = this.mod === 'v2' ? this.zoneWords(a.pos) : null;
     const parts = [
       `HP ${Math.ceil(a.hp)}/${a.maxHp} food ${a.food}`,
       dayAndTime(this.clock),
       `${a.pos.x} ${a.pos.y} ${a.pos.z} overworld`,
+      ...(zone ? [zone] : []),
       this.activity(),
     ];
     if (a.held) parts.push(shortId(a.held));
@@ -668,6 +832,31 @@ export class SimWorld {
     if (job) return job.text.length > 0 ? `${job.skill} ${job.text}` : job.skill;
     return `idle (${this.agent.mode})`;
   }
+}
+
+/** Distance from `p` to the nearest block of the zone (0 inside). */
+export function zoneDistance(z: Zone, p: Pos): number {
+  const dx = Math.max(0, z.box.min.x - p.x, p.x - z.box.max.x);
+  const dy = Math.max(0, z.box.min.y - p.y, p.y - z.box.max.y);
+  const dz = Math.max(0, z.box.min.z - p.z, p.z - z.box.max.z);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/** Horizontal distance to the zone ("12m from Base"). */
+export function zoneHorizontalDistance(z: Zone, p: Pos): number {
+  const dx = Math.max(0, z.box.min.x - p.x, p.x - z.box.max.x);
+  const dz = Math.max(0, z.box.min.z - p.z, p.z - z.box.max.z);
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
+/** BoundingBox.getCenter. */
+export function zoneCenter(z: Zone): Pos {
+  const c = (lo: number, hi: number) => lo + Math.floor((hi - lo + 1) / 2);
+  return {
+    x: c(z.box.min.x, z.box.max.x),
+    y: c(z.box.min.y, z.box.max.y),
+    z: c(z.box.min.z, z.box.max.z),
+  };
 }
 
 const FACES = [

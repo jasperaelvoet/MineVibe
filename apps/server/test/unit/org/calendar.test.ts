@@ -196,9 +196,10 @@ describe('CalendarService: firing', () => {
     const d = h.tasks[0] as TaskDelivery;
     expect(d).toMatchObject({ agentId: 'bram', priority: 'P1', late: false, location: 'farm' });
     const lines = d.text.split('\n');
-    // Only Node's words in the control line; the title, place and task (shared text) are in the envelope.
+    // Only Node's words in the control line; the title, place and task (shared text) are in the envelope. The report
+    // call is named in the default (v2) tool set.
     expect(lines[0]).toBe(
-      `[MV:abcd SCHEDULED] Calendar task [${res.event.id}] due Day 3 06:00; what and where are below. When finished, call mcp__mc__report_task{event_id:"${res.event.id}", status}.`,
+      `[MV:abcd SCHEDULED] Calendar task [${res.event.id}] due Day 3 06:00; what and where are below. When finished, call mcp__mc__calendar{"action":"report","id":"${res.event.id}","status":"done"}.`,
     );
     expect(lines[1]).toMatch(/^<<note author="Jasper \(player\)" kind="calendar"/);
     expect(lines.slice(3, 5)).toEqual(['Farm wheat', 'Location: farm']);
