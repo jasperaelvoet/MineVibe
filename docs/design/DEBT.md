@@ -14,6 +14,35 @@ lint no-op inside worktrees, the monitor stopping strays while `bootAll` runs, a
 booted a real linux-1 from `npm test`; the doubled status footer had already been fixed (Node splits the mod's
 `footer` off, `mcServer.ts` `splitFooter`).
 
+## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
+- **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
+  pays for the PC tools V2 list (31 tools, 19,558 chars, ~4.9k tokens; it was 20 tools, 8,751 chars) on every round
+  trip although the gate denies them all until it sits. That ate most of the mc v2 saving: about 24k prompt tokens
+  per Haiku round trip after v2 against 26k before, where the mc list alone shrank by ~4k tokens. One dark_safe run
+  even called `mcp__pc__wait` while standing in a field. **Fix:** attach the `pc` server only while seated (the SDK's
+  dynamic MCP server update at sit / stand, if it keeps the cache prefix stable enough), or defer the pc tools behind
+  tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8).
+- **"Keep me safe" is still unsolved.** With v2, every `mc.dark_safe` run built a shelter from gathered dirt or
+  planks (71 blocks) instead of sending Jasper into his house next door and guarding: 33 calls and ~1.2M prompt
+  tokens per run (40.7 and 1.0M before); after the `033c096` fixes 22 calls and 613k, but 1/3 passed: gathering takes
+  two to three game hours, the zombie reached Jasper first in one run, and in another Haiku told him "you're sealed
+  in" a shelter he never entered. The eval cannot show W1's scene: `eval/sim/observe.ts` has no `Scene.java`
+  text, so `observe{scene}` renders the house as `logs ×77 nearest 7m SE` with no owner, and the trees without
+  reachability. **Fix:** port `Scene.lookAround`'s lines (zone, trees, buildings with owners, people) into the
+  simulated mod so the eval measures W1's perception, then re-run dark_safe; if Haiku still builds, give the night
+  case a composite or a hint (`set_mode guard` + "tell the player to get inside").
+- **`do` with one step fails input validation.** The schema requires 2-8 steps; Haiku sent
+  `do{steps:[{tool:"goto",...}]}` once and got an MCP `too_small` error. Accept one step (run it as that tool).
+- **The NEEDS_TOOL hint suggests a craft that cannot work.** It says `craft{"item":"wooden_pickaxe"}`; with no wood
+  carried that fails `MISSING_INGREDIENTS` (dark_safe run 3). With `craft.tree` it should say
+  `craft{"item":"wooden_pickaxe","gather_missing":true}`.
+- **Two turns per long composite.** `gather`/`craft`/`do` answer `running` after 20 s and the agent ends its turn,
+  so the incident and the iron task take a second (cheap, one round trip) turn for the `[JOB DONE]` report: 2 turns
+  per run against 1.7-2.3 before. By design (tools-v2-mc.md §7); a longer first wait would trade turns for latency.
+- **The v1/v2 split of the gain is unmeasured.** The after-v2 run used the v2 tools on the simulated W1 + v2 mod;
+  a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. Production still defaults to
+  v1 (`MINEVIBE_MC_TOOLS`); the §14 flip gates call for N=5 runs per scenario and `eval:world -- --tools v2`.
+
 ## Found in the live acceptance run (2026-10-09)
 - **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to
   18 blocks away on seeds `minevibe-e2e` and `42`, from inside the office and again from the porch outside the door;

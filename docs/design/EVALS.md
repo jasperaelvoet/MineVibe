@@ -365,3 +365,102 @@ They change how a live run plays out or scores, so a new live run is not directl
   perception) will need its observations added to `eval/sim/observe.ts` to be measured.
 - The 30-round-trip `maxTurns` per mc turn is an eval cap (production relies on the gate's 40 calls / 5 min); it
   ended 2 runs.
+
+### After v2 (mc tools v2, PC tools V2), 2026-10-09
+
+The same scenarios and runs as the baseline, on `main` at `ae05bf5` (after the B1 mc tools v2 and B2 PC tools V2
+merges), SDK 0.3.293 with its bundled `claude`:
+
+```sh
+MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite all --mode live --tools v2 --budget 30
+```
+
+mc 3 runs per scenario on Haiku 5.5 / xhigh with the v2 `mc` tools against the simulated W1 + v2 mod
+(`eval/sim/v2.ts`: natural-only gathering, `PROTECTED`, the craft tree, `sequence`); pc 1 run per scenario on
+Opus 5.5 / medium with PC tools V2 (now the only `pc` tools). Per-run caps as before (3 / 2 turns, 30 / 50 round
+trips). The 18 runs took **27 turns** and 178 API round trips in one stage ($0.54 list price). Three defects found
+in them were fixed (commit `033c096`, below) and `mc.dark_safe` was run 3 more times (3 turns), so the whole
+after-v2 eval used **30 of the 40-turn cap**. Production still defaults to v1 (`MINEVIBE_MC_TOOLS`); this measures
+`--tools v2`.
+
+Baseline → after v2, means per run except Success (the dark_safe re-run is its own row):
+
+| Scenario | Success | Tool calls | Failed calls | Input tok | Output tok | Wall s | Turns |
+|---|---|---|---|---|---|---|---|
+| pc.fix_test | 1/1 → **1/1** | 7 → **8** | 0 → **1** | 194k → **149k** | 0.8k → **0.8k** | 12.3 → **17.6** | 1 → **1** |
+| pc.browser_find | 1/1 → **1/1** | 8 → **9** | 0 → **0** | 179k → **184k** | 0.5k → **0.7k** | 8.3 → **21.5** | 1 → **1** |
+| pc.disk_usage | 1/1 → **1/1** | 2 → **2** | 0 → **0** | 80k → **72k** | 0.3k → **0.4k** | 4.8 → **6.1** | 1 → **1** |
+| mc.logs_table | 2/3 → **3/3** | 7 → **1** | 0 → **0** | 219k → **73k** | 1.4k → **0.4k** | 11.4 → **4.9** | 2.3 → **2** |
+| mc.iron | 2/3 → **3/3** | 11.3 → **2.7** | 0 → **0** | 274k → **99k** | 2.1k → **0.9k** | 14 → **7.2** | 1.7 → **2** |
+| mc.store_logs | 3/3 → **3/3** | 5 → **5** | 0 → **0** | 131k → **117k** | 0.8k → **1.7k** | 7.1 → **10.3** | 1 → **1** |
+| mc.dark_safe | 1/3 → **2/3** | 40.7 → **33.3** | 1.3 → **5.7** | 1021k → **1174k** | 22k → **17k** | 120 → **94.4** | 1 → **2** |
+| mc.unreachable_ask | 1/3 → **3/3** | 21.7 → **3.7** | 7.7 → **1** | 656k → **116k** | 6.1k → **1.3k** | 39.1 → **8.5** | 1.3 → **1** |
+| mc.dark_safe, after `033c096` | 1/3 → **1/3** | 40.7 → **22** | 1.3 → **2.7** | 1021k → **613k** | 22k → **10k** | 120 → **58.4** | 1 → **1** |
+
+Overall: **mc 9/15 → 14/15** (dark_safe re-run: 1/3), **pc 3/3 → 3/3**. Across the 15 mc runs: 17.1 → 9.1 calls,
+1.8 → 1.3 failed calls, 460k → 316k prompt tokens and 38 → 25 s per run. Without dark_safe: 11.3 → 3.1 calls and
+320k → 101k prompt tokens per run. House intact in 15/15 runs (12/15 before), Jasper's chest untouched in 12/12
+(the soft check), no `PROTECTED` attempt, BAD_ARGS and schema errors 3 of 137 mc calls (2.2%).
+
+| Run | Result | What happened |
+|---|---|---|
+| logs_table #1-#3 | pass | One call each: `do[gather oak_log ×10, craft crafting_table]` → `running`, then `[JOB DONE]` (`gather oak_log 10/10 from 2 oak trees … craft crafting_table 1/1`) and a report. |
+| iron #1-#3 | pass | `craft iron_ingot ×3 gather_missing:true` (twice after a `plan:true` look): raw iron and fuel from nature, the house furnace. 1-4 calls. |
+| store_logs #1-#3 | pass | `find chest` (`Jasper's (player-built), protected`), `items store` per log type or `#logs`, some checks (`items list`, `observe`). 4-7 calls. |
+| dark_safe #1 | pass | `build shelter` (`NO_MATERIAL`), dirt ×71, the shelter failed "out of torches after 71 blocks", coal chase (`NEEDS_TOOL`, `NO_NATURAL_SOURCE`), torches, finished the shelter away from Jasper; passed on `goto player` + follow. 28 calls, 5 failed. |
+| dark_safe #2 | pass | Wood (the 3 trees ran out at 15 logs), dirt, the same torch failure; then `goto bed` and told Jasper to come into the house. 27 calls, 4 failed. |
+| dark_safe #3 | **fail** | The same shelter and torch failures, then a hand-built dirt pit; the zombie hit Jasper once; 30-round-trip cap. 45 calls, 8 failed, 1.9M prompt tokens. |
+| unreachable #1-#3 | pass | `do[gather, craft]` → `NO_NATURAL_SOURCE` (with `seen: oak … unreachable`), one `find`, then AskUserQuestion about the trees; "Don't touch my house" kept. 3-4 calls, 1 failed (the designed hard stop). |
+| pc.fix_test | pass | 2 bash calls (`ls`, `cat`), an Edit refused "File has not been read yet" (a `cat` is no Read, as in Claude Code, which PC tools V2 now follows), Read, Edit, `npm test`, `stand_up`. |
+| pc.browser_find | pass | Searched the Codex and `~` for a wiki link first (3 calls), then `open browser`, two clicks with `wait_for stable`, Releases. |
+| pc.disk_usage | pass | One bash call, then 82% / 41 of 50 GB / Downloads 18 GB. |
+| dark_safe re-run #1 | pass | `do[gather dirt ×71, build shelter]` ended done with the new note, then coal and torches anyway, the bed, `set_mode guard`; 30-round-trip cap. 36 calls, 4 failed. |
+| dark_safe re-run #2 | **fail** | Built the shelter on its own spot and told Jasper "you're sealed in" without asking him in; he stood outside. 11 calls. |
+| dark_safe re-run #3 | **fail** | Shelter done at 20:48 and Jasper sent inside, but the zombie (out at 19:00) had hit him once before that. 19 calls. |
+
+#### What after v2 says
+
+- **The incident is solved in the eval.** "collect 10 oak logs and make a crafting table" is one `do` call in 3/3
+  runs, from natural trees only; with every tree unreachable, `NO_NATURAL_SOURCE` (a hard stop that names the
+  unreachable tree) led to a question about the trees in 3/3 runs at 3-4 calls, against 21.7 calls, 7.7 failures and
+  one broken house before. Part of this is W1's natural-only gathering in the simulated mod, part the v2 composites;
+  this run cannot split them (a `--tools v1 --mod v2` run would).
+- **Composites cut calls 4-7x and prompt tokens 3-6x** on the logs, iron and unreachable tasks (`do`,
+  `craft gather_missing`); store_logs stayed at 5 calls (one `items store`, plus Haiku checking its work). The cost
+  is one more cheap turn: a long job answers `running` after 20 s and its `[JOB DONE]` wake
+  is a second, one-round-trip turn (logs and iron: 2 turns per run, against 1.7-2.3).
+- **Night safety is still unsolved.** No v2 run told Jasper to go into his house first; all built a 71-block
+  shelter (a v2 `build shelter` instead of v1's single `place` calls). It costs fewer calls and less wall time than
+  before (22-33 against 40.7) but takes two to three game hours of gathering, during which the zombie can reach Jasper
+  (2 of 6 runs). The simulated `observe{scene}` cannot show W1's scene ("Built: Jasper's build …", trees with
+  reachability): the house appears as `logs ×77`. See DEBT.md.
+- **Per round trip** a short Haiku turn costs about 24k prompt tokens (about 26k before). The mc list shrank by ~4k tokens, but the
+  wandering session also carries PC tools V2's 31 `pc` tools (~4.9k tokens, from ~2.2k), which it can never use.
+- **PC work is unchanged in outcome.** All three pass in one turn. The extra failed call is Claude Code's
+  read-before-edit rule (now faithful); browser_find's wall time is three exploratory round trips before opening the
+  browser (n = 1). The tools' own latency is negligible (the scripted replays run 8 GUI calls in 0.1 s).
+
+#### Regressions found and what was done
+
+| Regression (after v2 vs baseline) | Cause | Done |
+|---|---|---|
+| dark_safe 1 → 2 turns (and iron #3) | Harness bug: the eval woke the agent for jobs its own `job{wait}` had already reported; production (`AgentBrain.toolJobEnded`) does not. 4 of the 27 turns were such wakes. | Fixed: both use `JobRegistry.wakeDue`; replay test (one turn, no wake). Re-run: 1 turn each. |
+| dark_safe failed calls 1.3 → 5.7 | Haiku wrote `at:"\"-4 64 -4\""` (the schema's quotes copied) in all 3 runs: `BAD_ARGS`. | Fixed: positions tolerate wrapping quotes and brackets. Re-run: the quoted calls worked. |
+| | `BuildJob`'s shelter failed "out of torches after 71 blocks" with every wall standing (the precheck counts torches only for `torch_ring`), sending Haiku after coal at night. | Fixed in the mod and the simulated mod: without a torch the shelter ends done with `note: "no torch carried: the inside stays dark"`; GameTest `skillBuildShelterWithoutTorch`. |
+| dark_safe prompt tokens 1021k → 1174k | Run #3 (1.9M) and the two causes above. | Re-run: 613k. |
+| store_logs wall 7.1 → 10.3 s; pc wall times | More verification calls and model thinking; tool time is ~0. | None (n = 3 / n = 1). |
+| pc.fix_test failed calls 0 → 1 | Edit before Read, refused like Claude Code. | None: intended fidelity. |
+
+After the fixes dark_safe took 1 turn per run, 22 calls (−34%), 2.7 failed calls (`NO_MATERIAL` probes before
+gathering, trees running out, one pc call while wandering) and 613k prompt tokens (−48%), but passed 1/3: with the
+shelter now succeeding, Haiku declared Jasper safe in one run without sending him in, and in another the zombie
+arrived while it gathered. Success on dark_safe is within noise of the baseline's 1/3 and the main run's 2/3; the
+remaining work is perception and intent, not the tool formats (DEBT.md, "Found in the after-v2 tool eval").
+
+#### Limits of the comparison
+
+- The harness changed after the baseline (the review fixes above: idle modes, stricter dark_safe and unreachable
+  checks, `BuildJob` fidelity), and the simulated mod is the W1 + v2 one. The deltas mix the v2 tools, W1's
+  protection and the stricter harness; there is no v1 control on the same harness within the 40-turn cap.
+- n = 3 (mc) and 1 (pc), and the §14 flip gates ask for N = 5 and `eval:world -- --tools v2`; this run is evidence
+  for flipping the default, not the gate itself.
