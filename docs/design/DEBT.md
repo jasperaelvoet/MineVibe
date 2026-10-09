@@ -19,7 +19,8 @@ gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bri
 "Navigation v2"). Track P1 of 2026-10-09 (tools-v2-mc.md §16.10) made v2 the default and
 fixed the after-v2 leftovers: a one-step `do`, the NEEDS_TOOL hint, the `[Image: source: …]` host paths, consent for
 `use_block` / `menu_click` and for the refused step of Node's `do` macro, and the eval sim's missing W1 scene and
-shapes (also in `worldEval.ts`).
+shapes (also in `worldEval.ts`). The v2 confirmation of 2026-10-09 (EVALS.md "Confirmation of v2") measured "keep me
+safe" after those fixes (the agents now use the house) and scores `eval:world`'s v2 runs on the outcome.
 
 ## Found by navigation v2 (2026-10-09)
 - **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
@@ -70,21 +71,36 @@ shapes (also in `worldEval.ts`).
   per Haiku round trip after v2 against 26k before, where the mc list alone shrank by ~4k tokens. One dark_safe run
   even called `mcp__pc__wait` while standing in a field. **Fix:** attach the `pc` server only while seated (the SDK's
   dynamic MCP server update at sit / stand, if it keeps the cache prefix stable enough), or defer the pc tools behind
-  tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8).
-- **"Keep me safe" is unmeasured since the fixes.** With v2, every `mc.dark_safe` run built a shelter from gathered
-  dirt or planks (71 blocks) instead of sending Jasper into his house next door and guarding (1/3 after `033c096`;
-  in one run Haiku told him "you're sealed in" a shelter he never entered). P1 ported W1's scene into the sim (the
-  house is now `Base … ; Jasper's build`, the People line says whether he is `under cover`), and the primer, tool
-  texts and hints now prefer the shelter that stands and say to check he went in (EVALS.md "After-v2 polish").
-  **Next:** a live `eval:tools -- --suite mc --scenario mc.dark_safe --mode live --runs 3`; if Haiku still builds,
-  give the night case a composite (`set_mode guard` + "ask the player inside" as one call).
+  tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8). Mode profiles
+  gate the `pc` tools while wandering but leave them in the pinned list: in the v2 confirmation the cheapest Haiku
+  round trip was 18.9k tokens (19.0k after v2).
 - **Two turns per long composite.** `gather`/`craft`/`do` answer `running` after 20 s and the agent ends its turn,
   so the incident and the iron task take a second (cheap, one round trip) turn for the `[JOB DONE]` report: 2 turns
-  per run against 1.7-2.3 before. By design (tools-v2-mc.md §7); a longer first wait would trade turns for latency.
-- **The v1/v2 split of the gain is unmeasured.** The after-v2 run used the v2 tools on the simulated W1 + v2 mod;
-  a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. Production defaults to v2
-  since P1, on the after-v2 eval rather than the §14 gates (N=5 runs per scenario and `eval:world`), which are still
-  to run.
+  per run against 1.7-2.3 before (10 of 10 in the v2 confirmation). By design (tools-v2-mc.md §7); a longer first
+  wait would trade turns for latency.
+- **The v1/v2 split of the gain is unmeasured.** The after-v2 and confirmation runs used the v2 tools on the
+  simulated W1 + v2 mod; a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. The
+  N=5 confirmation (mc 24/25, pc 6/6, `eval:world` 3/3 on the outcome) meets the §14 gates it covers (S1 ≤ 3 calls,
+  S2 asks 5/5, no PC regression, no `BAD_ARGS`), but has no v1 control on the same harness and no S4 / S5 as
+  written.
+
+## Found in the v2 confirmation (2026-10-09, docs/design/EVALS.md "Confirmation of v2")
+- **`goto` knows no `base`.** The scene and the primer call the house `Base (Jasper's base) 4m SE` and say to bring
+  the player into it, but `goto{to:"base"}` fails `UNKNOWN_PLACE` (Node's `resolveTarget`; the mod's `Places` has
+  none either), and `office` / `home` mean the agent's own home spot, not the Base. In `mc.dark_safe` Haiku spent most
+  of its 14-35 calls finding the way in: `goto office`, `goto home`, `goto Base` (2 runs), `codex` searches, `find`
+  bed / chest / crafting_table, then walking to the bed. **Fix:** let `goto` take `base` (and the zone's name) to the
+  Base's entrance or the nearest walkable cell inside it, in `targets.ts` and `Places.java`, or have the scene name
+  the entrance's position.
+- **The eval's player does not understand "into the Base".** `SHELTER_WORDS` (`eval/scenarios/mc.ts`) knows inside,
+  indoors, into the / your house, home, shelter and cover, so "let's go into the Base", "come into the Base" and "go
+  in" leave Jasper outside: dark_safe #3 failed on it (it then told him the truth, that he was still in the open) and
+  #5 took 35 calls and the round-trip cap. The vocabulary predates P1 naming the house "Base". Add `(the|your) base`
+  and a bare "go / come in" (keeping the negation and first-person rules), then re-run dark_safe; until then its
+  success rate understates the agent.
+- **`find door` finds nothing next to a door.** In the sim `find{target:"door"}` answered `none` with the house's oak
+  door 6-8 m away (a bare `door` is no block id). Check what the mod answers; map family names (door, bed, log) to their
+  tag, or say that the name is not a block id.
 
 ## Found in track P1 (2026-10-09, tools-v2-mc.md §16.10)
 - **Claude Code names its working directory, a host path.** The preset system prompt's environment section has the
@@ -104,10 +120,9 @@ shapes (also in `worldEval.ts`).
   thread, it seems. Add a GameTest timeout or a watchdog on the server thread so a crash fails the run instead.
 - **`eval:world` runs the v2 tools against a fake mod without the v2 caps.** `EvalWorldSkills` has W1's shapes but
   an empty `hello.caps`, so with v2 (now its default) `craft` has no recipe tree (`MISSING_INGREDIENTS` for the table,
-  then planks by hand) and `do` is Node's macro. Its `lookedBeforeGathering` check predates v2, whose `gather` finds
-  natural sources itself: in the one review run (N = 1) `reachable` and `legacy` failed on that check alone. Give the
-  W1 scenarios the v2 caps (and the fake the craft tree and `sequence`), and score v2 on the outcome (natural oak, the
-  house intact, a card when nothing is reachable) before the §14 gates use it.
+  then planks by hand, in every v2 reachable and legacy run so far) and `do` is Node's macro. Give the W1 scenarios
+  the v2 caps (and the fake the craft tree and `sequence`; `GATHER` in `scoreScenario` then needs `sequence` steps).
+  The scoring half is done: since the v2 confirmation, v2 is scored on the outcome and looking first is a note.
 - **The sim's craft-tree gathering makes no tools.** `craft{stone_pickaxe, gather_missing}` gathers cobblestone
   without a pickaxe in the sim (the mod's makes one): a NEEDS_TOOL replay above the wooden tier fails in the sim only.
 

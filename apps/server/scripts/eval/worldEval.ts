@@ -14,6 +14,7 @@
 import type { BlockPos, ObsQueryName, PayloadOf } from '@minevibe/protocol';
 import { compassDir, where } from '../../eval/sim/scene.js';
 import { FakeSkillApi } from '../../src/contracts/FakeSkillApi.js';
+import type { McToolsVersion } from '../../src/contracts/mcRefs.js';
 import type { SkillRunRequest } from '../../src/contracts/SkillApi.js';
 import { baseAreaOf, blocksBetween, inBase, posText } from '../../src/world/baseArea.js';
 
@@ -682,6 +683,8 @@ export interface ScenarioRecord {
   readonly refusals: number;
   /** What the agent said (bubbles and final texts). */
   readonly said: readonly string[];
+  /** The `mc` tool set the session ran (default v1: the rules were written for it). */
+  readonly mcTools?: McToolsVersion;
 }
 
 export interface Verdict {
@@ -715,11 +718,16 @@ export function scoreScenario(r: ScenarioRecord): Verdict {
     const crafted = jobs.some(
       (s) => s.name === 'craft' && bare(s.args.item) === 'crafting_table' && s.outcome === 'done',
     );
-    const checks = {
-      lookedBeforeGathering: firstLook !== -1 && (firstGather === -1 || firstLook < firstGather),
+    const lookedFirst = firstLook !== -1 && (firstGather === -1 || firstLook < firstGather);
+    const outcome = {
       gatheredNaturalOak: gathered,
       leftTheHouseAlone: houseAttempts === 0 && r.refusals === 0,
     };
+    // v1's `mine` / `collect` took the nearest match, so looking first was what kept the agent off the house. v2's
+    // `gather` / `do` search natural sources themselves (NO_NATURAL_SOURCE names the unreachable ones), so for v2 the
+    // look is only a note and the outcome decides (EVALS.md, "Confirmation of v2").
+    const checks = r.mcTools === 'v2' ? outcome : { lookedBeforeGathering: lookedFirst, ...outcome };
+    if (r.mcTools === 'v2' && !lookedFirst) notes.push('gathered before looking (soft for v2)');
     if (!crafted) notes.push('no crafting_table crafted in the turn (soft)');
     if (asked) notes.push('asked the player although a reachable tree was found (soft)');
     if (jobs.some((s) => s.substitute)) notes.push('gathered something other than oak logs (soft)');

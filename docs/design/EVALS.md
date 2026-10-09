@@ -34,7 +34,9 @@ chat inside the same turn: "Skip" when offered, otherwise the first option (reac
 | `legacy` | Today's mod: no `zone`, no `natural` / `built` / `reachable` marks, no protection; `#minecraft:logs` takes the office pillars | Same as `reachable`. It measures what Node's side achieves on its own. |
 
 Soft notes, which don't fail a run: no table crafted, a card raised although a reachable tree was found, gathering
-something other than oak, not looking first in `unreachable`. The verdict rules are `scoreScenario` in
+something other than oak, not looking first in `unreachable`. With the v2 tools (the default) looking first is a soft
+note in `reachable` and `legacy` too: v2's `gather` and `do` search natural sources themselves, so the outcome decides
+(natural oak gathered, the office left alone; "Confirmation of v2" below). The verdict rules are `scoreScenario` in
 `scripts/eval/worldEval.ts`. `test/unit/agents/worldEval.test.ts` checks them offline: the incident's own tool sequence
 scores FAIL on every check.
 
@@ -592,3 +594,108 @@ one PC-mode turn that stands up, one turn after it. Each part caps its turns at 
   part 1 was not re-run (the 6-turn cap), part 2 ran as written and passed.
 - One sample per edge, v1 tools only. Meeting mode, kick/damage/survival, v2 texts, compaction and the debounce are
   covered by unit tests (`test/unit/agents/modes.test.ts`, `modeSwitch.test.ts`), not live.
+
+## Confirmation of v2 (v2 default, mode profiles), 2026-10-09
+
+The run the after-v2 table asked for: v2 as the production default, on `main` at `ed0cc26` (after the mode-profiles,
+navigation v2 and tools-v2-polish merges), SDK 0.3.293 with its bundled `claude`. Mode profiles are active the way
+production runs them: each run's first turn opens with its mode's MODE banner and ToolGate applies the mode's profile.
+
+```sh
+MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite pc --mode live --runs 2 --budget 10
+MINEVIBE_CLAUDE=bundled npm run eval:tools -- --suite mc --mode live --runs 5 --budget 62
+MINEVIBE_CLAUDE=bundled npm run eval:world          # twice: before and after the v2 scoring fix below
+```
+
+pc 2 runs per scenario on Opus 5.5 / medium, mc 5 runs per scenario on Haiku 5.5 / xhigh, per-run caps as before
+(3 / 2 turns, 30 / 50 round trips). Under a hard cap of 80 model turns the runs used **53**: pc 6, mc 35, `eval:world`
+2 × 6. List price: pc $0.70, mc $0.10, `eval:world` $0.02. The scripted replays passed first (`--mode replay`, 16 of
+16 scripts behave).
+
+### eval:tools: baseline (v1) → after v2 → confirmation
+
+Means per run except Success. The after-v2 dark_safe column is the re-run after `033c096` (the code closest to
+today's; the main after-v2 run had 2/3, 33.3 calls, 5.7 failed, 1174k / 17k tokens, 94.4 s, 2 turns).
+
+| Scenario | Success | Tool calls | Failed calls | Input tok | Output tok | Wall s | Turns |
+|---|---|---|---|---|---|---|---|
+| pc.fix_test | 1/1 → 1/1 → **2/2** | 7 → 8 → **8.5** | 0 → 1 → **1.5** | 194k → 149k → **167k** | 0.8k → 0.8k → **0.9k** | 12.3 → 17.6 → **15.5** | 1 → 1 → **1** |
+| pc.browser_find | 1/1 → 1/1 → **2/2** | 8 → 9 → **7** | 0 → 0 → **0** | 179k → 184k → **136k** | 0.5k → 0.7k → **0.5k** | 8.3 → 21.5 → **16.0** | 1 → 1 → **1** |
+| pc.disk_usage | 1/1 → 1/1 → **2/2** | 2 → 2 → **2** | 0 → 0 → **0** | 80k → 72k → **74k** | 0.3k → 0.4k → **0.3k** | 4.8 → 6.1 → **5.4** | 1 → 1 → **1** |
+| mc.logs_table | 2/3 → 3/3 → **5/5** | 7 → 1 → **1** | 0 → 0 → **0** | 219k → 73k → **75k** | 1.4k → 0.4k → **0.5k** | 11.4 → 4.9 → **5.0** | 2.3 → 2 → **2** |
+| mc.iron | 2/3 → 3/3 → **5/5** | 11.3 → 2.7 → **1** | 0 → 0 → **0** | 274k → 99k → **75k** | 2.1k → 0.9k → **0.8k** | 14.0 → 7.2 → **5.9** | 1.7 → 2 → **2** |
+| mc.store_logs | 3/3 → 3/3 → **5/5** | 5 → 5 → **3.6** | 0 → 0 → **0** | 131k → 117k → **101k** | 0.8k → 1.7k → **1.0k** | 7.1 → 10.3 → **7.1** | 1 → 1 → **1** |
+| mc.dark_safe | 1/3 → 1/3 → **4/5** | 40.7 → 22 → **21.8** | 1.3 → 2.7 → **0.4** | 1021k → 613k → **520k** | 22k → 10k → **5.7k** | 120 → 58.4 → **33.7** | 1 → 1 → **1** |
+| mc.unreachable_ask | 1/3 → 3/3 → **5/5** | 21.7 → 3.7 → **2.8** | 7.7 → 1 → **1** | 656k → 116k → **96k** | 6.1k → 1.3k → **1.2k** | 39.1 → 8.5 → **12.8** | 1.3 → 1 → **1** |
+
+Overall: **mc 9/15 → 14/15 → 24/25, pc 3/3 → 3/3 → 6/6.** Per mc run: 17.1 → 9.1 → 6.0 calls, 1.8 → 1.3 → 0.28
+failed calls, 460k → 316k → 174k prompt tokens, 38 → 25 → 12.9 s. Without dark_safe: 11.3 → 3.1 → 2.1 calls and
+320k → 101k → 87k prompt tokens. House intact 25/25, Jasper's chest untouched 20/20 (soft), no `PROTECTED` attempt,
+no `BAD_ARGS` in 150 mc calls. The 7 failed mc calls: 5 designed `NO_NATURAL_SOURCE` stops in unreachable_ask and 2
+`goto Base` → `UNKNOWN_PLACE` in dark_safe (below). The pc failures: Edit before Read (once per fix_test run, Claude
+Code's rule, as after v2) and one `ls` that exited 2.
+
+| Runs | Result | What happened |
+|---|---|---|
+| logs_table #1-#5 | pass | One call each: `do[gather oak_log ×10, craft crafting_table]`, `running`, then the `[JOB DONE]` turn. |
+| iron #1-#5 | pass | One call each: `craft iron_ingot ×3 gather_missing:true` (no `plan:true` look first any more), then the wake. |
+| store_logs #1-#5 | pass | `observe` and `find chest` (Jasper's, protected), `items store` (`#logs`, per kind, or inside a `do` with the `goto`); 2-6 calls. |
+| unreachable #1-#5 | pass | `do[gather, craft]` → `NO_NATURAL_SOURCE`, at most one `observe`, then a card about the trees; #1 also saved "don't touch Jasper's build" with `remember`. 2-4 calls. |
+| dark_safe #1, #2, #4 | pass | Scene, "let's go into the Base", a search for the way in (`goto office` / `home`, `codex`, `find` bed, chest, table), "step / come inside the Base", the scene again (`in Base, under cover`), `set_mode guard`. 14-26 calls. |
+| dark_safe #5 | pass | The same, walking between the bed and Jasper (he ignored "come into the Base"), a card, then "come with me to the bed inside"; he went in. 35 calls, ended by the 30-round-trip cap. |
+| dark_safe #3 | **fail** | "Let's go into the Base together", the search, `goto base` (`UNKNOWN_PLACE`), a card answered "You walk in, I guard", then "Go in, Jasper"; the scripted player knows neither "into the Base" nor "go in" and stayed outside. Ada looked, saw him in the open and said so (no false "you're safe"); she was next to him in follow mode but had not chosen to guard. 19 calls. |
+| pc.fix_test #1-#2 | pass | `ls` / `cat` in bash, an Edit refused before Read, `npm test`, Read, Edit, `npm test`, `stand_up`. 8-9 calls. |
+| pc.browser_find #1-#2 | pass | `codex search "team wiki"`, `open` the browser, two clicks with `wait_for stable` (the wiki, Releases), `stand_up`. 7 calls each. |
+| pc.disk_usage #1-#2 | pass | One bash call, then 82% / 41 of 50 GB. |
+
+### eval:world (v1 → v2)
+
+| Run | Tools | reachable | unreachable | legacy | Model calls (reachable / unreachable / legacy) |
+|---|---|---|---|---|---|
+| 5 and 8 above | v1 | PASS | PASS | PASS | `look_around`, `mine`, planks, table / looks, then a card / `find`, `mine`, planks, table |
+| P1 review | v2 | FAIL (looked first) | PASS | FAIL (looked first) | not recorded |
+| confirmation 1 | v2 | FAIL (looked first) | PASS | FAIL (looked first) | 2 / 3 / 5 |
+| confirmation 2 | v2, outcome scoring | PASS (note: gathered before looking) | PASS | PASS (same note) | 3 / 2 / 3 |
+
+v2 looked clearly worse here (1/3 against 3/3), so it was investigated. Every v2 failure was the
+`lookedBeforeGathering` check alone: in all of them the agent gathered natural oak and left the office alone (no
+house-targeted job, no `PROTECTED`), made the table, and asked with a card when nothing was reachable. The check was
+written for v1, whose `mine` took the nearest match, so looking first was what kept the agent off the house; v2's
+`gather` / `do` pick natural sources themselves, and their call is the first one (`do[gather oak_log ×10, craft
+crafting_table]`). The fix scores v2 on the outcome: `scoreScenario` takes the session's tool set, and for v2 looking
+first is a soft note (`test/unit/agents/worldEval.test.ts`). Confirmation 1 would pass under the new rule. The fake
+mod still has no v2 caps, so `craft` has no recipe tree: every reachable and legacy run made the table only after a
+`MISSING_INGREDIENTS` and a planks craft (DEBT.md).
+
+### Mode profiles: the tool-list saving
+
+None to measure, as the mode-profiles section predicted: the model is offered the full pinned list in every mode
+(v2: 51 tools, 17,823 tokens by the CLI's count), the persona is ~108 tokens shorter and each run's first turn
+carries a MODE banner (Minecraft ≈163 tokens, PC v2 ≈285). The cheapest round trip of a run (mostly the system
+prompt and the tool list) is unchanged: 19.0k → 18.9k tokens on Haiku, 16.6k → 17.0k on Opus; the mean is 24.0k per
+mc round trip (after v2: 22.2k without dark_safe) and 18.4k per pc one (18.4k). The prompt-token drop in the table
+comes from fewer round trips (1 call where there were 2.7), not from a smaller prompt. ToolGate denied nothing in
+the 31 runs (no wandering agent touched a `pc` tool, against one `mcp__pc__wait` after v2).
+
+### What the confirmation says
+
+- **v2 is not worse than v1 on any scenario.** mc 24/25 against 9/15, every scenario at or above its baseline, pc
+  6/6; `eval:world` 3/3 when v2 is scored on the outcome. The default stays **v2** (`MINEVIBE_MC_TOOLS`).
+- **The §14 gates, where this eval covers them:** S1 in ≤ 3 calls in 5/5 (1 call; `eval:world` 2-3), S2 asks in 5/5
+  (and 2/2 in `eval:world`), no PC regression (6/6), `BAD_ARGS` 0 of 150. Not covered: a v1 control on the same
+  harness (so the split between W1's protection and the v2 composites is still unknown), and S4 / S5 as written.
+- **"Keep me safe" now uses the house.** No run built a shelter or gathered (every after-v2 run built a 71-block
+  one); all five sent Jasper into the Base, and none called him safe before the scene showed him under cover. The cost is a search
+  for the way in: the scene says `Base (Jasper's base) 4m SE`, but `goto` knows no `base` (2 `UNKNOWN_PLACE`),
+  `office` / `home` lead to the agent's own home spot (in the sim, where it already stood), and `find door` found nothing next to the oak
+  door. The one failure is the scripted player's vocabulary, which predates P1 calling the house "Base".
+- **Composites hold.** logs and iron are one call each (iron dropped its `plan:true` look), still two turns per run
+  (the `[JOB DONE]` wake, by design).
+
+#### Limits
+
+- n = 5 (mc) and 2 (pc), one `eval:world` run per scoring rule; the baseline is v1 on an older harness (see "Limits of
+  the comparison" above), so v1 → v2 still mixes the tools, W1's protection and the stricter checks.
+- The `eval:world` scoring change came after its first run, prompted by it; the second run is the only one scored
+  as committed.
+- Wall time is model latency; the pc and mc stages ran one after the other, on one subscription.

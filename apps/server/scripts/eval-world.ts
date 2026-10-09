@@ -200,7 +200,7 @@ async function runScenario(
     manager.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
-  const record: ScenarioRecord = { scenario, steps: skills.steps, cards, refusals, said };
+  const record: ScenarioRecord = { scenario, steps: skills.steps, cards, refusals, said, mcTools };
   return {
     scenario,
     verdict: scoreScenario(record),
