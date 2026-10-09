@@ -107,9 +107,12 @@ export const HANDOFF_NOTE_MAX = 1500;
 export class HandoffNotes {
   readonly #dir: string;
   readonly #queue = new WriteQueue();
+  readonly #redact: (text: string) => string;
 
-  constructor(dir: string) {
+  /** `redact`: the outbound redactor, applied to every note an agent leaves (agents/redact.ts). */
+  constructor(dir: string, options: { readonly redact?: (text: string) => string } = {}) {
     this.#dir = dir;
+    this.#redact = options.redact ?? ((t) => t);
   }
 
   /** File key for a PC id or a Vault mount path. */
@@ -138,7 +141,7 @@ export class HandoffNotes {
     return this.#queue.run(target, async () => {
       const notes = [
         ...(await this.list(target)),
-        { ...note, text: note.text.slice(0, HANDOFF_NOTE_MAX) },
+        { ...note, text: this.#redact(note.text).slice(0, HANDOFF_NOTE_MAX) },
       ].slice(-HANDOFF_KEEP);
       await writeFileAtomic(this.#file(target), `${JSON.stringify({ target, notes }, null, 2)}\n`, {
         mode: 0o600,

@@ -1,7 +1,8 @@
 /**
  * TranscriptStore: each agent's transcript for AgentScreen and the Crew log (`chat.append`, `chat.history`), kept in
- * `worlds/<w>/agents/<id>/chat.jsonl` (one ChatEntry per line). Claude's own transcripts stay under
- * `~/.claude/projects/<cwd>`.
+ * `worlds/<w>/agents/<id>/chat.jsonl` (one ChatEntry per line). One merged history for both of the agent's sessions
+ * (PLAN §6.1, dual sessions): each line carries its session tag (`body`, or `desk` with the PC). Claude's own
+ * transcripts stay under `~/.claude/projects/<cwd>`.
  */
 
 import { readFileSync } from 'node:fs';
@@ -30,18 +31,22 @@ export class TranscriptStore extends TypedEmitter<TranscriptEvents> {
   readonly #now: () => number;
   readonly #writes = new Map<string, Promise<void>>();
   readonly #onError: (err: unknown) => void;
+  readonly #redact: (text: string) => string;
 
   constructor(
     options: {
       fileOf?: (agentId: string) => string | null;
       now?: () => number;
       onError?: (err: unknown) => void;
+      /** Applied to every line that is not the player's own (the outbound redactor). */
+      redact?: (text: string) => string;
     } = {},
   ) {
     super();
     this.#fileOf = options.fileOf ?? (() => null);
     this.#now = options.now ?? Date.now;
     this.#onError = options.onError ?? (() => {});
+    this.#redact = options.redact ?? ((t) => t);
   }
 
   /** Loads an agent's transcript tail from disk (once). */
@@ -107,13 +112,18 @@ export class TranscriptStore extends TypedEmitter<TranscriptEvents> {
     if (text.length === 0) return null;
     const log = this.#log(agentId);
     this.#ensureLoaded(agentId, log);
+    // Agent-authored lines leave the session here: account identifiers are redacted (agents/redact.ts). The player's
+    // own lines and answers stay as typed.
+    const shown = input.kind === 'player' || input.kind === 'answer' ? text : this.#redact(text);
     const entry: ChatEntry = {
       seq: log.nextSeq++,
       at: input.at ?? this.#now(),
       kind: input.kind,
-      text: text.length > TRANSCRIPT_TEXT_MAX ? `${text.slice(0, TRANSCRIPT_TEXT_MAX - 1)}…` : text,
+      text: shown.length > TRANSCRIPT_TEXT_MAX ? `${shown.slice(0, TRANSCRIPT_TEXT_MAX - 1)}…` : shown,
       ...(input.fromAgentId !== undefined ? { fromAgentId: input.fromAgentId } : {}),
       ...(input.cardId !== undefined ? { cardId: input.cardId } : {}),
+      ...(input.session !== undefined ? { session: input.session } : {}),
+      ...(input.session === 'desk' && input.pcId !== undefined ? { pcId: input.pcId } : {}),
     };
     log.entries.push(entry);
     if (log.entries.length > TRANSCRIPT_MEMORY_MAX)

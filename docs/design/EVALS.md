@@ -190,10 +190,14 @@ npm run eval:tools -- --suite mc [--tools v1] [--mod v1]        # v2 by default;
 
 ### What a run is
 
-`eval/harness/runner.ts` builds one agent the way `AgentBrain` does: `buildSessionOptions` (Haiku/xhigh or
-Opus/medium, the preset system prompt with the persona, aliased Bash/Read/Edit/Write/Glob/Grep, no host tools), the
-production `mcToolDefinitions` and `pcToolDefinitions` served by in-process SDK MCP servers with the same options as
-`createMcServer`/`createPcServer`, the `ToolGate` PreToolUse hook and the `InteractionBroker` as `canUseTool`. Only
+`eval/harness/runner.ts` builds one agent session the way `AgentBrain` does (dual sessions, PLAN §6.1): the **mc
+suite runs in a body session** (`buildSessionOptions({kind:'body'})`: Haiku/xhigh, every mc tool, AskUserQuestion, the
+body persona) and the **pc suite in a desk session** (`kind:'desk'`: Opus/medium, the `pc` tools with aliased
+Bash/Read/Edit/Write/Glob/Grep, WebSearch/WebFetch, PC mode's minimal mc set, the desk persona), each with its own
+tool list and no MODE banner, as in production. The tools are the production `mcToolDefinitions` (filtered to
+`sessionMcTools('desk')` for a desk) and `pcToolDefinitions`, served by in-process SDK MCP servers with the same
+options as `createMcServer`/`createPcServer`, behind the `ToolGate` PreToolUse hook (with the session in its context)
+and the `InteractionBroker` as `canUseTool`. Only
 the query factory differs between modes (the SDK, or a scripted model driving the same hook → broker → handler path
 as the CLI). The hosts behind the tools are the simulated backends:
 
@@ -203,8 +207,8 @@ as the CLI). The hosts behind the tools are the simulated backends:
 - **pc**: Ada is seated at `linux-1` and starts with the production kickoff message (`kickoffMessage`) carrying the
   task.
 
-Deliberate differences from production: one agent and no welcome turn; the PC session starts seated (no sit/swap
-turn); WebSearch and WebFetch are denied ("this eval PC is offline"); question and plan cards are answered at once by
+Deliberate differences from production: one agent and no welcome turn; the desk session starts seated (no body sit
+turn before it, and its KICKOFF carries no player lines, memory or Codex digest); WebSearch and WebFetch are denied ("this eval PC is offline"); question and plan cards are answered at once by
 the scenario; every `mc` tool call costs 2 s of game time; `persistSession` is off.
 
 #### Metrics
@@ -521,6 +525,10 @@ v2's `gather` allows), and the fake mod advertises no v2 caps, so `craft` had no
 
 ## Mode profiles (`scripts/tool-tokens.ts`, `test/live/modes.live.ts`)
 
+> **Superseded by "Dual sessions" below (2026-10-09).** This section records the one-session design (every session
+> carried the full list; a MODE banner at each switch; flag-layer model swaps). `test/live/modes.live.ts` was replaced
+> by `test/live/sessions.live.ts`.
+
 **Why.** The idea: while an agent sits at a PC its Minecraft tools should be unavailable, and while it wanders its
 PC tools, switched at the same turn boundary as the model swap (Haiku 5.5 xhigh ⇄ Opus 5.5 medium), so each mode's
 prompt is smaller and more focused. Spike S3b (`spikes/s3b-mode-switch/result.md`) showed that Claude Code 2.1.293
@@ -699,3 +707,77 @@ the 31 runs (no wandering agent touched a `pc` tool, against one `mcp__pc__wait`
 - The `eval:world` scoring change came after its first run, prompted by it; the second run is the only one scored
   as committed.
 - Wall time is model latency; the pc and mc stages ran one after the other, on one subscription.
+
+## Dual sessions (`scripts/tool-tokens.ts`, `test/live/sessions.live.ts`)
+
+**Why.** The mode profiles could not shrink what one conversation is offered (its list is pinned to the first
+request, S3b), so each agent now has two kinds of session (PLAN §6.1): a **body** session (Haiku 5.5 xhigh: the `mc`
+tools, AskUserQuestion) and a **desk** session per PC (Opus 5.5 medium: the `pc` tools with the host aliases,
+WebSearch/WebFetch, AskUserQuestion, PC mode's minimal `mc` set). Each session's list is its own from its first
+request, and nothing is swapped.
+
+### Tool-list size per session, 2026-10-09 (SDK 0.3.293, bundled claude 2.1.293, zero model turns)
+
+`node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts --cli` (now per session: it starts one
+CLI per session and mc tool set with the production options and reads `getContextUsage()`; characters / 4 of the
+rendered definitions in parentheses).
+
+| Tools of each request | v1 (`MINEVIBE_MC_TOOLS=v1`) | v2 (default) |
+|---|---|---|
+| Body session: `mc` | 54 tools: 16,413 (8,263) | 20 tools: 8,034 (4,038) |
+| Body session: built-ins (AskUserQuestion) | not reported as "System tools" (0) | 0 |
+| **Body session, total** | **16,413** | **8,034** (+191 MCP server instructions) |
+| Desk session: `pc` | 31 tools: 9,790 (4,928) | 31 tools: 9,790 (4,928) |
+| Desk session: minimal `mc` | 15 tools: 3,832 (1,933) | 7 tools: 2,744 |
+| Desk session: built-ins (AskUserQuestion, WebSearch, WebFetch) | 1,472 | 1,472 |
+| **Desk session, total** | **15,094** | **14,006** |
+| One session before (every request, every mode) | 26,201 + 1,472 built-ins | 17,823 + 1,472 built-ins |
+
+| Prompt | Body | Desk |
+|---|---|---|
+| Persona (CEO, `systemPrompt.append`) | v1 5,114 chars (≈1,279 tokens), v2 ≈1,222 tokens | v1 4,041 chars (≈1,010), v2 ≈1,016 |
+| System prompt as the CLI counts it (preset + persona) | v1 3,755, v2 3,680 | v1 2,467, v2 2,474 |
+| Banners | Meeting mode only: v1 735 chars (≈184), v2 620 (≈155); Minecraft mode once after a meeting | none |
+
+What the numbers say:
+
+- What was expected: the body ≈ the mc tools plus its one built-in, the desk ≈ the `pc` tools plus the minimal mc set.
+  Against one session's 27.7k (v1) / 19.3k (v2) tool tokens on every request: −11.3k per body request and −12.6k per
+  desk request with v1; −11.3k per body request and −5.3k per desk request with v2.
+- The desk's minimal mc set costs more with v1 (15 tools) than v2's (7 tools, but the `calendar` and `codex` action
+  tools are large).
+- The handoffs cost tokens instead: a KICKOFF at every sit (the PC, the task, the player's lines, memory.md up to 8 KB,
+  the Codex digest, notes, the CLAUDE.md excerpt, how to work the PC) and a short DESK REPORT at every stand. A resumed
+  desk re-reads its transcript from the cache when it is warm (1 h TTL), else uncached.
+
+### Live check, 2026-10-09 (5 turns, v1 tools)
+
+`MINEVIBE_CLAUDE=bundled npx vitest run --config vitest.live.config.ts test/live/sessions.live.ts` in `apps/server`,
+through the real AgentManager and SDK-bundled claude with the contract fakes as the body. Hard cap 5 model turns
+(enforced at each session's input): part 1 four, part 2 one.
+
+| # | Turn | Session | Model | Tool calls (ToolGate) | Wall | Session cost |
+|---|---|---|---|---|---|---|
+| 1 | welcome | body | Haiku | — | 2.2 s | $0.0044 |
+| 2 | sit | body | Haiku | `mc__sit_at_pc` allow | 1.7 s | $0.0050 |
+| 3 | KICKOFF | desk (new) | Opus | `pc__bash` allow, `mc__stand_up` allow | 12.4 s | $0.160 |
+| 4 | DESK REPORT | body | Haiku | — | 1.8 s | $0.0054 (body) |
+| 5 | baseline (part 2) | untitled bare session | Haiku | — | — | — |
+
+- Handoffs ran as designed: the body's sit turn ended, the desk session (its own cwd, Opus/medium) opened with the
+  KICKOFF, stood up, and the body woke with the DESK REPORT on Haiku. No `applyFlagSettings` call anywhere.
+- **Session titles.** The transcripts' entry types (read by type only: they hold the account's e-mail address in the
+  `session_context` attachment): the titled body and desk sessions wrote **0 `ai-title`** entries (2 `custom-title`
+  re-stamps each); the untitled baseline wrote **1 `ai-title`** after its one turn. A fixed `title` suppresses the AI
+  title generation (one background model call on a new session's first message, per the CLI source); the per-turn
+  entries S3b saw are re-stamps of the one title.
+- Cost at list price ≈ $0.18 for part 1, almost all of it the desk's first Opus request (cache write). The throwaway
+  transcripts were deleted afterwards.
+
+#### Limits
+
+- One sample per edge. Kick, damage, survival, PC down, meeting pulls, resumes, the TTL, crashes, cards in both
+  sessions, chat routing, the merged transcript and the redactor are covered by unit tests with the fake SDK
+  (`test/unit/agents/dualSessions.test.ts`, `seats.test.ts`, `modeSwitch.test.ts`, `redact.test.ts`), not live.
+- The tool evals (`npm run eval:tools`) were not re-run live after the switch; their replays pass with the new session
+  options.

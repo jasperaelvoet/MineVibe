@@ -1,6 +1,6 @@
 /**
- * Regressions for the T3 review: slot leaks, turn-boundary ordering, seat epochs, the context guard, startup
- * assertions, shared-text escaping and usage-governor edge cases.
+ * Regressions for the T3 review: slot leaks, turn-boundary ordering (now the handoffs between the body and desk
+ * sessions), seat epochs, startup assertions, shared-text escaping and usage-governor edge cases.
  */
 
 import { readFileSync } from 'node:fs';
@@ -10,8 +10,9 @@ import { isUsageLimitText } from '../../../src/agents/AgentBrain.js';
 import { Digest, EventRouter, type RouterAgent } from '../../../src/agents/EventRouter.js';
 import { UsageGovernor } from '../../../src/agents/UsageGovernor.js';
 import { createHarness, type Harness, MountedPcApi } from '../../helpers/agentHarness.js';
+import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
 import type { FakeQuery } from '../../helpers/fakeSdk.js';
-import { resultText, settle, userText } from '../../helpers/fakeSdk.js';
+import { resultText, settle } from '../../helpers/fakeSdk.js';
 
 let h: Harness | null = null;
 afterEach(async () => {
@@ -59,14 +60,6 @@ async function sit(w: Harness, q: FakeQuery, id: string) {
   return resultText(await calling);
 }
 
-function flagCalls(q: FakeQuery) {
-  return q.calls.filter((c) => c.method === 'applyFlagSettings').map((c) => c.args);
-}
-
-function modeCalls(q: FakeQuery) {
-  return q.calls.filter((c) => c.method === 'setPermissionMode').map((c) => c.args);
-}
-
 describe('brain slots', () => {
   it('a card answered while no slot is free does not leak the slot when the turn ends first', async () => {
     const { w, id, q } = await world();
@@ -97,88 +90,57 @@ describe('brain slots', () => {
 });
 
 describe('turn boundaries', () => {
-  it('a wake that arrives during the swap waits for it and runs together with the kickoff', async () => {
+  it('a wake that arrives during the handoff waits for it and runs in the desk, after the kickoff', async () => {
     const { w, id, q } = await world();
     await wake(w, q, 'fix it');
     expect(await sit(w, q, id)).toMatch(/^Seated at linux-1/);
-    let releaseSwap: () => void = () => {};
-    const swapGate = new Promise<void>((resolve) => {
-      releaseSwap = resolve;
+    // Hold the handoff (it reads the PC's info for the kickoff).
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    const apply = q.applyFlagSettings.bind(q);
-    let swapStarted = false;
-    q.applyFlagSettings = async (settings) => {
-      swapStarted = true;
-      await swapGate;
-      return apply(settings);
-    };
-    const flagsWhenSent: number[] = [];
-    q.onUser = (m) => {
-      if (userText(m).includes('status?')) flagsWhenSent.push(flagCalls(q).length);
+    const info = w.pcs.info.bind(w.pcs);
+    let handoffStarted = false;
+    w.pcs.info = async (pcId) => {
+      handoffStarted = true;
+      await gate;
+      return info(pcId);
     };
     q.result();
-    await w.until(() => swapStarted, 'swap started');
+    await w.until(() => handoffStarted, 'handoff started');
     await w.manager.deliverChat({ to: 'all', text: '@ada status?' });
     await settle(10);
+    // Neither session runs it yet: the body handed over, the desk has no kickoff.
     expect(w.texts(q).some((t) => t.includes('status?'))).toBe(false);
-    releaseSwap();
-    await w.until(() => w.texts(q).some((t) => t.includes('status?')), 'chat turn');
-    const turn = w.texts(q).find((t) => t.includes('status?')) ?? '';
-    expect(turn).toContain('KICKOFF');
-    expect(flagsWhenSent).toEqual([1]);
+    release();
+    await w.until(() => deskQuery(w, id) !== null, 'desk');
+    const d = deskQuery(w, id) as FakeQuery;
+    d.init();
+    await w.until(() => w.texts(d).some((t) => t.includes('status?')), 'chat turn');
+    const turn = w.texts(d).find((t) => t.includes('status?')) ?? '';
+    // One turn: the KICKOFF first, the player's line after it.
+    expect(turn.indexOf('KICKOFF]')).toBeGreaterThan(-1);
+    expect(turn.indexOf('KICKOFF]')).toBeLessThan(turn.indexOf('status?'));
+    expect(w.texts(q).some((t) => t.includes('status?'))).toBe(false);
     expect(w.manager.brain(id)?.model).toBe('opus');
   });
 
-  it('plan-first also applies to a quick re-sit that needs no swap', async () => {
-    const { w, id, q } = await world({ planFirst: true });
-    await wake(w, q, 'refactor');
-    await sit(w, q, id);
-    q.result();
-    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-    expect(modeCalls(q)).toEqual(['plan']);
-    await q.callTool('mcp__mc__stand_up', {});
-    q.result();
-    await w.until(() => w.manager.brain(id)?.fsm.state === 'wandering', 'wandering');
-    expect(modeCalls(q)).toEqual(['plan', 'bypassPermissions']);
-    await wake(w, q, 'one more thing');
-    await sit(w, q, id);
-    q.result();
-    await w.until(() => w.texts(q).filter((t) => t.includes('KICKOFF')).length === 2, 'second kickoff');
-    expect(flagCalls(q)).toHaveLength(1);
-    expect(modeCalls(q)).toEqual(['plan', 'bypassPermissions', 'plan']);
-    expect(w.manager.brain(id)?.trackedMode).toBe('plan');
-    expect(
-      await q.callTool('mcp__pc__write', { file_path: '/Users/jasper/Code/foo/a.ts', content: 'x' }),
-    ).toMatchObject({ kind: 'denied', reason: expect.stringMatching(/Plan mode/) });
-  });
-
-  it('the context guard does not hang when /compact reports zero turns', async () => {
+  it('a wake for the body that arrives while the desk works waits for the handoff back', async () => {
     const { w, id, q } = await world();
-    await wake(w, q, 'big job');
+    await wake(w, q, 'fix it');
     await sit(w, q, id);
     q.result();
-    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-    w.manager.onPcUnseat({
-      pcId: 'linux-1',
-      occupant: { kind: 'agent', agentId: id },
-      reason: 'pc_down',
-      reserved: false,
-    });
-    await w.until(() => q.interrupted === 1, 'interrupt');
-    q.result({
-      usage: {
-        input_tokens: 150_000,
-        output_tokens: 5_000,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-    });
-    await w.until(() => w.texts(q).includes('/compact'), 'compact');
-    q.result({ num_turns: 0 });
-    await w.until(() => flagCalls(q).length === 2, 'downswap');
-    expect(flagCalls(q)[1]).toEqual({ model: 'claude-haiku-5-5', effortLevel: 'xhigh' });
-    await w.until(() => w.texts(q).some((t) => t.includes('PC DOWN')), 'pc down wake');
-    expect(w.manager.brain(id)?.session?.inTurn).toBe(true);
+    await w.until(() => deskQuery(w, id) !== null, 'desk');
+    const d = deskQuery(w, id) as FakeQuery;
+    d.init();
+    await w.until(() => w.texts(d).some((t) => t.includes('KICKOFF')), 'kickoff');
+    // A world job of the body ends while the desk works: it goes to the active session (the desk).
+    w.manager.brain(id)?.enqueue({ mode: 'wake', priority: 3, kind: 'TELL', text: 'a tell for Ada' });
+    d.result();
+    await w.until(() => w.texts(d).some((t) => t.includes('a tell for Ada')), 'tell in the desk');
+    d.result();
+    await w.until(() => w.manager.brain(id)?.status === 'idle', 'idle');
+    expect(w.texts(q).some((t) => t.includes('a tell for Ada'))).toBe(false);
   });
 });
 
@@ -214,8 +176,11 @@ describe('seat epochs', () => {
     await wake(w, q, 'work');
     await sit(w, q, id);
     q.result();
-    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-    q.result();
+    await w.until(() => deskQuery(w, id) !== null, 'desk');
+    const d = deskQuery(w, id) as FakeQuery;
+    d.init();
+    await w.until(() => w.texts(d).some((t) => t.includes('KICKOFF')), 'kickoff');
+    d.result();
     await w.until(() => w.manager.brain(id)?.status === 'idle', 'idle');
     const brain = w.manager.brain(id);
     expect(await brain?.goAway()).toBe(true);
@@ -418,10 +383,8 @@ describe('crew and PC details', () => {
     ]);
     const { w, id, q } = await world({ harness: { pcs } });
     await wake(w, q, 'read notes');
-    await sit(w, q, id);
-    q.result();
-    await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-    expect(resultText(await q.callTool('mcp__pc__read', { file_path: '~/notes.txt' }))).toContain(
+    const d = await sitAtDesk(w, q, id);
+    expect(resultText(await d.callTool('mcp__pc__read', { file_path: '~/notes.txt' }))).toContain(
       'remember the milk',
     );
   });

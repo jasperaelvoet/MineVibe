@@ -58,6 +58,8 @@ export type ControlKind =
   | 'MODE'
   | 'CONSENT'
   | 'TOOLS UPDATED'
+  /** What the agent's desk session did at a PC, for its body session when it stands up (PLAN §6.3). */
+  | 'DESK REPORT'
   | 'PLAYER';
 
 /** `[MV:<nonce> <KIND>] text`. */
@@ -126,7 +128,9 @@ export type NoteKind =
   | 'chronicle'
   | 'crew'
   | 'mount'
-  | 'web';
+  | 'web'
+  /** What the agent's other session said (the desk's last words in a DESK REPORT). */
+  | 'session';
 
 export interface NoteOptions {
   /** Display author, e.g. "Bram (agent)", "Jasper (player)", "MineVibe". */

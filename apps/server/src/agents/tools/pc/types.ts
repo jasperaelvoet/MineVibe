@@ -35,6 +35,10 @@ export interface PcHost {
   readonly jobs?: PcJobBook | undefined;
   /** Subscribes to compactions (the agent no longer has what it read and saw). */
   onCompaction?(listener: () => void): void;
+  /** A foreground `bash` command finished (the DESK REPORT lists the last exit codes). */
+  onCommand?(record: { readonly pcId: string; readonly command: string; readonly exitCode: number }): void;
+  /** `write` or `edit` changed a file (the DESK REPORT lists them). */
+  onFileChanged?(record: { readonly pcId: string; readonly path: string }): void;
   /** Screen settle timing (tests shorten it). */
   readonly settle?: Partial<SettleTiming> | undefined;
 }

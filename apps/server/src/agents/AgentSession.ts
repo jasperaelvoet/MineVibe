@@ -1,26 +1,25 @@
 /**
- * AgentSession (PLAN §6.1): one long-lived streaming `query()` per agent.
+ * AgentSession (PLAN §6.1): one long-lived streaming `query()`. Each agent has a body session and, per PC, a desk
+ * session (dual sessions); each runs one fixed model for its whole life.
  *
  * - The prompt is an inbox (async iterable) Node pushes user messages into: wakes (`shouldQuery` default), context
  *   (`shouldQuery:false`, no API call) and interrupts (`priority:'now'`).
  * - Stream handling: main-thread assistant text and tool_use blocks go to the callbacks (bubbles, transcript, activity),
  *   `rate_limit_event` to the UsageGovernor, `result` ends a turn. **Results with `num_turns === 0` are ignored** (S2:
  *   a `shouldQuery:false` send emits one) unless an interrupt is pending or the result is an error.
- * - Model swaps use `applyFlagSettings` at turn boundaries and are acknowledged by the `PostModelSwitch` hook, which
- *   fires during the call (S3, 57-94 ms). An effort-only change fires no hook.
- * - Startup assertions run on the first `system/init` ({@link checkStartup}).
+ * - Startup assertions run on the first `system/init` ({@link checkStartup}); they also report the account (its
+ *   e-mail address and organisation feed the outbound redactor, agents/redact.ts).
  */
 
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
-import { type BrainProfile, FORBIDDEN_INIT_TOOLS, HAIKU, OPUS, SWAP_ACK_TIMEOUT_MS } from './constants.js';
+import { FORBIDDEN_INIT_TOOLS, HAIKU, OPUS } from './constants.js';
 import type {
+  AccountInfo,
   CanUseTool,
   HookCallback,
-  HookJSONOutput,
   Options,
   PermissionMode,
-  PostModelSwitchHookInput,
   QueryFactory,
   QueryLike,
   SDKAssistantMessage,
@@ -130,7 +129,6 @@ export interface SessionCallbacks {
   /** A real turn ended (zero-turn context results are filtered out). */
   onTurnEnd?(result: SDKResultMessage): void;
   onRateLimit?(info: SDKRateLimitInfo): void;
-  onModelSwitched?(input: PostModelSwitchHookInput): void;
   onCompacted?(): void;
   /** The stream ended: `error` null after {@link AgentSession.close}, otherwise why it died. */
   onExit?(error: Error | null): void;
@@ -147,21 +145,9 @@ export interface SessionConfig {
   readonly queryFactory: QueryFactory;
   readonly log?: Logger | undefined;
   readonly now?: () => number;
-  readonly swapAckTimeoutMs?: number;
 }
 
-export interface SwapResult {
-  readonly from: string | null;
-  readonly to: string;
-  readonly ms: number;
-  /** The PostModelSwitch hook confirmed the model (always true for an effort-only change). */
-  readonly acked: boolean;
-  readonly estimatedCacheWriteUsd: number | null;
-  /** The flag-layer swap failed and the session was closed and resumed with the new model (PLAN §6.3 fallback). */
-  readonly resumed?: boolean | undefined;
-}
-
-/** Usage numbers of the last real turn (context guard, accounting). */
+/** Usage numbers of the last real turn (accounting). */
 export interface TurnUsage {
   /** Prompt tokens the next request re-sends (input + cache read + cache write + output of the turn's last call). */
   readonly contextTokens: number;
@@ -192,7 +178,6 @@ function usageOf(result: SDKResultMessage, lastCall: UsageFields | null): TurnUs
 export class AgentSession {
   readonly #config: SessionConfig;
   readonly #cb: SessionCallbacks;
-  readonly #now: () => number;
   #inbox: Inbox | null = null;
   #query: QueryLike | null = null;
   #pump: Promise<void> | null = null;
@@ -206,15 +191,12 @@ export class AgentSession {
   #lastUsage: TurnUsage | null = null;
   /** Usage of the latest API call in the current turn (an assistant message's own `usage`). */
   #lastCallUsage: UsageFields | null = null;
-  #swapWaiter: ((input: PostModelSwitchHookInput) => void) | null = null;
-  #lastSwitch: PostModelSwitchHookInput | null = null;
   /** The id of the main-thread message being streamed. */
   #streaming: string | null = null;
 
   constructor(config: SessionConfig, callbacks: SessionCallbacks = {}) {
     this.#config = config;
     this.#cb = callbacks;
-    this.#now = config.now ?? Date.now;
   }
 
   get started(): boolean {
@@ -226,7 +208,7 @@ export class AgentSession {
     return this.#sessionId;
   }
 
-  /** The model the session runs, as last reported (init / PostModelSwitch / assistant message). */
+  /** The model the session runs, as last reported (init / assistant message). */
   get model(): string | null {
     return this.#model;
   }
@@ -254,16 +236,9 @@ export class AgentSession {
   }
 
   #fullOptions(): Options {
-    const postSwitch: HookCallback = async (input): Promise<HookJSONOutput> => {
-      if (input.hook_event_name === 'PostModelSwitch') this.#onSwitched(input as PostModelSwitchHookInput);
-      return {};
-    };
     return {
       ...this.#config.options,
-      hooks: {
-        PreToolUse: [{ hooks: [this.#config.gate] }],
-        PostModelSwitch: [{ hooks: [postSwitch] }],
-      },
+      hooks: { PreToolUse: [{ hooks: [this.#config.gate] }] },
       canUseTool: this.#config.canUseTool,
     };
   }
@@ -289,10 +264,14 @@ export class AgentSession {
     return uuid;
   }
 
-  /** Runs the startup assertions against this session's query. */
-  checkStartup(init: SDKSystemMessage, mode: 'subscription' | 'api_key'): Promise<string[]> {
+  /** Runs the startup assertions against this session's query; `onAccount` hears the account it runs on. */
+  checkStartup(
+    init: SDKSystemMessage,
+    mode: 'subscription' | 'api_key',
+    onAccount?: (account: AccountInfo) => void,
+  ): Promise<string[]> {
     if (!this.#query) return Promise.resolve(['session not running']);
-    return checkStartup(init, this.#query, mode);
+    return checkStartup(init, this.#query, mode, onAccount);
   }
 
   /** Interrupts the running turn; its `result` still arrives and ends the turn. */
@@ -311,44 +290,6 @@ export class AgentSession {
     await this.#query.setPermissionMode(mode);
   }
 
-  /**
-   * Swaps model and effort through the flag layer (call only at a turn boundary). Resolves once the PostModelSwitch
-   * hook acknowledged the new model, or after the ack timeout.
-   */
-  async applyProfile(profile: BrainProfile): Promise<SwapResult> {
-    const q = this.#query;
-    if (!q) throw new Error('session not running');
-    const from = this.#model;
-    const t0 = this.#now();
-    const modelChanges = from !== profile.model;
-    const acked = modelChanges
-      ? new Promise<PostModelSwitchHookInput | null>((resolve) => {
-          const timer = setTimeout(() => {
-            this.#swapWaiter = null;
-            resolve(null);
-          }, this.#config.swapAckTimeoutMs ?? SWAP_ACK_TIMEOUT_MS);
-          timer.unref?.();
-          this.#swapWaiter = (input) => {
-            clearTimeout(timer);
-            resolve(input);
-          };
-        })
-      : Promise.resolve(null);
-    this.#lastSwitch = null;
-    await q.applyFlagSettings({ model: profile.model, effortLevel: profile.effort });
-    const ack = modelChanges ? (this.#lastSwitch ?? (await acked)) : null;
-    this.#swapWaiter = null;
-    if (ack) this.#model = ack.to_model;
-    else if (!modelChanges) this.#model = profile.model;
-    return {
-      from,
-      to: profile.model,
-      ms: this.#now() - t0,
-      acked: !modelChanges || ack !== null,
-      estimatedCacheWriteUsd: ack?.estimated_cache_write_usd ?? null,
-    };
-  }
-
   /** Closes the inbox and the query; the pump ends and `onExit(null)` fires. */
   async close(graceMs = 2_000): Promise<void> {
     if (!this.#query || this.#closing) {
@@ -356,7 +297,6 @@ export class AgentSession {
       return;
     }
     this.#closing = true;
-    this.#swapWaiter = null;
     this.#inbox?.close();
     const pump = this.#pump ?? Promise.resolve();
     let timer: NodeJS.Timeout | undefined;
@@ -376,13 +316,6 @@ export class AgentSession {
       }
     }
     await pump;
-  }
-
-  #onSwitched(input: PostModelSwitchHookInput): void {
-    this.#lastSwitch = input;
-    this.#model = input.to_model;
-    this.#swapWaiter?.(input);
-    this.#cb.onModelSwitched?.(input);
   }
 
   async #run(q: QueryLike): Promise<void> {
@@ -482,18 +415,34 @@ export class AgentSession {
   }
 }
 
-/** Why a session must not run (PLAN §6.1 "Startup assertions"); empty when everything holds. */
+/**
+ * Why a session must not run (PLAN §6.1 "Startup assertions"); empty when everything holds. The account is read in
+ * both modes and handed to `onAccount` (the outbound redactor learns its identifiers; nothing is stored).
+ */
 export async function checkStartup(
   init: SDKSystemMessage,
   query: Pick<QueryLike, 'accountInfo' | 'supportedModels'>,
   mode: 'subscription' | 'api_key',
+  onAccount?: (account: AccountInfo) => void,
 ): Promise<string[]> {
   const problems: string[] = [];
+  if (mode === 'api_key' && onAccount) {
+    try {
+      onAccount(await query.accountInfo());
+    } catch {
+      // nothing to redact then
+    }
+  }
   if (mode === 'subscription') {
     if (init.apiKeySource !== 'none')
       problems.push(`an API key is in use (${init.apiKeySource}) instead of your subscription`);
     try {
       const account = await query.accountInfo();
+      try {
+        onAccount?.(account);
+      } catch {
+        // the redactor never fails a session
+      }
       if (!account.subscriptionType)
         problems.push('no Claude subscription is logged in (run `claude` and log in)');
       // S2 (spikes/s2-s3-sdk/out/a-init.json): a subscription login reports apiProvider "firstParty". A missing

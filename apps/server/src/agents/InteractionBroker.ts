@@ -51,6 +51,28 @@ export interface BrokerOptions {
   readonly turnText?: () => SpokenText | null;
   readonly playerName: () => string;
   readonly now?: () => number;
+  /**
+   * The outbound redactor (agents/redact.ts): a card shows agent-authored text to the player, so its questions,
+   * options and plan are redacted. The answers still reach the model under its own question texts.
+   */
+  readonly redact?: ((text: string) => string) | undefined;
+}
+
+/** The questions as a card shows them: every text redacted (and kept within the card schema's lengths). */
+function redactQuestions(
+  questions: readonly CardQuestion[],
+  redact: (text: string) => string,
+): CardQuestion[] {
+  return questions.map((q) => ({
+    ...q,
+    question: redact(q.question).slice(0, 1000),
+    ...(q.header !== undefined ? { header: redact(q.header).slice(0, 40) } : {}),
+    options: q.options.map((o) => ({
+      ...o,
+      label: redact(o.label).slice(0, 120),
+      ...(o.description !== undefined ? { description: redact(o.description).slice(0, 500) } : {}),
+    })),
+  }));
 }
 
 /** What a plan card shows when no plan file was captured and the agent said nothing in its turn. */
@@ -122,6 +144,8 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
               `AskUserQuestion input is malformed: ${parsed.error.issues[0]?.message ?? 'invalid'}`,
             );
           }
+          const asked = parsed.data.questions;
+          const shown = options.redact ? redactQuestions(asked, options.redact) : asked;
           const card: Card = {
             id: newCardId('q'),
             agentId: options.agentId,
@@ -129,7 +153,7 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
             parked: false,
             presenting: false,
             kind: 'question',
-            questions: parsed.data.questions,
+            questions: shown,
             answers: [],
           };
           const outcome = await wait(card, opts.signal, null);
@@ -140,8 +164,15 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
             );
           }
           await hooks.onWaitEnd(card, outcome);
+          // The card's answers are keyed by the question texts it showed: back to the model's own texts, by position.
+          const own = new Map<string, string>();
+          shown.forEach((q, i) => {
+            const original = asked[i]?.question;
+            if (original !== undefined && !own.has(q.question)) own.set(q.question, original);
+          });
           const answers: Record<string, string> = {};
-          for (const [q, a] of Object.entries(outcome.answers)) answers[q] = a.slice(0, CHAT_MAX_LENGTH);
+          for (const [q, a] of Object.entries(outcome.answers))
+            answers[own.get(q) ?? q] = a.slice(0, CHAT_MAX_LENGTH);
           return { behavior: 'allow', updatedInput: { ...input, answers } };
         }
 
@@ -164,7 +195,7 @@ export function createInteractionBroker(options: BrokerOptions): CanUseTool {
             parked: false,
             presenting: false,
             kind: 'plan',
-            plan: plan.slice(0, 32_000),
+            plan: (options.redact ? options.redact(plan) : plan).slice(0, 32_000),
           };
           const outcome = await wait(card, opts.signal, options.seatEpoch());
           if (outcome.kind === 'approved') {

@@ -54,7 +54,7 @@ export interface AgentRuntimeOptions {
       | 'chatDebounceMs'
       | 'autonomyTickMs'
       | 'lastWordsMs'
-      | 'swapDebounceMs'
+      | 'deskTtlMs'
       | 'crewCap'
       | 'now'
       | 'approveCalendarEvent'

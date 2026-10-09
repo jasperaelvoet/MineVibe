@@ -5,7 +5,6 @@
 
 import {
   type AccountInfo,
-  type EffortLevel,
   type ModelInfo,
   type Options,
   type PermissionMode,
@@ -25,7 +24,6 @@ export type {
   Options,
   PermissionMode,
   PermissionResult,
-  PostModelSwitchHookInput,
   PreToolUseHookInput,
   SDKAssistantMessage,
   SDKMessage,
@@ -35,11 +33,13 @@ export type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-/** What AgentSession needs from a running `query()`. */
+/**
+ * What AgentSession needs from a running `query()`. Sessions run one fixed model for their whole life (PLAN §6.1, dual
+ * sessions), so no flag-layer swaps (`applyFlagSettings`) are needed.
+ */
 export interface QueryLike extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
-  applyFlagSettings(settings: { model?: string | null; effortLevel?: EffortLevel | null }): Promise<void>;
   accountInfo(): Promise<AccountInfo>;
   supportedModels(): Promise<ModelInfo[]>;
   close(): void;

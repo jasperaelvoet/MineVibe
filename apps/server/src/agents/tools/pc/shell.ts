@@ -166,6 +166,7 @@ export function shellTools(ctx: PcToolContext): Def[] {
             text = `${text}\n\n... [output truncated] ...`;
           }
           const body = clipOutput(text);
+          ctx.host.onCommand?.({ pcId: seat.pcId, command: args.command, exitCode: res.exitCode });
           if (res.exitCode === 0) return textResult(body || BASH_NO_OUTPUT);
           const meaning = interpretExit(args.command, res.exitCode);
           if (meaning) return textResult(body || meaning);

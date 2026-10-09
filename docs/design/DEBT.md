@@ -21,6 +21,10 @@ fixed the after-v2 leftovers: a one-step `do`, the NEEDS_TOOL hint, the `[Image:
 `use_block` / `menu_click` and for the refused step of Node's `do` macro, and the eval sim's missing W1 scene and
 shapes (also in `worldEval.ts`). The v2 confirmation of 2026-10-09 (EVALS.md "Confirmation of v2") measured "keep me
 safe" after those fixes (the agents now use the house) and scores `eval:world`'s v2 runs on the outcome.
+Dual sessions (2026-10-09, PLAN §6.1) fixed "wandering agents carry the 31 `pc` tools" (the body
+session has no `pc` server; EVALS.md "Dual sessions") and the per-turn `ai-title` question (a fixed session `title`
+skips the AI title generation, verified live), and mitigated the account e-mail in agent prompts (outbound redactor
+and persona rule; what is left is below).
 
 ## Found by navigation v2 (2026-10-09)
 - **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
@@ -65,15 +69,6 @@ safe" after those fixes (the agents now use the house) and scores `eval:world`'s
   far over the count, consider stopping at the count and leaving the tree standing.
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
-- **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
-  pays for the PC tools V2 list (31 tools, 19,558 chars, ~4.9k tokens; it was 20 tools, 8,751 chars) on every round
-  trip although the gate denies them all until it sits. That ate most of the mc v2 saving: about 24k prompt tokens
-  per Haiku round trip after v2 against 26k before, where the mc list alone shrank by ~4k tokens. One dark_safe run
-  even called `mcp__pc__wait` while standing in a field. **Fix:** attach the `pc` server only while seated (the SDK's
-  dynamic MCP server update at sit / stand, if it keeps the cache prefix stable enough), or defer the pc tools behind
-  tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8). Mode profiles
-  gate the `pc` tools while wandering but leave them in the pinned list: in the v2 confirmation the cheapest Haiku
-  round trip was 18.9k tokens (19.0k after v2).
 - **Two turns per long composite.** `gather`/`craft`/`do` answer `running` after 20 s and the agent ends its turn,
   so the incident and the iron task take a second (cheap, one round trip) turn for the `[JOB DONE]` report: 2 turns
   per run against 1.7-2.3 before (10 of 10 in the v2 confirmation). By design (tools-v2-mc.md §7); a longer first
@@ -127,15 +122,42 @@ safe" after those fixes (the agents now use the house) and scores `eval:world`'s
   without a pickaxe in the sim (the mod's makes one): a NEEDS_TOOL replay above the wooden tier fails in the sim only.
 
 ## Found in the mode-profiles work (2026-10-09)
-- **The player's e-mail address reaches every agent prompt.** With the allowlisted env and `settingSources: []`, the
-  CLI still injects `session_context` (the account's e-mail address) and `credential_org` (the organisation id)
-  attachments into agent sessions (spike S3b, `spikes/s3b-mode-switch/result.md`, "Side effects"). Agents can read and
-  repeat them. Source not investigated (presumably the CLI's account profile); decide whether an env switch or a
-  persona rule is needed (PLAN §6.1 env).
-- **Per-turn `ai-title` generation in persisted sessions.** S3b saw an `ai-title` transcript entry after every turn
-  (`persistSession: true`), probably a small background model call per turn that no usage number counts.
 - **`runLock.test.ts` "never shows a reader an empty or partial lock" times out (5 s) under a full `npm test`** on a
   busy machine (4 of 6 full runs here); it passes alone.
+
+## Found in the dual-sessions work (2026-10-09)
+- **The account e-mail still reaches every agent prompt.** Claude Code 2.1.293 injects it as a `session_context`
+  attachment in every session and has no supported switch (only `ANTHROPIC_UNIX_SOCKET`, which reroutes the transport,
+  leaves it out; checked in the CLI source). Mitigated, not removed: the personas forbid repeating account identifiers
+  and `agents/redact.ts` redacts the e-mail and organisation name from everything agent-authored that leaves a session
+  (PLAN §6.1). Gaps: (1) the match is literal, so an obfuscated form ("jasper dot …", spaces) passes; (2) typing and
+  the clipboard inside a PC are out of scope; (3) the redactor learns the account from the first session's startup
+  check (`accountInfo()`, milliseconds after its init), so text streamed before that is not redacted; (4) in API-key mode `accountInfo()` reports no e-mail, while a
+  stored OAuth login may still put one into `session_context`: the redactor then knows nothing; (5) the organisation
+  *id* (`credential_org`) never reaches the model's prompt (it renders to nothing) but sits in the on-disk transcripts
+  under `~/.claude/projects/`, and Node never learns it. Fix when Claude Code offers a switch; otherwise consider a
+  generic e-mail pattern for agent text.
+- **Claude Code's `[Image: source: …]` notes are only handled by prompt lines.** The CLI saves every image an MCP
+  tool returns on the host (`mcp-pc-blob-….png`) and adds the note to the result. `CLAUDE_CODE_SKIP_PROMPT_HISTORY`
+  appears to skip that persistence (CLI source: `persistence_off`), which would also drop the note and the host copies
+  of PC screenshots; its other effects (prompt history, transcripts) are unverified, so it is not set.
+- **The KICKOFF repeats itself on resumed desks.** Every sit sends memory.md (up to 8 KB), the Codex digest, the notes
+  and the PC primer, also to a desk session that already has them in its transcript (≈1-3k tokens per sit). A resumed
+  desk could get only what changed since its last sit.
+- **A resumed desk session grows without bound.** It keeps its whole transcript within the 6 h TTL; Claude Code's own
+  auto-compaction is the only limit. A desk that crossed the TTL starts fresh and keeps only what the handoff carries.
+- **Plan-first toggled during a desk's life** changes its built-ins (ExitPlanMode) on resume through Claude Code's
+  in-message tool delta (S3b's M3 mechanism); not verified live for ExitPlanMode.
+- **Two claude processes per seated agent.** The body session stays open (idle) while its desk works: with the crew cap
+  of 4 and `maxSeated=2` up to 6 `claude` processes. Closing an idle body while seated (and resuming it at the
+  handoff back) would save memory at the cost of ~1 s per stand.
+- **Context during the body's sit turn reaches only the body.** A broadcast, consent or house-rule notice that arrives
+  while the body's sit turn ends (`seated_pending_handoff`) is sent to the body (as before), not kept for the desk;
+  the player's lines reach the desk anyway (the KICKOFF quotes them, and wakes wait for the desk since the review).
+- **A PC recreated under the same id resumes the old desk session** within the TTL: the desk record is keyed by the
+  PC id only, so the desk "remembers" work on a disk that no longer exists until it looks.
+- **Only one live sample of the handoffs** (EVALS.md "Dual sessions": 4 turns); the tool evals were not re-run live
+  after the switch (their replays pass). `test/live/brain.live.ts` was rewritten for dual sessions but not re-run.
 
 ## Found in the D2 sweep (2026-10-09)
 - **PC instances from before the registry stay in the dev engine.** `doctor --clean-orphans` knows an instance's home

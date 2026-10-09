@@ -825,8 +825,11 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   the player, shows the card-mode bubble and chimes once; it never dismounts. `present` walks over (for a seated agent,
   after Node's `agent.unseat{away, keepReservation}`).
 - `chat.append`: `{ agentId, entry: ChatEntry }`; `ChatEntry = { seq, at, kind:
-  player|agent|activity|card|answer|tell|system, text, fromAgentId?, cardId? }`. `chat.history` (request,
-  `ChatHistoryResult { entries, more }`): `{ agentId, beforeSeq?, limit }`.
+  player|agent|activity|card|answer|tell|system, text, fromAgentId?, cardId?, session?: body|desk, pcId? }`.
+  `session` says which of the agent's two sessions the line belongs to (PLAN §6.1, dual sessions): `body` in the world,
+  `desk` at the PC `pcId`. The transcript is one merged history; AgentScreen and the Crew log tag desk lines with their
+  PC (`Ada @linux-1: …`). `chat.history` (request, `ChatHistoryResult { entries, more }`): `{ agentId, beforeSeq?,
+  limit }`.
 - `chat.send` gains an optional `mode: chat|reply|task|interrupt` for AgentScreen's Reply / New task / Interrupt.
 - `pending.answer` (request, `ChatSendResult`): `{ agentId, pendingId, answer }` with `answer` one of
   `{ kind: "options", picks: [1-based] }`, `{ kind: "text", text }`, `{ kind: "later" }`, `{ kind: "approve" }`,

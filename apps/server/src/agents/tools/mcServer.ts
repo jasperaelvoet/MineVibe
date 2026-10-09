@@ -28,13 +28,27 @@ export { BLOCK_CHANGING_SKILLS, type McHost, splitFooter } from './host.js';
 // biome-ignore lint/suspicious/noExplicitAny: the server holds tools of many different input shapes
 type Def = SdkMcpToolDefinition<any>;
 
-/** The `mc` tool definitions of one agent, for the given tool set (default: `MINEVIBE_MC_TOOLS`). */
-export function mcToolDefinitions(host: McHost, version: McToolsVersion = mcToolsVersion()): Def[] {
-  return version === 'v2' ? mcToolDefinitionsV2(host) : mcToolDefinitionsV1(host);
+/**
+ * The `mc` tool definitions of one agent, for the given tool set (default: `MINEVIBE_MC_TOOLS`). `only` keeps just
+ * those tools (a desk session's minimal set, PLAN §6.1 dual sessions), in catalog order.
+ */
+export function mcToolDefinitions(
+  host: McHost,
+  version: McToolsVersion = mcToolsVersion(),
+  only?: readonly string[],
+): Def[] {
+  const defs = version === 'v2' ? mcToolDefinitionsV2(host) : mcToolDefinitionsV1(host);
+  return only ? defs.filter((d) => only.includes(d.name)) : defs;
 }
 
-/** The server options both versions share (and the eval harness copies). */
-export function mcServerOptions(version: McToolsVersion = mcToolsVersion()): {
+/**
+ * The server options both versions share (and the eval harness copies). The v2 world-tool instructions go only to a
+ * server with the world tools (`world: false` for a desk session's minimal set).
+ */
+export function mcServerOptions(
+  version: McToolsVersion = mcToolsVersion(),
+  options: { readonly world?: boolean } = {},
+): {
   name: 'mc';
   version: string;
   alwaysLoad: true;
@@ -47,17 +61,24 @@ export function mcServerOptions(version: McToolsVersion = mcToolsVersion()): {
         version: '2.0.0',
         alwaysLoad: true,
         timeout: MCP_TOOL_TIMEOUT_MS,
-        instructions: MC_V2_INSTRUCTIONS,
+        ...(options.world === false ? {} : { instructions: MC_V2_INSTRUCTIONS }),
       }
     : { name: 'mc', version: '1.0.0', alwaysLoad: true, timeout: MCP_TOOL_TIMEOUT_MS };
 }
 
-/** The in-process `mc` server (never swapped; `alwaysLoad`, 600 s tool timeout). */
+/**
+ * The in-process `mc` server of one session (`alwaysLoad`, 600 s tool timeout): every tool of the set for the body
+ * session, only `only` (PC mode's minimal set) for a desk session.
+ */
 export function createMcServer(
   host: McHost,
   version: McToolsVersion = mcToolsVersion(),
+  only?: readonly string[],
 ): McpSdkServerConfigWithInstance {
-  return createSdkMcpServer({ ...mcServerOptions(version), tools: mcToolDefinitions(host, version) });
+  return createSdkMcpServer({
+    ...mcServerOptions(version, { world: only === undefined }),
+    tools: mcToolDefinitions(host, version, only),
+  });
 }
 
 /** Every mc tool name the server defines (tests compare it with the catalog). */

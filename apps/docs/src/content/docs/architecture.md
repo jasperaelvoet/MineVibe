@@ -25,7 +25,7 @@ MineVibe.app
  └─ MacOS/MineVibe (Swift stub: first-run window, folder picker, quit handling, lifelines)
      └─ MacOS/node  apps/server/dist/main.mjs   (ORCHESTRATOR / agentic server, Node 24)
          ├─ BridgeServer ws://127.0.0.1:<rand>/v1 (token) <══════╗
-         ├─ AgentManager → AgentSession ×N → SDK query() ─stdio→ claude ×N (user's binary; keychain OAuth)
+         ├─ AgentManager → AgentBrain ×N → AgentSession: body + desk per PC → SDK query() ─stdio→ claude (user's binary)
          │     ToolGate (PreToolUse) · InteractionBroker (canUseTool) · SeatFSM · EventRouter/Digest
          │     BrainScheduler · UsageGovernor · in-proc MCP servers: mc (→bridge), pc (→spacesd)
          ├─ ChatRouter (@mentions) · CodexStore (markdown + git) · CalendarService (game/real clocks) · MeetingRunner
@@ -67,18 +67,27 @@ MineVibe.app
 
 ## Agent brains
 
-Each agent is **one long-lived, streaming `query()`** from `@anthropic-ai/claude-agent-sdk`, pointed at the
-user's `claude` binary.
+Each agent has **two kinds of long-lived, streaming `query()`** from `@anthropic-ai/claude-agent-sdk`, pointed
+at the user's `claude` binary. Exactly one of them is active at a time.
 
-- **Tools.** Agents get two in-process MCP servers: `mc` (the body: observe, move, mine, craft, build, talk,
-  Codex, Calendar) and `pc` (screen, input, shell and file tools inside a PC). Claude Code's built-in shell
-  and file tools are disabled or aliased onto `pc`.
-- **Modes.** An agent is always in one of three modes: **Minecraft mode** (on its feet: every `mc` tool, no
-  PC or web tools), **PC mode** (seated at a PC: the `pc` tools, the web and a minimal `mc` set to watch its
-  body, talk, take notes and stand up) and **Meeting mode** (at the meeting table: talk, notes, Codex,
-  calendar). Claude Code fixes the tool list a conversation is offered at its first request, so every session
-  keeps both servers; a mode switch is a short MODE notice at the start of the first turn after the switch
-  (how to act in that mode, what is available, what waits), and ToolGate enforces it.
+- **The body session** (Haiku 5.5 at `xhigh` effort) lives in the world: wandering, meetings, everything away from a
+  PC. Its tools are the in-process `mc` server (observe, move, mine, craft, build, talk, Codex, Calendar) and
+  `AskUserQuestion`; it has no computer and no web.
+- **A desk session per PC** (Opus 5.5 at `medium` effort) does the work at that PC. Its tools are the `pc` server
+  (screen, input, shell and file tools inside the PC, with Claude Code's Bash, Read, Edit, Write, Glob and Grep
+  aliased onto it), the web, `AskUserQuestion`, and a minimal `mc` set to watch its body, talk, take notes, use the
+  Codex and the calendar and stand up. It is created the first time the agent sits at that PC and **resumed** the
+  next time (unless it has been idle for 6 hours), so PC work carries on where it stopped.
+- **Handoffs.** When the agent sits down, its body turn ends and the desk session takes over with a **KICKOFF**: the
+  task, what you said to the agent lately (word for word), its memory, the Codex digest, notes left at that PC and
+  the PC's details. When it stands up (or is kicked, attacked, called to a meeting, …) the desk's turn ends, and the
+  body wakes with a short **DESK REPORT**: how it ended, the desk's last words, the files it changed and the exit
+  codes of its last commands.
+- **Why two sessions.** Claude Code fixes the tool list a conversation is offered at its first request, so one
+  session can't offer different tools per mode, and switching models inside one conversation leaves traces in it.
+  Each session keeps one model and its own, smaller tool list for its whole life.
+- **Modes.** Minecraft mode is the body's, PC mode the desk's. At the meeting table the body switches to
+  **Meeting mode** (talk, notes, Codex, calendar) with a short MODE notice at the start of its first turn there.
 - **ToolGate** is a `PreToolUse` hook that decides, fail-closed, which tools an agent may use in its current
   state (wandering, seated, plan mode) and mode. Agents run in Claude Code's `bypassPermissions` mode, so
   there are no permission prompts and ToolGate is the sandbox guard: it allows or denies every game, PC and
@@ -86,15 +95,22 @@ user's `claude` binary.
   Agents can't enter plan mode themselves; only the player's Plan-first toggle starts it.
 - **InteractionBroker** turns `AskUserQuestion`, `ExitPlanMode` and hires into cards the player answers in
   game (see [Answering cards](/MineVibe/playing/#answering-cards)).
-- **SeatFSM** tracks walking to a chair, sitting, standing and being kicked. The model swap (Haiku 5.5 at
-  `xhigh` effort while wandering, Opus 5.5 at `medium` effort while seated) only happens at turn boundaries,
-  and the mode switches at the same boundary: the first turn on the new model opens with the new mode.
+- **SeatFSM** tracks walking to a chair, sitting, standing and being kicked. The handoffs between the body and
+  the desk session happen at its turn boundaries.
 - **EventRouter and Digest** feed game events in cheaply: most events are context; only a few wake an agent.
 - **BrainScheduler** runs at most 2 work turns at once, with a reserved slot for the player's messages.
   **UsageGovernor** reads rate-limit events and moves the crew to Tired or Asleep.
 - **Environment hygiene.** Each `claude` starts with an allowlisted environment. Every `ANTHROPIC_*`,
   `CLAUDE_CODE_*` and `MCP_*` variable from the developer's shell is dropped; MineVibe never touches
   credentials.
+- **Account privacy.** Claude Code shows every session the e-mail address of the account it runs on, and there is no
+  setting to turn that off. Agents are told never to repeat account identifiers, and MineVibe replaces the account's
+  e-mail address and organisation with `[redacted]` in everything an agent writes that leaves its session: speech
+  bubbles, the transcript, messages to other agents, Codex pages, calendar events, meeting minutes, handoff notes and
+  the question and plan cards you answer.
+  The identifiers are only held in memory.
+- **Session titles.** Every session has a fixed title (`MineVibe · Ada · desk:linux-1 · World #2`), so Claude Code
+  never spends a model call on naming it.
 
 ## The game side
 

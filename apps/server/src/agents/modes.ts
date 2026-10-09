@@ -1,31 +1,33 @@
 /**
- * Brain modes and their tool profiles (PLAN §6.2 "Tools per mode", §6.3 "Mode switch"; spike S3b).
+ * Brain modes and their tool profiles (PLAN §6.2 "Tools per mode", §6.3; spike S3b), and the two sessions they come
+ * in (PLAN §6.1, dual sessions).
  *
- * | Mode | Seat | Model (outside the re-sit debounce) | Tools |
+ * | Mode | Seat | Session (fixed model) | Tools |
  * |---|---|---|---|
- * | `wander` (Minecraft mode) | none, or walking to one | Haiku 5.5 / xhigh | every mc tool; no pc tools, aliases or web |
- * | `seated` (PC mode) | a PC: seated, pending swap, or away asking the player | Opus 5.5 / medium | every pc tool (Bash/Read/Edit/Write/Glob/Grep/TaskStop are aliases of theirs), WebSearch/WebFetch, a minimal mc set |
- * | `meeting` (Meeting mode) | the meeting table | as before the meeting | talk, notes, Codex, calendar, stand_up |
+ * | `wander` (Minecraft mode) | none, or walking to one | body, Haiku 5.5 / xhigh | every mc tool; no pc tools, aliases or web |
+ * | `seated` (PC mode) | a PC: seated, pending handoff, or away asking the player | desk, Opus 5.5 / medium | every pc tool (Bash/Read/Edit/Write/Glob/Grep/TaskStop are aliases of theirs), WebSearch/WebFetch, a minimal mc set |
+ * | `meeting` (Meeting mode) | the meeting table | body | talk, notes, Codex, calendar, stand_up |
  *
  * Membership comes from the tool metadata in tools/catalog.ts, for both mc tool sets (v1 and v2, `MINEVIBE_MC_TOOLS`):
  * an untagged mc tool is wander-only and an untagged pc tool seated-only, so a new tool never leaks into another mode.
  *
- * What a profile is, and what it is not (spikes/s3b-mode-switch/result.md): Claude Code 2.1.293 pins the tool list the
- * model is offered to the conversation's first request (the pin survives `resume`), and deny rules never remove an MCP
- * tool. So every session keeps registering the full `mc` + `pc` servers (`alwaysLoad`), and the switch is a prompt-level
- * change made at the same turn boundary as the model/effort swap: the MODE banner (prompts/modes.ts: the mode's persona
- * section plus "available now / blocked until …") opens the first turn after that boundary, which is also the first
- * turn on the swapped model. ToolGate enforces the profile of the seat at call time and refuses a tool outside it with
- * teaching text, so a turn that keeps going after a mid-turn stand_up or kick is already held to the new profile.
+ * Why two sessions (spikes/s3b-mode-switch/result.md): Claude Code 2.1.293 pins the tool list the model is offered to
+ * the conversation's first request (the pin survives `resume`), and deny rules never remove an MCP tool. So one
+ * session could never offer a smaller list per mode. Instead each agent has a BODY session whose list is the Minecraft
+ * tools ({@link sessionMcTools} `body`: Minecraft and Meeting mode) and, per PC, a DESK session whose list is PC mode's
+ * ({@link sessionMcTools} `desk`). Meeting mode stays a prompt-level switch inside the body session (the MODE banner,
+ * prompts/modes.ts). ToolGate still enforces the profile of the seat at call time as a backstop, so a turn that keeps
+ * going after a mid-turn stand_up or kick is held to the new profile.
  */
 
 import {
+  BODY_PROFILE,
   type BrainProfile,
   BUILTIN_TOOLS,
+  DESK_PROFILE,
   type McToolsVersion,
-  SEATED_PROFILE,
+  type SessionKind,
   TOOL_ALIASES,
-  WANDERING_PROFILE,
 } from './constants.js';
 import type { SeatSnapshot } from './SeatFSM.js';
 import {
@@ -56,10 +58,9 @@ export interface ModeProfile {
   readonly version: McToolsVersion;
   /** "Minecraft mode", "PC mode", "Meeting mode". */
   readonly title: string;
-  /**
-   * The model and effort of the mode. The swap itself follows the SeatFSM (`wantsOpus`): its re-sit debounce keeps
-   * Opus for a while after a PC seat ends (60 s; a meeting pulled from a PC stretches it over the meeting).
-   */
+  /** The session the mode runs in: the body session (Minecraft and Meeting mode) or a desk session (PC mode). */
+  readonly session: SessionKind;
+  /** The session's fixed model and effort. */
   readonly brain: BrainProfile;
   readonly mc: readonly McToolName[];
   readonly pc: readonly PcToolName[];
@@ -75,11 +76,13 @@ const TITLES: Readonly<Record<BrainMode, string>> = {
   meeting: 'Meeting mode',
 };
 
-const BRAINS: Readonly<Record<BrainMode, BrainProfile>> = {
-  wander: WANDERING_PROFILE,
-  seated: SEATED_PROFILE,
-  meeting: WANDERING_PROFILE,
+const SESSIONS: Readonly<Record<BrainMode, SessionKind>> = {
+  wander: 'body',
+  seated: 'desk',
+  meeting: 'body',
 };
+
+const BRAINS: Readonly<Record<SessionKind, BrainProfile>> = { body: BODY_PROFILE, desk: DESK_PROFILE };
 
 /** The mc tools of a set, in catalog order. */
 export function mcToolsIn(version: McToolsVersion): McToolName[] {
@@ -100,7 +103,8 @@ function build(mode: BrainMode, version: McToolsVersion): ModeProfile {
     mode,
     version,
     title: TITLES[mode],
-    brain: BRAINS[mode],
+    session: SESSIONS[mode],
+    brain: BRAINS[SESSIONS[mode]],
     mc: Object.freeze(mcToolsIn(version).filter((t) => mcToolModes(t).includes(mode))),
     pc: Object.freeze(pc),
     builtins: Object.freeze(BUILTIN_TOOLS.filter((t) => builtinModes(t).includes(mode))),
@@ -131,14 +135,14 @@ export function modeProfile(mode: BrainMode, version: McToolsVersion = 'v1'): Mo
 }
 
 /**
- * The mode a seat puts the agent in. A PC seat is PC mode from the moment the body sits (`seated_pending_swap`, where
- * ToolGate denies every call until the turn ends) and stays PC mode while the agent is away asking the player (the
- * chair is reserved, the turn is in flight). Walking to a seat and the rest of a turn after standing up are Minecraft
- * mode.
+ * The mode a seat puts the agent in. A PC seat is PC mode from the moment the body sits (`seated_pending_handoff`,
+ * where ToolGate denies every call until the body's turn ends) and stays PC mode while the agent is away asking the
+ * player (the chair is reserved, the desk's turn is in flight). Walking to a seat and the rest of a turn after standing
+ * up are Minecraft mode.
  */
 export function modeForSeat(seat: Pick<SeatSnapshot, 'state' | 'kind'>): BrainMode {
   switch (seat.state) {
-    case 'seated_pending_swap':
+    case 'seated_pending_handoff':
     case 'seated':
     case 'away_from_seat':
       return seat.kind === 'meeting' ? 'meeting' : 'seated';
@@ -186,4 +190,17 @@ export function hasEveryPcTool(p: ModeProfile): boolean {
 /** The mc tools of its set a mode does not have, in catalog order. */
 export function hiddenMcTools(p: ModeProfile): McToolName[] {
   return mcToolsIn(p.version).filter((t) => !p.mc.includes(t));
+}
+
+/**
+ * The `mc` tools a session's server registers (PLAN §6.1, dual sessions): the body has every mc tool (Minecraft mode
+ * has them all; Meeting mode is a subset the gate holds it to), a desk session only PC mode's minimal set.
+ */
+export function sessionMcTools(kind: SessionKind, version: McToolsVersion = 'v1'): readonly McToolName[] {
+  return kind === 'desk' ? modeProfile('seated', version).mc : mcToolsIn(version);
+}
+
+/** The mode a session works in when nothing else is known: PC mode for a desk, Minecraft mode for the body. */
+export function sessionMode(kind: SessionKind): BrainMode {
+  return kind === 'desk' ? 'seated' : 'wander';
 }

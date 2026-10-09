@@ -7,9 +7,14 @@
  * time and wakes the agent with `[JOB DONE]` like the EventRouter would (within the per-run turn cap and the global
  * turn budget), lets the world settle, then evaluates the scenario's checks.
  *
- * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn (its first turn
- * opens with the mode's MODE banner, as in production), the PC session starts seated (no sit/swap turn), WebSearch/WebFetch are denied (the eval PC is offline), question cards are
- * answered by the scenario at once, and every `mc` tool call costs 2 s of game time ("thinking").
+ * Sessions as in production (PLAN §6.1, dual sessions): the MC suite runs in a BODY session (Haiku, every `mc` tool,
+ * the body persona), the PC suite in a DESK session (Opus, the `pc` tools with the host aliases, PC mode's minimal `mc`
+ * set, the desk persona), each with its own tool list and no MODE banner (each persona carries its mode).
+ *
+ * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn, the desk
+ * session starts seated (no sit turn in a body session first; its KICKOFF carries no player lines, memory or Codex),
+ * WebSearch/WebFetch are denied (the eval PC is offline), question cards are answered by the scenario at once, and
+ * every `mc` tool call costs 2 s of game time ("thinking").
  */
 
 import { randomUUID } from 'node:crypto';
@@ -31,11 +36,11 @@ import { summarizeResult } from '../../src/agents/EventRouter.js';
 import { control, newNonce, singleLine } from '../../src/agents/envelope.js';
 import { createInteractionBroker } from '../../src/agents/InteractionBroker.js';
 import { HandoffNotes } from '../../src/agents/memory.js';
-import { modeForSeat } from '../../src/agents/modes.js';
+import { sessionMcTools } from '../../src/agents/modes.js';
 import { type Card, PendingStore } from '../../src/agents/PendingStore.js';
 import { PlanCapture } from '../../src/agents/PlanCapture.js';
 import { kickoffMessage, rosterContext } from '../../src/agents/prompts/kickoff.js';
-import { modeBanner, stoodUpText } from '../../src/agents/prompts/modes.js';
+import { stoodUpText } from '../../src/agents/prompts/modes.js';
 import { personaPrompt } from '../../src/agents/prompts/persona.js';
 import type { SeatSnapshot } from '../../src/agents/SeatFSM.js';
 import type {
@@ -209,7 +214,6 @@ const WANDERING: SeatSnapshot = {
   since: 0,
   purpose: null,
   jobId: null,
-  debounceUntil: 0,
   lastPcId: null,
   awayExpiresAt: null,
   lastEnd: null,
@@ -361,9 +365,13 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         return res;
       },
     }));
+  // The body session has every mc tool; a desk session only PC mode's minimal set (production's per-session lists).
   const mcServer = createSdkMcpServer({
-    ...mcServerOptions(tools),
-    tools: instrument('mc', mcToolDefinitions(mcHost, tools)),
+    ...mcServerOptions(tools, { world: !seated }),
+    tools: instrument(
+      'mc',
+      mcToolDefinitions(mcHost, tools, seated ? sessionMcTools('desk', tools) : undefined),
+    ),
   });
   const pcServer = createSdkMcpServer({
     name: 'pc',
@@ -391,6 +399,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     playerName: PLAYER,
     halted,
     mcTools: tools,
+    session: seated ? 'desk' : 'body',
+    deskPc: seated ? PC_ID : null,
   });
   const gateHook = createToolGateHook(context, (o) => {
     turnState.calls++;
@@ -470,18 +480,21 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     playerName: PLAYER,
     nonce,
     mcTools: tools,
+    session: seated ? 'desk' : 'body',
   });
-  const options = buildSessionOptions({
+  const common = {
     claude: opts.claude,
     env: agentEnv({ version: SERVER_VERSION }),
     cwd: home,
     resume: null,
     sessionId: randomUUID(),
     persona,
-    mc: mcServer,
-    pc: pcServer,
+    title: `MineVibe eval · ${scenario.id} · ${seated ? `desk:${PC_ID}` : 'body'}`,
     profile: opts.profile,
-  });
+  };
+  const options = seated
+    ? buildSessionOptions({ ...common, kind: 'desk', mc: mcServer, pc: pcServer })
+    : buildSessionOptions({ ...common, kind: 'body', mc: mcServer });
   let waiter: ((r: SDKResultMessage | null) => void) | null = null;
   let exitError: Error | null = null;
   session = new AgentSession(
@@ -560,9 +573,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         handoffs: [],
       });
     }
-    // As in production (AgentBrain), the first turn opens with the mode banner: Minecraft mode for mc, PC mode for pc.
-    // The transcript shows the prompt after it (the banner is the same in every run of a suite).
-    let banner: string | null = modeBanner(modeForSeat(seat), { nonce, playerName: PLAYER, mcTools: tools });
+    // As in production (AgentBrain), no MODE banner: each session's persona carries its mode (Minecraft mode in the
+    // body, PC mode at the desk).
     for (let t = 0; ; t++) {
       if (t >= opts.maxRunTurns) {
         stop = 'turn_cap';
@@ -577,8 +589,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       turnState.startedAt = Date.now();
       metrics.turnTexts = [];
       metrics.transcript.push(`T${turn} > ${clip(text.replace(/\[MV:[0-9a-f]{6} /g, '['), 220)}`);
-      const { result, timedOut } = await sendAndWait(banner === null ? text : `${banner}\n\n${text}`);
-      banner = null;
+      const { result, timedOut } = await sendAndWait(text);
       turns++;
       if (startupProblems.length > 0 && opts.requireSubscription) {
         throw new FatalEvalError(`startup assertions failed: ${startupProblems.join('; ')}`);

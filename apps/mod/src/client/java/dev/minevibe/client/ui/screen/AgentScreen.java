@@ -636,17 +636,19 @@ public final class AgentScreen extends Screen {
 		for (Ui.ChatEntry e : UiState.get().transcript(agentId).entries()) {
 			String prefix;
 			int color;
+			// Dual sessions (PLAN §6.1): one merged history; lines of a desk session carry their PC.
+			String tag = e.sessionTag();
 			switch (e.kind()) {
 				case "player" -> {
-					prefix = "You: ";
+					prefix = tag.isEmpty() ? "You: " : "You →" + tag + ": ";
 					color = 0xFF9AD0FF;
 				}
 				case "agent" -> {
-					prefix = name + ": ";
+					prefix = name + tag + ": ";
 					color = 0xFFFFFFFF;
 				}
 				case "activity" -> {
-					prefix = "· ";
+					prefix = tag.isEmpty() ? "· " : "·" + tag + " ";
 					color = 0xFF909090;
 				}
 				case "card" -> {

@@ -13,16 +13,19 @@
  * - USER DECISION 2026-10-08: EnterPlanMode is always denied (agents never put themselves into plan mode), and
  *   ExitPlanMode is denied outside plan mode (only the player's Plan-first toggle starts one).
  * - Plan mode uses `input.permission_mode ?? nodeTrackedMode`.
+ * - Sessions (PLAN §6.1, dual sessions): the body session's list has only the mc tools and a desk session's only PC
+ *   mode's, so most refusals never happen. The gate stays the backstop: a desk session whose seat ended (stood up,
+ *   kicked, …) may call nothing more (`desk_closed`: end the turn), and the body session may call nothing while its
+ *   desk session owns the agent (`desk_active`).
  * - Mode profiles (agents/modes.ts): after the seat rules, a tool outside the mode of the current seat (Minecraft, PC
- *   or Meeting mode) is denied with teaching text (`mode`). Every tool stays in the model's list in every mode (spike
- *   S3b: the list is pinned to the conversation's first request), so this gate is what makes it unavailable. That
- *   includes the broker's ExitPlanMode: only PC mode hands it to the broker, even while the CLI is still in plan mode.
+ *   or Meeting mode) is denied with teaching text (`mode`). That includes the broker's ExitPlanMode: only PC mode hands
+ *   it to the broker, even while the CLI is still in plan mode.
  * - Any exception while deciding is a deny.
  */
 
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { TURN_CAPS } from './constants.js';
+import { type SessionKind, TURN_CAPS } from './constants.js';
 import { modeForSeat, toolInMode } from './modes.js';
 import type { PlanCapture } from './PlanCapture.js';
 import { outsideModeText } from './prompts/modes.js';
@@ -50,7 +53,12 @@ export type GateDenyCode =
   | 'untrusted_server'
   | 'not_seated'
   | 'seated'
-  | 'pending_swap'
+  /** The body sat down: its turn must end so the desk session can take over. */
+  | 'pending_handoff'
+  /** A desk session whose seat ended: its turn must end (the body takes back). */
+  | 'desk_closed'
+  /** The body session while its desk session owns the agent. */
+  | 'desk_active'
   | 'walking'
   | 'away'
   | 'meeting'
@@ -85,6 +93,10 @@ export interface GateContext {
   readonly halted?: string | null | undefined;
   /** The session's `mc` tool set (default v1): names of the other set are denied as unknown. */
   readonly mcTools?: McToolsVersion | undefined;
+  /** Which of the agent's sessions makes the call (default: none known, the seat rules alone decide). */
+  readonly session?: SessionKind | undefined;
+  /** For a desk session: the PC it works. Its seat ended when the seat no longer holds this PC. */
+  readonly deskPc?: string | null | undefined;
 }
 
 export interface WebTargetCheck {
@@ -107,8 +119,45 @@ function isPcSeat(seat: SeatSnapshot): boolean {
   return seat.kind === 'pc';
 }
 
-function pendingSwapText(seat: SeatSnapshot): string {
-  return `Seated at ${seat.pcId ?? 'the PC'}. End your turn now; your PC session starts with your next turn.`;
+function pendingHandoffText(seat: SeatSnapshot): string {
+  return `Seated at ${seat.pcId ?? 'the PC'}. End your turn now; your PC session takes over from here.`;
+}
+
+/** Whether the seat still holds the desk session's PC (pending handoff, seated or away asking the player). */
+function deskSeatHeld(seat: SeatSnapshot, pcId: string | null | undefined): boolean {
+  return (
+    pcId !== null &&
+    pcId !== undefined &&
+    seat.kind === 'pc' &&
+    seat.pcId === pcId &&
+    (seat.state === 'seated_pending_handoff' || seat.state === 'seated' || seat.state === 'away_from_seat')
+  );
+}
+
+/** The session rules that come before every other (PLAN §6.1, dual sessions); null when they let the call through. */
+function sessionDecision(ctx: GateContext): GateDecision | null {
+  if (ctx.session === 'desk' && !deskSeatHeld(ctx.seat, ctx.deskPc)) {
+    return deny(
+      'desk_closed',
+      `You are no longer seated at ${ctx.deskPc ?? 'the PC'}: this PC session is over. End your turn now (say the result in 1-2 sentences if you haven't).`,
+    );
+  }
+  // The body's sit turn: every call is refused, AskUserQuestion too (a card would hold the turn open, and with it the
+  // handoff to the desk, until the player answered).
+  if (ctx.session === 'body' && ctx.seat.kind === 'pc' && ctx.seat.state === 'seated_pending_handoff') {
+    return deny('pending_handoff', pendingHandoffText(ctx.seat));
+  }
+  if (
+    ctx.session === 'body' &&
+    ctx.seat.kind === 'pc' &&
+    (ctx.seat.state === 'seated' || ctx.seat.state === 'away_from_seat')
+  ) {
+    return deny(
+      'desk_active',
+      `Your PC session is working at ${ctx.seat.pcId ?? 'the PC'} right now; end your turn.`,
+    );
+  }
+  return null;
 }
 
 /** Per-turn caps by seat (card-wait time is excluded by the caller). */
@@ -148,7 +197,7 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
   if (category === null) {
     return deny('unknown_tool', `mcp__mc__${tool} is not one of your tools.`);
   }
-  if (seat.state === 'seated_pending_swap') return deny('pending_swap', pendingSwapText(seat));
+  if (seat.state === 'seated_pending_handoff') return deny('pending_handoff', pendingHandoffText(seat));
 
   switch (category) {
     case 'always':
@@ -160,7 +209,7 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
         ? allow('ceo hire')
         : deny('ceo_only', 'Only the CEO can hire. Ask the CEO with mcp__mc__tell.');
     case 'stand':
-      return seat.state === 'wandering' || seat.state === 'standing_pending_swap'
+      return seat.state === 'wandering' || seat.state === 'standing_pending_handoff'
         ? deny('not_seated', 'You are not seated.')
         : allow('stand');
     case 'calendar': {
@@ -182,7 +231,7 @@ function decideMc(tool: McToolName, input: Record<string, unknown>, ctx: GateCon
     case 'world': {
       switch (seat.state) {
         case 'wandering':
-        case 'standing_pending_swap':
+        case 'standing_pending_handoff':
           return allow(`mc ${category}`);
         case 'walking_to_seat':
           return deny(
@@ -207,12 +256,12 @@ function decidePc(tool: PcToolName, input: Record<string, unknown>, ctx: GateCon
   const seat = ctx.seat;
   switch (seat.state) {
     case 'wandering':
-    case 'standing_pending_swap':
+    case 'standing_pending_handoff':
       return deny('not_seated', NO_PC(ctx.playerName));
     case 'walking_to_seat':
       return deny('walking', 'You are still walking to the chair; end your turn and wait to be seated.');
-    case 'seated_pending_swap':
-      return deny('pending_swap', pendingSwapText(seat));
+    case 'seated_pending_handoff':
+      return deny('pending_handoff', pendingHandoffText(seat));
     case 'away_from_seat':
       return deny(
         'away',
@@ -368,6 +417,8 @@ export async function decideTool(
   const c: GateContext =
     mode === ctx.trackedMode ? ctx : { ...ctx, trackedMode: mode, occupant: ctx.occupant };
   if (ctx.halted) return deny('halted', `MineVibe stopped this brain: ${ctx.halted}. End your turn now.`);
+  const session = sessionDecision(ctx);
+  if (session) return session;
 
   switch (toolName) {
     case 'AskUserQuestion':
@@ -447,6 +498,8 @@ export interface GateObservation {
   /** `input.effort.level`: the CLI's applied effort (S2: init has none). */
   readonly effort: string | null;
   readonly permissionMode: string | null;
+  /** The session that made the call (when the gate context names it). */
+  readonly session?: SessionKind | undefined;
 }
 
 /**
@@ -461,9 +514,12 @@ export function createToolGateHook(
   return async (hookInput): Promise<HookJSONOutput> => {
     const input = hookInput as PreToolUseHookInput;
     let decision: GateDecision;
+    let session: SessionKind | undefined;
     try {
       if (input.hook_event_name !== 'PreToolUse') return {};
-      decision = await decideTool(input.tool_name, input.tool_input, context(), {
+      const ctx = context();
+      session = ctx.session;
+      decision = await decideTool(input.tool_name, input.tool_input, ctx, {
         permissionMode: input.permission_mode,
         serverSource: input.mcp_server?.source,
         web,
@@ -479,6 +535,7 @@ export function createToolGateHook(
         decision,
         effort: input.effort?.level ?? null,
         permissionMode: input.permission_mode ?? null,
+        ...(session ? { session } : {}),
       });
     } catch {
       // observation failures never change the decision

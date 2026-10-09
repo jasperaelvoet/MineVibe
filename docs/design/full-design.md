@@ -44,12 +44,12 @@ Tags: **[V]** means a primary source or the fact-checks confirmed it. **[U]** me
 | Claim in a design | Status | Replacement in this plan |
 |---|---|---|
 | Gradle 9.6 + Loom 1.17 (D1, D3); Gradle runs on JDK 17 (D2) | Refuted | Gradle 9.7.1 + Loom 1.18.3. The daemon must run on JDK 25 (spike S0). |
-| `setMcpServers` attaches `pc` tools mid-session and they are visible at once (D1, D3) | Partly (S3b corrects the original "Refuted") | The tool list the model is offered is pinned to the conversation's first request, also across `resume` (spike S3b). With no ToolSearch in `options.tools`, tools added later are not deferred: they arrive as an in-message `deferred_tools_delta` definition, callable at once, and removals only as a notice. **Both `mc` and `pc` are registered at session start with `alwaysLoad: true` and never swapped.** Availability is enforced by a PreToolUse gate (D2's approach), per mode profile (PLAN §6.2 "Tools per mode"). |
+| `setMcpServers` attaches `pc` tools mid-session and they are visible at once (D1, D3) | Partly (S3b corrects the original "Refuted") | The tool list the model is offered is pinned to the conversation's first request, also across `resume` (spike S3b). With no ToolSearch in `options.tools`, tools added later are not deferred: they arrive as an in-message `deferred_tools_delta` definition, callable at once, and removals only as a notice. **Since dual sessions (PLAN §6.1): each session registers its own servers at start (`alwaysLoad: true`), never swapped: the body session `mc`, a desk session `pc` plus a minimal `mc`.** A PreToolUse gate (D2's approach) stays the backstop, per mode profile (PLAN §6.2 "Tools per mode"). |
 | AskUserQuestion answers are `label \| label[]` (D1, D3) | Refuted | `answers: {[question]: string}`. Multi-select is joined with `", "`. Free text goes in as the value. Never rely on `response`. |
 | canUseTool can guard every tool call | Refuted | canUseTool never fires for auto-approved calls. **The PreToolUse hook is the authoritative guard.** canUseTool is only for human-in-the-loop. |
 | CLAUDE_CODE_SHELL / SHELL_PREFIX could relocate Bash | Refuted / fragile | `disallowedTools:['Bash']` + `toolAliases:{Bash:'mcp__pc__bash'}` [V] |
 | ExitPlanMode approve = plain `allow` | Corrected | Allow WITH `updatedInput`, and set the next permission mode explicitly. |
-| An explicit `effort` option is safe across `setModel` | Uncertain | No top-level `effort` option. Effort lives in the flag layer (`settings`), and every swap calls `applyFlagSettings({model, effortLevel})` at a turn boundary (S3). |
+| An explicit `effort` option is safe across `setModel` | Uncertain | No top-level `effort` option. Effort lives in the flag layer (`settings`), and every swap calls `applyFlagSettings({model, effortLevel})` at a turn boundary (S3). Superseded by dual sessions (PLAN §6.1): each session starts with its model and effort and never swaps. |
 | The bundled CLI may trigger a Keychain prompt (D3) | Not expected | The keychain ACL is on `/usr/bin/security`. Keep `HOME` and leave `CLAUDE_CONFIG_DIR` unset. S2 confirms. |
 | `settingSources: []` fully isolates agents | Partial | Auto memory still loads, so set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. |
 | The cua SDK/CLI can bind-mount host folders | Refuted | MineVibe runs Linux PCs with its own `docker run -v` and attaches via `embedded().spacesd(url, token)`. macOS runs through Lume REST with `sharedDirectories`. |
@@ -123,7 +123,7 @@ Tags: **[V]** means a primary source or the fact-checks confirmed it. **[U]** me
 ### 2.3 Principles
 1. **The LLM is never on a latency-critical path.** Survival, combat, eating and caretaking are tick-level Java reflexes. The LLM issues coarse, long-running jobs. Agents stay alive when Node, the network or the usage window is down.
 2. **One WebSocket.** MineVibe is singleplayer-only, so client UI actions reach the integrated server through `Minecraft.getInstance().getSingleplayerServer().execute(…)`. There are no Fabric custom payloads.
-3. **Stable tool list per session.** Availability is gated, not swapped, so the prompt cache only breaks on deliberate model swaps.
+3. **Stable tool list per session.** Availability is gated, not swapped. Since dual sessions (PLAN §6.1) each session also keeps one model for life, so nothing breaks its prompt cache on purpose.
 4. **One boot code path.** First run, normal start, reconnect and post-death reset all go through BootScreen.
 
 ---
@@ -264,6 +264,10 @@ Flow control: at most 2 un-acked frames per PC, latest wins. If `ws.bufferedAmou
 
 ### 5.1 Session construction (one long-lived streaming `query()` per agent)
 
+> **Superseded (2026-10-09): dual sessions, PLAN §6.1.** Each agent now has a body session (Haiku 5.5 xhigh, the `mc`
+> tools) and a desk session per PC (Opus 5.5 medium, the `pc` tools, a minimal `mc` set), each with a fixed model, tool
+> list, persona and `title`; the options below are the original single-session synthesis.
+
 ```ts
 const q = query({
   prompt: inbox,                                    // GatedInbox<SDKUserMessage>; turn-starting messages released by BrainScheduler
@@ -381,6 +385,11 @@ The full `mc` tool catalog is in 6.5.
   - `settingSources: []` means no project hooks run in claude itself.
 
 ### 5.5 Model and effort switching (at turn boundaries only)
+
+> **Superseded (2026-10-09): dual sessions, PLAN §6.1 and §6.3.** There are no model or effort swaps any more. A sit
+> hands the agent from its body session (Haiku) to the PC's desk session (Opus, created or resumed within a 6 h TTL)
+> with a KICKOFF handoff; a stand hands back with a DESK REPORT. The debounce, the context guard and the close + resume
+> swap fallback went away; close + resume remains for crash restarts. The text below is the original design.
 
 Facts [V]: `setModel` and `applyFlagSettings({model})` take effect mid-turn; `applyFlagSettings({effortLevel})` takes effect from the next turn. Swapping mid-turn would run the rest of the turn on Opus at xhigh, so every swap happens between turns.
 
@@ -913,7 +922,7 @@ Rejected alternatives:
 ### 9.3 Token and cost control
 1. Reflexes and barks, not prompts, handle survival and routine chatter.
 2. Coarse jobs: one call covers minutes of play. Jobs return `running` and wake later.
-3. Haiku while wandering; Opus only while seated, at medium effort. `maxSeated=2`. Model swaps happen only at turn boundaries, debounced (each swap forfeits the cache).
+3. Haiku while wandering; Opus only while seated, at medium effort. `maxSeated=2`. Since dual sessions (PLAN §6.1) each runs in its own session with its own, smaller tool list, so nothing is swapped and no cache is forfeited at a sit or stand.
 4. Digest plus footers plus `shouldQuery:false` context instead of streaming events. Wake budgets and autonomy levels; no idle loops.
 5. `maxConcurrentTurns=2`, crew cap 4, per-turn tool-call and wall-clock caps.
 6. UsageGovernor Tired and Asleep modes from `rate_limit_event`.
