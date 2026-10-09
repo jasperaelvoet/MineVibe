@@ -55,9 +55,11 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       model: 'claude-opus-5-5',
       effort: 'medium',
       toolCalls: 5,
-      failedCalls: 0,
+      // The first `npm test` fails on purpose: like Claude Code's Bash, a non-zero exit is an error result.
+      failedCalls: 1,
       turns: 1,
     });
+    expect(pc.transcript.some((l) => /^ {4}x Exit code 1 /.test(l))).toBe(true);
     // Seated, stand_up answers like AgentBrain.standUp.
     expect(pc.transcript.some((l) => l.includes('= Stood up from linux-1.'))).toBe(true);
     const mc = outcomes.find((o) => o.scenario === 'mc.logs_table' && o.variant === 'good')

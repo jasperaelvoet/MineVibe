@@ -7,6 +7,7 @@ import type { PcGuestInfo } from '../../contracts/PcApi.js';
 import { type BaseArea, posText } from '../../world/baseArea.js';
 import { control, escapeShared, wrapNote } from '../envelope.js';
 import type { HandoffNote } from '../memory.js';
+import { geometryFor } from '../tools/pc/geometry.js';
 
 /** Largest CLAUDE.md excerpt in a kickoff (≈2k tokens). */
 export const CLAUDE_MD_EXCERPT_CHARS = 8_000;
@@ -67,10 +68,28 @@ export function kickoffMessage(input: KickoffInput): string {
       `Plan first: you are in plan mode. Look around read-only, write your plan to ~/.claude/plans/<name>.md, then call ExitPlanMode so ${input.playerName} can approve it.`,
     );
   }
+  lines.push(pcPrimer(pc, input.playerName));
   lines.push(
-    `Prefer the shell for code and the screen for GUIs. When you are done, tell ${input.playerName} the result in 1-2 sentences, then call mcp__mc__stand_up.`,
+    `When you are done, tell ${input.playerName} the result in 1-2 sentences, then call mcp__mc__stand_up.`,
   );
   return lines.join('\n');
+}
+
+/**
+ * How to work a PC with the V2 `pc` tools (≈180 tokens, seated kickoffs only): coordinates, text-first perception,
+ * batched GUI steps, and the shell for code.
+ */
+export function pcPrimer(pc: PcGuestInfo, playerName: string): string {
+  const g = geometryFor(pc.screen);
+  return [
+    'How to work this PC:',
+    `- Screenshots are ${g.imgW}x${g.imgH}; every coordinate is a pixel of them, origin top-left.`,
+    '- Look with ui (find, text) first: exact text and ref_N elements for a fraction of a screenshot. Use screenshot or zoom when an app shows no tree.',
+    '- Do several GUI steps in one turn (left_click, type, key "ctrl+s"); they run in order and the last one answers with a screenshot.',
+    '- open starts a URL, file or app and waits for its window; wait_for waits for text, a window or a still screen.',
+    '- Code and files: bash, read, edit, write, grep, glob, not the GUI. Long commands: bash run_in_background (you are notified when they end).',
+    `- What you open closes when you stand up. Leave the "Shell: …" window open: ${playerName} watches your commands there.`,
+  ].join('\n');
 }
 
 export interface WelcomeInput {

@@ -7,6 +7,7 @@
  * mode (the PC, the task and the meeting arrive in their own messages).
  */
 
+import { TOOL_ALIASES } from '../constants.js';
 import { control } from '../envelope.js';
 import {
   type BrainMode,
@@ -66,11 +67,22 @@ function mcList(p: ModeProfile): string {
   return p.mc.join(', ');
 }
 
+/** One host alias per pc tool, in alias order (`TaskStop` and `KillShell` both stop a task: `TaskStop` is named). */
+function aliasNames(p: ModeProfile): string[] {
+  const targets = new Set<string>();
+  return p.aliases.filter((alias) => {
+    const target = TOOL_ALIASES[alias] ?? alias;
+    if (targets.has(target)) return false;
+    targets.add(target);
+    return true;
+  });
+}
+
 /** "Available now: …" of a mode. */
 export function availableText(p: ModeProfile): string {
   const parts: string[] = [];
   if (hasEveryPcTool(p)) {
-    parts.push(`${p.aliases.join(', ')} and every other ${PC_PREFIX}* tool, all running inside the PC`);
+    parts.push(`${aliasNames(p).join(', ')} and every other ${PC_PREFIX}* tool, all running inside the PC`);
   } else if (p.pc.length > 0) {
     parts.push(p.pc.map((t) => `${PC_PREFIX}${t}`).join(', '));
   }

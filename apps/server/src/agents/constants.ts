@@ -62,7 +62,10 @@ export const DISALLOWED_TOOLS = [
   'Task',
 ] as const;
 
-/** Built-in names routed to the PC tool server (S2: the hook sees the alias target). */
+/**
+ * Built-in names routed to the PC tool server (S2: the hook sees the alias target). A model that calls a built-in by
+ * habit (Bash, Read, TaskStop, KillShell, …) reaches the PC's tool, which answers in the built-in's format.
+ */
 export const TOOL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   Bash: 'mcp__pc__bash',
   Read: 'mcp__pc__read',
@@ -70,6 +73,8 @@ export const TOOL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   Write: 'mcp__pc__write',
   Glob: 'mcp__pc__glob',
   Grep: 'mcp__pc__grep',
+  TaskStop: 'mcp__pc__task_stop',
+  KillShell: 'mcp__pc__task_stop',
 });
 
 /** Tools that must never appear in `system/init.tools` (startup assertion). */

@@ -369,6 +369,8 @@ describe('session options (PLAN §6.1 as amended by S2/S3)', () => {
       Write: 'mcp__pc__write',
       Glob: 'mcp__pc__glob',
       Grep: 'mcp__pc__grep',
+      TaskStop: 'mcp__pc__task_stop',
+      KillShell: 'mcp__pc__task_stop',
     });
     for (const t of ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'NotebookEdit', 'Agent', 'Task']) {
       expect(o.disallowedTools).toContain(t);

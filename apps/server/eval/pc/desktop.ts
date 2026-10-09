@@ -284,6 +284,128 @@ export class Desktop {
     if (main.length === 1 && !has('ctrl') && !has('alt')) this.#append(main);
   }
 
+  /** Opens an app as its desktop icon would (the `open` tool). */
+  openApp(app: Exclude<App, 'desktop'>): void {
+    this.#open(app);
+  }
+
+  /** Closes the open window (its close button). */
+  closeWindow(): void {
+    this.app = 'desktop';
+    this.focus = 'none';
+  }
+
+  /** Sets a browser field's text and focuses it (an accessibility SET_VALUE); Enter then submits it. */
+  setField(field: 'address' | 'search', value: string): void {
+    if (this.app !== 'browser') return;
+    this.focus = field;
+    if (field === 'address') this.address = value;
+    else this.search = value;
+    this.#selectAll = false;
+  }
+
+  /** The title of the open window, or null on the bare desktop. */
+  title(): string | null {
+    switch (this.app) {
+      case 'browser':
+        return `Browser - ${pageTitle(this.page)}`;
+      case 'terminal':
+        return 'Terminal';
+      case 'files':
+        return 'Files - Home';
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * What the screen exposes to accessibility (the `ui` tools): role, name, value and box per element, in document
+   * order. The terminal exposes no text, like a real one.
+   */
+  elements(): DesktopElement[] {
+    const out: DesktopElement[] = [];
+    const el = (role: string, name: string, box: Rect | null, extra: Partial<DesktopElement> = {}) =>
+      out.push({ role, name, box, depth: extra.depth ?? 2, actions: extra.actions ?? [], ...extra });
+    if (this.app === 'desktop') {
+      for (const icon of ICONS) {
+        el('icon', icon.label.charAt(0) + icon.label.slice(1).toLowerCase(), icon.box, {
+          actions: ['press'],
+          open: icon.app,
+        });
+      }
+      return out;
+    }
+    el('button', 'Close', CLOSE, { depth: 1, actions: ['press'] });
+    if (this.app === 'terminal') {
+      el('terminal', 'Terminal', { x: 0, y: 64, w: SCREEN.w, h: SCREEN.h - 64 }, { actions: ['show_menu'] });
+      return out;
+    }
+    if (this.app === 'files') {
+      ['Desktop', 'Documents', 'Downloads', 'repo', 'Videos'].forEach((d, i) => {
+        el('list_item', d, { x: 40 + i * 200, y: 120, w: 140, h: 100 }, { actions: ['press'] });
+      });
+      return out;
+    }
+    el('button', 'Back', BACK, { actions: ['press'] });
+    el('text_field', 'Address', ADDRESS, {
+      value: this.focus === 'address' ? this.address : urlOf(this.page, this.query),
+      actions: ['press', 'focus', 'set_value'],
+      field: 'address',
+    });
+    const text = (s: string, y: number) => el('paragraph', s, { x: 200, y, w: 900, h: 30 }, { depth: 3 });
+    switch (this.page) {
+      case 'start':
+        el('heading', 'Start page', { x: 340, y: 150, w: 400, h: 40 }, { depth: 3 });
+        this.#searchElements(el);
+        el('link', 'Team wiki', BOOKMARK_WIKI, { depth: 3, actions: ['press'] });
+        break;
+      case 'results': {
+        el('heading', `Results for "${this.query}"`, { x: 340, y: 140, w: 700, h: 30 }, { depth: 3 });
+        this.#searchElements(el);
+        const ls = links(this.page, this.query);
+        if (ls.length === 0) text('No results. Try another search.', 300);
+        for (const l of ls) {
+          el('link', titleCase(l.label), l.box, { depth: 3, actions: ['press'] });
+          if (l.snippet) text(titleCase(l.snippet), l.box.y + 40);
+        }
+        break;
+      }
+      case 'wiki':
+        el('heading', 'Team wiki', { x: 340, y: 150, w: 400, h: 40 }, { depth: 3 });
+        for (const l of links('wiki', ''))
+          el('link', titleCase(l.label), l.box, { depth: 3, actions: ['press'] });
+        break;
+      case 'releases':
+        el('heading', 'MineVibe releases', { x: 200, y: 140, w: 600, h: 40 }, { depth: 3 });
+        text(`${LATEST_RELEASE.version} ${LATEST_RELEASE.name} ${LATEST_RELEASE.date} (latest)`, 280);
+        text('0.7.2 Tuff Trouble 2026-08-30', 330);
+        text('0.7.1 Moss Carpet 2026-07-19', 380);
+        text('0.7.0 First Light 2026-06-02', 430);
+        break;
+      case 'roadmap':
+        el('heading', 'Roadmap', { x: 200, y: 140, w: 400, h: 40 }, { depth: 3 });
+        text("Next: 0.8.0 'Deep Dark' - not released yet", 230);
+        break;
+      default:
+        el('heading', 'Server not found', { x: 200, y: 200, w: 600, h: 40 }, { depth: 3 });
+        text('This PC has no internet: only the office wiki is reachable.', 270);
+        break;
+    }
+    return out;
+  }
+
+  #searchElements(
+    el: (role: string, name: string, box: Rect | null, extra?: Partial<DesktopElement>) => void,
+  ): void {
+    el('text_field', 'Search the team wiki', SEARCH_BOX, {
+      depth: 3,
+      value: this.search,
+      actions: ['press', 'focus', 'set_value'],
+      field: 'search',
+    });
+    el('button', 'Search', SEARCH_BUTTON, { depth: 3, actions: ['press'] });
+  }
+
   back(): void {
     const prev = this.#history.pop();
     const q = this.#queries.pop() ?? '';
@@ -516,6 +638,26 @@ export class Desktop {
     c.rect(SEARCH_BUTTON.x, SEARCH_BUTTON.y, SEARCH_BUTTON.w, SEARCH_BUTTON.h, [40, 100, 220]);
     c.text(SEARCH_BUTTON.x + 22, SEARCH_BUTTON.y + 16, 'SEARCH', [255, 255, 255], 2);
   }
+}
+
+/** One element of the screen as accessibility sees it. */
+export interface DesktopElement {
+  readonly role: string;
+  readonly name: string;
+  readonly value?: string;
+  /** Screen pixels; null when it has no box. */
+  readonly box: Rect | null;
+  readonly depth: number;
+  readonly actions: readonly string[];
+  /** A desktop icon: the app it opens. */
+  readonly open?: App;
+  /** A browser text field. */
+  readonly field?: 'address' | 'search';
+}
+
+/** "RELEASES - TEAM WIKI" → "Releases - Team Wiki". */
+function titleCase(s: string): string {
+  return s.toLowerCase().replace(/(^|[\s-])([a-z])/g, (_m, sep: string, c: string) => sep + c.toUpperCase());
 }
 
 function pageTitle(p: Page): string {

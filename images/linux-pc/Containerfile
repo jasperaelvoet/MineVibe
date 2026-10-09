@@ -9,10 +9,16 @@ FROM ghcr.io/trycua/linux:24.04@sha256:71dbd9f077adcbe5e27f2041391bac69afce8093f
 
 USER root
 
-# Tools agents and players expect in a terminal PC. The base already ships Node, Go, uv, gh and rust.
+# Tools agents and players expect in a terminal PC. The base already ships Node, Go, uv, gh, rust, Firefox,
+# Chromium and ImageMagick (the `pc` zoom tool scales screen regions with it). PC tools V2 add a PDF-to-text reader
+# (the `read` tool's PDFs) and a text editor (the `open` tool's text files).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tmux ripgrep git build-essential \
+ && apt-get install -y --no-install-recommends tmux ripgrep git build-essential poppler-utils mousepad \
  && rm -rf /var/lib/apt/lists/*
+
+# Chromium exposes no accessibility tree unless asked, so the agents' `ui` tools would see an empty window.
+RUN mkdir -p /etc/chromium.d \
+ && printf '%s\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility"' > /etc/chromium.d/minevibe-a11y
 
 # A skeleton copy of the image's /home/cua. Apple container named volumes start empty and root-owned and
 # hide the image's /home/cua (XFCE then crash-loops), so the boot hook seeds the home volume from here.

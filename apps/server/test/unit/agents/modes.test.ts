@@ -250,7 +250,7 @@ describe('MODE banner and persona sections', () => {
   it('PC mode: the computer tools and exactly the minimal mc set; the world waits for stand_up', () => {
     const b = modeBanner('seated', input);
     expect(b).toContain(
-      'Available now: Bash, Read, Edit, Write, Glob, Grep and every other mcp__pc__* tool, all running inside the PC; AskUserQuestion, WebSearch, WebFetch; ',
+      'Available now: Bash, Read, Edit, Write, Glob, Grep, TaskStop and every other mcp__pc__* tool, all running inside the PC; AskUserQuestion, WebSearch, WebFetch; ',
     );
     expect(b).toContain(`from mcp__mc__ only ${MODE_PROFILES.seated.mc.join(', ')}.`);
     expect(b).toMatch(
