@@ -1,7 +1,14 @@
 import type { SpacesdClientLike, SpacesdProcessLike } from '@trycua/cua';
 import type { Logger } from 'pino';
 import { withDeadline } from './deadline.js';
-import { GUEST_DISPLAY, GUEST_HOME, GUEST_USER } from './guest.js';
+import {
+  GUEST_DISPLAY,
+  GUEST_HOME,
+  GUEST_USER,
+  MAC_GUEST_HOME,
+  MAC_GUEST_USER,
+  shellQuote,
+} from './guest.js';
 
 /**
  * ShellMirror (PLAN §6.2): while an agent sits at a PC, a terminal window on the PC's own screen tails
@@ -10,6 +17,10 @@ import { GUEST_DISPLAY, GUEST_HOME, GUEST_USER } from './guest.js';
  *
  * The terminal runs as `cua` on the guest display with `MV_MIRROR=<pcId>` in its environment; closing kills the
  * spawned process and sweeps every process carrying that variable (a mirror left by an earlier Node run included).
+ *
+ * On macOS PCs (spike S6) the mirror is a Terminal.app window: a `.terminal` settings document (`CommandString`,
+ * `shellExitAction` 0 = close the window when the command ends, the title) opened with `open` runs the same tail with
+ * `MV_MIRROR` set. Closing sweeps those processes (`ps -E`), and the window closes by itself; no Apple events.
  */
 
 /**
@@ -22,10 +33,65 @@ if [ "$s" -gt 4000000 ]; then tail -c 1000000 ~/.mv/shell.log > ~/.mv/shell.log.
 printf '\\n\\033[1;36m── %s sat down at %s (%s) ──\\033[0m\\n' "$1" "$2" "$(date '+%H:%M')" >> ~/.mv/shell.log
 tail -n 200 -F ~/.mv/shell.log 2>/dev/null | sed -u 's/__MV_PWD__.*$//'`;
 
+/** {@link MIRROR_SCRIPT} on macOS (BSD `stat`). */
+export const MAC_MIRROR_SCRIPT = MIRROR_SCRIPT.replace('stat -c %s', 'stat -f %z');
+
 /** The window title of a PC's mirror. */
 export function mirrorTitle(agentLabel: string): string {
   return `Shell: ${agentLabel}`;
 }
+
+const xml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * The mirror script of a macOS PC: {@link MAC_MIRROR_SCRIPT} with its arguments (the agent's label, the PC) set inside,
+ * because Terminal splits a `CommandString` on spaces and takes no quotes (S6/M9: a quoted path is not found).
+ */
+export function macMirrorScript(label: string, pcId: string): string {
+  return `set -- ${shellQuote(label)} ${shellQuote(pcId)}
+${MAC_MIRROR_SCRIPT}
+`;
+}
+
+/** The Terminal.app settings document of a macOS mirror: runs the tail, titled, and closes when it ends. */
+export function macMirrorTerminal(label: string, pcId: string): string {
+  if (!/^[a-z0-9-]+$/.test(pcId)) throw new Error(`invalid PC id ${pcId}`);
+  // Words without quotes or spaces only (see macMirrorScript).
+  const command = `/usr/bin/env MV_MIRROR=${pcId} /bin/bash ${MAC_GUEST_HOME}/.mv/mirror.sh`;
+  const t = xml(mirrorTitle(label));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>name</key><string>MineVibe Shell</string>
+<key>type</key><string>Window Settings</string>
+<key>ProfileCurrentVersion</key><real>2.07</real>
+<key>CommandString</key><string>${xml(command)}</string>
+<key>RunCommandAsShell</key><true/>
+<key>shellExitAction</key><integer>0</integer>
+<key>warnOnShellCloseAction</key><integer>0</integer>
+<key>WindowTitle</key><string>${t}</string>
+<key>ShowActiveProcessInTitle</key><false/>
+<key>ShowDimensionsInTitle</key><false/>
+<key>ShowShellCommandInTitle</key><false/>
+<key>ShowRepresentedURLInTitle</key><false/>
+<key>ShowTTYNameInTitle</key><false/>
+<key>ShowCommandKeyInTitle</key><false/>
+<key>ShowWindowSettingsNameInTitle</key><false/>
+<key>columnCount</key><integer>110</integer>
+<key>rowCount</key><integer>32</integer>
+</dict></plist>
+`;
+}
+
+/**
+ * Writes the mirror script and the settings document (`$1` script, `$2` document, both base64) into `~/.mv` and opens
+ * the document: Terminal opens a window running the tail.
+ */
+export const MAC_MIRROR_OPEN = `mkdir -p ~/.mv || exit 1
+printf '%s' "$1" | base64 -d > ~/.mv/mirror.sh && chmod 700 ~/.mv/mirror.sh || exit 1
+printf '%s' "$2" | base64 -d > ~/.mv/mirror.terminal || exit 1
+exec open ~/.mv/mirror.terminal`;
 
 export interface ShellMirrorOptions {
   /** The connected spacesd client of a running PC. */
@@ -37,6 +103,8 @@ export interface ShellMirrorOptions {
   readonly callTimeoutMs?: number;
   /** Terminal geometry (columns x rows + x + y). */
   readonly geometry?: string;
+  /** The PC's guest OS (default: linux). */
+  readonly osOf?: (pcId: string) => 'linux' | 'macos';
 }
 
 export class ShellMirror {
@@ -63,6 +131,11 @@ export class ShellMirror {
       await this.#closeNow(pcId);
       try {
         const c = await this.#o.client(pcId);
+        if (this.#o.osOf?.(pcId) === 'macos') {
+          await this.#openMac(c, pcId, label);
+          this.#open.set(pcId, { agentId, proc: null });
+          return;
+        }
         const proc = await withDeadline(this.#timeoutMs, 'shell mirror', (signal) =>
           c.spawn(
             {
@@ -98,6 +171,35 @@ export class ShellMirror {
         this.#o.logger?.warn({ pcId, agentId, err: String(err) }, 'could not open the shell mirror');
       }
     });
+  }
+
+  /** Opens the Terminal.app mirror of a macOS PC (the window belongs to Terminal; closing sweeps `MV_MIRROR`). */
+  async #openMac(c: SpacesdClientLike, pcId: string, label: string): Promise<void> {
+    const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+    const out = await withDeadline(this.#timeoutMs, 'shell mirror', (signal) =>
+      c.run(
+        {
+          program: 'bash',
+          args: [
+            '-c',
+            MAC_MIRROR_OPEN,
+            'mirror',
+            b64(macMirrorScript(label, pcId)),
+            b64(macMirrorTerminal(label, pcId)),
+          ],
+          env: new Map([['HOME', MAC_GUEST_HOME]]),
+          user: MAC_GUEST_USER,
+          stdin: false,
+          timeoutMs: this.#timeoutMs,
+        },
+        { signal },
+      ),
+    );
+    if (!out.exit.success) {
+      throw new Error(
+        `open exited with ${out.exit.code}: ${Buffer.from(out.stderr).toString('utf8').slice(0, 200)}`,
+      );
+    }
   }
 
   /** Closes the PC's mirror (if any). Never throws. */

@@ -1,6 +1,6 @@
 /**
  * PC types (PLAN §8.1). `linux` and `linux-slim` run on Apple `container` (or Docker in dev/CI),
- * `macos` is a Lume VM (driver stub until M9, at most 2 running), `windows` is shown greyed out.
+ * `macos` is a Lume VM (LumeMacDriver, at most 2 running), `windows` is shown greyed out.
  */
 
 export const PC_TYPES = ['linux', 'linux-slim', 'macos', 'windows'] as const;
@@ -43,8 +43,6 @@ export interface PcTypeSpec {
   /** Whether a PC of this type can be created on this host at all. */
   available: boolean;
   unavailableReason?: string;
-  /** True while the driver is a stub (macOS until M9): PCs can be configured but not booted. */
-  driverStub?: boolean;
   defaults: PcResources;
   min: Pick<PcResources, 'cpus' | 'memMiB'>;
   max: Pick<PcResources, 'cpus' | 'memMiB'>;
@@ -92,14 +90,15 @@ export const PC_TYPE_SPECS: Readonly<Record<PcType, PcTypeSpec>> = {
     label: 'macOS',
     family: 'macos',
     available: true,
-    driverStub: true,
     defaults: { cpus: 4, memMiB: 8 * GiB_MiB, shmMiB: 0 },
     min: { cpus: 2, memMiB: 4 * GiB_MiB },
     max: { cpus: 12, memMiB: 32 * GiB_MiB },
-    // The macOS image defines a 150 GiB sparse disk.
-    disk: { homeGiB: 0, overlayGiB: 0, tmpGiB: 0, varTmpGiB: 0, rootfsGiB: 150 },
+    // The image's disk is a 150 GiB sparse file, but clones share the base's ~29 GiB (APFS clonefile, S6): the budget
+    // charges each macOS PC an allowance for what it adds, and the base image is counted by the free disk itself.
+    disk: { homeGiB: 0, overlayGiB: 0, tmpGiB: 0, varTmpGiB: 0, rootfsGiB: 40 },
     maxRunning: 2,
     minFreeDiskGiB: 40,
+    // Pinned by tag and digest in packaging/vendor.lock.json (`images.cua-macos`); Lume pulls it (LumeMacDriver).
     image: 'ghcr.io/trycua/macos:26',
     display: [1280, 800],
   },

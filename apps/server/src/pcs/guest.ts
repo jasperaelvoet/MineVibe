@@ -257,7 +257,7 @@ const ESC = '\u001b';
  */
 export function mirrorPrompt(
   command: string,
-  who: { agentId: string; pcId: string; cwd: string | undefined },
+  who: { agentId: string; pcId: string; cwd: string | undefined; home?: string },
 ): string | null {
   if (!command.includes(WRAP_START)) return null;
   const lines = command.split('\n');
@@ -270,7 +270,9 @@ export function mirrorPrompt(
   const first = (inner[0] ?? '').trim();
   const shown = first.length > 300 ? `${first.slice(0, 300)}…` : first;
   const more = inner.length > 1 ? ' …' : '';
-  const cwd = (who.cwd ?? GUEST_HOME).replace(new RegExp(`^${GUEST_HOME}(?=/|$)`), '~');
+  const home = who.home ?? GUEST_HOME;
+  const cwd = who.cwd ?? home;
+  const shownCwd = cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
   // Control characters (escape sequences an agent put in its command included) are stripped from the parts; the
   // prompt's own colours are added afterwards.
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this strips
@@ -278,7 +280,7 @@ export function mirrorPrompt(
   const green = `${ESC}[1;32m`;
   const blue = `${ESC}[1;34m`;
   const reset = `${ESC}[0m`;
-  return `${green}${clean(who.agentId)}@${clean(who.pcId)}${reset}:${blue}${clean(cwd)}${reset}$ ${clean(shown)}${more}`;
+  return `${green}${clean(who.agentId)}@${clean(who.pcId)}${reset}:${blue}${clean(shownCwd)}${reset}$ ${clean(shown)}${more}`;
 }
 
 /** POSIX shell quoting of one word. */
@@ -594,4 +596,163 @@ export function exitCodeOf(exit: { code?: number | undefined; signal?: string | 
   const sig = (exit.signal ?? '').toLowerCase().replace(/^sig/, '');
   const nums: Record<string, number> = { hup: 1, int: 2, quit: 3, kill: 9, segv: 11, pipe: 13, term: 15 };
   return 128 + (nums[sig] ?? 9);
+}
+
+// ------------------------------------------------------------------------------------------------- macOS guests
+
+/** The macOS image's user (autologin; spacesd runs in its GUI session) and home (S6). */
+export const MAC_GUEST_USER = 'lume';
+export const MAC_GUEST_HOME = '/Users/lume';
+/** Where Lume's shares appear in a macOS guest. */
+export const MAC_SHARE_ROOT = '/Volumes/My Shared Files';
+/**
+ * PATH of the macOS guest scripts: spacesd's children get only `/usr/bin:/bin:/usr/sbin:/sbin`, and the ripgrep MineVibe
+ * installs lives in `/usr/local/bin`.
+ */
+export const MAC_GUEST_PATH = '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+
+/** `editFile`, read half, on macOS (BSD `stat`). */
+export const MAC_EDIT_READ_SCRIPT = EDIT_READ_SCRIPT.replace('stat -c %s --', 'stat -f %z --');
+
+/** `editFile`, write half, on macOS (`sha256sum` is new in macOS 15; `shasum` is the fallback). */
+export const MAC_EDIT_WRITE_SCRIPT = `f=$1
+if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum < "$f" | cut -d' ' -f1); else got=$(shasum -a 256 < "$f" | cut -d' ' -f1); fi
+[ -n "$got" ] || exit ${SCRIPT_EXIT.DENIED}
+[ "$got" = "$2" ] || exit ${SCRIPT_EXIT.CHANGED}
+cat > "$f" || exit ${SCRIPT_EXIT.DENIED}`;
+
+/** {@link STAT_TARGET_SCRIPT} on macOS: `<file type>|<size>|<mtime>` (`Regular File`, `Directory`). */
+export const MAC_STAT_TARGET_SCRIPT = `[ -e "$1" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
+exec stat -L -f '%HT|%z|%m' -- "$1"`;
+
+/** {@link TRIM_JOB_SCRIPT} on macOS. */
+export const MAC_TRIM_JOB_SCRIPT = TRIM_JOB_SCRIPT.replace('stat -c %s --', 'stat -f %z --');
+
+/**
+ * {@link SWEEP_SCRIPT} on macOS, which has no `/proc`: `ps -axwwE` prints each process's environment after its command
+ * (the user's own processes; every process when run as root), so a field equal to `$1=$2` marks a hit; descendants are
+ * added by parent pid. bash 3.2 has no associative arrays, so awk does the walk. Name and value reach awk separately:
+ * awk cuts its own `-v k=v` arguments at the `=` in place, and `ps` would then show a `MV_TAG=…` word in awk's command.
+ */
+export const MAC_SWEEP_SCRIPT = `ps -axwwE -o pid=,ppid=,command= 2>/dev/null | awk -v n="$1" -v v="$2" -v self="$$" '
+BEGIN { want = n "=" v }
+{ pid = $1; parent[pid] = $2; for (i = 3; i <= NF; i++) if ($i == want) { hit[pid] = 1; break } }
+END {
+  grow = 1
+  while (grow) { grow = 0; for (p in parent) if (!(p in hit) && (parent[p] in hit)) { hit[p] = 1; grow = 1 } }
+  for (p in hit) if (p != self) print p
+}'`;
+
+/**
+ * `open` on macOS: URLs go to Safari (the image has no Firefox), paths to their default app (LaunchServices), app names
+ * (and the Linux names the tools know: a terminal, a browser, a file manager) to the app. `open --env` gives the
+ * launched app `MV_TAG`/`MV_CALL`, so the seat's sweep finds it (`ps -E`). Exits NOT_FOUND for a missing path and 2
+ * (printing `apps: …`) when nothing opens the target.
+ */
+export const MAC_OPEN_SCRIPT = `t=$1; shift
+launch() { open --env "MV_TAG=$MV_TAG" --env "MV_CALL=$MV_CALL" "$@" >/dev/null 2>&1; }
+case "$t" in
+  xfce4-terminal|terminal|Terminal|shell) echo "via Terminal"; launch -a Terminal "$HOME"; exit $? ;;
+  firefox|chromium|browser|safari|Safari) echo "via Safari"; launch -a Safari; exit $? ;;
+  thunar|files|finder|Finder) echo "via Finder"; launch -a Finder; exit $? ;;
+  http://*|https://*|file://*|about:*) echo "via Safari"; launch -a Safari "$t"; exit $? ;;
+  /*)
+    [ -e "$t" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
+    echo "via open"; launch "$t"; exit $? ;;
+esac
+if open -Ra "$t" >/dev/null 2>&1; then
+  echo "via $t"
+  if [ $# -gt 0 ]; then launch -a "$t" --args "$@"; else launch -a "$t"; fi
+  exit $?
+fi
+if command -v "$t" >/dev/null 2>&1; then echo "via $t"; nohup "$t" "$@" >/dev/null 2>&1 < /dev/null & exit 0; fi
+printf 'apps: '; ls /Applications /System/Applications 2>/dev/null | sed -n 's/\\.app$//p' | sort -u | head -n 25 | tr '\\n' ' '; echo
+exit 2`;
+
+/**
+ * Prefix of every macOS `exec`: {@link EXEC_PREFIX} after `umask 022` (spacesd's children run with umask 077, so files
+ * an agent made would be 0600 on the Mac).
+ */
+export const MAC_EXEC_PREFIX = `umask 022\n${EXEC_PREFIX}`;
+
+/** What differs between Linux and macOS guests for PcApi, ShellMirror and the boot steps. */
+export interface GuestProfile {
+  readonly os: 'linux' | 'macos';
+  readonly user: string;
+  readonly home: string;
+  /** `DISPLAY` for GUI programs (Linux); null on macOS. */
+  readonly display: string | null;
+  /** PATH for the guest scripts (null: spacesd's own). */
+  readonly path: string | null;
+  readonly jobsDir: string;
+  /** Extra environment of every `exec`. */
+  readonly execEnv: Readonly<Record<string, string>>;
+  readonly execPrefix: string;
+  readonly scripts: {
+    readonly read: string;
+    readonly write: string;
+    readonly editRead: string;
+    readonly editWrite: string;
+    readonly glob: string;
+    readonly grep: string;
+    readonly statTarget: string;
+    readonly trimJob: string;
+    readonly open: string;
+    readonly zoom: string;
+    readonly sweep: string;
+  };
+}
+
+export const LINUX_GUEST: GuestProfile = {
+  os: 'linux',
+  user: GUEST_USER,
+  home: GUEST_HOME,
+  display: GUEST_DISPLAY,
+  path: null,
+  jobsDir: JOBS_DIR,
+  execEnv: { SHELL: '/bin/bash', DISPLAY: GUEST_DISPLAY, DEBIAN_FRONTEND: 'noninteractive' },
+  execPrefix: EXEC_PREFIX,
+  scripts: {
+    read: READ_SCRIPT,
+    write: WRITE_SCRIPT,
+    editRead: EDIT_READ_SCRIPT,
+    editWrite: EDIT_WRITE_SCRIPT,
+    glob: GLOB_SCRIPT,
+    grep: GREP_SCRIPT,
+    statTarget: STAT_TARGET_SCRIPT,
+    trimJob: TRIM_JOB_SCRIPT,
+    open: OPEN_SCRIPT,
+    zoom: ZOOM_SCRIPT,
+    sweep: SWEEP_SCRIPT,
+  },
+};
+
+export const MACOS_GUEST: GuestProfile = {
+  os: 'macos',
+  user: MAC_GUEST_USER,
+  home: MAC_GUEST_HOME,
+  display: null,
+  path: MAC_GUEST_PATH,
+  jobsDir: `${MAC_GUEST_HOME}/.mv/jobs`,
+  execEnv: { SHELL: '/bin/bash', HOMEBREW_NO_AUTO_UPDATE: '1' },
+  execPrefix: MAC_EXEC_PREFIX,
+  scripts: {
+    read: READ_SCRIPT,
+    write: WRITE_SCRIPT,
+    editRead: MAC_EDIT_READ_SCRIPT,
+    editWrite: MAC_EDIT_WRITE_SCRIPT,
+    glob: GLOB_SCRIPT,
+    grep: GREP_SCRIPT,
+    statTarget: MAC_STAT_TARGET_SCRIPT,
+    trimJob: MAC_TRIM_JOB_SCRIPT,
+    open: MAC_OPEN_SCRIPT,
+    // No ImageMagick: exits 127 and the region comes from spacesd.
+    zoom: ZOOM_SCRIPT,
+    sweep: MAC_SWEEP_SCRIPT,
+  },
+};
+
+/** The guest profile of a PC family. */
+export function guestProfile(family: 'linux' | 'macos' | 'windows'): GuestProfile {
+  return family === 'macos' ? MACOS_GUEST : LINUX_GUEST;
 }

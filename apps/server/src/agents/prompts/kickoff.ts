@@ -57,6 +57,11 @@ export function kickoffMessage(input: KickoffInput): string {
     ),
     `User ${pc.user}, home ${pc.home}.`,
   ];
+  if (pc.os === 'macos') {
+    lines.push(
+      'This PC runs macOS (BSD command-line tools, no Homebrew): Cmd is "cmd" in key names ("cmd+s" saves, "cmd+q" quits an app), and the open tool starts apps by name.',
+    );
+  }
   if (pc.mounts.length > 0) {
     lines.push(`${input.playerName}'s Vault folders (same absolute path inside the PC):`);
     for (const m of pc.mounts)

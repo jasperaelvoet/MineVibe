@@ -19,8 +19,9 @@ import {
   type PcAllocation,
   planBoot,
 } from './Budget.js';
-import { settleWithin } from './deadline.js';
+import { settleWithin, withDeadline } from './deadline.js';
 import { EngineError } from './drivers/ContainerRuntime.js';
+import { type MacPcDriver, MacStartError, type MacVmInfo } from './drivers/MacPcDriver.js';
 import {
   hasLabels,
   MANAGED_LABEL,
@@ -36,10 +37,21 @@ import {
   type VolumeMount,
 } from './drivers/PcDriver.js';
 import { FrameService, type FrameServiceOptions, type FrameSink } from './FrameService.js';
-import { GUEST_HOME, GUEST_USER } from './guest.js';
+import { GuestViewSync } from './GuestViewSync.js';
+import { GUEST_HOME, GUEST_USER, MAC_GUEST_HOME, MAC_GUEST_PATH, MAC_GUEST_USER } from './guest.js';
 import { freeDiskBytes, freeLoopbackPort, isLoopbackPortFree, readHostFacts } from './host.js';
 import { InputRouter, type InputRouterOptions } from './InputRouter.js';
 import { currentRecord, writeInstanceRecord } from './InstanceRegistry.js';
+import {
+  MAC_CODEX_PATH,
+  MAC_DISPLAY_JXA,
+  MAC_DISPLAY_SCRIPT,
+  MAC_REFRESH_SCRIPT,
+  MAC_SETUP_SCRIPT,
+  macSetupArgs,
+  macShares,
+  parseSetupOutput,
+} from './macGuest.js';
 import {
   assertPcId,
   clampResources,
@@ -59,7 +71,7 @@ import {
   sanitizeDiskCaps,
   tmpVolumeName,
 } from './PcTypes.js';
-import type { SpacesdPool } from './SpacesdPool.js';
+import { releaseClient, type SpacesdPool } from './SpacesdPool.js';
 import {
   crossPcNestingProblem,
   type OtherPcMounts,
@@ -130,6 +142,16 @@ interface PcsFile {
   version: 1;
   nextSlot: number;
   pcs: PcRecord[];
+  /** Downloads the player approved (`pc.consent`): the macOS image, by its pinned digest. */
+  consents?: { macosImage?: { digest: string; at: number } };
+}
+
+/** A download waiting for the player's OK (`pc.state.consent`, the mod's consent modal). */
+export interface PcConsentPrompt {
+  consentId: string;
+  what: string;
+  bytes: number;
+  freeBytes: number;
 }
 
 /** Machine-readable cause of an `error` (or other) status. */
@@ -143,7 +165,9 @@ export type PcStatusReason =
   | 'boot_failed'
   | 'stop_failed'
   | 'vault_refused'
-  | 'not_ours';
+  | 'not_ours'
+  /** On a `running` macOS PC: MineVibe's setup inside the guest (sudo, Vault paths, ripgrep) failed in part. */
+  | 'guest_setup';
 
 export interface PcStatusInfo {
   status: PcStatus;
@@ -168,6 +192,8 @@ export interface PcView {
   plugged: boolean;
   pinned: boolean;
   display: [number, number];
+  /** Set while `status` is `awaiting_consent`. */
+  consent?: PcConsentPrompt;
 }
 
 export type DiskLevel = 'ok' | 'low' | 'critical';
@@ -184,6 +210,11 @@ export interface PcManagerOptions {
   /** `state/` (pcs.json, tokens). */
   stateDir: string;
   driver: PcDriver;
+  /**
+   * The macOS VM driver (Lume, PLAN §8.7). Null (default): macOS PCs can be configured but not started (`UNAVAILABLE`).
+   * Its engine starts only when a macOS PC needs it.
+   */
+  macDriver?: MacPcDriver | null;
   pool: SpacesdPool;
   logger?: Logger;
   budget?: Partial<BudgetSettings>;
@@ -365,6 +396,18 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   readonly #notes = new Map<string, { reason: PcStatusReason; detail: string }>();
   /** The Codex export bind-mounted at {@link CODEX_GUEST_PATH}, or null. */
   readonly #codex: string | null;
+  /** The macOS VM driver, or null (macOS PCs unavailable). */
+  readonly #mac: MacPcDriver | null;
+  /** The Lume engine start in flight (shared by concurrent macOS starts). */
+  #macEngine: Promise<void> | null = null;
+  /** Last known macOS VMs of this instance, by PC id (H4: what actually runs). */
+  #macLive = new Map<string, MacVmInfo>();
+  /** The macOS image download waiting for the player's OK, and the PCs waiting for it. */
+  #consent: (PcConsentPrompt & { waiting: Set<string> }) | null = null;
+  /** macOS starts waiting for the image download, by PC id: a stop ends the wait (the download goes on). */
+  readonly #imageWaits = new Map<string, AbortController>();
+  /** Host edits of macOS PCs' Vault folders → a refreshed guest view before the next PcApi call (S6). */
+  readonly #guestView: GuestViewSync;
 
   constructor(options: PcManagerOptions) {
     super();
@@ -377,6 +420,26 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     this.#now = options.now ?? Date.now;
     this.instanceId = options.instanceId ?? instanceIdFor(options.stateDir);
     this.#codex = this.#codexSource(options.codexExport ?? null);
+    this.#mac = options.macDriver ?? null;
+    this.#guestView = new GuestViewSync({
+      refresh: (id) => this.#refreshGuestView(id),
+      ...(options.logger ? { logger: options.logger } : {}),
+    });
+  }
+
+  /** The macOS VM driver, or null. */
+  get macDriver(): MacPcDriver | null {
+    return this.#mac;
+  }
+
+  #isMac(p: Pick<PcRecord, 'type'>): boolean {
+    return PC_TYPE_SPECS[p.type].family === 'macos';
+  }
+
+  /** Whether a PC of this record's type can boot on this host with this manager (macOS needs the Lume driver). */
+  #bootable(p: Pick<PcRecord, 'type'>): boolean {
+    const spec = PC_TYPE_SPECS[p.type];
+    return spec.available && (!this.#isMac(p) || this.#mac !== null);
   }
 
   #codexSource(dir: string | null): string | null {
@@ -400,10 +463,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return this.#codex;
   }
 
-  /** Where a PC sees the Codex (`/mnt/codex`), or null when it has none (no export, or not a Linux PC). */
+  /**
+   * Where a PC sees the Codex: `/mnt/codex` (Linux), `/Volumes/My Shared Files/codex` (macOS, also `~/codex`), or null
+   * when it has none.
+   */
   codexPathOf(id: string): string | null {
     const p = this.#file.pcs.find((x) => x.id === id);
-    return this.#codex && p && PC_TYPE_SPECS[p.type].family === 'linux' ? CODEX_GUEST_PATH : null;
+    if (!this.#codex || !p) return null;
+    const family = PC_TYPE_SPECS[p.type].family;
+    if (family === 'linux') return CODEX_GUEST_PATH;
+    return family === 'macos' && this.#mac ? MAC_CODEX_PATH : null;
   }
 
   protected override onListenerError(event: string, error: unknown): void {
@@ -454,6 +523,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         .filter((p) => isPcType(p.type) && typeof p.id === 'string' && PC_ID_RE.test(p.id))
         .map((p) => {
           const rec: PcRecord = { ...p, disk: sanitizeDiskCaps(p.type, p.disk) };
+          // Before M9 a macOS record carried the image's 150 GiB sparse size; clones share the base (S6).
+          if (PC_TYPE_SPECS[p.type].family === 'macos' && rec.disk.rootfsGiB === 150) {
+            rec.disk.rootfsGiB = PC_TYPE_SPECS.macos.disk.rootfsGiB;
+          }
           const name = cleanPcName(p.name);
           if (name) rec.name = name;
           else delete rec.name;
@@ -462,6 +535,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         });
       const maxSlot = pcs.reduce((n, p) => Math.max(n, p.slot ?? 0), 0);
       this.#file = { version: 1, nextSlot: Math.max(raw.nextSlot ?? 1, maxSlot + 1), pcs };
+      const mac = raw.consents?.macosImage;
+      if (mac && typeof mac.digest === 'string' && typeof mac.at === 'number') {
+        this.#file.consents = { macosImage: { digest: mac.digest, at: mac.at } };
+      }
     }
     if (this.#file.pcs.length === 0 && (options.createDefault ?? true)) {
       await this.#addRecord(this.#newRecord('linux-1', 'linux', {}));
@@ -649,6 +726,16 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         plugged: p.plugged,
         pinned: p.pinned,
         display: PC_TYPE_SPECS[p.type].display,
+        ...(s.status === 'awaiting_consent' && this.#consent?.waiting.has(p.id)
+          ? {
+              consent: {
+                consentId: this.#consent.consentId,
+                what: this.#consent.what,
+                bytes: this.#consent.bytes,
+                freeBytes: this.#consent.freeBytes,
+              },
+            }
+          : {}),
       };
     });
   }
@@ -725,13 +812,31 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     } catch {
       volumes = null;
     }
+    await this.#macInventory();
     return { live: this.#live, volumes };
   }
 
-  /** Whether a PC's container actually runs (H4), whatever its status says. */
+  /** This instance's macOS VMs, as Lume reports them now (only while this process holds the Lume engine). */
+  async #macInventory(): Promise<void> {
+    if (!this.#mac?.engineHeld) return;
+    try {
+      const vms = await this.#mac.list(this.labels);
+      const live = new Map<string, MacVmInfo>();
+      for (const vm of vms) {
+        const id = vm.labels[PC_ID_LABEL];
+        if (id) live.set(id, vm);
+      }
+      this.#macLive = live;
+    } catch (err) {
+      this.#log?.debug({ err: errText(err) }, 'macOS VM list failed; using the last known');
+    }
+  }
+
+  /** Whether a PC's container or VM actually runs (H4), whatever its status says. */
   #liveActive(id: string): boolean {
     const st = this.#live.get(id)?.state;
-    return st === 'running' || st === 'stopping';
+    const vm = this.#macLive.get(id)?.state;
+    return st === 'running' || st === 'stopping' || vm === 'running' || vm === 'starting';
   }
 
   /** Records what a fresh inspect of one PC's container showed. */
@@ -931,10 +1036,14 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return this.#frames;
   }
 
-  /** An InputRouter whose clients come from this manager. */
+  /** An InputRouter whose clients come from this manager (macOS PCs get their own input translation). */
   createInputRouter(options: Partial<Omit<InputRouterOptions, 'getClient'>> = {}): InputRouter {
     this.#input = new InputRouter({
       getClient: (id) => this.pool.client(id),
+      osOf: (id) => {
+        const p = this.#file.pcs.find((x) => x.id === id);
+        return p && this.#isMac(p) ? 'macos' : 'linux';
+      },
       ...(this.#log ? { logger: this.#log } : {}),
       ...options,
     });
@@ -1033,14 +1142,513 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     return info;
   }
 
+  /** Stops the PC's container, or its VM (macOS: the guest is asked to shut down first). */
   async #stopContainer(p: PcRecord, timeoutSeconds?: number): Promise<void> {
+    if (this.#isMac(p)) return this.#stopMacVm(p, timeoutSeconds);
     const info = await this.#inspectOwned(p);
     if (info && info.state !== 'stopped') await this.driver.stop(info.name, timeoutSeconds);
   }
 
   async #removeContainer(p: PcRecord): Promise<void> {
+    if (this.#isMac(p)) return this.#removeMacVm(p);
     const info = await this.#inspectOwned(p);
     if (info) await this.driver.remove(info.name);
+  }
+
+  // ------------------------------------------------------------------ macOS VMs (PLAN §8.7)
+
+  /** Starts (or joins) the Lume engine; this instance's own VMs are left for reconcile and boot to adopt or stop. */
+  async #macEngineUp(): Promise<MacPcDriver> {
+    const mac = this.#mac;
+    if (!mac) throw new PcError('UNAVAILABLE', 'macOS PCs need Lume, which this MineVibe does not have');
+    // Held and answering; a serve that died meanwhile is started again (under the lease lock).
+    if (mac.engineHeld && (await mac.engineAlive())) return mac;
+    const prefix = `mv-pc-${this.instanceId}-`;
+    this.#macEngine ??= mac
+      .ensureEngine({
+        keep: (vm) => vm.startsWith(prefix),
+        onProgress: (m) => this.#log?.info({ lume: m }, 'macOS PC engine'),
+      })
+      .finally(() => {
+        this.#macEngine = null;
+      });
+    try {
+      await this.#macEngine;
+    } catch (err) {
+      throw new PcError('ENGINE_DOWN', `Lume: ${errText(err)}`);
+    }
+    return mac;
+  }
+
+  /** The PC's VM, refusing one that does not carry this instance's labels (M1). */
+  async #inspectMacOwned(p: PcRecord, mac: MacPcDriver): Promise<MacVmInfo | null> {
+    const info = await mac.inspect(this.containerNameOf(p.id));
+    if (info && !hasLabels(info.labels, this.#ownerLabels(p.id))) {
+      throw new PcError('BUSY', `VM ${info.name} does not carry this MineVibe's labels; leaving it alone`);
+    }
+    if (info) this.#macLive.set(p.id, info);
+    else this.#macLive.delete(p.id);
+    return info;
+  }
+
+  /**
+   * Asks the guest to shut down (it ends ~12 s later, S6) through a client of its own: the PC's viewers (and its pool
+   * entry) are gone by the time it is stopped. Best effort: the VM is powered off after the timeout.
+   */
+  async #askGuestShutdown(ip: string, token: string): Promise<void> {
+    const mod = await this.pool.module();
+    const c = await withDeadline(5_000, 'spacesd connect', (signal) =>
+      mod.embedded().spacesd(`http://${ip}:3211`, token, { signal }),
+    );
+    try {
+      await withDeadline(6_000, 'guest shutdown', (signal) =>
+        c.run(
+          {
+            program: 'bash',
+            args: ['-c', 'sudo -n shutdown -h now >/dev/null 2>&1 &'],
+            env: new Map([['HOME', MAC_GUEST_HOME]]),
+            user: MAC_GUEST_USER,
+            stdin: false,
+            timeoutMs: 5_000,
+          },
+          { signal },
+        ),
+      );
+    } finally {
+      releaseClient(c);
+    }
+  }
+
+  async #stopMacVm(p: PcRecord, timeoutSeconds?: number): Promise<void> {
+    this.#guestView.untrack(p.id);
+    const mac = this.#mac;
+    // Without the engine held there is nothing of ours to stop: VMs die with the serve that ran them.
+    if (!mac?.engineHeld) return;
+    const info = await this.#inspectMacOwned(p, mac);
+    if (!info) return;
+    const token = info.state === 'running' && info.ip ? await this.#readToken(p.id) : null;
+    const ip = info.ip;
+    const graceful = token && ip ? () => this.#askGuestShutdown(ip, token) : undefined;
+    await mac.stop(info.name, {
+      ...(graceful ? { graceful } : {}),
+      timeoutMs: Math.max(1, timeoutSeconds ?? 30) * 1000,
+    });
+    this.#macLive.set(p.id, { ...info, state: 'stopped' });
+  }
+
+  async #removeMacVm(p: PcRecord): Promise<void> {
+    const mac = this.#mac;
+    if (!mac) return;
+    const m = await this.#macEngineUp();
+    const info = await this.#inspectMacOwned(p, m);
+    if (info) await m.remove(info.name);
+    this.#macLive.delete(p.id);
+  }
+
+  /**
+   * The base image must be present before a clone. Missing and not yet approved: the PC waits for the player's OK
+   * (`awaiting_consent`, one prompt for every waiting PC) and this returns false. Approved: downloads it (shared by all
+   * waiting starts, progress in `downloading`).
+   */
+  async #ensureMacImage(p: PcRecord, mac: MacPcDriver): Promise<boolean> {
+    const base = await mac.baseImage();
+    if (base.present) return true;
+    if (this.#file.consents?.macosImage?.digest !== mac.image.digest) {
+      const free = await this.#freeDisk();
+      if (!this.#consent) {
+        this.#consent = {
+          consentId: `macos-image-${randomBytes(6).toString('hex')}`,
+          what: mac.image.what,
+          bytes: mac.image.downloadBytes,
+          freeBytes: free,
+          waiting: new Set(),
+        };
+      }
+      this.#consent.freeBytes = free;
+      this.#consent.waiting.add(p.id);
+      this.#setStatus(p.id, {
+        status: 'awaiting_consent',
+        detail: `the macOS image is a ${(mac.image.downloadBytes / 1e9).toFixed(1)} GB download; sneak-use the desk to approve it`,
+      });
+      return false;
+    }
+    const pct = (f: number) => Math.min(99, Math.max(0, Math.floor(f * 100)));
+    this.#setStatus(p.id, { status: 'downloading', progress: pct(base.pulling?.fraction ?? 0) });
+    // A stop (or decommission, or quit) ends this PC's wait at once; the download itself goes on for the others.
+    const wait = new AbortController();
+    this.#imageWaits.set(p.id, wait);
+    try {
+      const pulled = await Promise.race([
+        mac
+          .pullBase((pr) => {
+            if (wait.signal.aborted) return;
+            this.#setStatus(p.id, {
+              status: 'downloading',
+              progress: pct(pr.fraction),
+              detail: `${(pr.bytes / 1e9).toFixed(1)} of ${(pr.total / 1e9).toFixed(1)} GB`,
+            });
+          })
+          .then(() => true),
+        new Promise<false>((r) => wait.signal.addEventListener('abort', () => r(false), { once: true })),
+      ]);
+      if (!pulled) {
+        this.#setStatus(p.id, { status: 'off', detail: 'stopped while the macOS image downloaded' });
+        return false;
+      }
+    } finally {
+      if (this.#imageWaits.get(p.id) === wait) this.#imageWaits.delete(p.id);
+    }
+    this.#setStatus(p.id, { status: 'booting', progress: 5 });
+    return true;
+  }
+
+  /**
+   * The player's answer to the macOS image download. Accepting records the consent (by the image's digest, so a new
+   * image asks again) and returns the PCs that waited for it: the caller starts them. Declining turns them off.
+   */
+  async consent(pcId: string, consentId: string, accept: boolean): Promise<{ start: string[] }> {
+    this.#rec(pcId);
+    const c = this.#consent;
+    if (!c || c.consentId !== consentId || !c.waiting.has(pcId)) {
+      throw new PcError('INVALID', `no download of ${pcId} is waiting for consent`);
+    }
+    this.#consent = null;
+    const waiting = [...c.waiting].filter((id) => this.status(id).status === 'awaiting_consent');
+    if (accept && this.#mac) {
+      this.#file.consents = {
+        ...this.#file.consents,
+        macosImage: { digest: this.#mac.image.digest, at: this.#now() },
+      };
+      await this.#save();
+    }
+    for (const id of waiting) {
+      this.#setStatus(
+        id,
+        accept ? { status: 'off' } : { status: 'off', detail: 'the macOS download was declined' },
+      );
+    }
+    return { start: accept ? waiting : [] };
+  }
+
+  /** The consent prompt waiting now (tests, the bridge). */
+  get pendingConsent(): PcConsentPrompt | null {
+    if (!this.#consent) return null;
+    const { waiting: _w, ...prompt } = this.#consent;
+    return prompt;
+  }
+
+  /**
+   * Creates the VM when missing (clone + resources), else brings its resources in line with the record; then a new
+   * token, the Vault re-checked once more (H1), and the start with its shares. Registers spacesd at the VM's address.
+   */
+  async #bootMacVm(p: PcRecord, mac: MacPcDriver): Promise<void> {
+    await this.#recheckVault(p);
+    const name = this.containerNameOf(p.id);
+    const display = PC_TYPE_SPECS[p.type].display;
+    let info = await this.#inspectMacOwned(p, mac);
+    if (info && info.state !== 'stopped') {
+      // A VM still running for an inactive PC: restart it with fresh shares and a fresh token.
+      await mac.stop(name);
+      info = await this.#inspectMacOwned(p, mac);
+    }
+    if (!info) {
+      this.#setStatus(p.id, { status: 'booting', progress: 6, detail: 'cloning the macOS image' });
+      info = await mac.create({
+        name,
+        cpus: p.cpus,
+        memoryMiB: p.memMiB,
+        display,
+        labels: { ...this.#ownerLabels(p.id), 'minevibe.type': p.type },
+      });
+    } else if (
+      info.cpus !== p.cpus ||
+      info.memoryBytes !== p.memMiB * 1024 * 1024 ||
+      info.display !== `${display[0]}x${display[1]}`
+    ) {
+      await mac.configure(name, { cpus: p.cpus, memoryMiB: p.memMiB, display });
+    }
+    const token = await this.#rotateToken(p.id);
+    const links = macShares(p.mounts, this.#codex);
+    if (this.#codex) await mkdir(this.#codex, { recursive: true });
+    await this.#recheckVault(p);
+    // Watching starts before the guest mounts the shares, so no host edit from now on goes unseen (S6).
+    this.#guestView.track(
+      p.id,
+      p.mounts.map((m) => m.host),
+    );
+    this.#setStatus(p.id, { status: 'booting', progress: 10, detail: 'starting macOS' });
+    let ip: string;
+    try {
+      ({ ip } = await mac.start({ name, token, shares: links.map((l) => l.share) }));
+    } catch (err) {
+      if (err instanceof MacStartError && err.code === 'MACOS_SLOTS')
+        throw new PcError('MACOS_SLOTS', err.message);
+      throw err;
+    }
+    this.#macLive.set(p.id, { ...info, state: 'running', ip });
+    this.pool.register(p.id, { url: `http://${ip}:3211`, token });
+    this.#setStatus(p.id, { status: 'booting', progress: 25 });
+  }
+
+  /** MineVibe's setup inside a booted macOS guest (macGuest.ts); then the Vault folders are watched for host edits. */
+  async #macGuestSetup(p: PcRecord): Promise<{ warnings: string[]; error: string | null }> {
+    const links = macShares(p.mounts, this.#codex);
+    let result: { warnings: string[]; error: string | null };
+    try {
+      const out = await this.pool.call(
+        p.id,
+        (c, signal) =>
+          c.run(
+            {
+              program: 'bash',
+              args: ['-c', MAC_SETUP_SCRIPT, 'setup', ...macSetupArgs(links)],
+              env: new Map([
+                ['HOME', MAC_GUEST_HOME],
+                ['PATH', MAC_GUEST_PATH],
+                ['MV_RG', this.#mac?.guestRipgrep ?? ''],
+                ['MV_CODEX', this.#codex ? 'codex' : ''],
+              ]),
+              user: MAC_GUEST_USER,
+              stdin: false,
+              timeoutMs: 60_000,
+            },
+            { signal },
+          ),
+        { retry: false, timeoutMs: 70_000 },
+      );
+      const r = parseSetupOutput(Buffer.from(out.stdout).toString('utf8'));
+      result = {
+        warnings: r.warnings,
+        error: r.ok
+          ? null
+          : (r.error ?? `the setup script exited with ${out.exit.code ?? out.exit.signal ?? '?'}`),
+      };
+    } catch (err) {
+      result = { warnings: [], error: errText(err) };
+    }
+    const display = await this.#macDisplay(p);
+    if (display) result.warnings.push(display);
+    if (result.warnings.length || result.error) {
+      this.#log?.warn({ pcId: p.id, ...result }, 'macOS guest setup was incomplete');
+    }
+    if (!this.#guestView.isTracked(p.id)) {
+      // An adopted VM: it may have read files the host changed while no MineVibe watched, so the first call refreshes.
+      this.#guestView.track(
+        p.id,
+        p.mounts.map((m) => m.host),
+      );
+      this.#guestView.markDirty(p.id);
+    }
+    return result;
+  }
+
+  /**
+   * Puts the guest's main display in the PC's size (the image remembers 1024x768): a 1x mode set for good with
+   * {@link MAC_DISPLAY_JXA}, only when spacesd reports another size. Returns a warning, or null.
+   */
+  async #macDisplay(p: PcRecord): Promise<string | null> {
+    const [w, h] = PC_TYPE_SPECS[p.type].display;
+    try {
+      const size = async () => {
+        const list = JSON.parse(await this.pool.call(p.id, (c, signal) => c.displays({ signal }))) as {
+          primary?: boolean;
+          bounds?: { width?: number; height?: number };
+        }[];
+        const d = list.find((x) => x.primary) ?? list[0];
+        return `${Math.round(d?.bounds?.width ?? 0)}x${Math.round(d?.bounds?.height ?? 0)}`;
+      };
+      const before = await size();
+      if (before === `${w}x${h}`) return null;
+      const out = await this.pool.call(
+        p.id,
+        (c, signal) =>
+          c.run(
+            {
+              program: 'bash',
+              args: ['-c', MAC_DISPLAY_SCRIPT, 'display', MAC_DISPLAY_JXA, `${w}x${h}`],
+              env: new Map([
+                ['HOME', MAC_GUEST_HOME],
+                ['PATH', MAC_GUEST_PATH],
+              ]),
+              user: MAC_GUEST_USER,
+              stdin: false,
+              timeoutMs: 20_000,
+            },
+            { signal },
+          ),
+        { retry: false, timeoutMs: 25_000 },
+      );
+      const said = Buffer.from(out.stdout).toString('utf8').trim().split('\n').pop() ?? '';
+      if (said !== 'ok') return `the display stays ${before} (${said || `exit ${out.exit.code}`})`;
+      this.#log?.info({ pcId: p.id, from: before, to: `${w}x${h}` }, 'switched the macOS display mode');
+      return null;
+    } catch (err) {
+      return `the display size could not be set: ${errText(err)}`;
+    }
+  }
+
+  /** Refreshes a macOS guest's view of its Vault (MAC_REFRESH_SCRIPT; S6). Throws when it could not run. */
+  async #refreshGuestView(id: string): Promise<void> {
+    if (this.status(id).status !== 'running') return;
+    const out = await this.pool.call(
+      id,
+      (c, signal) =>
+        c.run(
+          {
+            program: 'bash',
+            args: ['-c', MAC_REFRESH_SCRIPT],
+            env: new Map([['HOME', MAC_GUEST_HOME]]),
+            user: MAC_GUEST_USER,
+            stdin: false,
+            timeoutMs: 15_000,
+          },
+          { signal },
+        ),
+      { retry: false, timeoutMs: 20_000 },
+    );
+    const text = Buffer.from(out.stdout).toString('utf8').trim();
+    if (text.includes('MVERR')) throw new Error(text);
+    this.#log?.debug({ pcId: id, how: text }, 'refreshed the guest view of the Vault');
+  }
+
+  /**
+   * Before a PcApi file or shell call: a macOS guest whose Vault changed on the host since the last call is refreshed
+   * first (S6). `writes` names the files a `write`/`edit` writes, so their own change events are not taken for host
+   * edits. Returns the function that ends the call. Other PCs: nothing to do.
+   */
+  guestIo(id: string, writes: readonly string[] = []): Promise<() => void> {
+    const p = this.#file.pcs.find((x) => x.id === id);
+    if (!p || !this.#isMac(p)) return Promise.resolve(() => {});
+    return this.#guestView.enter(id, writes);
+  }
+
+  /** A host-side change the watcher cannot see (tests): the next PcApi call refreshes the guest first. */
+  markGuestViewStale(id: string): void {
+    this.#guestView.markDirty(id);
+  }
+
+  async #startMacLocked(p: PcRecord, opts: { admitted: boolean }): Promise<void> {
+    if (!this.#mac) {
+      this.#setStatus(p.id, {
+        status: 'error',
+        detail: 'macOS PCs need Lume, which this MineVibe does not have',
+      });
+      throw new PcError('UNAVAILABLE', 'macOS PCs are not available here');
+    }
+    if (this.status(p.id).status === 'running') return;
+    const lowDisk = this.#diskFloorProblem(await this.#freeDisk());
+    if (lowDisk) {
+      this.#setStatus(p.id, { status: 'error', reason: 'low_disk', detail: lowDisk });
+      throw new PcError('OVER_BUDGET', lowDisk, 'disk');
+    }
+    let release = () => {};
+    if (!opts.admitted) {
+      try {
+        ({ release } = await this.#admit('start', p, { active: true }));
+      } catch (err) {
+        if (err instanceof PcError) {
+          this.#setStatus(p.id, {
+            status: err.code === 'MACOS_SLOTS' ? 'macos_slots_full' : 'no_capacity',
+            detail: err.message,
+          });
+        }
+        throw err;
+      }
+    }
+    try {
+      this.#setStatus(p.id, { status: 'booting', progress: 0, detail: 'starting Lume' });
+      let mac: MacPcDriver;
+      try {
+        mac = await this.#macEngineUp();
+      } catch (err) {
+        this.#setStatus(p.id, { status: 'engine_down', detail: errText(err) });
+        throw err;
+      }
+      if (!(await this.#ensureMacImage(p, mac))) return;
+      await this.#bootMacVm(p, mac);
+      await this.#save();
+      await this.#waitReady(p);
+    } catch (err) {
+      if (this.status(p.id).status === 'engine_down') throw err;
+      if (err instanceof PcError && err.code === 'MACOS_SLOTS') {
+        this.pool.unregister(p.id);
+        await this.#stopMacVm(p, 1).catch(() => {});
+        this.#setStatus(p.id, { status: 'macos_slots_full', detail: err.message });
+        throw err;
+      }
+      await this.#failBoot(p, err);
+      throw err;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Adopts or stops this instance's running macOS VMs (another process's serve kept them): a VM is adopted only when it
+   * runs with this PC's token, resources and shares; then it registers its address and waits for SERVING in `bootAll`.
+   * VMs without a record are stopped.
+   */
+  async #reconcileMac(): Promise<{ adopted: string[]; orphans: string[]; mismatched: string[] }> {
+    const out = { adopted: [] as string[], orphans: [] as string[], mismatched: [] as string[] };
+    if (!this.#mac || !this.#file.pcs.some((p) => this.#isMac(p))) return out;
+    let mac: MacPcDriver;
+    try {
+      mac = await this.#macEngineUp();
+    } catch (err) {
+      for (const p of this.#file.pcs) {
+        if (this.#isMac(p)) this.#setStatus(p.id, { status: 'engine_down', detail: errText(err) });
+      }
+      return out;
+    }
+    const vms = await mac.list(this.labels).catch(() => [] as MacVmInfo[]);
+    for (const vm of vms) {
+      const id = vm.labels[PC_ID_LABEL];
+      const rec = id ? this.#file.pcs.find((p) => p.id === id) : undefined;
+      if (!rec || !this.#isMac(rec) || vm.name !== this.containerNameOf(rec.id)) {
+        if (vm.state === 'running') {
+          out.orphans.push(vm.name);
+          await mac.stop(vm.name).catch(() => {});
+        }
+        continue;
+      }
+      this.#macLive.set(rec.id, vm);
+      if (vm.state !== 'running') continue;
+      await this.#serialize(rec.id, async () => {
+        const token = await this.#readToken(rec.id);
+        const display = PC_TYPE_SPECS[rec.type].display;
+        const want = ['setup', ...macShares(rec.mounts, this.#codex).map((l) => l.share.name)];
+        const got = (vm.shares ?? []).map((s) => s.hostPath.split('/').pop() ?? '');
+        const ok =
+          !!token &&
+          !!vm.ip &&
+          vm.tokenSha256 === tokenFingerprint(token) &&
+          vm.cpus === rec.cpus &&
+          vm.memoryBytes === rec.memMiB * 1024 * 1024 &&
+          vm.display === `${display[0]}x${display[1]}` &&
+          want.length === got.length &&
+          want.every((n, i) => n === got[i]);
+        if (ok && token && vm.ip) {
+          try {
+            await this.#recheckVault(rec);
+            this.pool.register(rec.id, { url: `http://${vm.ip}:3211`, token });
+            this.#setStatus(rec.id, { status: 'booting', progress: 50 });
+            out.adopted.push(rec.id);
+            return;
+          } catch (err) {
+            this.#log?.warn(
+              { pcId: rec.id, err: errText(err) },
+              'cannot adopt a running macOS VM; stopping it',
+            );
+          }
+        } else {
+          out.mismatched.push(rec.id);
+        }
+        await mac.stop(vm.name).catch(() => {});
+        this.#macLive.set(rec.id, { ...vm, state: 'stopped' });
+        this.#setStatus(rec.id, { status: 'off' });
+      });
+    }
+    return out;
   }
 
   #vaultOptions() {
@@ -1211,6 +1819,10 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       });
     }
     const legacy = await this.#reconcileLegacy();
+    const mac = await this.#reconcileMac();
+    adopted.push(...mac.adopted);
+    orphans.push(...mac.orphans);
+    mismatched.push(...mac.mismatched);
     await this.#save();
     await this.#inventory();
     if (orphans.length) this.#log?.warn({ orphans }, 'stopped orphaned PC containers (not deleted)');
@@ -1272,11 +1884,24 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
    */
   async #reconcileStrayLocked(p: PcRecord): Promise<void> {
     if (this.#isActive(p.id)) return;
+    if (this.#isMac(p)) {
+      // A macOS VM that runs for an inactive PC is stopped; its next start boots it with fresh shares and token.
+      if (this.#mac?.engineHeld) {
+        const vm = await this.#inspectMacOwned(p, this.#mac);
+        if (vm?.state === 'running') {
+          this.pool.unregister(p.id);
+          await this.#mac.stop(vm.name);
+          this.#macLive.set(p.id, { ...vm, state: 'stopped' });
+          this.#setStatus(p.id, { status: 'off' });
+        }
+      }
+      return;
+    }
     const c = await this.#inspectOwned(p);
     this.#noteLive(p.id, c);
     if (!c || (c.state !== 'running' && c.state !== 'stopping')) return;
     const spec = PC_TYPE_SPECS[p.type];
-    if (p.plugged && spec.available && !spec.driverStub && !this.#engineDown && c.state === 'running') {
+    if (p.plugged && spec.available && !this.#engineDown && c.state === 'running') {
       try {
         const problems = await this.#tryAdoptLocked(p, c);
         if (problems.length === 0) {
@@ -1334,7 +1959,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         .filter((p) => this.#isActive(p.id))
         .map((p) => this.#alloc(p, true));
       const candidates: BootCandidate[] = this.#file.pcs
-        .filter((p) => p.plugged && PC_TYPE_SPECS[p.type].available && !PC_TYPE_SPECS[p.type].driverStub)
+        .filter((p) => p.plugged && this.#bootable(p))
         .filter((p) => !this.#isActive(p.id) && !this.#liveActive(p.id))
         .map((p) => ({
           ...this.#alloc(p, false),
@@ -1489,7 +2114,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       }
       if (options.disk) rec.disk = { ...rec.disk, ...options.disk };
       if (options.mounts?.length) {
-        const v = await validateMounts(options.mounts, this.#vaultOptions());
+        const v = await validateMounts(this.#forType(options.type, options.mounts), this.#vaultOptions());
         if (!v.ok) throw new PcError('PATH_REFUSED', v.reason);
         const nested = crossPcNestingProblem(v.mounts, this.#otherMounts(id));
         if (nested) throw new PcError('PATH_REFUSED', nested);
@@ -1516,6 +2141,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       release();
     }
     return { pc: this.get(rec.id) as PcRecord, warnings };
+  }
+
+  /** Mounts as a PC type takes them: macOS shares have no build-dir overlays (no named volumes in a VM). */
+  #forType<M extends { overlays?: string[] }>(type: PcType, mounts: readonly M[]): M[] {
+    return PC_TYPE_SPECS[type].family === 'macos' ? mounts.map((m) => ({ ...m, overlays: [] })) : [...mounts];
   }
 
   #nextId(type: PcType): string {
@@ -1554,10 +2184,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     if (this.#closing) throw new PcError('ENGINE_DOWN', 'MineVibe is quitting; no PC starts now');
     const spec = PC_TYPE_SPECS[p.type];
     if (!spec.available) throw new PcError('UNAVAILABLE', spec.unavailableReason ?? 'unavailable');
-    if (spec.driverStub) {
-      this.#setStatus(p.id, { status: 'error', detail: 'macOS PCs arrive with the Lume driver (M9)' });
-      throw new PcError('UNAVAILABLE', 'macOS driver not implemented yet');
-    }
+    if (this.#isMac(p)) return this.#startMacLocked(p, opts);
     if (this.#engineDown) {
       this.#setStatus(p.id, { status: 'engine_down', detail: this.#engineDown });
       throw new PcError('ENGINE_DOWN', this.#engineDown);
@@ -1739,9 +2366,20 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       timeoutMs: this.#o.bootTimeoutMs ?? 120_000,
       onProgress: (pct) => booting(pct),
     });
-    await this.#linkCodex(p);
+    let setupProblem: string | null = null;
+    if (this.#isMac(p)) {
+      booting(97);
+      const r = await this.#macGuestSetup(p);
+      setupProblem = r.error ?? (r.warnings.length ? r.warnings.join('; ') : null);
+    } else {
+      await this.#linkCodex(p);
+    }
     this.#notes.delete(p.id);
-    this.#setStatus(p.id, { status: 'running', ...(note ? { ...note } : {}) });
+    this.#setStatus(p.id, {
+      status: 'running',
+      ...(note ? { ...note } : {}),
+      ...(setupProblem && !note ? { reason: 'guest_setup', detail: `guest setup: ${setupProblem}` } : {}),
+    });
   }
 
   /**
@@ -1780,6 +2418,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   /** Stops a PC (its container and volumes stay). A failure leaves `error`; the budget still counts a running container. */
   stop(id: string, options: { timeoutSeconds?: number } = {}): Promise<void> {
+    // A macOS start waiting minutes for the image download holds the PC's lock: end that wait first.
+    this.#imageWaits.get(id)?.abort();
     return this.#serialize(id, () => this.#stopLocked(this.#rec(id), options));
   }
 
@@ -1813,6 +2453,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   async #recreateLocked(p: PcRecord, status: 'booting' | 'remounting'): Promise<void> {
+    if (this.#isMac(p)) return this.#restartMacLocked(p, status);
     const wasActive = ACTIVE.has(this.status(p.id).status);
     try {
       if (wasActive) this.#setStatus(p.id, { status, progress: 0 });
@@ -1827,6 +2468,34 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         return;
       }
       await this.#createAndStart(p);
+      await this.#save();
+      await this.#waitReady(p);
+    } catch (err) {
+      await this.#failBoot(p, err);
+      throw err;
+    }
+  }
+
+  /**
+   * A macOS PC's "recreate" (resize, mounts): its disk is the PC, so the VM is kept. It is stopped, and a running PC
+   * boots again with the new resources (`PATCH`) and shares.
+   */
+  async #restartMacLocked(p: PcRecord, status: 'booting' | 'remounting'): Promise<void> {
+    const wasActive = ACTIVE.has(this.status(p.id).status);
+    try {
+      if (wasActive) this.#setStatus(p.id, { status, progress: 0 });
+      await this.#detachViewers(p.id);
+      await this.#stopMacVm(p).catch((err: unknown) => {
+        if (err instanceof PcError) throw err;
+      });
+      if (!wasActive) {
+        this.#setStatus(p.id, { status: 'off' });
+        await this.#save();
+        return;
+      }
+      const mac = await this.#macEngineUp();
+      if (!(await this.#ensureMacImage(p, mac))) return;
+      await this.#bootMacVm(p, mac);
       await this.#save();
       await this.#waitReady(p);
     } catch (err) {
@@ -1899,7 +2568,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     mounts: { host: string; ro?: boolean; overlays?: string[] }[],
   ): Promise<{ warnings: string[] }> {
     if (mounts.length > MAX_MOUNTS) throw new PcError('INVALID', `at most ${MAX_MOUNTS} mounts`);
-    const v = await validateMounts(mounts, this.#vaultOptions());
+    const v = await validateMounts(this.#forType(this.#rec(id).type, mounts), this.#vaultOptions());
     if (!v.ok) throw new PcError('PATH_REFUSED', v.reason);
     return this.#serialize(id, async () => {
       const cur = this.#rec(id);
@@ -1971,7 +2640,12 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     if (change.mounts?.some((m) => (m.overlays?.length ?? 0) > MAX_OVERLAYS_PER_MOUNT)) {
       throw new PcError('INVALID', `at most ${MAX_OVERLAYS_PER_MOUNT} overlays per mount`);
     }
-    const v = change.mounts ? await validateMounts(change.mounts, this.#vaultOptions()) : null;
+    const v = change.mounts
+      ? await validateMounts(
+          this.#forType(change.type ?? this.#rec(id).type, change.mounts),
+          this.#vaultOptions(),
+        )
+      : null;
     if (v && !v.ok) throw new PcError('PATH_REFUSED', v.reason);
     const validated = v?.ok ? v : null;
     return this.#serialize(id, async () => {
@@ -2065,7 +2739,14 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           this.#setStatus(id, { status: 'off' });
           return;
         }
-        await this.#createAndStart(p);
+        if (this.#isMac(p)) {
+          // A fresh clone of the base image.
+          const mac = await this.#macEngineUp();
+          if (!(await this.#ensureMacImage(p, mac))) return;
+          await this.#bootMacVm(p, mac);
+        } else {
+          await this.#createAndStart(p);
+        }
         await this.#save();
         await this.#waitReady(p);
       } catch (err) {
@@ -2077,14 +2758,17 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
 
   /** Removes the PC entirely: container, volumes, network, token and record. Vault folders are untouched. */
   decommission(id: string): Promise<void> {
+    this.#imageWaits.get(id)?.abort();
     return this.#serialize(id, async () => {
       const p = this.#rec(id);
       try {
         this.#setStatus(id, { status: 'stopping' });
         await this.#detachViewers(id);
         await this.#destroyContainerAndVolumes(p);
-        for (const n of await this.driver.listNetworks(this.#ownerLabels(id))) {
-          await this.driver.removeNetwork(n.name);
+        if (!this.#isMac(p)) {
+          for (const n of await this.driver.listNetworks(this.#ownerLabels(id))) {
+            await this.driver.removeNetwork(n.name);
+          }
         }
       } catch (err) {
         this.#setError(id, err, 'stop_failed');
@@ -2097,6 +2781,9 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#healthNext.delete(id);
       this.#notes.delete(id);
       this.#live.delete(id);
+      this.#macLive.delete(id);
+      this.#consent?.waiting.delete(id);
+      this.#guestView.untrack(id);
       await this.#save();
       this.emit('pc.state', this.views());
     });
@@ -2107,6 +2794,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       if (err instanceof PcError) throw err;
     });
     await this.#removeContainer(p);
+    if (this.#isMac(p)) return;
     // Every volume labelled with this instance and PC (home, tmp, current and earlier overlays); never
     // an unlabelled one or another instance's.
     for (const v of await this.driver.listVolumes(this.#ownerLabels(p.id))) {
@@ -2151,6 +2839,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
     this.#monitoring = true;
     try {
       await this.#checkContainers();
+      await this.#checkMacVms();
       await this.#checkDisk();
     } finally {
       this.#monitoring = false;
@@ -2165,8 +2854,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   }
 
   async #checkContainers(): Promise<void> {
-    if (this.#engineDown) return;
     this.#pass++;
+    if (this.#engineDown) return;
     const pass = this.#pass;
     // Status epochs as of before the list: a PC whose status moves on meanwhile is not judged by it.
     const epochs = new Map(this.#file.pcs.map((p) => [p.id, this.#epochOf(p.id)]));
@@ -2183,8 +2872,8 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
       this.#log?.debug({ err: errText(err) }, 'monitor: container list failed');
       return;
     }
-    const limit = this.#o.unresponsiveAfter ?? 3;
     for (const p of [...this.#file.pcs]) {
+      if (this.#isMac(p)) continue;
       const epoch = epochs.get(p.id);
       const unchanged = () => this.#epochOf(p.id) === epoch;
       if (this.#locks.has(p.id) || !unchanged()) continue;
@@ -2211,36 +2900,7 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           });
         });
       } else if (st === 'running') {
-        if (pass < (this.#healthNext.get(p.id) ?? 0)) continue;
-        try {
-          const h = await this.pool.health(p.id);
-          if (!h.serving) throw new Error(h.status);
-          if (!unchanged()) continue;
-          this.#healthFails.delete(p.id);
-          this.#healthNext.delete(p.id);
-          const cur = this.status(p.id);
-          if (cur.status === 'running' && cur.reason === 'unresponsive') {
-            this.#log?.info({ pcId: p.id }, 'spacesd answers again');
-            this.#setStatus(p.id, { status: 'running' });
-            this.#frames?.wake(p.id);
-          }
-        } catch (err) {
-          if (!unchanged() || this.status(p.id).status !== 'running') continue;
-          const n = (this.#healthFails.get(p.id) ?? 0) + 1;
-          this.#healthFails.set(p.id, n);
-          if (n >= limit) {
-            // N2: degraded, not dead. Only a crash or the user stops it; probe less and less often.
-            this.#healthNext.set(p.id, pass + Math.min(16, 2 ** (n - limit)));
-            if (this.status(p.id).reason !== 'unresponsive') {
-              this.#log?.warn({ pcId: p.id, fails: n, err: errText(err) }, 'PC spacesd is unresponsive');
-            }
-            this.#setStatus(p.id, {
-              status: 'running',
-              reason: 'unresponsive',
-              detail: `spacesd did not answer ${n} health checks in a row: ${errText(err)}`,
-            });
-          }
-        }
+        await this.#probeHealth(p, pass, unchanged);
       } else if (!ACTIVE.has(st) && running && c && this.#owns(c, p.id) && this.#bootAlls === 0) {
         // A `bootAll` in progress adopts or stops strays itself: stopping one now would only cost it a restart.
         await this.#serialize(p.id, async () => {
@@ -2263,6 +2923,141 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
           }
         });
       }
+    }
+  }
+
+  /**
+   * One health probe of a running PC (N2): `unresponsiveAfter` failures in a row keep it `running` with reason
+   * `unresponsive` (degraded, never stopped for it), probed every 1, 2, 4 … 16 passes until it answers again.
+   */
+  async #probeHealth(p: PcRecord, pass: number, unchanged: () => boolean): Promise<void> {
+    if (pass < (this.#healthNext.get(p.id) ?? 0)) return;
+    const limit = this.#o.unresponsiveAfter ?? 3;
+    try {
+      const h = await this.pool.health(p.id);
+      if (!h.serving) throw new Error(h.status);
+      if (!unchanged()) return;
+      this.#healthFails.delete(p.id);
+      this.#healthNext.delete(p.id);
+      const cur = this.status(p.id);
+      if (cur.status === 'running' && cur.reason === 'unresponsive') {
+        this.#log?.info({ pcId: p.id }, 'spacesd answers again');
+        this.#setStatus(p.id, { status: 'running' });
+        this.#frames?.wake(p.id);
+      }
+    } catch (err) {
+      if (!unchanged() || this.status(p.id).status !== 'running') return;
+      const n = (this.#healthFails.get(p.id) ?? 0) + 1;
+      this.#healthFails.set(p.id, n);
+      if (n >= limit) {
+        // N2: degraded, not dead. Only a crash or the user stops it; probe less and less often.
+        this.#healthNext.set(p.id, pass + Math.min(16, 2 ** (n - limit)));
+        if (this.status(p.id).reason !== 'unresponsive') {
+          this.#log?.warn({ pcId: p.id, fails: n, err: errText(err) }, 'PC spacesd is unresponsive');
+        }
+        this.#setStatus(p.id, {
+          status: 'running',
+          reason: 'unresponsive',
+          detail: `spacesd did not answer ${n} health checks in a row: ${errText(err)}`,
+        });
+      }
+    }
+  }
+
+  /**
+   * The macOS half of a monitor pass: a `running` PC whose VM stopped (a crash, or a shutdown inside the guest, which
+   * only the serve log tells, S6) becomes `error`/`crashed`; a running one is health-probed like a container; a VM that
+   * runs for an inactive PC is stopped (unless a `bootAll` runs). Every action re-inspects under the PC's lock (N1).
+   */
+  async #checkMacVms(): Promise<void> {
+    const mac = this.#mac;
+    if (!mac?.engineHeld || !this.#file.pcs.some((p) => this.#isMac(p))) return;
+    const pass = this.#pass;
+    const epochs = new Map(this.#file.pcs.map((p) => [p.id, this.#epochOf(p.id)]));
+    let live: Map<string, MacVmInfo>;
+    try {
+      live = new Map();
+      for (const vm of await mac.list(this.labels)) {
+        const id = vm.labels[PC_ID_LABEL];
+        if (id) live.set(id, vm);
+      }
+      this.#macLive = live;
+    } catch (err) {
+      this.#log?.debug({ err: errText(err) }, 'monitor: macOS VM list failed');
+      if (!(await mac.engineAlive().catch(() => true))) await this.#macEngineLost(epochs);
+      return;
+    }
+    for (const p of [...this.#file.pcs]) {
+      if (!this.#isMac(p)) continue;
+      const epoch = epochs.get(p.id);
+      const unchanged = () => this.#epochOf(p.id) === epoch;
+      if (this.#locks.has(p.id) || !unchanged()) continue;
+      const st = this.status(p.id).status;
+      const vm = live.get(p.id);
+      const running = vm?.state === 'running';
+      if (st === 'running' && !running) {
+        await this.#serialize(p.id, async () => {
+          if (this.status(p.id).status !== 'running' || !unchanged()) return;
+          let fresh: MacVmInfo | null;
+          try {
+            fresh = await this.#inspectMacOwned(p, mac);
+          } catch (err) {
+            this.#log?.debug({ pcId: p.id, err: errText(err) }, 'monitor: inspect failed; next pass');
+            return;
+          }
+          if (fresh?.state === 'running' || !unchanged()) return;
+          this.#log?.warn({ pcId: p.id, ended: fresh?.ended ?? false }, 'macOS PC stopped unexpectedly');
+          this.#guestView.untrack(p.id);
+          await this.#detachViewers(p.id);
+          // Lume's status stays `running` after a guest-side shutdown until a stop resets it.
+          if (fresh?.ended) await mac.stop(fresh.name).catch(() => {});
+          this.#setStatus(p.id, {
+            status: 'error',
+            reason: 'crashed',
+            detail: fresh?.ended ? 'macOS shut down or crashed inside the PC' : "the PC's VM is gone",
+          });
+        });
+      } else if (st === 'running') {
+        await this.#probeHealth(p, pass, unchanged);
+      } else if (!ACTIVE.has(st) && running && vm && this.#bootAlls === 0) {
+        await this.#serialize(p.id, async () => {
+          if (this.#isActive(p.id) || !unchanged() || this.#bootAlls > 0) return;
+          let fresh: MacVmInfo | null;
+          try {
+            fresh = await this.#inspectMacOwned(p, mac);
+          } catch {
+            return;
+          }
+          if (fresh?.state !== 'running' || this.#isActive(p.id) || !unchanged()) return;
+          this.#log?.warn({ pcId: p.id, status: st }, 'stopping a macOS VM that should not run');
+          await mac.stop(fresh.name).catch((err: unknown) => {
+            this.#log?.warn({ pcId: p.id, err: errText(err) }, 'could not stop a stray macOS VM');
+          });
+        });
+      }
+    }
+  }
+
+  /**
+   * `lume serve` died under this process (its VMs died with it): every running macOS PC is a crash. The next macOS
+   * start brings the serve back (#macEngineUp).
+   */
+  async #macEngineLost(epochs: ReadonlyMap<string, number>): Promise<void> {
+    for (const p of [...this.#file.pcs]) {
+      if (!this.#isMac(p) || this.#locks.has(p.id) || this.#epochOf(p.id) !== epochs.get(p.id)) continue;
+      if (this.status(p.id).status !== 'running') continue;
+      await this.#serialize(p.id, async () => {
+        if (this.status(p.id).status !== 'running' || this.#epochOf(p.id) !== epochs.get(p.id)) return;
+        this.#log?.warn({ pcId: p.id }, 'lume serve stopped; the macOS PC stopped with it');
+        this.#guestView.untrack(p.id);
+        await this.#detachViewers(p.id);
+        this.#macLive.delete(p.id);
+        this.#setStatus(p.id, {
+          status: 'error',
+          reason: 'crashed',
+          detail: 'Lume (the macOS VM service) stopped, and the PC with it',
+        });
+      });
     }
   }
 
@@ -2309,8 +3104,11 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
   async shutdown(options: { stopEngine?: boolean } = {}): Promise<void> {
     this.#closing = true;
     this.stopMonitor();
+    this.#guestView.closeAll();
+    for (const w of this.#imageWaits.values()) w.abort();
     const budgetMs = this.#o.shutdownTimeoutMs ?? 20_000;
     if (!this.#engineDown) await this.#inventory();
+    else await this.#macInventory();
     // Every PC whose container runs, whatever its status says (an `error` PC may still run, H4).
     const active = this.#file.pcs.filter(
       (p) => ACTIVE.has(this.status(p.id).status) || this.#liveActive(p.id),
@@ -2331,7 +3129,13 @@ export class PcManager extends TypedEmitter<PcManagerEvents> {
         .catch((err: unknown) => {
           this.#log?.warn({ err: errText(err) }, 'engine stop failed');
         });
-      if ((await settleWithin(release, budgetMs)) === 'timeout') {
+      // Lume: the serve stops only when no other MineVibe uses it (its VMs would die with it).
+      const releaseMac = Promise.resolve()
+        .then(() => this.#mac?.shutdownEngine())
+        .catch((err: unknown) => {
+          this.#log?.warn({ err: errText(err) }, 'lume serve stop failed');
+        });
+      if ((await settleWithin(Promise.all([release, releaseMac]), budgetMs)) === 'timeout') {
         this.#log?.warn({ timeoutMs: budgetMs }, 'letting go of the engine timed out; leaving it running');
       }
     }

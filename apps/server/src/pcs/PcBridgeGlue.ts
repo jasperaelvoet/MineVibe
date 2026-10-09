@@ -498,12 +498,19 @@ export class PcBridgeGlue {
       this.pushStates();
       return { recreate: false };
     }
+    const mac = (m.type ?? rec.type) === 'macos';
     const mounts = m.mounts?.map((w) => {
       const existing = rec.mounts.find((x) => x.host === w.hostPath);
       const ro = w.mode === 'ro';
-      // Keep a folder's overlays; a new read-write project folder gets the build-dir overlays its markers suggest.
-      const overlays =
-        existing && existing.ro === ro ? existing.overlays : ro ? [] : suggestOverlays(w.hostPath);
+      // Keep a folder's overlays; a new read-write project folder gets the build-dir overlays its marker files suggest
+      // (Linux only: a macOS PC shares the folder as it is).
+      const overlays = mac
+        ? []
+        : existing && existing.ro === ro
+          ? existing.overlays
+          : ro
+            ? []
+            : suggestOverlays(w.hostPath);
       return { host: w.hostPath, ro, overlays };
     });
     const op = manager.reconfigure(pcId, {
@@ -591,10 +598,24 @@ export class PcBridgeGlue {
     return { pcId };
   }
 
+  /**
+   * The player's answer to a download prompt (the macOS image, PLAN §8.7): accepting starts every PC that waited for it
+   * (in the background: the download takes minutes, its progress shows as `downloading`); declining turns them off.
+   */
   async #onConsent(m: MessageOf<'pc.consent'>): Promise<HandlerResult> {
-    this.#known(m.pcId);
-    // Nothing asks for consent yet (macOS PCs arrive with M9).
-    throw new BridgeError(ERROR_CODES.NOT_READY, `no download of ${m.pcId} is waiting for consent`);
+    const pcId = this.#known(m.pcId);
+    let start: string[];
+    try {
+      ({ start } = await this.#o.manager.consent(pcId, m.consentId, m.accept));
+    } catch (err) {
+      throw new BridgeError(
+        ERROR_CODES.NOT_READY,
+        (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      );
+    }
+    for (const id of start) this.#background(`start ${id}`, () => this.#o.manager.start(id));
+    this.pushStates();
+    return {};
   }
 
   async #onPickFolder(m: MessageOf<'host.pick_folder'>): Promise<HandlerResult> {

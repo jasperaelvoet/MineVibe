@@ -13,7 +13,8 @@ import { PcManager } from '../../src/pcs/PcManager.js';
 import { SeatBook } from '../../src/pcs/SeatBook.js';
 import type { ShellMirror } from '../../src/pcs/ShellMirror.js';
 import { FakePcBridge } from './fakeBridge.js';
-import { FakeDriver, fakePool } from './fakes.js';
+import { FakeMacDriver } from './fakeMac.js';
+import { FakeDriver, fakePool, serving } from './fakes.js';
 
 let dir: string;
 let host: HostFacts;
@@ -26,12 +27,18 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-async function setup() {
+async function setup(opts: { mac?: FakeMacDriver } = {}) {
   const driver = new FakeDriver();
   const manager = new PcManager({
     stateDir: join(dir, 'state'),
     driver,
-    pool: fakePool(join(dir, 'caches')),
+    ...(opts.mac ? { macDriver: opts.mac } : {}),
+    pool: fakePool(join(dir, 'caches'), [], {
+      json: serving,
+      runs: [],
+      displays: JSON.stringify([{ primary: true, bounds: { width: 1280, height: 800 } }]),
+      runStdout: () => 'MVOK\n',
+    }),
     labelValue: 'pc-test',
     instanceId: 'unit',
     hostFacts: async () => host,
@@ -338,6 +345,52 @@ describe('requests', () => {
     expect(t.manager.get('linux-2')).toBeDefined();
     for (let i = 0; i < 50 && t.manager.status('linux-2').status !== 'running'; i++) await tick(10);
     expect(t.manager.status('linux-2').status).toBe('running');
+  });
+
+  it('mac_workstation: create waits for the download consent; Download (pc.consent) boots it', async () => {
+    const mac = new FakeMacDriver();
+    mac.basePresent = false;
+    const t = await setup({ mac });
+    const r = await t.bridge.call('pc.action', { action: 'create', type: 'macos' });
+    const pcId = r.pcId as string;
+    expect(pcId).toBe('mac-1');
+    for (let i = 0; i < 50 && t.manager.status(pcId).status !== 'awaiting_consent'; i++) await tick(5);
+    await tick(5);
+    const waiting = states(t.bridge, pcId).at(-1);
+    expect(PcInfo.safeParse(waiting).success).toBe(true);
+    expect(waiting).toMatchObject({
+      status: 'awaiting_consent',
+      consent: { what: mac.image.what, bytes: mac.image.downloadBytes, freeBytes: 199 * GiB },
+    });
+    const consentId = waiting?.consent?.consentId as string;
+    const err = await t.bridge
+      .call('pc.consent', { pcId, consentId: 'macos-image-other', accept: true })
+      .then(
+        () => null,
+        (e: { code: string }) => e.code,
+      );
+    expect(err).toBe(ERROR_CODES.NOT_READY);
+    expect(await t.bridge.call('pc.consent', { pcId, consentId, accept: true })).toEqual({});
+    for (let i = 0; i < 100 && t.manager.status(pcId).status !== 'running'; i++) await tick(10);
+    expect(t.manager.status(pcId).status).toBe('running');
+    const seen = states(t.bridge, pcId).map((s) => s.status);
+    expect(seen).toEqual(expect.arrayContaining(['awaiting_consent', 'downloading', 'booting', 'running']));
+    expect(states(t.bridge, pcId).at(-1)?.consent).toBeNull();
+  });
+
+  it('declining the download (Not now) leaves the macOS PC off', async () => {
+    const mac = new FakeMacDriver();
+    mac.basePresent = false;
+    const t = await setup({ mac });
+    const { pcId } = (await t.bridge.call('pc.action', { action: 'create', type: 'macos' })) as {
+      pcId: string;
+    };
+    for (let i = 0; i < 50 && t.manager.status(pcId).status !== 'awaiting_consent'; i++) await tick(5);
+    const consentId = t.manager.pendingConsent?.consentId as string;
+    await t.bridge.call('pc.consent', { pcId, consentId, accept: false });
+    await tick(5);
+    expect(t.manager.status(pcId)).toEqual({ status: 'off', detail: 'the macOS download was declined' });
+    expect(mac.log).not.toContain('pull');
   });
 
   it('a create that does not fit shows no_capacity on its monitor', async () => {

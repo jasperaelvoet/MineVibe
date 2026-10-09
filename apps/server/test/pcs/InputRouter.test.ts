@@ -674,3 +674,153 @@ describe('agent input for PC tools V2', () => {
     expect(f.calls.at(-1)).toEqual(['pointer', { up: { button: 'MOUSE_BUTTON_LEFT' } }]);
   });
 });
+
+describe('macOS guests (no key or button down/up in spacesd)', () => {
+  function macSetup() {
+    const f = fakeClient();
+    let now = 1_000;
+    const pointers: { x: number; y: number }[] = [];
+    const router = new InputRouter({
+      getClient: async () => f.client,
+      osOf: (id) => (id.startsWith('mac') ? 'macos' : 'linux'),
+      now: () => now,
+      onPointer: (_id, p) => void pointers.push(p),
+    });
+    router.setOccupant('mac-1', player);
+    return {
+      f,
+      router,
+      pointers,
+      tick: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  it('keys: a key-down presses with the modifiers held; ups and modifiers alone send nothing', async () => {
+    const { f, router } = macSetup();
+    router.submit('mac-1', player, [
+      text('echo hi'),
+      key('KEY_ENTER', true),
+      key('KEY_ENTER', false),
+      key('KEY_META', true),
+      key('q', true),
+      key('q', false),
+      key('KEY_META', false),
+      key('KEY_SHIFT', true),
+      key('KEY_SHIFT', false),
+    ]);
+    await router.idle('mac-1');
+    expect(f.calls).toEqual([
+      ['type', 'echo hi'],
+      ['keyboard', { press: { key: { named: 'KEY_ENTER' } } }],
+      ['keyboard', { press: { key: { character: 'q' }, modifiers: ['KEY_META'] } }],
+    ]);
+    expect(router.held('mac-1')).toEqual({ keys: [], buttons: [] });
+    // A held key's repeats arrive as more key-downs: each presses again.
+    router.submit('mac-1', player, [key('KEY_BACKSPACE', true), key('KEY_BACKSPACE', true)]);
+    await router.idle('mac-1');
+    expect(f.calls.filter(([, j]) => JSON.stringify(j).includes('KEY_BACKSPACE'))).toHaveLength(2);
+  });
+
+  it('buttons: a click where it went down, double clicks counted, a move while down makes a drag', async () => {
+    const { f, router, pointers, tick } = macSetup();
+    router.submit('mac-1', player, [button('left', true, 100, 100), button('left', false, 100, 100)]);
+    await router.idle('mac-1');
+    tick(200);
+    router.submit('mac-1', player, [button('left', true, 101, 100), button('left', false, 101, 100)]);
+    await router.idle('mac-1');
+    const clicks = f.calls.filter(([, j]) => 'click' in (j as object)).map(([, j]) => j);
+    expect(clicks).toEqual([
+      { click: { position: { x: 100, y: 100 }, button: 'MOUSE_BUTTON_LEFT', count: 1 } },
+      { click: { position: { x: 101, y: 100 }, button: 'MOUSE_BUTTON_LEFT', count: 2 } },
+    ]);
+    // Too late for a double click: one again, with the modifier held.
+    tick(2_000);
+    f.calls.length = 0;
+    router.submit('mac-1', player, [
+      key('KEY_SHIFT', true),
+      button('left', true, 101, 100),
+      button('left', false, 101, 100),
+      key('KEY_SHIFT', false),
+    ]);
+    await router.idle('mac-1');
+    expect(f.calls).toEqual([
+      [
+        'pointer',
+        {
+          click: {
+            position: { x: 101, y: 100 },
+            button: 'MOUSE_BUTTON_LEFT',
+            count: 1,
+            modifiers: ['KEY_SHIFT'],
+          },
+        },
+      ],
+    ]);
+    // A drag: moves while the button is down are not sent; the up drags from where it went down.
+    f.calls.length = 0;
+    router.submit('mac-1', player, [
+      move(200, 200),
+      button('right', true, 200, 200),
+      move(220, 210),
+      move(260, 240),
+      button('right', false, 260, 240),
+      move(300, 300),
+    ]);
+    await router.idle('mac-1');
+    expect(f.calls).toEqual([
+      ['pointer', { move: { position: { x: 200, y: 200 } } }],
+      [
+        'pointer',
+        { drag: { from: { x: 200, y: 200 }, to: { x: 260, y: 240 }, button: 'MOUSE_BUTTON_RIGHT' } },
+      ],
+      ['pointer', { move: { position: { x: 300, y: 300 } } }],
+    ]);
+    expect(pointers.at(-1)).toEqual({ x: 300, y: 300 });
+    expect(router.held('mac-1')).toEqual({ keys: [], buttons: [] });
+  });
+
+  it('a release forgets a held button and modifiers without clicking; Linux PCs keep downs and ups', async () => {
+    const { f, router } = macSetup();
+    router.submit('mac-1', player, [key('KEY_META', true), button('left', true, 50, 50)]);
+    await router.idle('mac-1');
+    expect(router.held('mac-1')).toEqual({ keys: ['KEY_META'], buttons: ['left'] });
+    await router.releaseAll('mac-1');
+    expect(router.held('mac-1')).toEqual({ keys: [], buttons: [] });
+    router.submit('mac-1', player, [button('left', false, 50, 50), key('a', true)]);
+    await router.idle('mac-1');
+    expect(f.calls.filter(([, j]) => 'click' in (j as object) || 'drag' in (j as object))).toEqual([]);
+    expect(f.calls.at(-1)).toEqual(['keyboard', { press: { key: { character: 'a' } } }]);
+    router.setOccupant('linux-1', player);
+    router.submit('linux-1', player, [key('KEY_META', true), key('KEY_META', false)]);
+    await router.idle('linux-1');
+    expect(f.calls.slice(-2)).toEqual([
+      ['keyboard', { down: { key: { named: 'KEY_META' } } }],
+      ['keyboard', { up: { key: { named: 'KEY_META' } } }],
+    ]);
+  });
+
+  it("an agent's drag and click keep their own modifiers; a drag uses spacesd's drag", async () => {
+    const { f, router } = macSetup();
+    router.setOccupant('mac-1', ada);
+    await router.perform('mac-1', ada, [
+      { k: 'drag', x: 10, y: 10, toX: 90, toY: 40, modifiers: ['alt'] },
+      { k: 'click', x: 5, y: 6, button: 'left', count: 2 },
+    ]);
+    expect(f.calls).toEqual([
+      [
+        'pointer',
+        {
+          drag: {
+            from: { x: 10, y: 10 },
+            to: { x: 90, y: 40 },
+            button: 'MOUSE_BUTTON_LEFT',
+            modifiers: ['KEY_ALT'],
+          },
+        },
+      ],
+      ['pointer', { click: { position: { x: 5, y: 6 }, button: 'MOUSE_BUTTON_LEFT', count: 2 } }],
+    ]);
+  });
+});

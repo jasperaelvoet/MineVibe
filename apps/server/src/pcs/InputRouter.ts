@@ -23,6 +23,12 @@ import { hasControlChar } from './Vault.js';
  *   failed key-up is retried by the next release. Unary RPCs have no lease, so this is the only safety net.
  * - Every spacesd call has a deadline (H3), long text is typed in chunks, batches and queues are capped
  *   (key-ups get a little slack; past it the queue is dropped and replaced by a release).
+ * - **macOS guests** (M9): spacesd's macOS driver has no separate key or button down/up ("use press or hotkey", "use
+ *   click or drag"). For a macOS PC the router keeps modifiers and a held button itself: a key-down becomes a `press`
+ *   with the modifiers held then, a button-down waits for its button-up, which becomes a `click` (a double or triple
+ *   click when it follows the last one closely) or, when the pointer moved meanwhile, a `drag` from where it went down;
+ *   pointer moves while a button is held are not sent (the player's screen draws its own cursor). A release only
+ *   forgets that state: nothing is down in the guest.
  */
 
 export type MouseButtonName = 'left' | 'right' | 'middle';
@@ -94,6 +100,11 @@ export const MAX_HOLD_MS = 300_000;
 const MAX_REPEAT = 100;
 /** Extra queue room for key-ups and button-ups beyond `maxQueue`. */
 const RELEASE_SLACK = 64;
+/** macOS: a button-up this far (px, either axis) from its button-down is a drag, nearer a click. */
+export const MAC_DRAG_MIN_PX = 4;
+/** macOS: a click this soon after the last one, this near it, counts on (double, triple click). */
+export const MAC_MULTI_CLICK_MS = 500;
+const MAC_MULTI_CLICK_PX = 4;
 const KEY_NAME_RE = /^KEY_[A-Z0-9_]{1,32}$/;
 
 /**
@@ -439,6 +450,22 @@ type Op = (
 
 type CallOp = Exclude<Op, { t: 'release' }>;
 
+/** What the router holds for a macOS guest itself, whose spacesd has no key or button down/up. */
+interface MacInputState {
+  /** Modifiers the occupant holds: sent with every press, click and drag. */
+  mods: Set<string>;
+  /** The button the occupant holds: where it went down, and where the pointer was asked to go since. */
+  button: {
+    button: MouseButtonName;
+    at: { x: number; y: number };
+    to: { x: number; y: number } | null;
+  } | null;
+  /** The last click, for double and triple clicks. */
+  lastClick: { button: MouseButtonName; x: number; y: number; at: number; count: number } | null;
+  /** Where the pointer is: the last pointer call spacesd accepted. */
+  pointer: { x: number; y: number } | null;
+}
+
 interface PcQueue {
   occupant: Occupant | null;
   ops: Op[];
@@ -452,6 +479,8 @@ interface PcQueue {
   display: { w: number; h: number } | null;
   /** Ends the running `hold` early (any release: occupant change, kick, removal). */
   holdAbort: AbortController | null;
+  /** Set for a macOS guest once input reached it. */
+  mac: MacInputState | null;
   stats: { calls: number; coalesced: number; rejected: number; errors: number; overflows: number };
 }
 
@@ -466,6 +495,10 @@ export interface InputRouterOptions {
   removeWaitMs?: number;
   /** Called with the pointer position after every pointer call that spacesd accepted (the agent cursor). */
   onPointer?: (pcId: string, pos: { x: number; y: number }) => void;
+  /** The PC's guest OS (default linux): a macOS guest gets presses, clicks and drags instead of downs and ups. */
+  osOf?: (pcId: string) => 'linux' | 'macos';
+  /** Clock for double clicks on macOS (tests). */
+  now?: () => number;
 }
 
 export interface SubmitResult {
@@ -492,6 +525,8 @@ export class InputRouter {
   readonly #callTimeoutMs: number;
   readonly #removeWaitMs: number;
   readonly #onPointer: InputRouterOptions['onPointer'];
+  readonly #osOf: InputRouterOptions['osOf'];
+  readonly #now: () => number;
 
   constructor(options: InputRouterOptions) {
     this.#getClient = options.getClient;
@@ -500,6 +535,8 @@ export class InputRouter {
     this.#callTimeoutMs = options.callTimeoutMs ?? 5_000;
     this.#removeWaitMs = options.removeWaitMs ?? 2_000;
     this.#onPointer = options.onPointer;
+    this.#osOf = options.osOf;
+    this.#now = options.now ?? Date.now;
   }
 
   #q(pcId: string): PcQueue {
@@ -515,6 +552,7 @@ export class InputRouter {
         lastPos: null,
         display: null,
         holdAbort: null,
+        mac: null,
         stats: { calls: 0, coalesced: 0, rejected: 0, errors: 0, overflows: 0 },
       };
       this.#pcs.set(pcId, q);
@@ -885,6 +923,16 @@ export class InputRouter {
 
   /** Sends key-up / button-up for everything held now; a failed one stays held for the next release. */
   async #release(pcId: string, q: PcQueue): Promise<void> {
+    if (this.#isMac(pcId)) {
+      // Nothing is down in a macOS guest: forget the modifiers and the button (a held button is not clicked).
+      if (q.mac) {
+        q.mac.mods.clear();
+        q.mac.button = null;
+      }
+      q.downKeys.clear();
+      q.downButtons.clear();
+      return;
+    }
     const ops: CallOp[] = [
       ...[...q.downKeys].map((key) => ({ t: 'keyup' as const, key })),
       ...[...q.downButtons].map((button) => ({ t: 'up' as const, button })),
@@ -944,6 +992,10 @@ export class InputRouter {
       await this.#hold(pcId, q, op);
       return;
     }
+    if (this.#isMac(pcId)) {
+      await this.#macCall(pcId, q, op);
+      return;
+    }
     try {
       await this.#send(pcId, op);
     } catch (err) {
@@ -963,6 +1015,114 @@ export class InputRouter {
         this.#onPointer(pcId, { x: op.x, y: op.y });
       else if (op.t === 'drag') this.#onPointer(pcId, { x: op.toX, y: op.toY });
     }
+  }
+
+  #isMac(pcId: string): boolean {
+    return this.#osOf?.(pcId) === 'macos';
+  }
+
+  /** One op for a macOS guest (see the header): downs and ups become presses, clicks and drags. */
+  async #macCall(pcId: string, q: PcQueue, op: Exclude<CallOp, { t: 'hold' }>): Promise<void> {
+    q.mac ??= { mods: new Set(), button: null, lastClick: null, pointer: null };
+    const m = q.mac;
+    const mods = (own?: string[]) => (own?.length ? own : m.mods.size > 0 ? [...m.mods] : undefined);
+    const moved = (pos: { x: number; y: number }) => {
+      m.pointer = pos;
+      this.#onPointer?.(pcId, pos);
+    };
+    switch (op.t) {
+      case 'keydown':
+        if (MODIFIER_KEYS.has(op.key)) {
+          m.mods.add(op.key);
+          q.downKeys.add(op.key);
+          return;
+        }
+        // Every key-down presses (the mod sends a held key's repeats as further key-downs).
+        await this.#send(pcId, { t: 'press', key: op.key, modifiers: [...m.mods], repeat: 1 });
+        return;
+      case 'keyup':
+        m.mods.delete(op.key);
+        q.downKeys.delete(op.key);
+        return;
+      case 'down':
+        m.button = { button: op.button, at: m.pointer ?? q.lastPos ?? { x: 0, y: 0 }, to: null };
+        q.downButtons.add(op.button);
+        return;
+      case 'move':
+        if (m.button) {
+          m.button.to = { x: op.x, y: op.y };
+          return;
+        }
+        await this.#send(pcId, op);
+        moved({ x: op.x, y: op.y });
+        return;
+      case 'up': {
+        q.downButtons.delete(op.button);
+        const b = m.button;
+        if (!b || b.button !== op.button) return;
+        m.button = null;
+        const modifiers = mods();
+        if (b.to && Math.max(Math.abs(b.to.x - b.at.x), Math.abs(b.to.y - b.at.y)) >= MAC_DRAG_MIN_PX) {
+          await this.#macDrag(pcId, b.button, b.at, b.to, modifiers);
+          m.lastClick = null;
+          moved(b.to);
+          return;
+        }
+        const now = this.#now();
+        const last = m.lastClick;
+        const count =
+          last &&
+          last.button === b.button &&
+          now - last.at <= MAC_MULTI_CLICK_MS &&
+          Math.max(Math.abs(last.x - b.at.x), Math.abs(last.y - b.at.y)) <= MAC_MULTI_CLICK_PX
+            ? (last.count % 3) + 1
+            : 1;
+        await this.#send(pcId, {
+          t: 'click',
+          ...b.at,
+          button: b.button,
+          count,
+          ...(modifiers ? { modifiers } : {}),
+        });
+        m.lastClick = { button: b.button, ...b.at, at: now, count };
+        moved(b.at);
+        return;
+      }
+      case 'click': {
+        const modifiers = mods(op.modifiers);
+        await this.#send(pcId, { ...op, ...(modifiers ? { modifiers } : {}) });
+        m.lastClick = null;
+        if (op.x !== undefined && op.y !== undefined) moved({ x: op.x, y: op.y });
+        return;
+      }
+      case 'drag': {
+        const to = { x: op.toX, y: op.toY };
+        await this.#macDrag(pcId, 'left', { x: op.x, y: op.y }, to, mods(op.modifiers));
+        m.lastClick = null;
+        moved(to);
+        return;
+      }
+      default:
+        await this.#send(pcId, op);
+        if (op.t === 'scroll' && op.x !== undefined && op.y !== undefined) m.pointer = { x: op.x, y: op.y };
+    }
+  }
+
+  /** spacesd's own drag (any button, modifiers held), the one way to drag on macOS. */
+  #macDrag(
+    pcId: string,
+    button: MouseButtonName,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    modifiers: string[] | undefined,
+  ): Promise<void> {
+    return withDeadline(this.#callTimeoutMs * 2, 'pc input drag', async (signal) => {
+      const c = await this.#getClient(pcId);
+      await c.pointerJson(
+        JSON.stringify({ drag: { from, to, button: BUTTONS[button], ...(modifiers ? { modifiers } : {}) } }),
+        { signal },
+      );
+    });
   }
 
   async #send(pcId: string, op: Exclude<CallOp, { t: 'hold' }>): Promise<void> {
