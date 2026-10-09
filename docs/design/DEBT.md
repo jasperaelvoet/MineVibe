@@ -51,6 +51,11 @@ shapes (also in `worldEval.ts`).
   (a read) but the gate decides by tool name, so a seated agent is denied what `craft{plan}` alone would be allowed.
 - **The People line's cover is not covered by a GameTest.** `Scene.shelterWords` is unit-tested; the heightmap test
   and the zone lookup for a real player need a client GameTest (server GameTests have no player).
+- **`runGameTest` can hang after a light-engine crash.** The first `./gradlew build` of P1 logged `ReportedException:
+  Getting block state` (`MissingPaletteEntryException: Missing Palette entry for index 3`, from
+  `ThreadedLevelLightEngine` on a worker thread) two seconds into the 124-test batch, then logged nothing for 20
+  minutes until the server was killed; the re-run passed all 124. A race between the batch's block edits and the light
+  thread, it seems. Add a GameTest timeout or a watchdog on the server thread so a crash fails the run instead.
 - **The sim's craft-tree gathering makes no tools.** `craft{stone_pickaxe, gather_missing}` gathers cobblestone
   without a pickaxe in the sim (the mod's makes one): a NEEDS_TOOL replay above the wooden tier fails in the sim only.
 
