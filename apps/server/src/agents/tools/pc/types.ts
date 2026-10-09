@@ -16,7 +16,9 @@ export interface PcHost {
    * The PC and seat epoch this call may use, or null (not seated, or the seat changed since the gate allowed it); the
    * gate's tool_use id of the call when the host knows it.
    */
-  access(tool: PcToolName): { readonly pcId: string; readonly epoch: number; readonly toolUseId?: string } | null;
+  access(
+    tool: PcToolName,
+  ): { readonly pcId: string; readonly epoch: number; readonly toolUseId?: string } | null;
   /** Display name for handoff notes. */
   authorName(): string;
   /** The player's name (teaching errors). */

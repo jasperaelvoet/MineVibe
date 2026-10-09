@@ -116,9 +116,34 @@ function terminalWindow(pcId: string): FakeWindow {
     onScreen: true,
     z: 1,
     nodes: [
-      { elementId: '0', depth: 1, role: 'menu', name: 'File', bounds: { x: 100, y: 80, w: 40, h: 24 }, states: ['enabled'], actions: ['press'] },
-      { elementId: '1', depth: 1, role: 'menu', name: 'Edit', bounds: { x: 140, y: 80, w: 40, h: 24 }, states: ['enabled'], actions: ['press'] },
-      { elementId: '2', depth: 2, role: 'terminal', name: 'Terminal', description: `cua@${pcId}: ~`, bounds: { x: 100, y: 104, w: 800, h: 476 }, states: ['enabled', 'focused'], actions: ['show_menu'] },
+      {
+        elementId: '0',
+        depth: 1,
+        role: 'menu',
+        name: 'File',
+        bounds: { x: 100, y: 80, w: 40, h: 24 },
+        states: ['enabled'],
+        actions: ['press'],
+      },
+      {
+        elementId: '1',
+        depth: 1,
+        role: 'menu',
+        name: 'Edit',
+        bounds: { x: 140, y: 80, w: 40, h: 24 },
+        states: ['enabled'],
+        actions: ['press'],
+      },
+      {
+        elementId: '2',
+        depth: 2,
+        role: 'terminal',
+        name: 'Terminal',
+        description: `cua@${pcId}: ~`,
+        bounds: { x: 100, y: 104, w: 800, h: 476 },
+        states: ['enabled', 'focused'],
+        actions: ['show_menu'],
+      },
     ],
   };
 }
@@ -135,6 +160,7 @@ export class FakePcApi implements PcApi {
   #snapshotSeq = 0;
   /** Snapshots handed out: id → the window and nodes it saw. */
   readonly #snapshots = new Map<string, { pcId: string; windowId: string; nodes: UiNode[] }>();
+  readonly #latest = new Map<string, string>();
 
   /** Every pointer, keyboard and type call, in order. */
   readonly input: { pcId: string; kind: 'pointer' | 'keyboard' | 'type'; value: unknown }[] = [];
@@ -148,13 +174,11 @@ export class FakePcApi implements PcApi {
    * What a foreground command returns (default: exit 0, no output). `hang: true` acts like a command that overruns its
    * timeout: TIMEOUT, or a background job with `onTimeout: 'background'`.
    */
-  execHandler: (
-    pcId: string,
-    request: ExecRequest,
-  ) => { exitCode: number; output: string; hang?: boolean } = () => ({
-    exitCode: 0,
-    output: '',
-  });
+  execHandler: (pcId: string, request: ExecRequest) => { exitCode: number; output: string; hang?: boolean } =
+    () => ({
+      exitCode: 0,
+      output: '',
+    });
   /** What `open` does (default: a new focused window titled after the target). */
   openHandler: ((pcId: string, request: OpenRequest) => FakeWindow | null) | null = null;
   /** What a click changes on the desktop (default: nothing but the screen version). */
@@ -361,6 +385,8 @@ export class FakePcApi implements PcApi {
   #snapshot(pcId: string, win: FakeWindow, nodes: UiNode[]): UiSnapshot {
     const snapshotId = `ax-${++this.#snapshotSeq}`;
     this.#snapshots.set(snapshotId, { pcId, windowId: win.id, nodes });
+    // Like spacesd: one live snapshot per window (a newer look at the window expires the older one).
+    this.#latest.set(`${pcId}\n${win.id}`, snapshotId);
     return { snapshotId, windowId: win.id, nodes };
   }
 
@@ -400,7 +426,8 @@ export class FakePcApi implements PcApi {
     const snap = this.#snapshots.get(request.snapshotId);
     const w = snap ? pc.windows.find((x) => x.id === snap.windowId) : undefined;
     const node = w?.nodes.find((n) => n.elementId === request.elementId);
-    if (!snap || snap.pcId !== pcId || !w || !node) {
+    const current = snap ? this.#latest.get(`${pcId}\n${snap.windowId}`) === request.snapshotId : false;
+    if (!snap || snap.pcId !== pcId || !w || !node || !current) {
       throw new ApiError(PC_ERROR_CODES.STALE_REF, 'the accessibility snapshot expired (the window changed)');
     }
     this.actions.push({ pcId, kind: 'ui', value: request });
@@ -527,7 +554,8 @@ export class FakePcApi implements PcApi {
       };
     }
     const dir = `${p.replace(/\/+$/, '')}/`;
-    if ([...pc.files.keys()].some((f) => f.startsWith(dir))) return { exists: true, kind: 'dir', size: 0, mtimeMs: 0 };
+    if ([...pc.files.keys()].some((f) => f.startsWith(dir)))
+      return { exists: true, kind: 'dir', size: 0, mtimeMs: 0 };
     return { exists: false, size: 0, mtimeMs: 0 };
   }
 

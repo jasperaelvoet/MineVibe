@@ -85,7 +85,12 @@ const parsePages = (pages: string | undefined): { first: number; last: number } 
   return { first, last: Math.min(last, first + 19) };
 };
 
-async function readPdf(ctx: PcToolContext, seat: Seat, path: string, pages: string | undefined): Promise<CallToolResult> {
+async function readPdf(
+  ctx: PcToolContext,
+  seat: Seat,
+  path: string,
+  pages: string | undefined,
+): Promise<CallToolResult> {
   const range = parsePages(pages) ?? { first: 1, last: 20 };
   const script = `command -v pdftotext >/dev/null 2>&1 || { echo "__MV_NO_PDFTOTEXT__"; exit 0; }
 pdftotext -layout -f ${range.first} -l ${range.last} -- ${shellQuote(path)} - 2>&1`;
@@ -108,7 +113,12 @@ pdftotext -layout -f ${range.first} -l ${range.last} -- ${shellQuote(path)} - 2>
 async function readFile(
   ctx: PcToolContext,
   seat: Seat,
-  args: { file_path: string; offset?: number | undefined; limit?: number | undefined; pages?: string | undefined },
+  args: {
+    file_path: string;
+    offset?: number | undefined;
+    limit?: number | undefined;
+    pages?: string | undefined;
+  },
 ): Promise<CallToolResult> {
   const { pcId } = seat;
   const path = await ctx.absolute(pcId, args.file_path);
@@ -118,7 +128,8 @@ async function readFile(
   const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase() ?? '';
   const imageType = IMAGE_TYPES[ext];
   if (imageType) {
-    if (st.size > IMAGE_MAX_BYTES) return errorResult(`${path} is ${st.size} bytes; images over 5 MB cannot be shown.`);
+    if (st.size > IMAGE_MAX_BYTES)
+      return errorResult(`${path} is ${st.size} bytes; images over 5 MB cannot be shown.`);
     const data = await ctx.host.pcs.readBytes(pcId, path, IMAGE_MAX_BYTES);
     ctx.readState.set(pcId, path, { mtimeMs: st.mtimeMs, size: st.size });
     return {
@@ -162,7 +173,12 @@ async function readFile(
 }
 
 /** The read-state check of a write or edit to an existing file: null when it may go ahead. */
-function staleCheck(ctx: PcToolContext, pcId: string, path: string, st: { mtimeMs: number; size: number }): string | null {
+function staleCheck(
+  ctx: PcToolContext,
+  pcId: string,
+  path: string,
+  st: { mtimeMs: number; size: number },
+): string | null {
   const seen = ctx.readState.get(pcId, path);
   if (!seen) return NOT_READ_YET;
   if (!unchanged(seen, st)) return MODIFIED_SINCE_READ;
@@ -223,8 +239,12 @@ async function editFile(
       const n = Number(/(\d+)/.exec(err.message)?.[1] ?? 2);
       return errorResult(editAmbiguous(n, args.old_string));
     }
-    if (isApiError(err, PC_ERROR_CODES.NOT_FOUND)) return errorResult(readMissing(await ctx.cwdOf(seat.pcId)));
-    if (isApiError(err, PC_ERROR_CODES.GUEST_ERROR) && /changed while it was being edited/.test(err.message)) {
+    if (isApiError(err, PC_ERROR_CODES.NOT_FOUND))
+      return errorResult(readMissing(await ctx.cwdOf(seat.pcId)));
+    if (
+      isApiError(err, PC_ERROR_CODES.GUEST_ERROR) &&
+      /changed while it was being edited/.test(err.message)
+    ) {
       return errorResult(MODIFIED_SINCE_READ);
     }
     throw err;
@@ -243,7 +263,8 @@ async function glob(
   try {
     res = await ctx.host.pcs.glob(seat.pcId, { pattern: args.pattern, path: dir });
   } catch (err) {
-    if (isApiError(err, PC_ERROR_CODES.NOT_FOUND)) return errorResult(dirMissing(args.path ?? dir, await ctx.cwdOf(seat.pcId)));
+    if (isApiError(err, PC_ERROR_CODES.NOT_FOUND))
+      return errorResult(dirMissing(args.path ?? dir, await ctx.cwdOf(seat.pcId)));
     throw err;
   }
   if (res.paths.length === 0) return textResult(GLOB_NONE);
@@ -279,7 +300,8 @@ async function grep(
   const mode = args.output_mode ?? 'files_with_matches';
   const around = args.context ?? args['-C'];
   const offset = Math.max(0, Math.floor(args.offset ?? 0));
-  const headLimit = args.head_limit === 0 ? undefined : Math.max(1, Math.floor(args.head_limit ?? GREP_DEFAULT_HEAD_LIMIT));
+  const headLimit =
+    args.head_limit === 0 ? undefined : Math.max(1, Math.floor(args.head_limit ?? GREP_DEFAULT_HEAD_LIMIT));
   let res: Awaited<ReturnType<typeof ctx.host.pcs.grep>>;
   try {
     res = await ctx.host.pcs.grep(seat.pcId, {
@@ -328,7 +350,9 @@ export function fileTools(ctx: PcToolContext): Def[] {
         offset: z
           .number()
           .optional()
-          .describe('The line number to start reading from. Only provide if the file is too large to read at once'),
+          .describe(
+            'The line number to start reading from. Only provide if the file is too large to read at once',
+          ),
         limit: z
           .number()
           .optional()
@@ -353,7 +377,10 @@ export function fileTools(ctx: PcToolContext): Def[] {
       'write',
       'Write a file inside the PC (creates parent directories). Overwriting an existing file needs a read of it first in this seat. Prefer edit for changes to existing files.',
       {
-        file_path: z.string().min(1).describe('The absolute path to the file to write (must be absolute, not relative)'),
+        file_path: z
+          .string()
+          .min(1)
+          .describe('The absolute path to the file to write (must be absolute, not relative)'),
         content: z.string().describe('The content to write to the file'),
       },
       async (args, extra) => {
@@ -367,7 +394,7 @@ export function fileTools(ctx: PcToolContext): Def[] {
     ),
     tool(
       'edit',
-      'Replace exact text in a file inside the PC. Read the file first. old_string must match the file exactly (indentation included, without read\'s line-number prefix) and exactly once, unless replace_all is true. An empty old_string creates a new file with new_string.',
+      "Replace exact text in a file inside the PC. Read the file first. old_string must match the file exactly (indentation included, without read's line-number prefix) and exactly once, unless replace_all is true. An empty old_string creates a new file with new_string.",
       {
         file_path: z.string().min(1).describe('The absolute path to the file to modify'),
         old_string: z.string().describe('The text to replace'),
@@ -382,7 +409,10 @@ export function fileTools(ctx: PcToolContext): Def[] {
             return textResult(editUpdated(args.file_path));
           }
           const res = plans.edit(args.file_path, args.old_string, args.new_string, args.replace_all === true);
-          if (res.ok) return textResult(args.replace_all ? editUpdatedAll(args.file_path) : editUpdated(args.file_path));
+          if (res.ok)
+            return textResult(
+              args.replace_all ? editUpdatedAll(args.file_path) : editUpdated(args.file_path),
+            );
           if (res.code === 'EDIT_NOT_FOUND') return errorResult(editNotFound(args.old_string));
           if (res.code === 'EDIT_AMBIGUOUS') {
             return errorResult(editAmbiguous(Number(/(\d+)/.exec(res.message)?.[1] ?? 2), args.old_string));
@@ -410,20 +440,30 @@ export function fileTools(ctx: PcToolContext): Def[] {
       'Search file contents inside the PC with ripgrep (full regex syntax; escape literal braces: interface\\{\\}). Paths inside the working directory are shown relative to it.',
       {
         pattern: z.string().min(1).describe('The regular expression pattern to search for in file contents'),
-        path: z.string().optional().describe('File or directory to search in. Defaults to the working directory.'),
+        path: z
+          .string()
+          .optional()
+          .describe('File or directory to search in. Defaults to the working directory.'),
         glob: z.string().optional().describe('Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}")'),
         type: z.string().optional().describe('File type to search (rg --type): js, py, rust, go, java, ...'),
         output_mode: z
           .enum(['content', 'files_with_matches', 'count'])
           .optional()
-          .describe('"content" shows matching lines, "files_with_matches" file paths (default), "count" match counts'),
+          .describe(
+            '"content" shows matching lines, "files_with_matches" file paths (default), "count" match counts',
+          ),
         '-i': z.boolean().optional().describe('Case insensitive search'),
         '-n': z.boolean().optional().describe('Line numbers (content mode; default true)'),
         '-o': z.boolean().optional().describe('Only the matched parts, one per line (content mode)'),
         '-A': z.number().int().min(0).optional().describe('Lines after each match (content mode)'),
         '-B': z.number().int().min(0).optional().describe('Lines before each match (content mode)'),
         '-C': z.number().int().min(0).optional().describe('Alias for context'),
-        context: z.number().int().min(0).optional().describe('Lines before and after each match (content mode)'),
+        context: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Lines before and after each match (content mode)'),
         multiline: z.boolean().optional().describe('Let . match newlines and patterns span lines'),
         head_limit: z
           .number()
@@ -431,7 +471,12 @@ export function fileTools(ctx: PcToolContext): Def[] {
           .min(0)
           .optional()
           .describe('First N lines/entries after offset (default 250; 0 for all, sparingly)'),
-        offset: z.number().int().min(0).optional().describe('Skip the first N lines/entries before head_limit'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Skip the first N lines/entries before head_limit'),
       },
       (args, extra) => ctx.run('grep', extra, (seat) => grep(ctx, seat, args)),
       { annotations: { readOnlyHint: true } },

@@ -38,7 +38,9 @@ export async function finishAction(
   options: { forceImage?: boolean; isError?: boolean; windowNote?: boolean } = {},
 ): Promise<CallToolResult> {
   ctx.noteMutation(seat.pcId);
-  const last = options.forceImage ? true : await ctx.batch.isLast(seat.toolUseId, ctx.settleTiming.batchWaitMs);
+  const last = options.forceImage
+    ? true
+    : await ctx.batch.isLast(seat.toolUseId, ctx.settleTiming.batchWaitMs);
   if (last === false) return options.isError ? { ...textResult(text), isError: true } : textResult(text);
   const { shot, unchanged } = await ctx.look(seat.pcId, { auto: !options.forceImage });
   const { note } = await ctx.windowChange(seat.pcId);

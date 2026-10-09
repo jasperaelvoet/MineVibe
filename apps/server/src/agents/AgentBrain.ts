@@ -258,7 +258,11 @@ export function describeTool(name: string, input: unknown): string {
   const pick = (...keys: string[]) =>
     keys.map((k) => i[k]).find((v) => typeof v === 'string' || typeof v === 'number');
   let detail: unknown;
-  const at = Array.isArray(i.coordinate) ? ` at ${i.coordinate.join(',')}` : typeof i.ref === 'string' ? ` ${i.ref}` : '';
+  const at = Array.isArray(i.coordinate)
+    ? ` at ${i.coordinate.join(',')}`
+    : typeof i.ref === 'string'
+      ? ` ${i.ref}`
+      : '';
   switch (short) {
     case 'bash':
       detail = i.description ?? i.command;
@@ -274,7 +278,10 @@ export function describeTool(name: string, input: unknown): string {
     case 'middle_click':
     case 'double_click':
     case 'triple_click':
-      return singleLine(`${short === 'left_click' ? '' : `${short.replace('_click', '')}-`}clicked${at}`, 160);
+      return singleLine(
+        `${short === 'left_click' ? '' : `${short.replace('_click', '')}-`}clicked${at}`,
+        160,
+      );
     case 'type':
       return `typed ${typeof i.text === 'string' ? [...i.text].length : 0} chars`;
     case 'key':
@@ -287,11 +294,17 @@ export function describeTool(name: string, input: unknown): string {
     case 'open':
       return singleLine(`opened ${String(i.target ?? '')}`, 160);
     case 'ui':
-      return singleLine(`ui ${String(i.action ?? '')}${typeof i.query === 'string' ? ` "${i.query}"` : ''}`, 160);
+      return singleLine(
+        `ui ${String(i.action ?? '')}${typeof i.query === 'string' ? ` "${i.query}"` : ''}`,
+        160,
+      );
     case 'ui_act':
       return singleLine(`${String(i.op ?? 'act')} ${String(i.ref ?? i.window ?? '')}`, 160);
     case 'wait_for':
-      return singleLine(`waiting for ${String(i.text ?? i.name ?? i.window ?? (i.stable ? 'a still screen' : ''))}`, 160);
+      return singleLine(
+        `waiting for ${String(i.text ?? i.name ?? i.window ?? (i.stable ? 'a still screen' : ''))}`,
+        160,
+      );
     case 'task_stop':
       return singleLine(`stopped ${String(i.task_id ?? i.shell_id ?? '')}`, 160);
     default:

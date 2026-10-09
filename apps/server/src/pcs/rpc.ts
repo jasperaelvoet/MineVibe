@@ -1,6 +1,12 @@
 import type { SpacesdClientLike } from '@trycua/cua';
 import { ApiError } from '../contracts/common.js';
-import { type GuestWindow, PC_ERROR_CODES, type UiAction, type UiNode, type UiSnapshot } from '../contracts/PcApi.js';
+import {
+  type GuestWindow,
+  PC_ERROR_CODES,
+  type UiAction,
+  type UiNode,
+  type UiSnapshot,
+} from '../contracts/PcApi.js';
 import { DeadlineError, withDeadline } from './deadline.js';
 
 /**
@@ -55,7 +61,8 @@ export function rpcError(method: string, e: unknown): ApiError {
     return err(PC_ERROR_CODES.STALE_REF, 'the accessibility snapshot expired (the window changed)');
   if (/stale window handle|window is gone|no such window|window not found/i.test(msg))
     return err(PC_ERROR_CODES.WINDOW_NOT_FOUND, 'the window is gone');
-  if (/cannot launch|No such file or directory/i.test(msg)) return err(PC_ERROR_CODES.OPEN_FAILED, cleanMsg(msg));
+  if (/cannot launch|No such file or directory/i.test(msg))
+    return err(PC_ERROR_CODES.OPEN_FAILED, cleanMsg(msg));
   if (/unimplemented|not supported|unsupported|no accessibility|a11y/i.test(msg))
     return err(PC_ERROR_CODES.A11Y_UNAVAILABLE, cleanMsg(msg));
   return err(PC_ERROR_CODES.GUEST_ERROR, `${method} failed: ${cleanMsg(msg)}`);

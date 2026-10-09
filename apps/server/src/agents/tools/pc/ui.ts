@@ -24,7 +24,11 @@ import type { RefEntry } from './refs.js';
 
 // ------------------------------------------------------------------------------------------------- roles
 
-const norm = (s: string | undefined) => (s ?? '').toLowerCase().replace(/[\s_-]+/g, ' ').trim();
+const norm = (s: string | undefined) =>
+  (s ?? '')
+    .toLowerCase()
+    .replace(/[\s_-]+/g, ' ')
+    .trim();
 
 /** Role names people and models use, grouped with the toolkits' (spacesd's normalized and native) names. */
 const ROLE_GROUPS: readonly (readonly string[])[] = [
@@ -148,10 +152,16 @@ export function nodeLine(ref: string, n: UiNode, g: ScreenGeometry): string {
 
 // ------------------------------------------------------------------------------------------------- windows
 
-export type WindowPick = { ok: true; window: GuestWindow; all: readonly GuestWindow[] } | { ok: false; error: CallToolResult };
+export type WindowPick =
+  | { ok: true; window: GuestWindow; all: readonly GuestWindow[] }
+  | { ok: false; error: CallToolResult };
 
 /** A window by id, title substring or app name (case-insensitive), front first; default the focused one. */
-export async function pickWindow(ctx: PcToolContext, pcId: string, query: string | undefined): Promise<WindowPick> {
+export async function pickWindow(
+  ctx: PcToolContext,
+  pcId: string,
+  query: string | undefined,
+): Promise<WindowPick> {
   const all = await ctx.host.pcs.windows(pcId);
   if (query === undefined || query.trim() === '') {
     const w = all.find((x) => x.focused) ?? all[0];
@@ -175,7 +185,10 @@ export type RefPick = { ok: true; entry: RefEntry } | { ok: false; error: CallTo
 export function pickRef(ctx: PcToolContext, pcId: string, ref: string): RefPick {
   const entry = ctx.refs.get(ref);
   if (!entry || entry.pcId !== pcId) {
-    return { ok: false, error: errorResult(ctx.refs.issued(ref) ? staleRef(ref.trim(), 'its window') : unknownRef(ref.trim())) };
+    return {
+      ok: false,
+      error: errorResult(ctx.refs.issued(ref) ? staleRef(ref.trim(), 'its window') : unknownRef(ref.trim())),
+    };
   }
   return { ok: true, entry };
 }
@@ -195,7 +208,48 @@ function remember(ctx: PcToolContext, pcId: string, snap: UiSnapshot, n: UiNode,
   });
 }
 
-/** Runs an element action; an expired snapshot is the stale-ref teaching error. */
+/**
+ * The same element in a fresh snapshot of its window (role and name equal, the nearest box when several match), with
+ * the ref pointed at it; null when the window no longer shows it.
+ */
+async function refreshRef(ctx: PcToolContext, seat: Seat, entry: RefEntry): Promise<RefEntry | null> {
+  if (!entry.windowId) return null;
+  let snap: UiSnapshot;
+  try {
+    snap = entry.name
+      ? await ctx.host.pcs.uiFind(seat.pcId, {
+          windowId: entry.windowId,
+          nameContains: entry.name,
+          maxResults: 50,
+        })
+      : await ctx.host.pcs.uiTree(seat.pcId, { windowId: entry.windowId, maxNodes: 1_500 });
+  } catch (err) {
+    if (isApiError(err, PC_ERROR_CODES.WINDOW_NOT_FOUND)) return null;
+    throw err;
+  }
+  const same = snap.nodes.filter(
+    (n) => norm(n.role) === norm(entry.role) && (n.name ?? '') === (entry.name ?? ''),
+  );
+  if (same.length === 0) return null;
+  const dist = (n: UiNode) =>
+    n.bounds && entry.bounds
+      ? Math.abs(n.bounds.x - entry.bounds.x) + Math.abs(n.bounds.y - entry.bounds.y)
+      : 0;
+  const best = same.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+  return (
+    ctx.refs.update(entry.ref, {
+      snapshotId: snap.snapshotId,
+      elementId: best.elementId,
+      bounds: best.bounds && !offscreen(best) ? best.bounds : undefined,
+    }) ?? null
+  );
+}
+
+/**
+ * Runs an element action. spacesd keeps one live snapshot per window, so a ref whose snapshot a newer look at the
+ * same window replaced is found again (same role and name) and the action retried; an element that is gone is the
+ * stale-ref teaching error.
+ */
 export async function act(
   ctx: PcToolContext,
   seat: Seat,
@@ -203,18 +257,28 @@ export async function act(
   action: UiAction,
   value?: string,
 ): Promise<CallToolResult | null> {
-  try {
-    await ctx.host.pcs.uiAct(seat.pcId, {
-      snapshotId: entry.snapshotId,
-      elementId: entry.elementId,
+  const run = (e: RefEntry) =>
+    ctx.host.pcs.uiAct(seat.pcId, {
+      snapshotId: e.snapshotId,
+      elementId: e.elementId,
       action,
       ...(value !== undefined ? { value } : {}),
     });
+  const stale = (err: unknown) =>
+    isApiError(err, PC_ERROR_CODES.STALE_REF) || isApiError(err, PC_ERROR_CODES.WINDOW_NOT_FOUND);
+  try {
+    await run(entry);
     return null;
   } catch (err) {
-    if (isApiError(err, PC_ERROR_CODES.STALE_REF) || isApiError(err, PC_ERROR_CODES.WINDOW_NOT_FOUND)) {
-      return errorResult(staleRef(entry.ref, entry.windowTitle));
-    }
+    if (!stale(err)) throw err;
+  }
+  const fresh = await refreshRef(ctx, seat, entry);
+  if (!fresh) return errorResult(staleRef(entry.ref, entry.windowTitle));
+  try {
+    await run(fresh);
+    return null;
+  } catch (err) {
+    if (stale(err)) return errorResult(staleRef(entry.ref, entry.windowTitle));
     throw err;
   }
 }
@@ -266,10 +330,20 @@ async function findIn(
   query: string | undefined,
   role: string | undefined,
 ): Promise<Hit[]> {
+  // spacesd keeps one live snapshot per window: each window is looked at once (by name, else by value).
   const snaps: UiSnapshot[] = [];
   if (query) {
-    snaps.push(await ctx.host.pcs.uiFind(pcId, { windowId: w.id, nameContains: query, maxResults: MAX_FIND }));
-    snaps.push(await ctx.host.pcs.uiFind(pcId, { windowId: w.id, valueContains: query, maxResults: MAX_FIND }));
+    const byName = await ctx.host.pcs.uiFind(pcId, {
+      windowId: w.id,
+      nameContains: query,
+      maxResults: MAX_FIND,
+    });
+    const named = byName.nodes.some((n) => !role || roleMatches(n, role));
+    snaps.push(
+      named
+        ? byName
+        : await ctx.host.pcs.uiFind(pcId, { windowId: w.id, valueContains: query, maxResults: MAX_FIND }),
+    );
   } else {
     snaps.push(await ctx.host.pcs.uiTree(pcId, { windowId: w.id, maxNodes: 1_500 }));
   }
@@ -301,7 +375,10 @@ async function uiFind(
     windows = [p.window];
   } else {
     const all = await ctx.host.pcs.windows(seat.pcId);
-    windows = [...all.filter((w) => w.onScreen && !isMirror(w)), ...all.filter((w) => w.onScreen && isMirror(w))];
+    windows = [
+      ...all.filter((w) => w.onScreen && !isMirror(w)),
+      ...all.filter((w) => w.onScreen && isMirror(w)),
+    ];
   }
   const max = Math.max(1, Math.min(MAX_FIND, args.max ?? DEFAULT_FIND));
   const groups: { w: GuestWindow; lines: string[] }[] = [];
@@ -339,7 +416,8 @@ async function uiFind(
     );
   }
   const out = groups.map(
-    (gr) => `${gr.lines.length} ${gr.lines.length === 1 ? 'match' : 'matches'} in ${quote(windowLabel(gr.w))}:\n${gr.lines.join('\n')}`,
+    (gr) =>
+      `${gr.lines.length} ${gr.lines.length === 1 ? 'match' : 'matches'} in ${quote(windowLabel(gr.w))}:\n${gr.lines.join('\n')}`,
   );
   if (more > 0) out.push(`(… ${more} more; narrow with window or role)`);
   return textResult(out.join('\n'));
@@ -351,7 +429,9 @@ function subtree(nodes: readonly UiNode[], entry: RefEntry): UiNode[] | null {
     (n) =>
       norm(n.role) === norm(entry.role) &&
       (n.name ?? '') === (entry.name ?? '') &&
-      (!entry.bounds || !n.bounds || (Math.abs(n.bounds.x - entry.bounds.x) < 40 && Math.abs(n.bounds.y - entry.bounds.y) < 40)),
+      (!entry.bounds ||
+        !n.bounds ||
+        (Math.abs(n.bounds.x - entry.bounds.x) < 40 && Math.abs(n.bounds.y - entry.bounds.y) < 40)),
   );
   if (i < 0) return null;
   const root = nodes[i] as UiNode;
@@ -367,7 +447,9 @@ async function treeOf(
   ctx: PcToolContext,
   seat: Seat,
   args: { window?: string | undefined; ref?: string | undefined },
-): Promise<{ ok: true; w: GuestWindow; snap: UiSnapshot; nodes: UiNode[] } | { ok: false; error: CallToolResult }> {
+): Promise<
+  { ok: true; w: GuestWindow; snap: UiSnapshot; nodes: UiNode[] } | { ok: false; error: CallToolResult }
+> {
   let entry: RefEntry | undefined;
   let w: GuestWindow;
   if (args.ref) {
@@ -402,13 +484,20 @@ async function treeOf(
 async function uiTree(
   ctx: PcToolContext,
   seat: Seat,
-  args: { window?: string | undefined; ref?: string | undefined; filter?: 'interactive' | 'all' | undefined; maxChars?: number | undefined },
+  args: {
+    window?: string | undefined;
+    ref?: string | undefined;
+    filter?: 'interactive' | 'all' | undefined;
+    maxChars?: number | undefined;
+  },
 ): Promise<CallToolResult> {
   const t = await treeOf(ctx, seat, args);
   if (!t.ok) return t.error;
   const g = await ctx.geometry(seat.pcId);
   const all = args.filter === 'all';
-  const kept = t.nodes.filter((n) => (all ? Boolean(n.name || n.value || n.actions.length > 0) : interactive(n)));
+  const kept = t.nodes.filter((n) =>
+    all ? Boolean(n.name || n.value || n.actions.length > 0) : interactive(n),
+  );
   const minDepth = kept.length > 0 ? Math.min(...kept.map((n) => n.depth)) : 0;
   const max = Math.max(500, Math.min(30_000, args.maxChars ?? 6_000));
   const head = `window ${quote(windowLabel(t.w))}${t.w.focused ? ' focused' : ''}`;
@@ -430,7 +519,20 @@ async function uiTree(
   return textResult(lines.join('\n'));
 }
 
-const STRUCTURAL = new Set(['window', 'tool bar', 'menu bar', 'scroll bar', 'split pane', 'panel', 'filler', 'scroll pane', 'internal frame', 'section', 'landmark', 'page tab list']);
+const STRUCTURAL = new Set([
+  'window',
+  'tool bar',
+  'menu bar',
+  'scroll bar',
+  'split pane',
+  'panel',
+  'filler',
+  'scroll pane',
+  'internal frame',
+  'section',
+  'landmark',
+  'page tab list',
+]);
 
 async function uiText(
   ctx: PcToolContext,
@@ -460,7 +562,8 @@ async function uiText(
     size += line.length + 1;
   }
   if (terminal) out.push('(A terminal does not expose its text: run commands with bash, or zoom into it.)');
-  if (out.length === 0) return textResult(`${quote(windowLabel(t.w))} shows no text through its accessibility tree. Use zoom.`);
+  if (out.length === 0)
+    return textResult(`${quote(windowLabel(t.w))} shows no text through its accessibility tree. Use zoom.`);
   return textResult(out.join('\n'));
 }
 
@@ -516,7 +619,8 @@ async function uiAct(
   args: { op: string; ref?: string | undefined; window?: string | undefined; value?: string | undefined },
 ): Promise<CallToolResult> {
   if ((WINDOW_OPS as readonly string[]).includes(args.op)) {
-    if (!args.window && !args.ref) return errorResult(`ui_act ${args.op} needs window (a title or part of it).`);
+    if (!args.window && !args.ref)
+      return errorResult(`ui_act ${args.op} needs window (a title or part of it).`);
     let target: GuestWindow;
     if (args.window) {
       const p = await pickWindow(ctx, seat.pcId, args.window);
@@ -530,7 +634,9 @@ async function uiAct(
       target = found;
     }
     if (args.op === 'close' && isMirror(target)) {
-      return errorResult(`${quote(windowLabel(target))} is MineVibe's shell mirror (the player watches your commands there); leave it open.`);
+      return errorResult(
+        `${quote(windowLabel(target))} is MineVibe's shell mirror (the player watches your commands there); leave it open.`,
+      );
     }
     await ctx.host.pcs.window(seat.pcId, target.id, args.op as (typeof WINDOW_OPS)[number]);
     if (args.op === 'close') ctx.refs.dropWindow(target.id);
@@ -550,13 +656,17 @@ async function uiAct(
   } catch (err) {
     if (args.op !== 'set_value' || !isApiError(err) || !entry.bounds) throw err;
     // An editable that refuses SET_VALUE: click into it, select all, type.
-    const c = { x: Math.round(entry.bounds.x + entry.bounds.w / 2), y: Math.round(entry.bounds.y + entry.bounds.h / 2) };
+    const c = {
+      x: Math.round(entry.bounds.x + entry.bounds.w / 2),
+      y: Math.round(entry.bounds.y + entry.bounds.h / 2),
+    };
     await ctx.host.pcs.pointer(seat.pcId, { action: 'click', x: c.x, y: c.y });
     await ctx.host.pcs.keyboard(seat.pcId, { action: 'press', keys: ['KEY_CONTROL', 'a'] });
     await ctx.host.pcs.type(seat.pcId, args.value ?? '');
     return finishAction(ctx, seat, `typed into ${label} (it refused a direct value)`);
   }
-  const text = args.op === 'set_value' ? `set ${label} to ${quote(args.value ?? '', 60)}` : `${PAST[args.op]} ${label}`;
+  const text =
+    args.op === 'set_value' ? `set ${label} to ${quote(args.value ?? '', 60)}` : `${PAST[args.op]} ${label}`;
   return finishAction(ctx, seat, text);
 }
 
@@ -570,14 +680,21 @@ export function uiTools(ctx: PcToolContext): Def[] {
       {
         action: z.enum(['find', 'tree', 'text', 'windows']),
         query: z.string().max(200).optional().describe('find: text in the name or value (case-insensitive)'),
-        role: z.string().max(40).optional().describe('find: role such as button, entry, menu item, link, check box, tab'),
+        role: z
+          .string()
+          .max(40)
+          .optional()
+          .describe('find: role such as button, entry, menu item, link, check box, tab'),
         window: z
           .string()
           .max(200)
           .optional()
           .describe('Window title (or part of it); default the focused window (find: all windows)'),
         ref: z.string().max(16).optional().describe('tree/text: start at this element'),
-        filter: z.enum(['interactive', 'all']).optional().describe('tree: interactive elements only (default) or all'),
+        filter: z
+          .enum(['interactive', 'all'])
+          .optional()
+          .describe('tree: interactive elements only (default) or all'),
         max_chars: z.number().int().min(500).max(30_000).optional(),
       },
       (args, extra) =>
@@ -602,7 +719,7 @@ export function uiTools(ctx: PcToolContext): Def[] {
     ),
     tool(
       'ui_act',
-      'Operate an accessibility element or a window without the mouse (works even when it is covered). On ref: press, focus, set_value (value replaces the field\'s text), toggle, select, expand, collapse, increment, decrement, scroll_into_view, show_menu. On window (title or part of it): activate, maximize, minimize, restore, close.',
+      "Operate an accessibility element or a window without the mouse (works even when it is covered). On ref: press, focus, set_value (value replaces the field's text), toggle, select, expand, collapse, increment, decrement, scroll_into_view, show_menu. On window (title or part of it): activate, maximize, minimize, restore, close.",
       {
         op: z.enum([...ELEMENT_OPS, ...WINDOW_OPS]),
         ref: z.string().max(16).optional(),

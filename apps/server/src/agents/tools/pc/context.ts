@@ -6,7 +6,13 @@
 
 import { createHash } from 'node:crypto';
 import { isApiError } from '../../../contracts/common.js';
-import { type GuestWindow, PC_ERROR_CODES, PC_LIMITS, type PcGuestInfo, type Screenshot } from '../../../contracts/PcApi.js';
+import {
+  type GuestWindow,
+  PC_ERROR_CODES,
+  PC_LIMITS,
+  type PcGuestInfo,
+  type Screenshot,
+} from '../../../contracts/PcApi.js';
 import type { PcToolName } from '../catalog.js';
 import { type CallToolResult, errorFrom, errorResult } from '../results.js';
 import { BatchBook } from './batch.js';
@@ -75,7 +81,10 @@ export function guardResult(result: CallToolResult): CallToolResult {
     const keep = Math.max(1_000, c.text.length - (total - max) - 200);
     const head = c.text.slice(0, Math.floor(keep * 0.4));
     const tail = c.text.slice(c.text.length - Math.floor(keep * 0.6));
-    return { ...c, text: `${head}\n\n... [${c.text.length - head.length - tail.length} characters cut] ...\n\n${tail}` };
+    return {
+      ...c,
+      text: `${head}\n\n... [${c.text.length - head.length - tail.length} characters cut] ...\n\n${tail}`,
+    };
   });
   return { ...result, content };
 }
@@ -129,6 +138,7 @@ export class PcToolContext {
     body: (seat: Seat) => Promise<CallToolResult>,
     options: { gui?: boolean } = {},
   ): Promise<CallToolResult> {
+    // Always asked first: the host pairs each call with the gate's decision for it (one per allowed call).
     const access = this.host.access(name);
     const toolUseId = toolUseIdOf(extra) ?? access?.toolUseId;
     if (options.gui && this.batch.halted(toolUseId)) return errorResult(BATCH_HALT);
@@ -248,7 +258,10 @@ export class PcToolContext {
    * The screen after an action: settled, and deduplicated against the last image this agent saw (`auto`), or always
    * an image (an explicit screenshot). Remembers what was sent.
    */
-  async look(pcId: string, options: { auto: boolean }): Promise<{ shot: Screenshot | null; unchanged: boolean }> {
+  async look(
+    pcId: string,
+    options: { auto: boolean },
+  ): Promise<{ shot: Screenshot | null; unchanged: boolean }> {
     await this.settle(pcId);
     const shot = await this.capture(pcId);
     const hash = createHash('sha1').update(shot.data).digest('hex');

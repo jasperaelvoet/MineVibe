@@ -43,6 +43,21 @@ export class RefBook {
     return this.#refs.get(ref.trim());
   }
 
+  /** Points a ref at the same element in a newer snapshot (spacesd keeps one live snapshot per window). */
+  update(ref: string, fresh: Pick<RefEntry, 'snapshotId' | 'elementId' | 'bounds'>): RefEntry | undefined {
+    const cur = this.#refs.get(ref);
+    if (!cur) return undefined;
+    const { bounds: _old, ...rest } = cur;
+    const next: RefEntry = {
+      ...rest,
+      snapshotId: fresh.snapshotId,
+      elementId: fresh.elementId,
+      ...(fresh.bounds ? { bounds: fresh.bounds } : {}),
+    };
+    this.#refs.set(ref, next);
+    return next;
+  }
+
   /** Whether `ref` was ever handed out (an expired one, as opposed to a made-up one). */
   issued(ref: string): boolean {
     const m = /^ref_(\d+)$/.exec(ref.trim());

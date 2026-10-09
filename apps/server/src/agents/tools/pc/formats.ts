@@ -47,7 +47,8 @@ export function readPartialByLines(path: string, shown: number, totalLines: numb
 export const editUpdated = (path: string) => `The file ${path} has been updated successfully.`;
 export const editUpdatedAll = (path: string) =>
   `The file ${path} has been updated. All occurrences were successfully replaced.`;
-export const editNotFound = (oldString: string) => `String to replace not found in file.\nString: ${oldString}`;
+export const editNotFound = (oldString: string) =>
+  `String to replace not found in file.\nString: ${oldString}`;
 export const editAmbiguous = (count: number, oldString: string) =>
   `Found ${count} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${oldString}`;
 export const EDIT_SAME = 'No changes to make: old_string and new_string are exactly the same.';
@@ -58,7 +59,8 @@ export const MODIFIED_SINCE_READ =
 
 const STATE_CURRENT = ' (file state is current in your context — no need to Read it back)';
 export const writeCreated = (path: string) => `File created successfully at: ${path}${STATE_CURRENT}`;
-export const writeUpdated = (path: string) => `The file ${path} has been updated successfully.${STATE_CURRENT}`;
+export const writeUpdated = (path: string) =>
+  `The file ${path} has been updated successfully.${STATE_CURRENT}`;
 
 // ------------------------------------------------------------------------------------------------- Grep, Glob
 
@@ -90,7 +92,12 @@ export function grepCount(
 }
 
 /** Grep `files_with_matches` mode. */
-export function grepFiles(paths: readonly string[], limit: number | undefined, offset: number, total: number): string {
+export function grepFiles(
+  paths: readonly string[],
+  limit: number | undefined,
+  offset: number,
+  total: number,
+): string {
   const page = pagination(limit, offset);
   if (paths.length === 0) {
     return offset && total > 0
@@ -103,7 +110,11 @@ export function grepFiles(paths: readonly string[], limit: number | undefined, o
 export const GLOB_NONE = 'No files found';
 
 /** The line after a cut glob listing. */
-export function globTruncated(shown: number, total: number | undefined, complete: boolean | undefined): string {
+export function globTruncated(
+  shown: number,
+  total: number | undefined,
+  complete: boolean | undefined,
+): string {
   if (total === undefined) return '(Results are truncated. Consider using a more specific path or pattern.)';
   if (complete) {
     return `(Showing ${shown} of ${total} matching files; ${total - shown} more are not listed. Narrow the pattern or path to see the rest.)`;
@@ -141,7 +152,12 @@ export function bashBackground(id: string, outputPath: string): string {
   return `Command running in background with ID: ${id}. Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use Read on that file path.`;
 }
 
-export function bashMovedToBackground(timeoutMs: number, id: string, outputPath: string, lifetimeMs: number): string {
+export function bashMovedToBackground(
+  timeoutMs: number,
+  id: string,
+  outputPath: string,
+  lifetimeMs: number,
+): string {
   return `Command did not complete within its ${Math.max(1, Math.round(timeoutMs / 1000))}s timeout and was moved to the background (ID: ${id}). Output is being written to: ${outputPath}. You will be notified when it completes. If it is still running after ${formatDuration(lifetimeMs)} in the background, it will be stopped and you will be notified. To check interim output, use Read on that file path.`;
 }
 

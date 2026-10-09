@@ -67,13 +67,27 @@ import {
   splitGlob,
   TRIM_JOB_SCRIPT,
   WRITE_MAX_BYTES,
-  ZOOM_SCRIPT,
   WRITE_SCRIPT,
+  ZOOM_SCRIPT,
 } from './guest.js';
-import { InputError, type InputRouter, MODIFIER_KEYS, normalizeKeyName, type RouterEvent } from './InputRouter.js';
+import {
+  InputError,
+  type InputRouter,
+  MODIFIER_KEYS,
+  normalizeKeyName,
+  type RouterEvent,
+} from './InputRouter.js';
 import type { PcRecord, PcStatusInfo } from './PcManager.js';
 import { PC_TYPE_SPECS } from './PcTypes.js';
-import { parseUiSnapshot, parseWindows, type RawWindow, rpc, rpcError, uiActionEnum, windowRef } from './rpc.js';
+import {
+  parseUiSnapshot,
+  parseWindows,
+  type RawWindow,
+  rpc,
+  rpcError,
+  uiActionEnum,
+  windowRef,
+} from './rpc.js';
 import { type SeatBook, seatTag, tagAgent } from './SeatBook.js';
 
 /**
@@ -1022,7 +1036,10 @@ export class PcGuestApi implements PcApi {
     const lifetime = setTimeout(() => {
       if (!job.running) return;
       job.endReason = 'lifetime';
-      void this.#stopJob(job, `\n[stopped: it ran longer than ${Math.round(spec.lifetimeMs / 60_000)} min]\n`);
+      void this.#stopJob(
+        job,
+        `\n[stopped: it ran longer than ${Math.round(spec.lifetimeMs / 60_000)} min]\n`,
+      );
     }, spec.lifetimeMs);
     lifetime.unref?.();
     job.timers.push(lifetime);

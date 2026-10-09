@@ -20,7 +20,9 @@ const XY = z.array(z.number().int().min(0)).length(2);
 const MODS = z
   .string()
   .max(64)
-  .describe('Modifier keys to hold during the action: "shift", "ctrl", "alt", "super", or joined with + ("ctrl+shift")');
+  .describe(
+    'Modifier keys to hold during the action: "shift", "ctrl", "alt", "super", or joined with + ("ctrl+shift")',
+  );
 const REF = z.string().max(16).describe('A ui element ref (ref_12) to act on instead of coordinate');
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -28,7 +30,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 type Point = { x: number; y: number };
 
 /** A coordinate (image pixels) as screen pixels, or the out-of-bounds teaching error. */
-async function screenPoint(ctx: PcToolContext, pcId: string, xy: readonly number[]): Promise<Point | CallToolResult> {
+async function screenPoint(
+  ctx: PcToolContext,
+  pcId: string,
+  xy: readonly number[],
+): Promise<Point | CallToolResult> {
   const g = await ctx.geometry(pcId);
   const p = checkPoint(g, xy);
   if (!p.ok) return errorResult(outOfBounds(p.x, p.y, g.imgW, g.imgH));
@@ -100,12 +106,19 @@ export function guiTools(ctx: PcToolContext): Def[] {
       description,
       described
         ? {
-            coordinate: XY.optional().describe('[x, y] in pixels of the latest screenshot; omit to click at the cursor'),
+            coordinate: XY.optional().describe(
+              '[x, y] in pixels of the latest screenshot; omit to click at the cursor',
+            ),
             text: MODS.optional(),
             ref: REF.optional(),
           }
-        : { coordinate: XY.optional(), text: z.string().max(64).optional(), ref: z.string().max(16).optional() },
-      (args, extra) => ctx.run(CLICK_TOOL[kind], extra, (seat) => click(ctx, seat, kind, args), { gui: true }),
+        : {
+            coordinate: XY.optional(),
+            text: z.string().max(64).optional(),
+            ref: z.string().max(16).optional(),
+          },
+      (args, extra) =>
+        ctx.run(CLICK_TOOL[kind], extra, (seat) => click(ctx, seat, kind, args), { gui: true }),
     );
 
   return defs(
@@ -122,7 +135,10 @@ export function guiTools(ctx: PcToolContext): Def[] {
             const { windows } = await ctx.windowChange(seat.pcId);
             const focused = windows.find((w) => w.focused);
             if (!shot) return errorResult('No screenshot.');
-            return imageResult(`${shot.w}x${shot.h}${focused ? ` · focused: "${windowLabel(focused)}"` : ''}`, shot);
+            return imageResult(
+              `${shot.w}x${shot.h}${focused ? ` · focused: "${windowLabel(focused)}"` : ''}`,
+              shot,
+            );
           },
           { gui: true },
         ),
@@ -165,7 +181,11 @@ export function guiTools(ctx: PcToolContext): Def[] {
     clickTool('right', 'Click the right mouse button at coordinate (or ref, or the cursor).', false),
     clickTool('middle', 'Click the middle mouse button at coordinate (or ref, or the cursor).', false),
     clickTool('double', 'Double-click the left mouse button at coordinate (or ref, or the cursor).', false),
-    clickTool('triple', 'Triple-click the left mouse button at coordinate (selects a line or paragraph).', false),
+    clickTool(
+      'triple',
+      'Triple-click the left mouse button at coordinate (selects a line or paragraph).',
+      false,
+    ),
     tool(
       'left_click_drag',
       'Press the left button at start_coordinate, drag to coordinate, release.',
@@ -237,20 +257,16 @@ export function guiTools(ctx: PcToolContext): Def[] {
           { gui: true },
         ),
     ),
-    tool(
-      'left_mouse_up',
-      'Release the left mouse button at the cursor.',
-      {},
-      (_args, extra) =>
-        ctx.run(
-          'left_mouse_up',
-          extra,
-          async (seat) => {
-            await ctx.host.pcs.pointer(seat.pcId, { action: 'up', button: 'left' });
-            return finishAction(ctx, seat, OK);
-          },
-          { gui: true },
-        ),
+    tool('left_mouse_up', 'Release the left mouse button at the cursor.', {}, (_args, extra) =>
+      ctx.run(
+        'left_mouse_up',
+        extra,
+        async (seat) => {
+          await ctx.host.pcs.pointer(seat.pcId, { action: 'up', button: 'left' });
+          return finishAction(ctx, seat, OK);
+        },
+        { gui: true },
+      ),
     ),
     tool(
       'cursor_position',
@@ -364,7 +380,8 @@ export function guiTools(ctx: PcToolContext): Def[] {
           async (seat) => {
             const parsed = parseKeyText(args.text);
             if (!parsed.ok) return errorResult(parsed.error);
-            if (parsed.chords.length !== 1) return errorResult('hold_key takes one key or combination ("shift", "ctrl+alt").');
+            if (parsed.chords.length !== 1)
+              return errorResult('hold_key takes one key or combination ("shift", "ctrl+alt").');
             await ctx.host.pcs.keyboard(seat.pcId, {
               action: 'hold',
               keys: parsed.chords[0] as string[],

@@ -4,10 +4,10 @@
  */
 
 import type { PcGuestInfo } from '../../contracts/PcApi.js';
-import { geometryFor } from '../tools/pc/geometry.js';
 import { type BaseArea, posText } from '../../world/baseArea.js';
 import { control, escapeShared, wrapNote } from '../envelope.js';
 import type { HandoffNote } from '../memory.js';
+import { geometryFor } from '../tools/pc/geometry.js';
 
 /** Largest CLAUDE.md excerpt in a kickoff (≈2k tokens). */
 export const CLAUDE_MD_EXCERPT_CHARS = 8_000;

@@ -26,7 +26,8 @@ export function metaTools(ctx: PcToolContext): Def[] {
           const jobs = ctx.jobs.on(seat.pcId);
           const now = Date.now();
           const jobLines = jobs.map(
-            (j) => `- ${j.jobId}: ${j.description} (started ${formatDuration(now - j.startedAt)} ago; output ${j.outputPath ?? 'none'})`,
+            (j) =>
+              `- ${j.jobId}: ${j.description} (started ${formatDuration(now - j.startedAt)} ago; output ${j.outputPath ?? 'none'})`,
           );
           const lines = [
             `${i.pcId}: ${i.type} (${i.osVersion ?? i.os}), ${i.status}, ${screen}`,

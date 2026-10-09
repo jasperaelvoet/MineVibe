@@ -61,7 +61,10 @@ export function clipOutput(text: string, max: number = PC_LIMITS.maxOutputChars)
 
 /** The guest's own head/tail marker (OutputCapture) in the built-in's words. */
 function rewordCaptureCut(text: string): string {
-  return text.replace(/\n… \((\d+) characters omitted\) …\n/, (_m, n: string) => `\n\n... [${n} characters truncated] ...\n\n`);
+  return text.replace(
+    /\n… \((\d+) characters omitted\) …\n/,
+    (_m, n: string) => `\n\n... [${n} characters truncated] ...\n\n`,
+  );
 }
 
 /** A short label of a command for notifications (its description, else its first line). */
@@ -96,17 +99,27 @@ export function shellTools(ctx: PcToolContext): Def[] {
           .boolean()
           .optional()
           .describe('Set to true to run this command in the background. Use Read to read the output later.'),
-        dangerouslyDisableSandbox: z.boolean().optional().describe('Ignored: commands always run inside the PC'),
+        dangerouslyDisableSandbox: z
+          .boolean()
+          .optional()
+          .describe('Ignored: commands always run inside the PC'),
       },
       (args, extra) =>
         ctx.run('bash', extra, async (seat) => {
           const cwd = await ctx.cwdOf(seat.pcId);
           const background = args.run_in_background === true;
-          const requested = typeof args.timeout === 'number' && Number.isFinite(args.timeout) ? args.timeout : undefined;
-          const timeoutMs = Math.min(PC_LIMITS.maxTimeoutMs, Math.max(1_000, requested ?? PC_LIMITS.defaultTimeoutMs));
+          const requested =
+            typeof args.timeout === 'number' && Number.isFinite(args.timeout) ? args.timeout : undefined;
+          const timeoutMs = Math.min(
+            PC_LIMITS.maxTimeoutMs,
+            Math.max(1_000, requested ?? PC_LIMITS.defaultTimeoutMs),
+          );
           const lifetimeMs = Math.min(
             PC_LIMITS.maxJobLifetimeMs,
-            Math.max(1_000, background && requested !== undefined ? requested : PC_LIMITS.defaultJobLifetimeMs),
+            Math.max(
+              1_000,
+              background && requested !== undefined ? requested : PC_LIMITS.defaultJobLifetimeMs,
+            ),
           );
           const jobId = `b${randomBytes(4).toString('hex')}`;
           const res = await ctx.host.pcs.exec(seat.pcId, {
@@ -122,7 +135,8 @@ export function shellTools(ctx: PcToolContext): Def[] {
             outputFile: true,
           });
           if (res.kind === 'background') {
-            const outputPath = res.outputPath ?? `${(await ctx.info(seat.pcId)).home}/.mv/jobs/${res.jobId}.out`;
+            const outputPath =
+              res.outputPath ?? `${(await ctx.info(seat.pcId)).home}/.mv/jobs/${res.jobId}.out`;
             ctx.jobs.add({
               pcId: seat.pcId,
               jobId: res.jobId,
@@ -135,7 +149,12 @@ export function shellTools(ctx: PcToolContext): Def[] {
             });
             if (res.timedOutAfterMs !== undefined) {
               return textResult(
-                bashMovedToBackground(res.timedOutAfterMs, res.jobId, outputPath, res.lifetimeMs ?? lifetimeMs),
+                bashMovedToBackground(
+                  res.timedOutAfterMs,
+                  res.jobId,
+                  outputPath,
+                  res.lifetimeMs ?? lifetimeMs,
+                ),
               );
             }
             return textResult(bashBackground(res.jobId, outputPath));
@@ -170,7 +189,8 @@ export function shellTools(ctx: PcToolContext): Def[] {
           try {
             n = await ctx.host.pcs.kill(seat.pcId, { jobId: id });
           } catch (err) {
-            if (isApiError(err, PC_ERROR_CODES.UNKNOWN_JOB)) return errorResult(taskNotRunning(id, seat.pcId));
+            if (isApiError(err, PC_ERROR_CODES.UNKNOWN_JOB))
+              return errorResult(taskNotRunning(id, seat.pcId));
             throw err;
           }
           if (n === 0) return errorResult(taskNotRunning(id, seat.pcId));

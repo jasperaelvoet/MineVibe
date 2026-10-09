@@ -372,7 +372,8 @@ export class Desktop {
       }
       case 'wiki':
         el('heading', 'Team wiki', { x: 340, y: 150, w: 400, h: 40 }, { depth: 3 });
-        for (const l of links('wiki', '')) el('link', titleCase(l.label), l.box, { depth: 3, actions: ['press'] });
+        for (const l of links('wiki', ''))
+          el('link', titleCase(l.label), l.box, { depth: 3, actions: ['press'] });
         break;
       case 'releases':
         el('heading', 'MineVibe releases', { x: 200, y: 140, w: 600, h: 40 }, { depth: 3 });
@@ -393,7 +394,9 @@ export class Desktop {
     return out;
   }
 
-  #searchElements(el: (role: string, name: string, box: Rect | null, extra?: Partial<DesktopElement>) => void): void {
+  #searchElements(
+    el: (role: string, name: string, box: Rect | null, extra?: Partial<DesktopElement>) => void,
+  ): void {
     el('text_field', 'Search the team wiki', SEARCH_BOX, {
       depth: 3,
       value: this.search,

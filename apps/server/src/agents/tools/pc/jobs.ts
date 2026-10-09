@@ -32,7 +32,11 @@ export function jobNotification(job: PcJob, exit: Pick<JobExit, 'exitCode' | 're
   if (exit.reason === 'stopped' || exit.reason === 'seat') return null;
   const status = exit.reason === 'exited' ? (exit.exitCode === 0 ? 'completed' : 'failed') : 'killed';
   const why =
-    exit.reason === 'lifetime' ? 'it ran past its time limit' : exit.reason === 'lost' ? 'MineVibe lost track of it' : undefined;
+    exit.reason === 'lifetime'
+      ? 'it ran past its time limit'
+      : exit.reason === 'lost'
+        ? 'MineVibe lost track of it'
+        : undefined;
   return taskNotification({
     taskId: job.jobId,
     toolUseId: job.toolUseId,

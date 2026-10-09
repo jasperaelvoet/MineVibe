@@ -34,7 +34,12 @@ import type {
 /** The parts of the stream the batch bookkeeping needs. */
 export type StreamMark =
   | { readonly kind: 'message_start'; readonly messageId: string }
-  | { readonly kind: 'tool_use'; readonly messageId: string | null; readonly toolUseId: string; readonly name: string }
+  | {
+      readonly kind: 'tool_use';
+      readonly messageId: string | null;
+      readonly toolUseId: string;
+      readonly name: string;
+    }
   | { readonly kind: 'message_stop'; readonly messageId: string | null };
 
 /** A raw streaming event as a {@link StreamMark}, or null for every other event. */

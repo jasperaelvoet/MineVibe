@@ -3,8 +3,8 @@ import type { SpacesdClientLike } from '@trycua/cua';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { wrapBash } from '../../src/agents/tools/pcServer.js';
 import type { ApiError } from '../../src/contracts/common.js';
-import { PcGuestApi } from '../../src/pcs/GuestApi.js';
 import type { JobExit } from '../../src/contracts/PcApi.js';
+import { PcGuestApi } from '../../src/pcs/GuestApi.js';
 import {
   EDIT_READ_SCRIPT,
   EDIT_WRITE_SCRIPT,
@@ -109,7 +109,14 @@ class FakeGuest {
     stat: async (path: string) => {
       const f = this.files.get(path);
       if (!f) throw new Error(`CuaError.Env: env: not found: ${path} (NotFound)`);
-      return { name: path, path, kind: 'file', size: BigInt(f.data.byteLength), mode: 0o644, modifiedMs: BigInt(f.mtime) };
+      return {
+        name: path,
+        path,
+        kind: 'file',
+        size: BigInt(f.data.byteLength),
+        mode: 0o644,
+        modifiedMs: BigInt(f.mtime),
+      };
     },
     download: async (path: string) => {
       const f = this.files.get(path);
@@ -698,7 +705,10 @@ describe('PC tools V2: input', () => {
 
 describe('PC tools V2: screen, windows and accessibility', () => {
   it('reads the cursor and the windows (focused first, mirror and all)', async () => {
-    guest.rpc.set('ComputerService/GetCursorPosition', () => ({ position: { x: 700, y: 500 }, displayId: '0' }));
+    guest.rpc.set('ComputerService/GetCursorPosition', () => ({
+      position: { x: 700, y: 500 },
+      displayId: '0',
+    }));
     expect(await api.cursor('linux-1')).toEqual({ x: 700, y: 500 });
     guest.rpc.set('WindowsService/ListWindows', () => ({
       windows: [
@@ -863,7 +873,12 @@ describe('PC tools V2: screen, windows and accessibility', () => {
         focused: calls <= 1,
         zOrder: 3,
       };
-      const ff = { ref: { id: 'w9' }, title: 'Example Domain — Mozilla Firefox', app: { name: 'firefox' }, zOrder: 4 };
+      const ff = {
+        ref: { id: 'w9' },
+        title: 'Example Domain — Mozilla Firefox',
+        app: { name: 'firefox' },
+        zOrder: 4,
+      };
       return { windows: calls <= 1 ? [term] : [term, ff] };
     });
     guest.rpc.set('WindowsService/ActivateWindow', () => ({}));

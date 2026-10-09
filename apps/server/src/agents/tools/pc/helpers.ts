@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { isApiError } from '../../../contracts/common.js';
 import { type GuestWindow, PC_ERROR_CODES } from '../../../contracts/PcApi.js';
 import { type CallToolResult, errorResult, textResult } from '../results.js';
-import { type Def, defs, finishAction, imageResult, tool } from './common.js';
+import { type Def, defs, finishAction, tool } from './common.js';
 import { isMirror, type PcToolContext, type Seat, windowLabel } from './context.js';
 import { openFailed } from './formats.js';
 import { roleMatches } from './ui.js';
@@ -41,7 +41,10 @@ function resolveTarget(target: string, home: string): string {
   if (t === '~' || t.startsWith('~/')) return `${home.replace(/\/+$/, '')}${t.slice(1)}`;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t) || t.startsWith('about:') || t.startsWith('/')) return t;
   if (/^(www\.|[a-z0-9-]+\.(com|org|net|io|dev|app|ai|edu|gov)(\/|$))/i.test(t)) return `https://${t}`;
-  return APP_ALIASES[t.toLowerCase()] ?? t;
+  const alias = APP_ALIASES[t.toLowerCase()];
+  if (alias) return alias;
+  // "Firefox", "Thunar": executables are lowercase.
+  return /^[A-Za-z][A-Za-z0-9_+-]*$/.test(t) ? t.toLowerCase() : t;
 }
 
 async function open(
@@ -134,7 +137,9 @@ async function waitFor(ctx: PcToolContext, seat: Seat, args: WaitArgs): Promise<
     // The screen stops changing: equal thumbnails over at least 600 ms.
     const hash = async () =>
       createHash('sha1')
-        .update((await ctx.host.pcs.screenshot(seat.pcId, { maxDim: 320, quality: 50, includeCursor: false })).data)
+        .update(
+          (await ctx.host.pcs.screenshot(seat.pcId, { maxDim: 320, quality: 50, includeCursor: false })).data,
+        )
         .digest('hex');
     let prev = await hash();
     let since = Date.now();
@@ -166,12 +171,16 @@ async function waitFor(ctx: PcToolContext, seat: Seat, args: WaitArgs): Promise<
     last = await holds(ctx, seat.pcId, args);
     if (last.found !== (args.gone === true)) {
       const where = last.where ? ` in "${windowLabel(last.where)}"` : '';
-      const text = args.gone ? `${what} is gone after ${secs()} s.` : `Found ${what} after ${secs()} s${where}.`;
+      const text = args.gone
+        ? `${what} is gone after ${secs()} s.`
+        : `Found ${what} after ${secs()} s${where}.`;
       return finishAction(ctx, seat, text, { forceImage: true, windowNote: false });
     }
     await sleep(300);
   }
-  const focused = (await ctx.host.pcs.windows(seat.pcId).catch(() => [] as GuestWindow[])).find((w) => w.focused);
+  const focused = (await ctx.host.pcs.windows(seat.pcId).catch(() => [] as GuestWindow[])).find(
+    (w) => w.focused,
+  );
   const text = args.gone
     ? `${what} was still there after ${Math.round(timeout / 1000)} s.`
     : `${what} did not appear within ${Math.round(timeout / 1000)} s.${focused ? ` Focused: "${windowLabel(focused)}".` : ''}`;
@@ -191,7 +200,7 @@ export function helperTools(ctx: PcToolContext): Def[] {
     ),
     tool(
       'wait_for',
-      'Wait until the screen shows something, instead of guessing with wait: text (in the windows\' accessible text or titles), an element (role and/or name), a window (title or part of it), or stable (the screen stops changing). gone: true waits for it to disappear. Returns as soon as it holds, with a screenshot; an error after timeout_ms (default 10000, max 120000).',
+      "Wait until the screen shows something, instead of guessing with wait: text (in the windows' accessible text or titles), an element (role and/or name), a window (title or part of it), or stable (the screen stops changing). gone: true waits for it to disappear. Returns as soon as it holds, with a screenshot; an error after timeout_ms (default 10000, max 120000).",
       {
         text: z.string().max(200).optional(),
         role: z.string().max(40).optional(),

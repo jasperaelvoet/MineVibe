@@ -128,7 +128,8 @@ describe('catalog and schemas', () => {
     const { reg } = setup();
     expect(Object.keys(reg).sort()).toEqual([...PC_TOOLS].sort());
     expect(PC_TOOLS).toHaveLength(31);
-    for (const gone of ['click', 'move', 'drag', 'bash_output', 'bash_kill']) expect(reg[gone]).toBeUndefined();
+    for (const gone of ['click', 'move', 'drag', 'bash_output', 'bash_kill'])
+      expect(reg[gone]).toBeUndefined();
   });
 
   it('takes the trained computer-use inputs', () => {
@@ -140,7 +141,9 @@ describe('catalog and schemas', () => {
     expect(ok('left_click', { coordinate: [-1, 2] })).toBe(false);
     expect(ok('triple_click', { coordinate: [1, 2] })).toBe(true);
     expect(ok('left_click_drag', { start_coordinate: [1, 2], coordinate: [3, 4] })).toBe(true);
-    expect(ok('scroll', { scroll_direction: 'down', scroll_amount: 5, coordinate: [1, 2], text: 'shift' })).toBe(true);
+    expect(
+      ok('scroll', { scroll_direction: 'down', scroll_amount: 5, coordinate: [1, 2], text: 'shift' }),
+    ).toBe(true);
     expect(ok('scroll', { scroll_direction: 'sideways', scroll_amount: 5 })).toBe(false);
     expect(ok('key', { text: 'ctrl+s', repeat: 3 })).toBe(true);
     expect(ok('hold_key', { text: 'shift', duration: 1.5 })).toBe(true);
@@ -155,7 +158,13 @@ describe('catalog and schemas', () => {
     const { reg } = setup();
     const ok = (name: string, args: unknown) => reg[name]?.inputSchema?.safeParse(args).success;
     expect(
-      ok('bash', { command: 'ls', description: 'list', timeout: 5000, run_in_background: false, dangerouslyDisableSandbox: true }),
+      ok('bash', {
+        command: 'ls',
+        description: 'list',
+        timeout: 5000,
+        run_in_background: false,
+        dangerouslyDisableSandbox: true,
+      }),
     ).toBe(true);
     expect(ok('read', { file_path: '/x', offset: 1, limit: 2, pages: '1-2' })).toBe(true);
     expect(ok('edit', { file_path: '/x', old_string: 'a', new_string: 'b', replace_all: true })).toBe(true);
@@ -242,7 +251,9 @@ describe('read (Claude Code 2.1.293 Read)', () => {
     );
     const huge = await call(reg, 'read', { file_path: `${VAULT}/big.txt` });
     expect(huge.text.length).toBeLessThan(60_000);
-    expect(huge.text).toMatch(/\[Truncated: PARTIAL view — .*big\.txt: showing lines 1-55 of 300 total \(\d+ tokens, cap 14000\)\. Call Read with offset=56 limit=55/);
+    expect(huge.text).toMatch(
+      /\[Truncated: PARTIAL view — .*big\.txt: showing lines 1-55 of 300 total \(\d+ tokens, cap 14000\)\. Call Read with offset=56 limit=55/,
+    );
   });
 
   it('shows images as images', async () => {
@@ -259,7 +270,10 @@ describe('write and edit (read-state)', () => {
       `File created successfully at: ${VAULT}/new.ts (file state is current in your context — no need to Read it back)`,
     );
     const blind = await call(reg, 'write', { file_path: `${VAULT}/a.ts`, content: 'gone' });
-    expect(blind).toMatchObject({ isError: true, text: 'File has not been read yet. Read it first before writing to it.' });
+    expect(blind).toMatchObject({
+      isError: true,
+      text: 'File has not been read yet. Read it first before writing to it.',
+    });
     expect(pcs.files('linux-1').get(`${VAULT}/a.ts`)).toBe('line one\nline two\nline three\n');
     await call(reg, 'read', { file_path: `${VAULT}/a.ts` });
     pcs.touchFile('linux-1', `${VAULT}/a.ts`, 'the player typed this\n');
@@ -290,9 +304,9 @@ describe('write and edit (read-state)', () => {
     expect((await call(reg, 'edit', { file_path, old_string: 'line', new_string: 'L' })).text).toBe(
       'Found 2 matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: line',
     );
-    expect((await call(reg, 'edit', { file_path, old_string: 'line', new_string: 'L', replace_all: true })).text).toBe(
-      `The file ${file_path} has been updated. All occurrences were successfully replaced.`,
-    );
+    expect(
+      (await call(reg, 'edit', { file_path, old_string: 'line', new_string: 'L', replace_all: true })).text,
+    ).toBe(`The file ${file_path} has been updated. All occurrences were successfully replaced.`);
     expect(pcs.files('linux-1').get(file_path)).toBe('L one\nLINE 2\nL three\n');
     expect((await call(reg, 'edit', { file_path, old_string: 'x', new_string: 'x' })).text).toBe(
       'No changes to make: old_string and new_string are exactly the same.',
@@ -300,16 +314,18 @@ describe('write and edit (read-state)', () => {
     expect((await call(reg, 'edit', { file_path, old_string: '', new_string: 'x' })).text).toBe(
       'Cannot create new file - file already exists.',
     );
-    expect((await call(reg, 'edit', { file_path: `${VAULT}/c.ts`, old_string: '', new_string: 'new\n' })).text).toBe(
-      `The file ${VAULT}/c.ts has been updated successfully.`,
-    );
+    expect(
+      (await call(reg, 'edit', { file_path: `${VAULT}/c.ts`, old_string: '', new_string: 'new\n' })).text,
+    ).toBe(`The file ${VAULT}/c.ts has been updated successfully.`);
     expect(pcs.files('linux-1').get(`${VAULT}/c.ts`)).toBe('new\n');
   });
 
   it('plan files are captured in memory and never reach the PC', async () => {
     const { reg, pcs, plans } = setup();
     const path = '/Users/jasper/.claude/plans/fix.md';
-    expect((await call(reg, 'write', { file_path: path, content: '# Plan\n- a' })).text).toContain('File created successfully');
+    expect((await call(reg, 'write', { file_path: path, content: '# Plan\n- a' })).text).toContain(
+      'File created successfully',
+    );
     expect((await call(reg, 'edit', { file_path: path, old_string: '- a', new_string: '- b' })).text).toBe(
       `The file ${path} has been updated successfully.`,
     );
@@ -335,7 +351,12 @@ describe('glob and grep', () => {
       return grep(pcId, req);
     };
     expect((await call(reg, 'grep', { pattern: 'line|const' })).text).toBe('Found 2 files\na.ts\nsrc/b.ts');
-    expect(seen).toMatchObject({ outputMode: 'files_with_matches', headLimit: 250, offset: 0, lineNumbers: true });
+    expect(seen).toMatchObject({
+      outputMode: 'files_with_matches',
+      headLimit: 250,
+      offset: 0,
+      lineNumbers: true,
+    });
     expect((await call(reg, 'grep', { pattern: 'line|const', head_limit: 1 })).text).toBe(
       'Found 1 file limit: 1\na.ts',
     );
@@ -348,7 +369,9 @@ describe('glob and grep', () => {
     expect((await call(reg, 'grep', { pattern: 'line', output_mode: 'count' })).text).toBe(
       'a.ts:3\n\nFound 3 total occurrences across 1 file.',
     );
-    expect((await call(reg, 'grep', { pattern: 'zzz', output_mode: 'content' })).text).toBe('No matches found');
+    expect((await call(reg, 'grep', { pattern: 'zzz', output_mode: 'content' })).text).toBe(
+      'No matches found',
+    );
     expect((await call(reg, 'grep', { pattern: 'zzz' })).text).toBe('No files found');
     await call(reg, 'grep', { pattern: 'l\\w+', output_mode: 'content', '-o': true, head_limit: 0 });
     expect(seen).toMatchObject({ onlyMatching: true, headLimit: undefined });
@@ -379,8 +402,15 @@ describe('bash and task_stop (Claude Code 2.1.293 Bash)', () => {
     expect(pcs.execs[0]?.request.command).toBe(wrapBash('cd sub && echo ok'));
     const failed = await call(reg, 'bash', { command: 'false', timeout: 900_000 });
     expect(failed).toMatchObject({ isError: true, text: 'Exit code 2\nboom' });
-    expect(pcs.execs[1]?.request).toMatchObject({ cwd: `${VAULT}/sub`, timeoutMs: 600_000, env: { MV_CWD: `${VAULT}/sub` } });
-    expect(await call(reg, 'bash', { command: 'true' })).toMatchObject({ isError: false, text: '(No output)' });
+    expect(pcs.execs[1]?.request).toMatchObject({
+      cwd: `${VAULT}/sub`,
+      timeoutMs: 600_000,
+      env: { MV_CWD: `${VAULT}/sub` },
+    });
+    expect(await call(reg, 'bash', { command: 'true' })).toMatchObject({
+      isError: false,
+      text: '(No output)',
+    });
     expect(await call(reg, 'bash', { command: 'grep -r nothing .' })).toMatchObject({
       isError: false,
       text: 'No matches found',
@@ -389,7 +419,10 @@ describe('bash and task_stop (Claude Code 2.1.293 Bash)', () => {
 
   it('cuts huge output in the middle', async () => {
     const { reg, pcs } = setup();
-    pcs.execHandler = () => ({ exitCode: 0, output: Array.from({ length: 4_000 }, (_, i) => `row ${i}`).join('\n') });
+    pcs.execHandler = () => ({
+      exitCode: 0,
+      output: Array.from({ length: 4_000 }, (_, i) => `row ${i}`).join('\n'),
+    });
     const r = await call(reg, 'bash', { command: 'seq' });
     expect(r.text.length).toBeLessThanOrEqual(30_100);
     expect(r.text).toMatch(/^row 0\n/);
@@ -399,21 +432,35 @@ describe('bash and task_stop (Claude Code 2.1.293 Bash)', () => {
   it('background commands report their file, overruns move to the background, task_stop stops them', async () => {
     const jobs = new PcJobBook();
     const { reg, pcs } = setup({ jobs });
-    const bg = await call(reg, 'bash', { command: 'npm run dev', run_in_background: true, timeout: 3_600_000 });
+    const bg = await call(reg, 'bash', {
+      command: 'npm run dev',
+      run_in_background: true,
+      timeout: 3_600_000,
+    });
     const id = /ID: (\S+?)\./.exec(bg.text)?.[1] ?? '';
     expect(bg.text).toBe(
       `Command running in background with ID: ${id}. Output is being written to: /home/cua/.mv/jobs/${id}.out. You will be notified when it completes. To check interim output, use Read on that file path.`,
     );
     expect(pcs.execs[0]?.request).toMatchObject({ background: true, lifetimeMs: 3_600_000 });
-    expect(jobs.get('linux-1', id)).toMatchObject({ command: 'npm run dev', description: 'npm run dev', epoch: 7 });
+    expect(jobs.get('linux-1', id)).toMatchObject({
+      command: 'npm run dev',
+      description: 'npm run dev',
+      epoch: 7,
+    });
     pcs.execHandler = () => ({ exitCode: 0, output: 'compiling', hang: true });
-    const moved = await call(reg, 'bash', { command: 'npm run build', description: 'Build the app', timeout: 5_000 });
+    const moved = await call(reg, 'bash', {
+      command: 'npm run build',
+      description: 'Build the app',
+      timeout: 5_000,
+    });
     const id2 = /\(ID: (\S+?)\)/.exec(moved.text)?.[1] ?? '';
     expect(moved.text).toBe(
       `Command did not complete within its 5s timeout and was moved to the background (ID: ${id2}). Output is being written to: /home/cua/.mv/jobs/${id2}.out. You will be notified when it completes. If it is still running after 30m in the background, it will be stopped and you will be notified. To check interim output, use Read on that file path.`,
     );
     expect(jobs.get('linux-1', id2)?.description).toBe('Build the app');
-    expect((await call(reg, 'task_stop', { task_id: id })).text).toBe(`Successfully stopped task: ${id} (npm run dev)`);
+    expect((await call(reg, 'task_stop', { task_id: id })).text).toBe(
+      `Successfully stopped task: ${id} (npm run dev)`,
+    );
     expect((await call(reg, 'task_stop', { task_id: 'b00000000' })).isError).toBe(true);
   });
 
@@ -451,8 +498,12 @@ describe('computer tools (the trained members)', () => {
       isError: true,
       text: 'Coordinate (1400, 300) is outside the screen (1280x800). Coordinates are pixels of the latest screenshot, origin top-left.',
     });
-    expect((await call(reg, 'left_click', { coordinate: [1, 1], text: 'banana' })).text).toContain('Unknown key "banana"');
-    expect((await call(reg, 'left_click', { coordinate: [1, 1], text: 'ctrl+a' })).text).toContain('is not a modifier');
+    expect((await call(reg, 'left_click', { coordinate: [1, 1], text: 'banana' })).text).toContain(
+      'Unknown key "banana"',
+    );
+    expect((await call(reg, 'left_click', { coordinate: [1, 1], text: 'ctrl+a' })).text).toContain(
+      'is not a modifier',
+    );
   });
 
   it('a larger screen is shown scaled to 1280 pixels, and coordinates are scaled back', async () => {
@@ -599,11 +650,53 @@ const EDITOR: FakeWindow = {
   focused: true,
   onScreen: true,
   nodes: [
-    { elementId: '1', depth: 1, role: 'menu', name: 'File', bounds: { x: 0, y: 30, w: 40, h: 20 }, states: ['enabled'], actions: ['press'] },
-    { elementId: '2', depth: 2, role: 'button', nativeRole: 'push button', name: 'Save', bounds: { x: 1160, y: 28, w: 40, h: 20 }, states: ['enabled'], actions: ['press'] },
-    { elementId: '3', depth: 2, role: 'text_field', name: 'Search', value: '', bounds: { x: 200, y: 60, w: 300, h: 24 }, states: ['enabled', 'editable'], actions: ['press', 'set_value'] },
-    { elementId: '4', depth: 2, role: 'paragraph', name: 'Hello world', bounds: { x: 20, y: 100, w: 400, h: 20 }, states: ['enabled'], actions: [] },
-    { elementId: '5', depth: 2, role: 'button', name: 'Hidden', description: 'off-screen: scroll it into view before a pixel action; element actions still reach it', states: ['enabled'], actions: ['press'] },
+    {
+      elementId: '1',
+      depth: 1,
+      role: 'menu',
+      name: 'File',
+      bounds: { x: 0, y: 30, w: 40, h: 20 },
+      states: ['enabled'],
+      actions: ['press'],
+    },
+    {
+      elementId: '2',
+      depth: 2,
+      role: 'button',
+      nativeRole: 'push button',
+      name: 'Save',
+      bounds: { x: 1160, y: 28, w: 40, h: 20 },
+      states: ['enabled'],
+      actions: ['press'],
+    },
+    {
+      elementId: '3',
+      depth: 2,
+      role: 'text_field',
+      name: 'Search',
+      value: '',
+      bounds: { x: 200, y: 60, w: 300, h: 24 },
+      states: ['enabled', 'editable'],
+      actions: ['press', 'set_value'],
+    },
+    {
+      elementId: '4',
+      depth: 2,
+      role: 'paragraph',
+      name: 'Hello world',
+      bounds: { x: 20, y: 100, w: 400, h: 20 },
+      states: ['enabled'],
+      actions: [],
+    },
+    {
+      elementId: '5',
+      depth: 2,
+      role: 'button',
+      name: 'Hidden',
+      description: 'off-screen: scroll it into view before a pixel action; element actions still reach it',
+      states: ['enabled'],
+      actions: ['press'],
+    },
   ],
 };
 
@@ -620,7 +713,9 @@ describe('ui and ui_act (accessibility)', () => {
     expect(r.text).toBe('1 match in "notes.md - Mousepad":\nref_1 button "Save" @(1180,38)');
     const byRole = await call(reg, 'ui', { action: 'find', role: 'entry' });
     expect(byRole.text).toContain('text field "Search" @(350,72)');
-    expect((await call(reg, 'ui', { action: 'find', query: 'zebra' })).text).toMatch(/^No element matches "zebra"/);
+    expect((await call(reg, 'ui', { action: 'find', query: 'zebra' })).text).toMatch(
+      /^No element matches "zebra"/,
+    );
   });
 
   it('a ref clicks through the accessibility tree; other clicks go to its centre', async () => {
@@ -633,6 +728,21 @@ describe('ui and ui_act (accessibility)', () => {
     expect(pcs.input.at(-1)?.value).toEqual({ action: 'right_click', x: 1180, y: 38 });
     expect((await call(reg, 'left_click', { ref: 'ref_99' })).text).toBe(
       'No element ref_99. Refs come from ui find/tree in this seat.',
+    );
+  });
+
+  it('a ref survives a newer look at its window (spacesd keeps one live snapshot per window)', async () => {
+    const { reg, pcs } = withEditor();
+    await call(reg, 'ui', { action: 'find', query: 'save' });
+    await call(reg, 'ui', { action: 'tree' });
+    expect((await call(reg, 'left_click', { ref: 'ref_1' })).text).toMatch(/^pressed button "Save"/);
+    expect(pcs.actions.filter((a) => a.kind === 'ui')).toHaveLength(1);
+    // Once the element is gone, the ref says so.
+    const ed = pcs.desktop('linux-1').find((w) => w.id === 'w-ed') as FakeWindow;
+    ed.nodes = ed.nodes.filter((n) => n.name !== 'Save');
+    await call(reg, 'ui', { action: 'tree' });
+    expect((await call(reg, 'left_click', { ref: 'ref_1' })).text).toBe(
+      'ref_1 is from an older view of "notes.md - Mousepad" (the window changed). Call ui find or ui tree again.',
     );
   });
 
@@ -651,7 +761,14 @@ describe('ui and ui_act (accessibility)', () => {
 
   it('windows lists them front first and marks the shell mirror', async () => {
     const { reg, pcs } = withEditor();
-    pcs.desktop('linux-1').push({ id: 'mirror', title: 'Shell: ada-1', app: 'Xfce4-terminal', focused: false, onScreen: true, nodes: [] });
+    pcs.desktop('linux-1').push({
+      id: 'mirror',
+      title: 'Shell: ada-1',
+      app: 'Xfce4-terminal',
+      focused: false,
+      onScreen: true,
+      nodes: [],
+    });
     const r = await call(reg, 'ui', { action: 'windows' });
     expect(r.text).toBe(
       [
@@ -671,8 +788,12 @@ describe('ui and ui_act (accessibility)', () => {
       /^set text field "Search" to "needle"/,
     );
     expect(pcs.actions.at(-1)).toMatchObject({ value: { action: 'set_value', value: 'needle' } });
-    expect((await call(reg, 'ui_act', { op: 'minimize', window: 'Mousepad' })).text).toMatch(/^minimized "notes\.md - Mousepad"/);
-    expect((await call(reg, 'ui_act', { op: 'close', window: 'notes.md' })).text).toMatch(/^closed "notes\.md - Mousepad"/);
+    expect((await call(reg, 'ui_act', { op: 'minimize', window: 'Mousepad' })).text).toMatch(
+      /^minimized "notes\.md - Mousepad"/,
+    );
+    expect((await call(reg, 'ui_act', { op: 'close', window: 'notes.md' })).text).toMatch(
+      /^closed "notes\.md - Mousepad"/,
+    );
     expect((await call(reg, 'ui_act', { op: 'press', ref: 'ref_1' })).text).toBe(
       'ref_1 is from an older view of "its window" (the window changed). Call ui find or ui tree again.',
     );
@@ -683,7 +804,12 @@ describe('ui and ui_act (accessibility)', () => {
 
   it('an app without an accessibility tree says to use the screen', async () => {
     const { reg, pcs } = setup();
-    pcs.addWindow('linux-1', { id: 'ch', title: 'page - Chromium', app: 'Chromium', nodes: [{ elementId: '0', depth: 0, role: 'window', name: 'page - Chromium', states: [], actions: [] }] });
+    pcs.addWindow('linux-1', {
+      id: 'ch',
+      title: 'page - Chromium',
+      app: 'Chromium',
+      nodes: [{ elementId: '0', depth: 0, role: 'window', name: 'page - Chromium', states: [], actions: [] }],
+    });
     expect((await call(reg, 'ui', { action: 'tree' })).text).toBe(
       '"page - Chromium" exposes no accessibility tree (Chromium starts without one; open pages with open, which uses Firefox). Use screenshot and zoom with coordinates.',
     );
@@ -733,7 +859,17 @@ describe('seat, info and limits', () => {
   it('refuses every tool when the seat is gone (fail closed)', async () => {
     const { reg, unseat } = setup();
     unseat();
-    for (const tool of ['bash', 'read', 'write', 'left_click', 'screenshot', 'ui', 'open', 'task_stop', 'grep']) {
+    for (const tool of [
+      'bash',
+      'read',
+      'write',
+      'left_click',
+      'screenshot',
+      'ui',
+      'open',
+      'task_stop',
+      'grep',
+    ]) {
       const r = await call(reg, tool, {
         command: 'ls',
         file_path: `${VAULT}/a.ts`,
@@ -751,11 +887,17 @@ describe('seat, info and limits', () => {
 
   it('info tells the screen, the Vault and the background commands', async () => {
     const { reg } = setup();
-    await call(reg, 'bash', { command: 'npm run dev', run_in_background: true, description: 'Start the dev server' });
+    await call(reg, 'bash', {
+      command: 'npm run dev',
+      run_in_background: true,
+      description: 'Start the dev server',
+    });
     const r = await call(reg, 'info', {});
     expect(r.text).toContain('screen 1280x800 (screenshots are the same size, 1334 image tokens)');
     expect(r.text).toContain(`Vault: ${VAULT} (rw)`);
-    expect(r.text).toMatch(/- b[0-9a-f]{8}: Start the dev server \(started 0s ago; output \/home\/cua\/\.mv\/jobs\/b[0-9a-f]{8}\.out\)/);
+    expect(r.text).toMatch(
+      /- b[0-9a-f]{8}: Start the dev server \(started 0s ago; output \/home\/cua\/\.mv\/jobs\/b[0-9a-f]{8}\.out\)/,
+    );
   });
 
   it('handoff notes are kept per PC or mount', async () => {

@@ -91,8 +91,14 @@ visible around the edges and keeps running.
 ## Agents at PCs
 
 An agent that needs a computer walks to a free PC and sits down. Once seated it switches to **Opus 5.5** and
-gets its PC tools: screenshots, mouse and keyboard, a shell, and file tools (read, write, edit, search). All
-of them act **inside that PC**.
+gets its PC tools: screenshots and zoom, mouse and keyboard, reading apps' text and buttons directly (through
+the desktop's accessibility tree, much cheaper than looking at the screen), opening apps, files and web pages, a
+shell, and file tools (read, write, edit, search). All of them act **inside that PC**.
+
+- **Careful with your files.** An agent only overwrites or edits a file it has read in this sitting, and stops
+  if the file changed since (you edited it in the meantime).
+- **Long commands** (servers, builds) run in the background; the agent hears when they finish.
+- **Apps it opens close when it stands up**, like its commands.
 
 - **Plan first.** Coding roles start in plan mode: the agent can look around and run read-only commands, and
   nothing changes until you approve its plan card.

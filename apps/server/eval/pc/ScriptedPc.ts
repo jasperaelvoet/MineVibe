@@ -68,7 +68,12 @@ export function unwrapBash(wrapped: string): string {
 /** cua key names (what the V2 tools send) as the desktop's own key words. */
 function deskKey(key: string): string {
   const k = key.toLowerCase().replace(/^key_/, '');
-  const arrows: Record<string, string> = { arrow_left: 'left', arrow_right: 'right', arrow_up: 'up', arrow_down: 'down' };
+  const arrows: Record<string, string> = {
+    arrow_left: 'left',
+    arrow_right: 'right',
+    arrow_up: 'up',
+    arrow_down: 'down',
+  };
   if (arrows[k]) return arrows[k] as string;
   if (k === 'numpad_enter') return 'enter';
   if (k === 'control' || k.startsWith('control_')) return 'ctrl';
@@ -247,9 +252,15 @@ export class ScriptedPc implements PcApi {
       via = 'thunar';
     } else if (t.startsWith('/')) {
       if (!this.fs.isFile(t)) throw new ApiError(PC_ERROR_CODES.NOT_FOUND, `no such file or directory: ${t}`);
-      throw new ApiError(PC_ERROR_CODES.OPEN_FAILED, `nothing opens ${t}. Installed apps include: firefox thunar xfce4-terminal`);
+      throw new ApiError(
+        PC_ERROR_CODES.OPEN_FAILED,
+        `nothing opens ${t}. Installed apps include: firefox thunar xfce4-terminal`,
+      );
     } else {
-      throw new ApiError(PC_ERROR_CODES.OPEN_FAILED, `nothing opens ${t}. Installed apps include: firefox thunar xfce4-terminal`);
+      throw new ApiError(
+        PC_ERROR_CODES.OPEN_FAILED,
+        `nothing opens ${t}. Installed apps include: firefox thunar xfce4-terminal`,
+      );
     }
     const [win] = await this.windows(pcId);
     return { window: win ?? null, newWindow: true, via };
@@ -309,7 +320,10 @@ export class ScriptedPc implements PcApi {
     }
     this.input.push({ kind: 'ui', value: { action: request.action, role: now.role, name: now.name } });
     if ((request.action === 'set_value' || request.action === 'focus') && now.field) {
-      this.desktop.setField(now.field, request.action === 'set_value' ? (request.value ?? '') : (now.value ?? ''));
+      this.desktop.setField(
+        now.field,
+        request.action === 'set_value' ? (request.value ?? '') : (now.value ?? ''),
+      );
       return;
     }
     if (request.action === 'press' && now.open) {
@@ -483,7 +497,12 @@ export class ScriptedPc implements PcApi {
       .walk(root)
       .filter((p) => re.test(p) && !p.includes('/.git/'))
       .sort();
-    return { paths: paths.slice(0, 100), truncated: paths.length > 100, total: paths.length, countIsComplete: true };
+    return {
+      paths: paths.slice(0, 100),
+      truncated: paths.length > 100,
+      total: paths.length,
+      countIsComplete: true,
+    };
   }
 
   async grep(pcId: string, request: GrepRequest): Promise<GrepResult> {
