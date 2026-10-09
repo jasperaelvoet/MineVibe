@@ -32,8 +32,9 @@ It approves plan cards as the player would (runs 1-4 predate the 2026-10-08 user
 by default; plan-first is now off unless the player turns it on, so a default crew raises none), stops
 prompting the crew at `--max-turns`, captures screenshots of the game window only, and writes everything to
 `scripts/e2e/out/<run>/` (`result.json`, `summary.md`, `events.jsonl` with every bridge message, `samples.jsonl`
-with the client snapshots, `server.log`, the game's logs, screenshots). `--crew scripted` runs boot, a chat and UI
-smoke test, a seed scout (can a body mine oak here?), death and quit without spending tokens.
+with the client snapshots, `server.log`, the game's logs, screenshots). `--crew scripted` runs boot, the CEO at the
+door (greeted by the harness instead of a welcome turn), a chat and UI smoke test, a seed scout (can a body mine oak
+here?), step 3 by the mod's own jobs, death and quit without spending tokens.
 
 ## Results (run 2, seed `mv-forest-1`, 13 agent turns)
 
@@ -182,3 +183,72 @@ node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripte
   landing is mined away while the agent walks to the edge re-plans instead of falling 6 blocks; a 9-block fall into a
   pool is no re-plan; no scaffold is planned into a torch's cell (one clean `no_path`, not 9 searches ending `stuck`);
   and the office's exit stairs seal off a pond beside them and sand above them.
+
+## Nav v2 scripted runs (2026-10-09)
+
+The zero-token acceptance run on `main` right after navigation v2 merged (`0098139`, with its review fixes): steps 1
+to 3, 8 and 9 with `--crew scripted` on the three usual seeds and three new random ones, then all six again after the
+two fixes below (`4a9acd1`, `3b52313`). Step 3 is the mod's own `collect` of 10 logs with `radius: 48`, as in the
+section above. As a regression check, the three random seeds of that section's table ran steps 1 and 3 before and
+after the fix.
+
+```sh
+node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripted --steps 1,2,3,8 --seed 1350113924
+```
+
+**Result: with the fixes, all six seeds pass all five steps.** On `0098139`, step 2 failed on all six (a harness gap)
+and step 3 failed on `1350113924` (a navigation bug).
+
+| Seed | 1 Cold boot | 2 CEO | 3 on `0098139` | 3 after the fix | 8 Hardcore | 9 Quit |
+| --- | --- | --- | --- | --- | --- | --- |
+| `42` | PASS: world 21.8 s, linux-1 6.3 s, frame 22.1 s | FAIL, now PASS | PASS, 46.0 s, 11 of 11 | PASS, 47.3 s, 10 of 10 | PASS: Game Over 48 ms, World #2 3.9 s | PASS, 3.6 s |
+| `mv-forest-1` | PASS: 24.0 s, 6.3 s, 24.2 s | FAIL, now PASS | PASS, 41.9 s, 10 of 10 | PASS, 42.2 s, 10 of 10 | PASS: 51 ms, 3.9 s | PASS, 6.0 s |
+| `minevibe-e2e` | PASS: 25.0 s, 9.0 s, 25.1 s | FAIL, now PASS | PASS, 76.5 s, 15 of 26 | PASS, 68.0 s, 14 of 16 | PASS: 50 ms, 3.2 s | PASS, 2.8 s |
+| `1350113924` | PASS: 18.2 s, 6.0 s, 18.4 s | FAIL, now PASS | **FAIL**, 46.1 s, 6 logs, `NO_NATURAL_SOURCE`, 6 of 13 | PASS, 59.5 s, 12 of 12 | PASS: 49 ms, 3.7 s | PASS, 2.7 s |
+| `2368183124` | PASS: 17.9 s, 6.0 s, 18.1 s | FAIL, now PASS | PASS, 188.2 s, 19 of 35 | PASS, 165.1 s, 36 of 36 | PASS: 49 ms, 3.7 s | PASS, 2.0 s |
+| `3207449953` | PASS: 17.7 s, 6.0 s, 17.8 s | FAIL, now PASS | PASS, 65.1 s, 13 of 29 | PASS, 66.0 s, 13 of 29 | PASS: 48 ms, 3.7 s | PASS, 3.0 s |
+| `3037014017` (1, 3) | PASS | | PASS, 68.8 s, 16 of 29 | PASS, 47.2 s, 10 of 10 | | PASS |
+| `217793310` (1, 3) | PASS | | PASS, 80.7 s (spruce), 19 of 22 | PASS, 87.6 s, 20 of 24 | | PASS |
+| `2921725920` (1, 3) | PASS | | PASS, 46.0 s, 11 of 11 | PASS, 65.8 s, 15 of 15 | | PASS |
+| **Collect done** | | | **8 of 9** | **9 of 9** | | |
+| **Reach** | | | **120 of 186 (0.65)** | **140 of 162 (0.86)** | | |
+
+- Step 3's "x of y" is logs mined of the mining targets tried (mined plus given up, the job's own `mined` and
+  `unreachable`). No walk to a drop failed in any run. Tier 2 planned 4 to 31 times per run.
+- Steps 1, 8 and 9 are from the runs after the fix; those on `0098139` match (world ready 17.9 to 21.1 s, linux-1
+  running 5.9 to 8.5 s, death to World #2 3.0 to 3.9 s, teardown 2.1 to 3.0 s), except one Begin to World #2 of
+  10.3 s (seed `3207449953`; under the 60 s check, not seen again). Each step 8 kept the same PCs (linux-1, running,
+  bound to the new office) and buried the dead save in `saves/_graveyard`. Each step 9: `npm run play` returned 143
+  (SIGTERM, as before), no child processes or orphans, linux-1's VM gone, the engine stopped.
+- Step 2 after the fix: the CEO spawned 0 blocks from the door, then stood 3.0 blocks from the player (3.8 on
+  `mv-forest-1`); head icons NONE then THINKING, bubble "On it: hello".
+
+**Step 3 on `1350113924` (fixed in `4a9acd1`).** The office there is sunk about 6 blocks into a hill; its exit
+stairs (the N1 review fix) let the CEO out. (`ceb3c01`, before the review fixes, failed this seed at once: no way out
+of the office, three trees `no_path`.) The first tree gave 6 logs. The second, a 6-log oak on a bank 2 blocks above
+the path, gave none, and the third was called unreachable from 4 blocks away. The cause: Tier 2 tests a "reach a
+block" goal cell by its middle (3.75 blocks), but the body enters the last cell of a path on the side away from the
+block, so the navigator arrived with the eyes 4.05 and 4.27 blocks from the log, and `Walk.toMine` failed
+`out_of_reach` (hand reach 4.0). The miner then took the bank tree's base log for a high log; with no dirt in the bag
+it booked all six as `logsLeftHigh`. The third tree could only be reached by digging, so that one failure made it
+unreachable. Diagnosed with `MINEVIBE_NAV_DEBUG=1` and a throwaway instrumented mod jar (`MINEVIBE_MOD_JAR`). The fix:
+a "reach a block" goal arrives only once the eyes are in hand reach; when the path is walked out, the body first
+steps to the middle of the cell, crouched, for at most 30 ticks. Two GameTests, each failing on `0098139`: a block
+up a glass corridor (old code arrived 4.02 from it) and the same geometry as a tree on a bank (old code:
+`NO_NATURAL_SOURCE`, "oak tree 4m SE (unreachable)"). `NavGameTests` now has 29, and all 152 server GameTests pass.
+
+The fix lifted reach on the seeds that passed too. On `0098139`, 65 of the 66 targets given up were booked as high
+logs, the bank tree's six among them. After the fix, 22 were given up, all of them high logs: 16 in one 29-log oak
+(`3207449953`), 4 in `217793310`'s spruce and 2 on `minevibe-e2e` (DEBT, "High logs of a felled tree stay up"). Collect
+now fells more: on `2368183124` it finished a 24-log oak whole, so it mined 36 logs and kept 15, the rest left in the
+canopy (DEBT).
+
+**Step 2 (harness, `3b52313`).** The scripted crew has no welcome turn, so no bubble ever showed over the CEO, and
+step 2 had failed in every scripted run since the harness was written (dry runs 1 to 4 above too). In scripted mode
+the harness now says `@ada hello` and samples `debug.state` at 10 Hz until the reply bubble shows. It checks the
+THINKING head icon in both modes.
+
+**Cleanup.** Every run removed its own PC instance (container, network, three volumes, registry entry). The first run
+also removed `0fa3430b`, the leaked E2E instance listed in `out/leaked-instances.txt` (DEBT, D2 sweep). The dev
+engine still holds the other 13 instances it held before (12 unregistered, plus the play home). No temporary home, game,
+node or VM process is left.

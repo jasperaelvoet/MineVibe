@@ -22,8 +22,10 @@ gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bri
 - **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
   pillar (3 blocks, 2 at low health, so the agent can always get down without digging under itself) nor its own
   (2 blocks) reaches: 30 of 117 targets in the zero-token runs on `b7c347f`, 14 of 94 on `5f7e72d`, most in the
-  spruce of seed `217793310` (ACCEPTANCE.md, "Navigation v2"). Each costs a Tier-2 search that runs out (20 000
-  nodes, 70-110 ticks at 1.5 ms).
+  spruce of seed `217793310` (ACCEPTANCE.md, "Navigation v2"). After the arrival fix of the nav v2 scripted runs
+  (`4a9acd1`) it is 22 of 162 on nine seeds, 16 of them in one 29-log oak on seed `3207449953` (ACCEPTANCE.md, "Nav v2
+  scripted runs"; before that fix, arrivals short of hand reach were booked as high logs too). Each costs a Tier-2
+  search that runs out (20 000 nodes, 70-110 ticks at 1.5 ms).
   - **Fix:** a dedicated "log straight above, beside its trunk" plan (pillar beside the trunk up to the log, clear it
     on the way down), and skip the search for logs above the pillar limit outright.
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars
@@ -43,6 +45,20 @@ gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bri
 - **`mine` and `collect` search 24 blocks by default, `find` 32.** An agent that `find`s oak at 28 blocks and then
   `collect`s without `radius` gets `NOT_FOUND` (seed `mv-forest-1`, nearest oak 27.9 from the office). The scripted
   step 3 passes `radius: 48`. Fix: one default for both (W1 owns tree targeting).
+
+## Found in the nav v2 scripted runs (2026-10-09, ACCEPTANCE.md "Nav v2 scripted runs")
+- **One missed log sends the miner climbing for the rest of the tree.** When a walk to a log above the feet fails,
+  for whatever reason, `Miner` sets `climbing`, and every later log of that tree goes straight to `climbToward`
+  without a walk. With no dirt in the bag, each is booked `logsLeftHigh` and skipped. On seed `1350113924` a walk that
+  arrived short of a bank tree's base log gave up all six logs, though all were in reach from the bank's foot. The
+  short arrival is fixed (`4a9acd1`), but the latch stays: a base log on a ledge that no walk reaches still gives up
+  the whole tree. **Fix:** climb only for logs above the lowest log still standing, and clear `climbing` once a
+  walk to a log of the tree arrives.
+- **A felled big tree leaves most of its drops in the canopy.** After a tree, `collect` picks up drops within 5 blocks
+  of the stump for 100 ticks (`TREE_COLLECT_TICKS`). On seed `2368183124` it finished a 24-log oak whole (W1 finishes
+  the tree it is felling): 36 logs mined, 15 kept, and `collect 10` took 165 s. **Fix:** pick up a broken log's drop
+  when it lands within reach of the walk, or look for drops around each felled log, not only the stump. For trees
+  far over the count, consider stopping at the count and leaving the tree standing.
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
 - **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
@@ -90,8 +106,9 @@ gaps and drops in leaves were out of reach on foot (Tier 2 digs, pillars and bri
   export's owner file, or the homes of the checkout it runs in. Instances made by older builds (throwaway homes of
   earlier E2E and `npm test` runs, and of other worktrees) show as `unregistered` and are kept. When this was written
   the dev engine held eight, some of them live (another worktree's dev server, a tools-v2 probe) and one the main
-  checkout's play home (`4d19177e`); `0fa3430b` is a leaked E2E run (`scripts/e2e/out/leaked-instances.txt`, which the
-  harness now removes through the same code). Remove one with
+  checkout's play home (`4d19177e`); `0fa3430b`, a leaked E2E run listed in `scripts/e2e/out/leaked-instances.txt`, was
+  removed by the harness in the nav v2 scripted runs (2026-10-09), which left 12 unregistered instances and the play
+  home. Remove one with
   `npm run doctor -- --clean-orphans --apply --instance <id>` once you know its home is gone; the next `npm run dev` /
   `play` of a live home registers it.
 - **Other branches still boot a real PC from `npm test`.** `test/contract/devServer.test.ts` ("buries a dead save on
