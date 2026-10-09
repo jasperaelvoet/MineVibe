@@ -338,3 +338,74 @@ Two runs, one seed, one PC, 11 turns. Kick, damage, meetings, the TTL, crashes a
 the unit tests only (EVALS.md "Dual sessions"). The comparison numbers come from the single-session runs of
 2026-10-08 (v1 tools, plan-first). The runs' transcripts stay under `~/.claude/projects/`, as every E2E run's do;
 they hold the account e-mail in Claude Code's own `session_context` attachment (DEBT.md).
+
+## Gathering polish (2026-10-09)
+
+The felling fixes of PLAN §7.2 ("Felling tall trees") for DEBT's tree-felling items, measured with step 3 at zero
+tokens on the four seeds the task named, before (`7611dcd`) and after (this branch). Step 3 is the mod's own `collect`
+of 10 logs with `radius: 48`, as above; "kept" is the logs in the CEO's bag, "given up" the job's `unreachable`
+(`logsLeftHigh` in brackets).
+
+```sh
+node --conditions=source --import tsx scripts/e2e/run-scenario.ts --crew scripted --steps 1,3 --seed 3207449953
+```
+
+| Seed | Before: trees, mined, kept, given up, time | After: trees, mined, kept, given up, time |
+| --- | --- | --- |
+| `42` | 2 (5, 5), 10, 10, 0, 45.7 s | 3 (4, 5, 5), 14, 14, 0, 78.2 s |
+| `2368183124` | 3 (5, 6, 6), 17, 14 (+2 Bram), 0, 61.5 s | 3 (5, 6, 6), 17, 14 (+2 Bram), 0, 64.2 s |
+| `3207449953` | 1 (29-log oak), 13, 13, 16 (16 high), 65.5 s | 1, 27, 26, 2 (2 high), 189.6 s |
+| `minevibe-e2e` | 2 (4, 10), 14, 14, 2 (2 high), 70.9 s | 2 (4, 22), 26, 25, 0, 142.5 s |
+| **Reach** | **54 of 72 (0.75)** | **84 of 86 (0.98)** |
+| **Kept** | **51 of 54 (0.94)** | **79 of 84 (0.94; 0.96 with Bram's)** |
+
+- Every run passed steps 1, 3 and 9; no hurt or death in the final runs. The trees differ between runs of a seed
+  (the CEO's start varies, and W1 fells every tree it starts whole), so the table compares reach and kept rates
+  more than totals. Times grew with the work: the high logs are felled now, by hand (the scripted CEO has no axe),
+  and dirt for the pillar is dug first (5 blocks on `3207449953`, put back after).
+- **High logs** (DEBT "High logs of a felled tree stay up"): `3207449953`'s 29-log oak gave up 16 logs before; now 2.
+  The climb dug 5 dirt, pillared in the cut trunk to the top and twice beside a branch (8 blocks placed, all cleared;
+  4 of the 5 holes filled again, one refill timed out). The two left: a branch log with no column in the 3x3 around it
+  to stand in (`no_column`), and one where a pillar block found nothing to rest on (`pillar_failed`, NO_SUPPORT; DEBT).
+- **Canopy drops** (DEBT "A felled big tree leaves most of its drops in the canopy"): in two earlier runs of this
+  branch the CEO started by `2368183124`'s 24-log oak (which the nav v2 runs felled with 36 mined, 15 kept): 36
+  mined, 28 kept (+2 Bram) and 34 mined, 29 kept (+3 Bram, 2 high). The rest were a log lying where no pickup box
+  reaches (`not_picked_up`) and logs in the crown higher than a Tier-2 walk to the leaf under them reaches.
+  "Bram" is the scripted crew's second agent, standing by: his Pickup reflex takes logs within 6 blocks of him.
+- **One missed log** (DEBT "One missed log sends the miner climbing"): no run gave up more than a log of a tree; on
+  `minevibe-e2e` (an earlier run of this branch) a log whose column the CEO could not walk into waited, was retried
+  once at the end, and only that log was left.
+- **Found on the way, fixed before these runs:** in an intermediate build the CEO drowned on `3207449953`. Digging dirt
+  for the pillar took the floor of a hole it had dug before (deepening it block by block) and opened a water pocket
+  under the oak; the drop sweep walked in after a log, and inside the pocket Tier 2 tried to break the grass ceiling
+  while swimming (25 times slower: `break_timeout`) until the CEO drowned; the Hazard reflex cannot surface under a
+  solid ceiling. Dirt is now dug only at the surface, one block deep, on solid ground, never a hole's floor, and the
+  sweep fetches no drop under the ground or in roofed water (the Tier-2 side is in DEBT).
+
+**GameTests** (`NavGameTests`, 33 then, 38 after the review below): a 9-log oak felled whole with nothing but an axe in the bag (dirt dug, 3
+pillar blocks in the cut trunk, 9 of 9 kept, 350 ticks, holes filled, no scaffold left); a 2x2 spruce 12 high (48
+logs, 7 pillar blocks, 48 of 48 kept, about 1 140 ticks); an 8-log oak whose branch end over an obsidian block no walk
+reaches (the rest of the tree comes down, and the blocked log on the retry, with the dug dirt as a Tier-2 pillar: 15
+of 15); and an office on a 6-high plateau whose porch is its edge (stairs down 6 treads, Tier 1 walks down and back
+up unhurt, the office unchanged). The regression suites pass: all 156 server GameTests in the last three full runs
+(earlier runs on this branch caught its own bugs, and two approach tests failed once each from a time-of-day race this
+change does not touch: DEBT); `TreeClimbTest` (4 unit tests) for the climb's numbers.
+
+**Cleanup.** Every run removed its own PC instance; no game, node or VM process is left.
+
+**Review (same day).** An adversarial review of the polish found an agent left stranded on its pillar when the
+felling job ended up there (cancelled, replaced, timed out, failed: no walk comes down a pillar), the fall limit
+checked only when a climb was planned and measured from whatever the agent stood on, cobblestone scaffold mined back
+by hand (lost), a full bag digging every dirt block around, and a knocked-off climb giving its log up and planning
+the next climb on top of its old pillar. Fixed (DEBT, "Found in the gathering polish review", for what stays open),
+each with a GameTest that fails on the polish commit and passes now (`NavGameTests`, 38):
+
+| GameTest | What it shows | Numbers (4 full runs) |
+| --- | --- | --- |
+| `nav_cancelled_climb_comes_down` | 14-log oak, job cancelled 5 blocks up the pillar: the PillarDown reflex (41) mines it away | down to the ground, unhurt, no scaffold left |
+| `nav_hurt_climb_comes_down` | health set to 10 four blocks up (limit now 2) | never higher than 4, down to the ground |
+| `nav_climb_builds_only_with_scaffold_it_mines_back` | 9-log oak, 16 cobblestone and no pickaxe | dirt dug, 9 of 9 kept, 16 cobblestone kept, 351-378 ticks |
+| `nav_full_bag_digs_no_holes` | 9-log oak, bag with room for logs only | no hole dug; 6 low logs felled, 3 left high |
+| `nav_climb_knocked_off_its_column` | 14-log oak, agent moved off its pillar 7 up | new climb beside it, 14 of 14 kept, old pillar cleared from a 1-block Tier-2 pillar, 720-737 ticks |
+
+All 161 server GameTests passed in four full runs after the fixes, and the 423 unit tests (`TreeClimbTest`: 5).

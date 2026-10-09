@@ -677,10 +677,15 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
     placed and that touches no building block (planks, glass, doors, stairs, slabs, fences, walls, wool, beds,
     bricks, cobblestone, chests...). Logs in buildings are never trees, even in a world from before provenance. A tree is felled whole, bottom-up: the nearest one the agent can walk
     to (a quick A* per tree; with no walking way to any, the nearest one Tier-2 navigation can dig or build its way
-    to), each log reached by digging natural ground, pillaring or bridging if needed (else by stepping into the cut
-    trunk or pillaring up at most 2 blocks), every pillar cleared afterwards; drops are picked up at the stump, and `collect{replant:true}`
-    plants a sapling of the same kind there. `result.trees` counts felled trees, `logsLeftHigh` logs left out of
-    reach.
+    to), the logs in reach first, each other log reached by digging natural ground, pillaring or bridging if needed;
+    logs higher than that from a pillar beside the trunk or in the cut trunk (scaffold from the bag, or dirt dug nearby
+    and put back afterwards; at most 12 blocks high at full health, less when hurt, never in water or by lava, down
+    again at 8 health or less or when a hit leaves it too high; an agent a cancelled or failed job leaves up there
+    comes down by itself). A log no walk reaches waits while the rest of the tree comes down, and gets one more
+    try; three failed walks in a row give the rest of that tree up. Every pillar is cleared afterwards; the tree's
+    drops are picked up all over its crown (the leaf under a drop caught in the canopy is broken so it falls), and
+    `collect{replant:true}` plants a sapling of the same kind on the stump. `result.trees` counts felled trees,
+    `kept` the logs kept (picked up) against `mined`, `logsLeftHigh` logs no climb reaches (never searched for).
   - Protected blocks are never targets. Nothing natural in reach: `NO_NATURAL_SOURCE` (only protected blocks of the
     named kind: `PROTECTED`; `mine{near}` on a protected block: `PROTECTED` at once).
 - **Protection and consent (W1).** The mod records who placed each block: players, agents (separately) and the
@@ -726,16 +731,17 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   sheep, chicken and feathers: chickens, rabbit and rabbit hide: rabbits) come from the nearest animal outside
   protected zones that is no pet, named, leashed or young (none: `NO_NATURAL_SOURCE`, saying how many were left
   alone), also once no natural block of an item both drop is left (wool); drops are picked up within 5 blocks for
-  up to 5 seconds after each break. A block that drops something else (`stone`: cobblestone, an ore: its raw metal)
+  up to 5 seconds after each break (a felled tree's: after the tree, all over its crown). A block that drops something else (`stone`: cobblestone, an ore: its raw metal)
   is broken `count` times, as `mine` counts, and the job is done with `result.note` saying so (Node's v2 `gather`
   asks for the drop instead). `result` adds `item`, `got` (the same as `collected`: more of the item than at the
   start), `sources: [{ kind: tree|ore|stone|animal, what, pos, n }]`, `tools_made` and `note`.
 - **`container`** without `pos` (cap `container.nearest`) uses the nearest chest, trapped chest or barrel within 24
   blocks (none: `NOT_FOUND`); the result's `pos` says which. **`give`** without `count` (cap `give.all`) gives
   everything of the item.
-- **`mine` and `collect`** reach their blocks by digging through natural ground, pillaring and bridging if there is
-  no walking way (the mod's Tier-2 navigation, which breaks only what section 7.4.3 lets agents break); their
-  `result` counts `mined` and `unreachable` (the targets given up on).
+- **`mine` and `collect`** search `radius` blocks around `near` or the agent: 32 by default, the same as `find`, so
+  a source `find` shows is one they reach (at most 64). They reach their blocks by digging through natural ground,
+  pillaring and bridging if there is no walking way (the mod's Tier-2 navigation, which breaks only what section
+  7.4.3 lets agents break); their `result` counts `mined` and `unreachable` (the targets given up on).
 - **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
   north at rotation 0, roof, a torch inside when one is carried: without one it ends `done` with
   `note: "no torch carried: the inside stays dark"`), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks

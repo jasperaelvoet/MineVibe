@@ -128,6 +128,8 @@ public final class GatherJobs {
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
 			if (this.miner.treeMode()) {
 				this.put("trees", this.miner.treesFelled());
+				// Logs kept of those felled: the rest stayed in the crown or bounced away.
+				this.put("kept", Miner.kept(Inv.gained(this.before, Inv.counts(agent)), this.match));
 				if (this.miner.logsLeftHigh() > 0) {
 					this.put("logsLeftHigh", this.miner.logsLeftHigh());
 				}
@@ -435,6 +437,8 @@ public final class GatherJobs {
 			}
 			if (this.miner != null && this.miner.treeMode()) {
 				this.put("trees", this.miner.treesFelled());
+				// Logs kept (picked up) by the job, to set against those it felled ("mined").
+				this.put("kept", Miner.kept(Inv.gained(this.before, Inv.counts(agent)), this.sources == null ? s -> false : this.sources));
 				if (this.miner.replanted() > 0) {
 					this.put("replanted", this.miner.replanted());
 				}

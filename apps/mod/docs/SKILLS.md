@@ -53,7 +53,9 @@ contract is protocol §6.1 (caps) and §7.4.2.
   inventory, iron then stone then wooden tier, through `CraftTreeJob`), animals for drops (cows, pigs, sheep,
   chickens, rabbits: never in a protected zone, never pets, named, leashed or young animals), and `result.sources`
   (`Miner.Source`: felled trees by species and trunk, ores and stone by kind). Drops are picked up within 5 blocks for
-  up to 100 ticks after each break (was 3.5 and 40, which lost items).
+  up to 100 ticks after each break (was 3.5 and 40, which lost items); a felled tree's logs after the tree, all over
+  its crown (below). `mine` and `collect` search 32 blocks by default (`SkillFactory.GATHER_RADIUS`, the same as
+  `find`), at most 64.
 - **`container`** without `pos` takes the nearest chest or barrel within 24 blocks and says which (`result.pos`);
   **`give`** without `count` gives everything of the item.
 
@@ -110,11 +112,31 @@ What the agents know about the world around them, and what they must leave alone
   bricks, cobblestone, chests, barrels, crafting tables, furnaces, bookshelves. A log cabin is never a tree, even in a
   world from before provenance and even when a real tree grows against it; the whole cluster is searched once):
   `Miner` picks the nearest tree the agent can walk to (`Reach`: one A* per tree; with no walking way to any, the
-  nearest tree for Tier 2 to dig, pillar or bridge to, unreachable if it finds no way either), fells it bottom-up (each
-  log reached with Tier 2; failing that, stepping into the cut trunk, pillaring at most 2 blocks with dirt or
-  cobblestone; every pillar cleared),
-  picks up the logs at the stump and replants on request. Nothing natural in reach: `NO_NATURAL_SOURCE` with the
-  candidates it saw (unreachable, too far, protected, not a tree); it never substitutes another block.
+  nearest tree for Tier 2 to dig, pillar or bridge to, unreachable if it finds no way either) and fells it whole,
+  bottom-up, the logs in reach first:
+  - A log at most 4 above the stump is walked to with Tier 2 (`Walk.toMine`).
+  - A log higher up is felled from a pillar beside the trunk or in the cut trunk (`TreeClimb`, "pillar beside the
+    trunk"): the column (of the nine around the log) with the fewest blocks to place, scaffold from the bag or dirt
+    dug within 8 blocks when there is too little (never the stump's ground; the holes are filled again afterwards),
+    leaves over the head cut on the way up, every log that comes into reach felled; then down the way a player comes
+    down, mining the pillar from the top. At most 12 blocks above the ground at full health (health minus 8, so a fall
+    from the top is survived; the ground is the column's own, under any scaffold, never leaves), never in water, beside
+    lava or fire, or into a protected zone; at 8 health or less, or once a hit leaves it higher than its health allows
+    now, it stops and comes down. Scaffold is only what it mines back with the drop (`NavBlocks.minedBack`: dirt;
+    cobblestone and stone only with a pickaxe), and dirt is dug only while the bag has room for it (three digs that
+    brought nothing end the digging). Knocked off its column, the log gets a new climb, never on top of the old pillar.
+    A log higher than any climb reaches (or than a Tier-2 pillar, base + 7, without one) is left at once
+    (`logsLeftHigh`), with no search. A job cancelled, timed out or failed up there leaves the agent to the PillarDown
+    reflex.
+  - A log no walk reaches is tried from a climb, else waits while the rest of the tree comes down and gets one more
+    try at the end (a face may be open by then); three failed walks in a row, or six on one tree, give up the rest of
+    that tree (each failed search costs 20 000 nodes).
+  - After the tree: its pillars are cleared (the scaffold picked up), the dug holes filled with dirt (natural again,
+    unmarked), its logs picked up anywhere in and under its crown (a log caught in the leaves: the leaf under it is
+    broken, so it falls), and a sapling planted on request. The result counts `mined`, `kept` (logs picked up) and
+    `logsLeftHigh`.
+  Nothing natural in reach: `NO_NATURAL_SOURCE` with the candidates it saw (unreachable, too far, protected, not a
+  tree); it never substitutes another block.
 - **Perception** (`Scene`). `look_around` answers a scene, most important first: position, cover and time; the zone;
   hazards; natural trees with trunk, distance, compass direction and reachability; what players and agents built
   (clusters of marks); people (a player with whether they stand in a zone and under a roof, leaves not counting:
@@ -127,7 +149,8 @@ What the agents know about the world around them, and what they must leave alone
 Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, Protect 80, SelfDefense 70, Eat 60,
 **FeedPlayer 55** (player food ≤ 12: toss food, every 15 s at most), **ShareFood 50** (a teammate at food
 ≤ 6 with nothing to eat), **UnseatToSurvive 47** (seated, food ≤ 6, no food), **UnseatToFight 45**
-(seated, hit by a hostile, HP < 50%), **Approach 40**, **Attend 38**, Job 35, **Shelter 30** (dusk, a home
+(seated, hit by a hostile, HP < 50%), **PillarDown 41** (no job, standing on agent scaffold with more than a
+3-block drop on every side: mines the pillar away under its feet), **Approach 40**, **Attend 38**, Job 35, **Shelter 30** (dusk, a home
 set, not following the player), **Pickup 25** (loose items within 6 blocks in sight), idle 10.
 A seated agent (or one in a vehicle) only runs reflexes at 45 and above, and never Protect,
 SelfDefense, FeedPlayer or ShareFood: it stands up only for its own survival (47) or to fight (45). Approach reports `agent.event approach_blocked{why}` (`combat`,
@@ -141,6 +164,7 @@ Jobs walk through `dev.minevibe.agent.job.Walk`, which drives `dev.minevibe.agen
 |---|---|---|
 | `toMine(block)` | `mine`, `collect` (`Miner`) | Tier 2 straight away: a cell with the block in hand reach and a face open toward the eyes, beside, above or below it, never standing on it. Cells are planned by their middle (3.75 blocks), so it arrives only once the eyes are within 4.0 of the block, stepping to the middle of the last cell (crouched) when it entered at the far edge |
 | `toTrunk(log)` | (for tree jobs) | Tier 2: any standable cell next to the trunk, at any height a pillar reaches |
+| (`TreeClimb`) | `mine`, `collect` (`Miner`), logs above ground reach | its own pillar beside or in the trunk (up to 12 blocks), walking into the column with `toDig` |
 | `toBlock(block)` | `craft`, `place`, `use_block`, `build`, `farm`, menus | Tier 1, then Tier 2 if it finds no way |
 | `toDig(point)` | `goto` (`pos`, places) | Tier 1, then Tier 2 if it finds no way |
 | `toItem(pos)` | drops after mining, `collect`'s loose items, `pickup` | Tier 1, then Tier 2 to anywhere the pickup box reaches the item (a drop caught in leaves) |
@@ -154,7 +178,9 @@ only (`NavBlocks.mayBreak`: never a crew build, never the office, never a block 
 `Protection.check` protects), pillars and bridges with dirt or cobblestone from the bag (into empty cells or
 replaceable plants nobody placed, never inside a protected zone), and never digs straight down, opens a block next to
 water or lava, or takes a drop whose landing went away since the plan. Felling a tree, the miner clears the pillars
-Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay). It plans within 1.5 ms
+Tier 2 built for that job (`AgentNavigator.drainPlacedPillars`; those of earlier walks stay) and its own climbs'
+(Tier-2 blocks placed to reach a high pillar's top are cleared after it; a top no walk reaches leaves its column
+whole). Tier 2 places scaffold it mines back with the drop first (dirt before cobblestone without a pickaxe). It plans within 1.5 ms
 per tick per agent. Its plans
 are logged as `[agent <id>] nav.dig {steps, breaks, places, nodes, ms}`; `mine` and `collect` results carry
 `unreachable` (targets given up on). With `MINEVIBE_NAV_DEBUG=1` (or `-Dminevibe.navDebug=true`) every failed walk logs

@@ -21,8 +21,8 @@ import org.jspecify.annotations.Nullable;
  * reflex above the job wants control and there is no job, the idle mode runs (priority 10).
  *
  * <p>Priorities: Hazard 100, CreeperBackoff 95, CriticalHeal 90, Flee 85, ProtectPlayer 80, SelfDefense 70, Eat 60,
- * FeedPlayer 55, ShareFood 50, UnseatToSurvive 47, UnseatToFight 45, Approach 40 (walking; SeatedPresent 40 from the
- * chair), Attend 38, Job 35, Shelter 30,
+ * FeedPlayer 55, ShareFood 50, UnseatToSurvive 47, UnseatToFight 45, PillarDown 41 (only without a job), Approach 40
+ * (walking; SeatedPresent 40 from the chair), Attend 38, Job 35, Shelter 30,
  * Pickup 25, idle mode 10 (follow, stay, guard, wander).
  *
  * <p>While the agent sits (a PC or meeting chair, or any vehicle) only reflexes at 45 and above may run, and the ones
@@ -86,6 +86,7 @@ public final class ReflexBrain {
 		this.reflexes.add(new ShareFoodReflex());
 		this.reflexes.add(new UnseatToSurviveReflex());
 		this.reflexes.add(new UnseatToFightReflex());
+		this.reflexes.add(new PillarDownReflex());
 		this.reflexes.add(new ApproachReflex());
 		this.reflexes.add(new SeatedPresentReflex());
 		this.reflexes.add(new AttendReflex());

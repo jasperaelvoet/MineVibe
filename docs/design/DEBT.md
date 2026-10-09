@@ -26,21 +26,14 @@ session has no `pc` server; EVALS.md "Dual sessions") and the per-turn `ai-title
 skips the AI title generation, verified live), and mitigated the account e-mail in agent prompts (outbound redactor
 and persona rule; what is left is below). The live dual-sessions check (2026-10-09, ACCEPTANCE.md "Dual sessions,
 live") fixed a `(silent)` reply showing in the player's chat log and the body repeating what its desk had just said.
+The gathering polish of 2026-10-09 (ACCEPTANCE.md, "Gathering polish") fixed the high logs of tall
+trees left standing (a climb beside or in the trunk, with dirt dug nearby), one missed log giving up the rest of a
+tree, a felled big tree's drops left in its crown, `mine` / `collect` searching 24 blocks where `find` searched 32, and
+a cliff-side office porch with no stairs down.
 
 ## Found by navigation v2 (2026-10-09)
-- **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
-  pillar (3 blocks, 2 at low health, so the agent can always get down without digging under itself) nor its own
-  (2 blocks) reaches: 30 of 117 targets in the zero-token runs on `b7c347f`, 14 of 94 on `5f7e72d`, most in the
-  spruce of seed `217793310` (ACCEPTANCE.md, "Navigation v2"). After the arrival fix of the nav v2 scripted runs
-  (`4a9acd1`) it is 22 of 162 on nine seeds, 16 of them in one 29-log oak on seed `3207449953` (ACCEPTANCE.md, "Nav v2
-  scripted runs"; before that fix, arrivals short of hand reach were booked as high logs too). Each costs a Tier-2
-  search that runs out (20 000 nodes, 70-110 ticks at 1.5 ms).
-  - **Fix:** a dedicated "log straight above, beside its trunk" plan (pillar beside the trunk up to the log, clear it
-    on the way down), and skip the search for logs above the pillar limit outright.
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars
   Tier 2 built; any other walk leaves its scaffold (noted, so agents may break it again later).
-- **The office's floor still follows the median of 9 terrain samples.** Its exit stairs fix the buried porch, but a
-  porch high above the ground in front (a cliff side) gets no stairs down; a drop over 3 blocks there hurts the player.
 - **Found in the navigation v2 review (fixed meanwhile: crew builds broken to make way, an earlier walk's pillar
   cleared by a later felling job, drops taken after their landing went, scaffold planned into a torch's cell, mid-fall
   re-plans, the office stairs flooding).** Still open:
@@ -50,24 +43,71 @@ live") fixed a `(silent)` reply showing in the player's chat log and the body re
   - Water is fuzzy: a swim step arrives within 1.2 blocks vertically, so a goal checked by cell (a pickup, a block in
     reach) can need one more small plan after a plunge; a swim step is not re-checked if the water drained meanwhile.
   - The office stairs cut natural-looking blocks nobody placed, generated structures included (a village house's log
-    corner in front of a sunk porch); planks or cobblestone end the stairs.
-- **`mine` and `collect` search 24 blocks by default, `find` 32.** An agent that `find`s oak at 28 blocks and then
-  `collect`s without `radius` gets `NOT_FOUND` (seed `mv-forest-1`, nearest oak 27.9 from the office). The scripted
-  step 3 passes `radius: 48`. Fix: one default for both (W1 owns tree targeting).
+    corner in front of a sunk porch); planks or cobblestone end the stairs. The stairs down from a cliff-side porch
+    (gathering polish) end at a fluid or at anything somebody placed, and at 12 steps: a drop deeper than that keeps
+    its last part.
 
-## Found in the nav v2 scripted runs (2026-10-09, ACCEPTANCE.md "Nav v2 scripted runs")
-- **One missed log sends the miner climbing for the rest of the tree.** When a walk to a log above the feet fails,
-  for whatever reason, `Miner` sets `climbing`, and every later log of that tree goes straight to `climbToward`
-  without a walk. With no dirt in the bag, each is booked `logsLeftHigh` and skipped. On seed `1350113924` a walk that
-  arrived short of a bank tree's base log gave up all six logs, though all were in reach from the bank's foot. The
-  short arrival is fixed (`4a9acd1`), but the latch stays: a base log on a ledge that no walk reaches still gives up
-  the whole tree. **Fix:** climb only for logs above the lowest log still standing, and clear `climbing` once a
-  walk to a log of the tree arrives.
-- **A felled big tree leaves most of its drops in the canopy.** After a tree, `collect` picks up drops within 5 blocks
-  of the stump for 100 ticks (`TREE_COLLECT_TICKS`). On seed `2368183124` it finished a 24-log oak whole (W1 finishes
-  the tree it is felling): 36 logs mined, 15 kept, and `collect 10` took 165 s. **Fix:** pick up a broken log's drop
-  when it lands within reach of the walk, or look for drops around each felled log, not only the stump. For trees
-  far over the count, consider stopping at the count and leaving the tree standing.
+## Found in the gathering polish (2026-10-09)
+- **An agent in a water pocket under the ground drowns.** In an intermediate build of the polish the CEO followed a
+  drop into an enclosed water pocket under seed `3207449953`'s oak (ACCEPTANCE.md, "Gathering polish"): Tier 2 planned
+  its way out by breaking the grass ceiling while swimming, every break timed out (`break_timeout`: mining under
+  water and off the ground is 25 times slower), and the Hazard reflex cannot surface under a solid ceiling; the job
+  resumed after each reflex until the agent drowned. The felling no longer opens such pockets (dirt is dug one block
+  deep on solid ground) and its sweep fetches no drop under the ground or in roofed water, but any walk can still
+  swim into one. **Fix:** Tier 2 should treat water with no air within reach above as a hazard to enter, and plan
+  a way out with breaks only from a standing cell; the Hazard reflex could cancel a job that keeps swimming back in.
+- **Logs no climb reaches stay up.** The climb rises at most 12 blocks (health minus 8) in one of the 9 columns
+  around a log, so logs more than 17 above the stump (mega spruce and jungle tops) and branch ends with no standable
+  column under or beside them (`no_column`) are left (`logsLeftHigh`; 2 of 86 targets in the polish runs). Once a
+  pillar block found nothing to rest on (`pillar_failed`, `NO_SUPPORT`, seed `3207449953`, a column beside a
+  branch); not reproduced, and the climb then gives that log up rather than retry.
+- **A climb knocked off its column leaves its pillar when no walk reaches its top.** A mob's hit or a reflex that
+  moves the agent ends the climb (`off_column`); since the review, the log gets a new climb beside the old pillar and
+  the cleanup reaches the old top from a short Tier-2 pillar (cleared after it). A top higher than a Tier-2 pillar
+  reaches (about 8 above the ground) leaves the whole column standing (`pillar_left`; noted as scaffold, so
+  navigation may break it later).
+- **The ground around a felled tree comes back as dirt, not grass** (grass spreads back over time), and a hole whose
+  refill times out or whose dirt was lost stays open (`hole_left` with `MINEVIBE_NAV_DEBUG=1`; 1 of 10 holes in the
+  final polish runs).
+- **The sweep fetches logs and the sapling to plant, nothing else.** Sticks, apples and other saplings are left to
+  the Pickup reflex (6 blocks, in sight). A log in the crown higher than a Tier-2 walk to the leaf under it reaches,
+  or lying where no pickup box reaches (`not_picked_up`), stays: 3 of 84 logs in the final polish runs (another
+  agent standing by took 2 more).
+- **Whole trees take long.** W1 finishes the tree it is felling, high logs included now, by hand when no axe is
+  carried: `collect 10` took 142 s on `minevibe-e2e` (a 22-log oak) and 190 s on `3207449953` (29 logs). For trees
+  far over the count, consider stopping at the count and leaving the tree standing, or crafting an axe first.
+- **Search radii differ by layer.** The mod's `mine` / `collect` default is 32 now (as `find`'s); Node's v2 `gather`
+  and the craft tree pass 48, and Node's own guard for mods without provenance assumes their default of 24 (right
+  for those mods).
+- **Two approach GameTests flake on the time of day.** `reflex_approaches_the_player` and
+  `seated_agent_with_afar_player_walks_over_and_returns` failed once each in 11 full runs here (their code is not
+  touched): on its first tick the agent reported `approach_blocked(night)` although its batch's environment sets the
+  clock to noon, and the Approach reflex stays put once blocked. Not run down; the likely cause is that
+  `Goals.nightOutside` reads `isDarkOutside()`, whose sky darkness only follows a clock change on the next tick, while
+  the test world's saved clock (it keeps running from run to run) can stand at night when the batch starts. **Fix:**
+  read the clock in `nightOutside`, or let the tests wait a tick before the approach.
+
+## Found in the gathering polish review (2026-10-09)
+Fixed in the review (ACCEPTANCE.md, "Gathering polish", review): an agent left on its pillar by a cancelled, timed out
+or failed job (no walk comes down: Tier 1 drops 3 blocks, Tier 2 never digs straight down) now comes down by the
+PillarDown reflex; the climb's fall limit followed the health only when planned (now while climbing), and was measured
+from whatever the agent stood on (leaves too); cobblestone scaffold was mined back by hand (lost, 10 s a block); a
+full bag dug every dirt block around (the drop stayed on the ground, each hole open); a knocked-off climb gave its log
+up, planned the next climb on top of the old pillar, and the cleanup mined the Tier-2 block under its own feet.
+Still open:
+- **A stranded agent at low health cannot flee.** On a pillar with no job, Flee (85) wins over PillarDown (41) once
+  HP is 6 or less and a hostile is near, and Flee's walk finds no way off (Tier 1). Mid-climb the job is preempted
+  the same way before its own retreat (8 HP) runs. **Fix:** let PillarDown (or Flee) come down a remembered pillar
+  first when stranded.
+- **PillarDown knows only scaffold remembered in memory.** `NavBlocks`' scaffold set is not saved: after a restart an
+  agent stranded on its pillar stays up there.
+- **A cancelled felling leaves its holes open.** Filling the holes dug for scaffold is a chore of the job; cancelled,
+  the dirt stays in the bag and the holes in the ground.
+- **The miner still clears other walks' cobblestone pillars by hand** when it has no pickaxe (Tier 2 now places dirt
+  first, but uses cobblestone when that is all it carries): that cobblestone is lost.
+- **`nav_fells_big_spruce_keeping_the_drops` left one hole open once** in seven runs during the review (the first,
+  before the sweep fetched dirt; not reproduced with `MINEVIBE_NAV_DEBUG=1`): a refill that timed out, or a pillar
+  block's dirt that bounced away. The sweep now fetches dirt while holes wait; watch this test.
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
 - **Two turns per long composite.** `gather`/`craft`/`do` answer `running` after 20 s and the agent ends its turn,
