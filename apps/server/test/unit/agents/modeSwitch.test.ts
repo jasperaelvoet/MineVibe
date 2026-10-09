@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolObservation } from '../../../src/agents/AgentManager.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { deskQuery, freshWorld, lastText, sitAtDesk, wake } from '../../helpers/desk.js';
 import type { FakeQuery } from '../../helpers/fakeSdk.js';
 
@@ -175,11 +175,11 @@ describe('modes in the dual-session runtime', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-modes-'));
     try {
       const first = await createHarness({ dir });
-      await first.manager.openWorld({ worldId: 'w1', gen: 1 });
+      await openWorldWithCeo(first.manager, { worldId: 'w1', gen: 1 });
       await first.cleanup();
       h = await createHarness({ dir });
       const w = h;
-      await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+      await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
       const id = w.manager.listAgents()[0]?.agentId ?? '';
       const q = w.query(0);
       q.init();

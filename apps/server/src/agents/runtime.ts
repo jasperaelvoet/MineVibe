@@ -6,8 +6,9 @@
  */
 
 import type { Logger } from 'pino';
-import type { BridgeServer } from '../bridge/BridgeServer.js';
+import { BridgeError, type BridgeServer } from '../bridge/BridgeServer.js';
 import type { MineVibePaths } from '../config/paths.js';
+import { isApiError } from '../contracts/common.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
 import { createBridgeSkillApi, type SkillApi } from '../contracts/SkillApi.js';
@@ -58,6 +59,7 @@ export interface AgentRuntimeOptions {
       | 'crewCap'
       | 'now'
       | 'approveCalendarEvent'
+      | 'payHire'
     >
   >;
 }
@@ -112,6 +114,10 @@ export async function createAgentRuntime(options: AgentRuntimeOptions): Promise<
     log: options.log,
     authMode: options.apiKey ? 'api_key' : 'subscription',
     ...(options.queryFactory ? { queryFactory: options.queryFactory } : {}),
+    // Approving a hire takes an Agent Core from the player (PLAN §7.5); the mod answers `err NO_CORE` without one.
+    payHire: async (req) => {
+      await options.bridge.request('hire.pay', req, { timeoutMs: 10_000 });
+    },
     ...options.manager,
   });
   const off = attachAgentBridge(options.bridge, manager, {
@@ -159,6 +165,15 @@ export function attachAgentBridge(
     bridge.on('pc.seat', (msg) => manager.onPcSeat(msg)),
     bridge.on('pc.unseat', (msg) => manager.onPcUnseat(msg)),
     bridge.handle('agent.died', (msg) => manager.onAgentDied(msg)),
+    // The awakening ritual (PLAN §7.5): the err message is what the mod tells the player when it gives the core back.
+    bridge.handle('agent.awaken', async (msg) => {
+      try {
+        return await manager.awaken({ pos: msg.pos, dim: msg.dim });
+      } catch (err) {
+        if (isApiError(err)) throw new BridgeError(err.code, err.message);
+        throw err;
+      }
+    }),
   ];
   if (worldEvents) {
     offs.push(

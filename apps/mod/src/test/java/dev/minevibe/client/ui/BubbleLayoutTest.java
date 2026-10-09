@@ -73,7 +73,9 @@ class BubbleLayoutTest {
 
 	@Test
 	void hireAndCalendarCards() {
-		assertEquals(List.of("Hire Dana (miner)?", "We need iron.", "@ada yes · @ada no"), BubbleLayout.card(hire("h", "ada", 1), "ada"));
+		assertEquals(
+				List.of("Hire Dana (miner)?", "We need iron.", "Costs 1 Agent Core", "@ada yes · @ada no"),
+				BubbleLayout.card(hire("h", "ada", 1), "ada"));
 		assertEquals(List.of("Approve this event?", "Daily standup", "G to approve or decline"), BubbleLayout.card(calendar("c", "ada", 1), "ada"));
 	}
 

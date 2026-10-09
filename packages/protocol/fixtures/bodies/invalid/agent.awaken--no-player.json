@@ -1,0 +1,11 @@
+{
+  "t": "agent.awaken",
+  "v": 1,
+  "id": "m-141",
+  "pos": {
+    "x": 12,
+    "y": 64,
+    "z": -35
+  },
+  "dim": "minecraft:overworld"
+}

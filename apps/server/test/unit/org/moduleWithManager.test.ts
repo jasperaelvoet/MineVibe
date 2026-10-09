@@ -10,7 +10,7 @@ import type { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { gameTicksAt } from '../../../src/org/clock.js';
 import { ControlNonce } from '../../../src/org/envelope.js';
 import { type CrewCardControl, createOrgModuleWith } from '../../../src/org/module.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { FakeUiBridge } from '../../helpers/fakeUiBridge.js';
 import { FakeHooks } from '../../helpers/orgCrew.js';
 
@@ -45,7 +45,7 @@ describe('org module with the real AgentManager as its crew', () => {
       org: mod.orgApi as unknown as FakeOrgApi,
     });
     cleanups.push(() => h.cleanup());
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     await mod.onWorldOpen('w1', true);
     const hooks = new FakeHooks();
     mod.bindCrew(h.manager, hooks);

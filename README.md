@@ -21,8 +21,10 @@ sit down at in-game PCs that are real Linux containers and macOS VMs, to work on
 
 - **One world, hardcore.** If you die, the world and its crew end and a new world begins. Your machines, your
   mounted folders (the Vault) and the shared Codex survive.
-- **A crew led by a CEO.** The first agent, the CEO, follows you and listens. It can hire more agents (the
-  crew is capped at 4 by default), but only after you approve each hire.
+- **Start with nothing, earn a crew.** A new world gives you nothing. Craft an Agent Core and use it on two stacked
+  copper blocks to awaken your first agent, the CEO, who follows you and listens. It can hire more agents (the crew
+  is capped at 4 by default), but only after you approve each hire, and each hire costs another core. The
+  MineVibe tab of the advancements screen walks you through it.
 - **Your own Claude.** Every agent is a Claude Code session run through the Claude Agent SDK on your own
   `claude` login: Haiku 5.5 while it wanders, Opus 5.5 while it sits at a PC. Survival reflexes run in the
   mod at zero tokens, so the model is never on a life-or-death path.

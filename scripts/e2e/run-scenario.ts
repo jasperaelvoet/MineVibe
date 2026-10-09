@@ -160,6 +160,8 @@ interface ManagerLike {
     crew: Array<{ agentId: string; handle: string; name: string; ceo: boolean; status: string }>;
   };
   brain(agentId: string): BrainLike | undefined;
+  /** The awakening ritual (PLAN §7.5): what the mod's `agent.awaken` does once the player used an Agent Core. */
+  awaken(place: { pos: Pos; dim: string }): Promise<{ agentId: string; name: string }>;
   /** The outbound redactor (agents/redact.ts): learns the account from each session's startup check. */
   redactor: { noteAccount(account: { email?: string | null } | null | undefined): void; active: boolean };
 }
@@ -797,6 +799,14 @@ async function step1(r: StepResult): Promise<void> {
 }
 
 async function step2(r: StepResult): Promise<void> {
+  // A world starts with nobody (PLAN §7.5): stand in for the player's first Agent Core at the office door.
+  const manager = runtime().agents?.manager as unknown as ManagerLike | undefined;
+  const doorSlot = office(firstWorld).find((x) => x.kind === 'door')?.pos;
+  if (manager && !ceo() && doorSlot) {
+    await manager.awaken({ pos: doorSlot, dim: 'minecraft:overworld' }).catch((err: Error) => {
+      r.notes.push(`awaken: ${err.message}`);
+    });
+  }
   const boss = await waitFor('the CEO', 90_000, () => ceo(), 500);
   r.numbers.ceo = `${boss.name} (${boss.agentId})`;
   const spawn = events.find(

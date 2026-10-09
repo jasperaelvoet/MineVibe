@@ -291,6 +291,18 @@ export const HireDecision = defineMessage('hire.decision', {
 }).describe('Approves or declines a hire card.');
 
 /**
+ * N→M request (PLAN §7.5 "Agent Core"). Approving a hire costs the player one Agent Core: Node asks the mod to take it
+ * from the player's inventory before the hire arrives (`ok {}`; `err NO_CORE` when there is none, and the card stays
+ * up), and to give it back (`refund: true`) when the approved hire then could not arrive.
+ */
+export const HirePay = defineMessage('hire.pay', {
+  pendingId: PendingId,
+  /** The hire's name, for the player-facing message. */
+  name: DisplayName,
+  refund: z.boolean(),
+}).describe('Takes (or gives back) the Agent Core a hire costs.');
+
+/**
  * M→N request. An AgentScreen command. `plan_first` and `ping_instead` need `on`; `autonomy` needs `level`.
  * `follow|stay|guard|wander` set the idle mode (Node answers with `agent.mode`); `kick` stands a seated agent
  * up; `retry_brain` restarts an offline brain.
@@ -376,6 +388,12 @@ export const uiMessages = {
     group: 'ui',
     summary: 'Request: approve or revise a plan card.',
     reply: ChatSendResult,
+  },
+  'hire.pay': {
+    schema: HirePay,
+    direction: 'node_to_mod',
+    group: 'ui',
+    summary: 'Request: take the Agent Core an approved hire costs from the player (or give it back).',
   },
   'hire.decision': {
     schema: HireDecision,

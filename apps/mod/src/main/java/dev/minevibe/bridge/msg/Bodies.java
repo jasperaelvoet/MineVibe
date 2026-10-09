@@ -16,6 +16,7 @@ import static dev.minevibe.bridge.msg.Types.JSON_OBJECT;
 import static dev.minevibe.bridge.msg.Types.NON_NEG_INT;
 import static dev.minevibe.bridge.msg.Types.NON_NEG_NUMBER;
 import static dev.minevibe.bridge.msg.Types.PLACE;
+import static dev.minevibe.bridge.msg.Types.PLAYER_NAME;
 import static dev.minevibe.bridge.msg.Types.POS_INT;
 import static dev.minevibe.bridge.msg.Types.VEC3;
 import static dev.minevibe.bridge.msg.Types.WORLD_ID;
@@ -116,6 +117,15 @@ public final class Bodies {
 			String dim,
 			Messages.@Nullable BlockPos grave) {}
 
+	/**
+	 * M→N request (PLAN 7.5 "Agent Core"): the awakening ritual at {@code pos} (the lower of the two copper blocks), by the
+	 * player {@code by}. Reply: {@link AgentAwakenResult}; any {@code err} means "give the core back".
+	 */
+	public record AgentAwaken(Messages.BlockPos pos, String dim, String by) {}
+
+	/** The CEO who woke up. */
+	public record AgentAwakenResult(String agentId, String name) {}
+
 	/** N→M request. */
 	public record AgentMode(String agentId, String mode, Messages.@Nullable BlockPos anchor) {}
 
@@ -182,6 +192,13 @@ public final class Bodies {
 			.req("dim", DIMENSION)
 			.opt("grave", BLOCK_POS));
 
+	public static final MessageType<AgentAwaken> AGENT_AWAKEN = type("agent.awaken", Direction.MOD_TO_NODE, AgentAwaken.class, object()
+			.req("pos", BLOCK_POS)
+			.req("dim", DIMENSION)
+			.req("by", PLAYER_NAME));
+
+	public static final Schema.Obj AGENT_AWAKEN_RESULT = object().req("agentId", AGENT_ID).req("name", DISPLAY_NAME);
+
 	public static final MessageType<AgentMode> AGENT_MODE = type("agent.mode", Direction.NODE_TO_MOD, AgentMode.class, object()
 			.req("agentId", AGENT_ID)
 			.req("mode", IDLE_MODE)
@@ -192,5 +209,5 @@ public final class Bodies {
 
 	/** Every type of this group, registered by {@code Messages}. */
 	public static final List<MessageType<?>> TYPES =
-			List.of(AGENT_SPAWN, AGENT_DESPAWN, AGENT_STATE, AGENT_EVENT, AGENT_DIED, AGENT_MODE, CREW_STATE);
+			List.of(AGENT_SPAWN, AGENT_DESPAWN, AGENT_STATE, AGENT_EVENT, AGENT_DIED, AGENT_AWAKEN, AGENT_MODE, CREW_STATE);
 }

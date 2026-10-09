@@ -1,10 +1,12 @@
 package dev.minevibe.pc;
 
+import dev.minevibe.progression.ProgressionContent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.GlobalPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
@@ -18,8 +20,9 @@ import org.jspecify.annotations.Nullable;
  * {@code linux_workstation} and {@code mac_workstation} (PLAN 7.5): place a desk, monitor and chair in one use.
  *
  * <ul>
- *   <li>Without a {@code minevibe:pc_id} component the item creates a new PC of its type: the desk is placed unbound
- *       and sends {@code pc.action{create}} (Node admits it against the budget or refuses, and the monitor shows
+ *   <li>Without a {@code minevibe:pc_id} component the desk is placed unbound and sends {@code pc.action{create}}: Node
+ *       plugs a PC of the item's family that has no desk in this world yet (the first Linux workstation of a world
+ *       shows {@code linux-1}), or creates a new PC (admitted against the budget or refused, and the monitor shows
  *       why).</li>
  *   <li>With one, the desk binds that PC and sends {@code pc.action{plug}} (breaking it unplugged the PC). A PC that
  *       already has a desk in the world is not placed twice.</li>
@@ -88,6 +91,9 @@ public final class WorkstationItem extends Item {
 		}
 		if (player == null || !player.hasInfiniteMaterials()) {
 			stack.shrink(1);
+		}
+		if (player instanceof ServerPlayer serverPlayer) {
+			ProgressionContent.PLACED_WORKSTATION.trigger(serverPlayer);
 		}
 		return InteractionResult.SUCCESS_SERVER;
 	}

@@ -84,7 +84,7 @@ export function worldPrimer(player: string, version: McToolsVersion = 'v1'): str
   if (version === 'v2') return worldPrimerV2(player);
   return [
     '## The world around you',
-    `- The Base (the office you start in) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use. Blocks the crew placed are yours to take back.`,
+    `- The Base (the office, once there is one) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use. Blocks the crew placed are yours to take back.`,
     '- Gather from nature: trees outside the Base, natural stone and ores; logs come from trees, not from walls. Ask mcp__mc__mine / mcp__mc__collect for the exact natural block you need ("oak_log"), never a #tag (it means any kind) or building blocks (planks, stripped logs, bricks, glass).',
     `- Before gathering anything in several steps, call mcp__mc__look_around (or mcp__mc__find) to see where you are, which natural trees you can reach and what ${player} built; then mcp__mc__mine the one you pick with near:{x,y,z}. Each turn starts with a one-line Scene of where you are.`,
     namedOrAnyKind(player, 'take the nearest you can reach'),
@@ -124,7 +124,7 @@ function nightSafety(player: string, look: string, walk: string): string {
 function worldPrimerV2(player: string): string[] {
   return [
     '## The world',
-    `- The Base (the office you start in) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use.`,
+    `- The Base (the office, once there is one) is ${player}'s home. Never break, replace or take blocks of the Base or anything ${player} built, not even as a substitute. Its chests, beds, tables and PCs are there to use.`,
     '- Get things with one call: mcp__mc__gather{item, count} for the natural item ("oak_log"; "#logs" when any kind will do; never building blocks); mcp__mc__craft{item} makes it with the whole recipe tree; mcp__mc__do runs several known steps as one job.',
     '- Unsure what is around? mcp__mc__observe (or mcp__mc__find) first: natural or built, how far, which direction, reachable or not. Each turn starts with a one-line Scene of where you are.',
     namedOrAnyKind(player, 'mcp__mc__craft takes the nearest kind'),
@@ -240,7 +240,7 @@ export function personaPrompt(input: PersonaInput): string {
     );
     if (!desk)
       lines.push(
-        `- Hiring always needs ${player}'s approval: mcp__mc__request_hire returns at once and you get a [HIRE DECISION] later. The crew is capped at 4.`,
+        `- Hiring always needs ${player}'s approval, and each hire costs ${player} an Agent Core (amethyst, redstone, a diamond, an ender pearl): ask only when the work needs more hands. mcp__mc__request_hire returns at once and you get a [HIRE DECISION] later. The crew is capped at 4.`,
       );
     lines.push(`- Collect results with ${refs.reportTask} outcomes and tell ${player} what matters.`);
   }

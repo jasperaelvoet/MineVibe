@@ -15,6 +15,7 @@ import {
   JsonObject,
   NonNegInt,
   Place,
+  PlayerName,
   PosInt,
   Vec3,
   WorldId,
@@ -186,6 +187,26 @@ export const AgentMode = defineMessage('agent.mode', {
   anchor: BlockPos.optional(),
 }).describe("Sets an agent's idle mode.");
 
+/**
+ * M→N request (PLAN §7.5 "Agent Core"). The player used an Agent Core on two stacked copper blocks: wake a CEO there.
+ * `pos` is the lower block (where the body will stand); the mod has already taken both blocks and the core aside,
+ * and gives them back unless Node answers `ok`. Errors: `CEO_EXISTS` (the CEO hires the crew instead), `NOT_READY`
+ * (no world open, or no brains), `NOT_HANDLED` (no agent runtime), `SPAWN_FAILED`.
+ */
+export const AgentAwaken = defineMessage('agent.awaken', {
+  pos: BlockPos,
+  dim: Dimension,
+  /** The player who performed the ritual. */
+  by: PlayerName,
+}).describe('The awakening ritual: wake the first (or next) CEO at the copper stack.');
+
+/** Result of a successful `agent.awaken`: the CEO who arrived. */
+export const AgentAwakenResult = z.object({
+  agentId: AgentId,
+  name: DisplayName,
+});
+export type AgentAwakenResult = z.infer<typeof AgentAwakenResult>;
+
 /** N→M. The crew of the current world (name tags, `@` Tab completion, CEO promotion). */
 export const CrewState = defineMessage('crew.state', {
   crew: z.array(CrewMember).max(64),
@@ -228,6 +249,13 @@ export const bodyMessages = {
     direction: 'node_to_mod',
     group: 'bodies',
     summary: "Request: set an agent's idle mode (follow, stay, guard, wander).",
+  },
+  'agent.awaken': {
+    schema: AgentAwaken,
+    direction: 'mod_to_node',
+    group: 'bodies',
+    summary: 'Request: the awakening ritual (Agent Core on two copper blocks); wake a CEO there.',
+    reply: AgentAwakenResult,
   },
   'crew.state': {
     schema: CrewState,

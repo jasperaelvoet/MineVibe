@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/desk",
+  "criteria": {
+    "codex": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:codex"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:codex"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.codex.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.codex.description"
+    }
+  },
+  "requirements": [
+    [
+      "codex"
+    ]
+  ]
+}

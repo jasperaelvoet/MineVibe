@@ -8,7 +8,7 @@ import type { FolderPicker } from './folderPicker.js';
 import type { PcGuestApi } from './GuestApi.js';
 import type { InputRouter, Occupant } from './InputRouter.js';
 import type { PcManager, PcStatusInfo } from './PcManager.js';
-import type { PcType } from './PcTypes.js';
+import { PC_TYPE_SPECS, type PcType } from './PcTypes.js';
 import {
   decommissionedInfo,
   type PcRequestKind,
@@ -59,6 +59,8 @@ export interface PcBridgeGlueOptions {
   readonly budgetDebounceMs?: number;
   /** The second full push after a `hello` (default 1.5 s). */
   readonly helloRepushMs?: number;
+  /** The world the game plays (desks plug PCs into it), or null before one opened. */
+  readonly world?: () => string | null;
 }
 
 const PLAYER: Occupant = { kind: 'player', id: 'player' };
@@ -536,7 +538,25 @@ export class PcBridgeGlue {
 
   async #onAction(m: MessageOf<'pc.action'>): Promise<HandlerResult> {
     const { manager } = this.#o;
+    const world = this.#o.world?.() ?? null;
     if (m.action === 'create') {
+      // A fresh workstation item takes a PC of its family that has no desk in this world first (the first Linux
+      // workstation of every world plugs `linux-1`); only when every one has a desk here does it create a new PC.
+      const family = PC_TYPE_SPECS[m.type as PcType]?.family;
+      const spare = family ? manager.unplacedPc(family, world, new Set(m.placed ?? [])) : null;
+      if (spare) {
+        try {
+          await manager.setPlugged(spare.id, true, world);
+        } catch (err) {
+          throw toBridgeError(err, 'action');
+        }
+        if (manager.status(spare.id).status !== 'running') {
+          this.#background(`start ${spare.id}`, () => manager.start(spare.id));
+        }
+        this.#log.info({ pcId: spare.id, world }, 'a new desk plugs an existing PC');
+        this.pushStates();
+        return { pcId: spare.id };
+      }
       let pcId: string;
       try {
         ({
@@ -545,6 +565,7 @@ export class PcBridgeGlue {
       } catch (err) {
         throw toBridgeError(err, 'create');
       }
+      if (world) await manager.setPlugged(pcId, true, world).catch(() => {});
       // Admission and boot run in the background: a PC that does not fit shows `no_capacity` on its monitor.
       this.#background(`start ${pcId}`, () => manager.start(pcId));
       this.pushStates();
@@ -578,7 +599,7 @@ export class PcBridgeGlue {
         break;
       case 'plug':
         try {
-          await manager.setPlugged(pcId, true);
+          await manager.setPlugged(pcId, true, world);
         } catch (err) {
           throw toBridgeError(err, 'action');
         }

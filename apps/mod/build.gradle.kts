@@ -41,6 +41,7 @@ repositories {
  * | `minevibe.dev`        | `MINEVIBE_DEV`         | `-Dminevibe.dev`         | `true` (new worlds allow commands)        |
  * | `minevibe.parentPid`  | `MINEVIBE_PARENT_PID`  | `-Dminevibe.parentPid`   | unset (no parent watchdog)                |
  * | `minevibe.runTag`     | `MINEVIBE_RUN_TAG`     | `-Dminevibe.runTag`      | unset (a marker for finding the process)  |
+ * | `minevibe.office`     | `MINEVIBE_OFFICE`      | `-Dminevibe.office`      | unset (new worlds start with nothing)     |
  * | `minevibe.runDir`     | `MINEVIBE_RUN_DIR`     | game directory           | `run` (relative to apps/mod)              |
  *
  * They are read when Gradle configures the build (so a change invalidates the configuration cache, as it should).
@@ -68,6 +69,7 @@ loom {
 			launchSetting("minevibe.e2e", "MINEVIBE_E2E")?.let { property("minevibe.e2e", it) }
 			launchSetting("minevibe.parentPid", "MINEVIBE_PARENT_PID")?.let { property("minevibe.parentPid", it) }
 			launchSetting("minevibe.runTag", "MINEVIBE_RUN_TAG")?.let { property("minevibe.runTag", it) }
+			launchSetting("minevibe.office", "MINEVIBE_OFFICE")?.let { property("minevibe.office", it) }
 			launchSetting("minevibe.runDir", "MINEVIBE_RUN_DIR")?.let { runDir(it) }
 		}
 	}

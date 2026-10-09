@@ -37,7 +37,7 @@ import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
 import { FakeSkillApi } from '../../src/contracts/FakeSkillApi.js';
 import type { SeatRequest } from '../../src/contracts/SkillApi.js';
 import { SERVER_VERSION } from '../../src/version.js';
-import { MountedPcApi } from '../helpers/agentHarness.js';
+import { MountedPcApi, openWorldWithCeo } from '../helpers/agentHarness.js';
 
 const OUT = join(import.meta.dirname, 'out');
 /** The hard cap on model turns for this file: 5. */
@@ -175,7 +175,7 @@ describe('live dual sessions and session titles (subscription, ≤ 5 turns)', ()
     let deskId = '';
     let titles: Record<string, Record<string, number> | null> = {};
     try {
-      await manager.openWorld({ worldId: 'live-sessions', gen: 1 });
+      await openWorldWithCeo(manager, { worldId: 'live-sessions', gen: 1 });
       agentId = manager.listAgents()[0]?.agentId ?? '';
       // 1. The welcome turn, in the body session.
       await waitFor(() => results.length >= 1, 'welcome');

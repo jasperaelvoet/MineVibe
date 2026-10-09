@@ -124,6 +124,8 @@ public final class BubbleLayout {
 			case Ui.PendingCard.HIRE -> {
 				lines.add(clip("Hire " + card.name() + " (" + card.role() + ")?", CARD_CHARS));
 				if (card.reason() != null && !card.reason().isBlank()) lines.addAll(wrap(card.reason(), CARD_CHARS, 3).lines());
+				// Approving a hire costs the player an Agent Core (PLAN 7.5).
+				lines.add("Costs 1 Agent Core");
 				lines.add(clip("@" + handle + " yes · @" + handle + " no", CARD_CHARS));
 			}
 			case Ui.PendingCard.CALENDAR -> {

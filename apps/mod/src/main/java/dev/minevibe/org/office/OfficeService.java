@@ -30,12 +30,14 @@ import net.minecraft.world.level.storage.LevelResource;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The starter office of a world (PLAN §7.5, §7.9): built once, on a fresh world, at its spawn.
+ * The starter office of a world (PLAN §7.5, §7.9): opt-in since the survival start (a new world begins with nothing, and
+ * the player earns the crew, the PCs and the Codex). With {@code -Dminevibe.office=true} it is built once, on a fresh
+ * world, at its spawn; {@code /mv office build} builds one by hand in any world.
  *
  * <ul>
- *   <li><b>When.</b> When the integrated server has started (or the first player joins, whichever comes first) and
- *       the world is fresh: no office recorded yet and the overworld younger than {@value #FRESH_TICKS} ticks.
- *       Worlds that predate the office are left alone ({@code /mv office build} builds one by hand).</li>
+ *   <li><b>When.</b> With the opt-in, when the integrated server has started (or the first player joins, whichever
+ *       comes first) and the world is fresh: no office recorded yet and the overworld younger than
+ *       {@value #FRESH_TICKS} ticks. Worlds that predate the office are left alone.</li>
  *   <li><b>Where.</b> Centred on the world spawn, floor at the median ground height; the world spawn moves into the
  *       office, and a player joining for the first time is placed on the spawn cell (vanilla would put them on the
  *       roof: the spawn search starts at the top of the column).</li>
@@ -43,7 +45,7 @@ import org.jspecify.annotations.Nullable;
  *       rebuilds or re-teleports. The layout is also published for the client, which reports it to Node as
  *       {@code world.state.office}.</li>
  *   <li>Never automatic under server or client GameTests ({@code -Dfabric-api.gametest}, {@code -Dfabric.client.gametest})
- *       or with {@code -Dminevibe.office=false}.</li>
+ *       or without {@code -Dminevibe.office=true}.</li>
  * </ul>
  * Server thread, except {@link #published()}.
  */
@@ -121,11 +123,11 @@ public final class OfficeService {
 		published = layout != null ? new Published(HardcoreHooks.levelId(server), layout) : null;
 	}
 
-	/** True unless office building is switched off for this JVM (GameTests, {@code -Dminevibe.office=false}). */
+	/** True only with the {@code -Dminevibe.office=true} opt-in (and never under GameTests). */
 	public static boolean autoBuildEnabled() {
 		return System.getProperty("fabric-api.gametest") == null
 			&& System.getProperty("fabric.client.gametest") == null
-			&& !"false".equalsIgnoreCase(System.getProperty(OFFICE_PROPERTY, "true").trim());
+			&& "true".equalsIgnoreCase(System.getProperty(OFFICE_PROPERTY, "false").trim());
 	}
 
 	private static void onServerStarted(final MinecraftServer server) {

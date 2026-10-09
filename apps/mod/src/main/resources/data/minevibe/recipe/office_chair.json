@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "key": {
+    "W": "#minecraft:wool",
+    "I": "minecraft:iron_ingot"
+  },
+  "pattern": [
+    "W  ",
+    "WWW",
+    "I I"
+  ],
+  "result": {
+    "id": "minevibe:office_chair"
+  }
+}

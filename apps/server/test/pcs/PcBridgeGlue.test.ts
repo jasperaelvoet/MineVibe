@@ -27,7 +27,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-async function setup(opts: { mac?: FakeMacDriver; android?: boolean; fresh?: { kernel: boolean } } = {}) {
+async function setup(
+  opts: { mac?: FakeMacDriver; android?: boolean; fresh?: { kernel: boolean }; world?: string } = {},
+) {
   const driver = opts.android ? new FakeAndroidDriver() : new FakeDriver();
   const manager = new PcManager({
     stateDir: join(dir, 'state'),
@@ -133,6 +135,7 @@ async function setup(opts: { mac?: FakeMacDriver; android?: boolean; fresh?: { k
     settleMs: 1500,
     budgetDebounceMs: 0,
     helloRepushMs: 30,
+    world: () => opts.world ?? 'world-1',
   });
   glue.attach();
   return { driver, manager, bridge, tiers, acks, input, router, seats, killed, mirrorLog, picks, glue };
@@ -363,14 +366,43 @@ describe('input and seats', () => {
 });
 
 describe('requests', () => {
+  it('pc.action create plugs a PC that has no desk in this world before it creates one (PLAN 7.5)', async () => {
+    const t = await setup();
+    // The first Linux workstation of the world takes linux-1 (created on first run, no desk anywhere yet).
+    const first = await t.bridge.call('pc.action', {
+      action: 'create',
+      type: 'linux',
+      pos: { x: 1, y: 64, z: 2 },
+    });
+    expect(first).toEqual({ pcId: 'linux-1' });
+    expect(t.manager.list().map((p) => p.id)).toEqual(['linux-1']);
+    expect(t.manager.get('linux-1')).toMatchObject({ plugged: true, placedIn: 'world-1' });
+    for (let i = 0; i < 50 && t.manager.status('linux-1').status !== 'running'; i++) await tick(10);
+    expect(t.manager.status('linux-1').status).toBe('running');
+    // A macOS workstation never takes a Linux PC.
+    expect(t.manager.unplacedPc('macos', 'world-1')).toBeNull();
+    // Unplugging (the desk broke) frees it for the next desk in this world.
+    await t.bridge.call('pc.action', { action: 'unplug', pcId: 'linux-1' });
+    expect(t.manager.get('linux-1')?.placedIn).toBeUndefined();
+    expect(t.manager.unplacedPc('linux', 'world-1')?.id).toBe('linux-1');
+    // A desk the mod knows of in this world is never taken twice.
+    expect(t.manager.unplacedPc('linux', 'world-1', new Set(['linux-1']))).toBeNull();
+    // A PC plugged in a world that died is free again in the next one.
+    await t.bridge.call('pc.action', { action: 'plug', pcId: 'linux-1' });
+    expect(t.manager.unplacedPc('linux', 'world-1')).toBeNull();
+    expect(t.manager.unplacedPc('linux', 'world-2')?.id).toBe('linux-1');
+  });
+
   it('pc.action create returns the new id at once and boots it in the background', async () => {
     const t = await setup();
+    await t.bridge.call('pc.action', { action: 'create', type: 'linux', pos: { x: 0, y: 64, z: 0 } });
     const r = await t.bridge.call('pc.action', {
       action: 'create',
       type: 'linux',
       pos: { x: 1, y: 64, z: 2 },
     });
     expect(r).toEqual({ pcId: 'linux-2' });
+    expect(t.manager.get('linux-2')?.placedIn).toBe('world-1');
     expect(t.manager.get('linux-2')).toBeDefined();
     for (let i = 0; i < 50 && t.manager.status('linux-2').status !== 'running'; i++) await tick(10);
     expect(t.manager.status('linux-2').status).toBe('running');

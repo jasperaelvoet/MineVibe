@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isUsageLimitText } from '../../../src/agents/AgentBrain.js';
 import { Digest, EventRouter, type RouterAgent } from '../../../src/agents/EventRouter.js';
 import { UsageGovernor } from '../../../src/agents/UsageGovernor.js';
-import { createHarness, type Harness, MountedPcApi } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, MountedPcApi, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
 import type { FakeQuery } from '../../helpers/fakeSdk.js';
 import { resultText, settle } from '../../helpers/fakeSdk.js';
@@ -29,7 +29,7 @@ const QUESTION = {
 
 async function world(options: { planFirst?: boolean; harness?: Parameters<typeof createHarness>[0] } = {}) {
   h = await createHarness(options.harness);
-  await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+  await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
   const id = h.manager.listAgents()[0]?.agentId ?? '';
   const q = h.query(0);
   await h.until(() => h?.texts(q).some((t) => t.includes('WELCOME')) ?? false, 'welcome');
@@ -205,7 +205,7 @@ describe('startup assertions', () => {
   it('a failed assertion halts the brain: interrupt, close, deny every tool; Retry re-checks', async () => {
     h = await createHarness();
     const w = h;
-    await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
     const id = w.manager.listAgents()[0]?.agentId ?? '';
     const q = w.query(0);
     await w.until(() => w.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -241,7 +241,7 @@ describe('startup assertions', () => {
   it('persists sessionStarted as soon as the session exists', async () => {
     h = await createHarness();
     const w = h;
-    await w.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(w.manager, { worldId: 'w1', gen: 1 });
     const q = w.query(0);
     await w.until(() => w.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
     q.init();

@@ -25,6 +25,24 @@ export class MountedPcApi extends FakePcApi {
 
 export const HOME = '/Users/jasper';
 
+/** Where {@link openWorldWithCeo} performs the awakening ritual. */
+export const RITUAL_PLACE = { pos: { x: 3, y: 64, z: -7 }, dim: 'minecraft:overworld' } as const;
+
+/**
+ * Opens a world and, when nobody leads it (a fresh world starts empty, PLAN §7.5 "Agent Core"), awakens its CEO at
+ * {@link RITUAL_PLACE}, as the player's first Agent Core would.
+ */
+export async function openWorldWithCeo(
+  manager: AgentManager,
+  world: { worldId: string; gen: number },
+  options: { respawn?: boolean } = {},
+): Promise<void> {
+  await manager.openWorld(world, options);
+  if (!manager.listAgents().some((a) => a.ceo && a.status === 'alive')) {
+    await manager.awaken({ pos: { ...RITUAL_PLACE.pos }, dim: RITUAL_PLACE.dim });
+  }
+}
+
 export interface Harness {
   readonly dir: string;
   readonly manager: AgentManager;

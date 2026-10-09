@@ -55,7 +55,7 @@ class MsgCatalogTest {
 		for (List<MessageType<?>> group : List.of(Bodies.TYPES, Skills.TYPES, Seats.TYPES, Ui.TYPES, Pc.TYPES, Org.TYPES, Debug.TYPES)) {
 			for (MessageType<?> type : group) assertSame(type, Messages.byName(type.name()), type.name());
 		}
-		assertEquals(69, Messages.catalog().size(), "the catalog has every type of registry.ts");
+		assertEquals(71, Messages.catalog().size(), "the catalog has every type of registry.ts");
 	}
 
 	@Test
@@ -147,7 +147,8 @@ class MsgCatalogTest {
 				"ok--skill-run-replaced.json", Skills.SKILL_RUN_RESULT,
 				"ok--codex-search.json", Org.CODEX_SEARCH_RESULT,
 				"ok--meeting-start.json", Org.MEETING_START_RESULT,
-				"ok--pick-folder.json", Pc.PICK_FOLDER_RESULT);
+				"ok--pick-folder.json", Pc.PICK_FOLDER_RESULT,
+				"ok--agent-awaken.json", Bodies.AGENT_AWAKEN_RESULT);
 		schemas.forEach((name, schema) -> assertEquals(List.of(), schema.validate(okResult(name)), name));
 
 		Skills.SkillRunResult run = ProtocolCodec.GSON.fromJson(okResult("ok--skill-run.json"), Skills.SkillRunResult.class);
@@ -160,6 +161,25 @@ class MsgCatalogTest {
 		assertTrue(start.etas().get(1).dialIn());
 		Bodies.AgentSpawnResult spawned = ProtocolCodec.GSON.fromJson(okResult("ok--agent-spawn.json"), Bodies.AgentSpawnResult.class);
 		assertEquals(6.5, spawned.pos().x());
+		Bodies.AgentAwakenResult woke = ProtocolCodec.GSON.fromJson(okResult("ok--agent-awaken.json"), Bodies.AgentAwakenResult.class);
+		assertEquals("Ada", woke.name());
+	}
+
+	@Test
+	void readsAndWritesTheProgressionMessages() {
+		Bodies.AgentAwaken awaken = parse(Bodies.AGENT_AWAKEN, "bodies", "agent.awaken.json");
+		assertEquals(-35, awaken.pos().z());
+		assertEquals("Jordan", awaken.by());
+		String sent = ProtocolCodec.encode(
+				Bodies.AGENT_AWAKEN, new Bodies.AgentAwaken(new Messages.BlockPos(1, 64, 2), "minecraft:overworld", "Jordan"), "m-1", null);
+		assertTrue(sent.contains("\"by\":\"Jordan\""));
+		Ui.HirePay pay = parse(Ui.HIRE_PAY, "ui", "hire.pay.json");
+		assertEquals("Bram", pay.name());
+		assertFalse(pay.refund());
+		assertTrue(parse(Ui.HIRE_PAY, "ui", "hire.pay--refund.json").refund());
+		Pc.PcAction create = parse(Pc.PC_ACTION, "pc", "pc.action--create-placed.json");
+		assertEquals(List.of("linux-2"), create.placed());
+		assertNull(parse(Pc.PC_ACTION, "pc", "pc.action.json").placed());
 	}
 
 	@Test

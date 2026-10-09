@@ -5,9 +5,10 @@ import type { MessageOf } from '@minevibe/protocol';
 import { pino } from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { attachAgentBridge, type RuntimeBridge } from '../../../src/agents/runtime.js';
+import { BridgeError } from '../../../src/bridge/BridgeServer.js';
 import { PLAYER } from '../../../src/contracts/common.js';
 import { TypedEmitter } from '../../../src/util/TypedEmitter.js';
-import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { createHarness, type Harness, openWorldWithCeo } from '../../helpers/agentHarness.js';
 import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
 import { type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
 
@@ -35,7 +36,7 @@ describe('app restart (same world)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-restart-'));
     dirs.push(dir);
     const a = await harness(dir);
-    await a.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(a.manager, { worldId: 'w1', gen: 1 });
     const id = a.manager.listAgents()[0]?.agentId ?? '';
     const q = a.query(0);
     await a.until(() => a.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -57,7 +58,7 @@ describe('app restart (same world)', () => {
     a.manager.dispose();
 
     const b = await harness(dir);
-    await b.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(b.manager, { worldId: 'w1', gen: 1 });
     expect(b.skills.spawned[0]).toMatchObject({ agentId: id, restore: true });
     // The body resumes (everyone loads unseated); the desk stays a resumable record.
     const q2 = b.query(0);
@@ -85,7 +86,7 @@ describe('app restart (same world)', () => {
 
   it('worker restart: the mod still seats the agent, so the seat is rebuilt and its desk session takes over', async () => {
     const h = await harness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
     const q = h.query(0);
     await h.until(() => h.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -106,7 +107,7 @@ describe('app restart (same world)', () => {
 describe('calendar, task reports, house rules', () => {
   it('reminders only bubble; task text comes through CrewHooks.deliver, not calendar.fired', async () => {
     const h = await harness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
     const q = h.query(0);
     await h.until(() => h.texts(q).some((t) => t.includes('WELCOME')), 'welcome');
@@ -150,7 +151,7 @@ describe('calendar, task reports, house rules', () => {
 
   it('player-written rules pages arrive as binding HOUSE RULES context', async () => {
     const h = await harness();
-    await h.manager.openWorld({ worldId: 'w1', gen: 1 });
+    await openWorldWithCeo(h.manager, { worldId: 'w1', gen: 1 });
     const q = h.query(0);
     await h.org.codex.write(PLAYER, {
       mode: 'create',
@@ -200,14 +201,26 @@ describe('bridge glue', () => {
       phase: 'ready',
       clockTime: 100,
     } satisfies MessageOf<'world.state'>);
-    await h.until(
-      () =>
-        h.manager.world?.worldId === 'w9' &&
-        h.manager.brain(h.manager.listAgents()[0]?.agentId ?? '') !== undefined,
-      'world',
-    );
+    await h.until(() => h.manager.world?.worldId === 'w9', 'world');
     expect(h.manager.world).toEqual({ worldId: 'w9', gen: 7 });
-    const id = h.manager.listAgents()[0]?.agentId ?? '';
+    expect(h.manager.listAgents()).toEqual([]);
+    // The awakening ritual (PLAN §7.5): the first core wakes the CEO, a second one is refused with a BridgeError.
+    const awaken = bridge.handlers.get('agent.awaken');
+    const ritual = {
+      t: 'agent.awaken',
+      v: 1,
+      id: 'm-1',
+      pos: { x: 5, y: 64, z: 5 },
+      dim: 'minecraft:overworld',
+      by: 'Jordan',
+    } satisfies MessageOf<'agent.awaken'>;
+    const woke = (await awaken?.(ritual)) as { agentId: string; name: string };
+    expect(woke.name).toBe('Ada');
+    expect(h.skills.spawned[0]).toMatchObject({ at: { pos: ritual.pos, dim: ritual.dim }, ceo: true });
+    await expect(Promise.resolve().then(() => awaken?.(ritual))).rejects.toSatisfy(
+      (e) => e instanceof BridgeError && e.code === 'CEO_EXISTS',
+    );
+    const id = woke.agentId;
     bridge.fire('agent.state', {
       t: 'agent.state',
       v: 1,

@@ -32,10 +32,12 @@ service. For development and CI, a Docker or OrbStack driver can stand in for Ap
 
 ### Placing and removing PCs
 
-- **Your first PC**, `linux-1`, is created on the first run. Its workstation stands in your starter office.
+- **Your first PC**, `linux-1`, is created on the first run. A new world has no desk for it: craft a Linux
+  Workstation and place it, and that desk shows `linux-1`.
 - **Workstation items** (`linux_workstation`, `mac_workstation`) place a desk, a monitor and a chair in one
-  go. Placing a new one creates a new PC of that type, if your budget has room. Otherwise the monitor shows
-  "no capacity", or "Apple allows 2 macOS VMs".
+  go. A fresh item first takes a PC of its kind (Linux or macOS) that has no desk in this world yet, so no PC is
+  duplicated; only when every one already has a desk does it create a new PC, if your budget has room. Otherwise the
+  monitor shows "no capacity", or "Apple allows 2 macOS VMs".
 - **Breaking a workstation unplugs its PC.** The PC stops and stays off until you place the item again,
   which reconnects the same machine. A lost item (lava, a grave) can be re-issued from the PC config screen.
 - **Recipes:** a Linux workstation takes iron, redstone, a glass pane and copper; a Mac workstation takes

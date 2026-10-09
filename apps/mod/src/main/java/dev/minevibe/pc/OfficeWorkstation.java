@@ -12,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The starter office's workstation (PLAN 7.5 "First PC"): OfficeBuilder hands its first workstation slot to this
+ * The starter office's workstation (PLAN 7.5 "First PC"; the office is opt-in since the survival start): OfficeBuilder hands its first workstation slot to this
  * placer, which puts down a desk bound to {@code linux-1} (the PC Node creates on first run). It also clears desks out
  * of the office's footprint ({@link #clearDesk}): {@code linux-1}'s with {@link PcWorkstation#removeQuietly} (no item
  * drop, no {@code unplug}: it goes straight back into slot 1), any other PC's as if the player broke it (its bound
@@ -43,10 +43,9 @@ public final class OfficeWorkstation implements OfficeBuilder.WorkstationPlacer 
 		if (be == null) {
 			return null;
 		}
-		if (info != null && !info.plugged()) {
-			// Its desk was broken in an earlier world (unplugged): this desk plugs it back in, as a bound item would.
-			be.requestPlug(level);
-		}
+		// Plugged in as a bound item would be: an unplugged PC (its desk broke in an earlier world) comes back, and Node
+		// learns that linux-1 has its desk in this world (a fresh workstation item then takes another PC, PLAN 7.5).
+		be.requestPlug(level);
 		LOG.info("Placed {}'s workstation in the office at {}", FIRST_PC_ID, origin.toShortString());
 		return FIRST_PC_ID;
 	}

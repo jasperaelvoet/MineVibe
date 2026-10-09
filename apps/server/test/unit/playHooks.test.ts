@@ -111,7 +111,7 @@ describe('play hooks (MineVibe.app)', () => {
 
 describe('E2E mode (MINEVIBE_E2E=1 npm run play)', () => {
   it('turns on the game debug handlers with the system property the mod reads', () => {
-    expect(e2eJvmArgs(true)).toEqual(['-Dminevibe.e2e=true']);
+    expect(e2eJvmArgs(true)).toEqual(['-Dminevibe.e2e=true', '-Dminevibe.office=true']);
     expect(e2eJvmArgs(false)).toEqual([]);
   });
 });

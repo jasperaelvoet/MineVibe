@@ -151,6 +151,8 @@ ignored. Message types sent in the wrong direction are refused with `err BAD_MES
 | `RESERVED`, `OCCUPIED_BY_PLAYER`, `UNREACHABLE`, `NO_SEAT` | mod | `agent.seat`: chair reserved, the player sits there, no path, no free meeting chair |
 | `CARD_GONE` | Node | `pending.answer` / `plan.decision` / `hire.decision`: the card is no longer pending |
 | `FORBIDDEN` | Node | Rights: CEO only, player-created event, `rules` page, ... |
+| `CEO_EXISTS` | Node | `agent.awaken`: the world already has a living CEO (it hires the crew; approving a hire costs the core) |
+| `NO_CORE` | mod | `hire.pay`: the player carries no Agent Core |
 | `PC_UNKNOWN`, `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`, `BAD_MOUNT`, `ENGINE_DOWN` | Node | PC requests (section 7.7) |
 | `CODEX_NOT_FOUND`, `CODEX_CONFLICT`, `CODEX_SIMILAR`, `CODEX_TOO_LARGE`, `CODEX_SECRET`, `CODEX_INVALID`, `CODEX_BUDGET` | Node | Codex requests (section 7.8) |
 | `CALENDAR_NOT_FOUND`, `CALENDAR_INVALID`, `CALENDAR_LIMIT` | Node | Calendar requests |
@@ -442,6 +444,7 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `agent.event` | bodies | M→N |  | A notable body event (hurt, starving, stuck, kicked, arrived, ...). |
 | `agent.died` | bodies | M→N |  | Request: an agent died (grave placed); re-sent until acked. |
 | `agent.mode` | bodies | N→M |  | Request: set an agent's idle mode (follow, stay, guard, wander). |
+| `agent.awaken` | bodies | M→N | `AgentAwakenResult` | Request: the awakening ritual (Agent Core on two copper blocks); wake a CEO there. |
 | `crew.state` | bodies | N→M |  | The crew list (names, handles, roles, CEO, status). |
 | `skill.run` | skills | N→M | `SkillRunResult` | Request: start a job; replies running, done, failed or cancelled. |
 | `skill.progress` | skills | M→N |  | Progress of a running job. |
@@ -462,6 +465,7 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `chat.send` | ui | M→N | `ChatSendResult` | Request: player chat line or AgentScreen reply; Node routes it. |
 | `pending.answer` | ui | M→N | `ChatSendResult` | Request: answer, park or decide a card from AgentScreen, G or Alt+1-4. |
 | `plan.decision` | ui | M→N | `ChatSendResult` | Request: approve or revise a plan card. |
+| `hire.pay` | ui | N→M |  | Request: take the Agent Core an approved hire costs from the player (or give it back). |
 | `hire.decision` | ui | M→N | `ChatSendResult` | Request: approve or decline a hire card. |
 | `agent.cmd` | ui | M→N |  | Request: AgentScreen command (follow, stay, stop, interrupt, kick, dismiss, toggles). |
 | `brains.state` | ui | N→M |  | Brain scheduler and usage state (normal, tired, asleep). |
@@ -545,6 +549,14 @@ records flatten every variant into one record with `@Nullable` fields.
   `BAD_ARGS` (the mod also needs `agentId` to be `[a-z][a-z0-9_]{0,15}`, because it names the fake player),
   `AGENT_DEAD` (the agent died in this world), `SPAWN_FAILED`.
 - `agent.despawn` (request): `{ agentId, reason: dismissed|world_end|shutdown, farewell }`.
+- `agent.awaken` (M→N request, `AgentAwakenResult { agentId, name }`): `{ pos, dim, by }`. The awakening ritual (PLAN
+  §7.5 "Agent Core"): the player used an Agent Core on the top of two stacked copper blocks; `pos` is the lower block.
+  The mod takes both blocks and the core aside first and sends this; Node hires a CEO with `agent.spawn{at: pos}` and
+  answers `ok`, after which the mod keeps the core, strikes a visual-only lightning bolt and grants the "It's alive!"
+  advancement. Any `err` (or no answer in 15 s, or no bridge) gives the blocks and the core back with Node's message.
+  Errors: `CEO_EXISTS` (the CEO hires the crew; a hire card costs the core instead), `NOT_READY` (no world open, a
+  ritual already running, or no usable `claude`), `SPAWN_FAILED`; `NOT_HANDLED` when no agent runtime
+  runs (the scripted crew).
 - `agent.state` (1 Hz): `{ tick, agents: AgentBody[] }`; `AgentBody = { agentId, pos: Vec3, dim, hp, maxHp, food,
   saturation, mode, hasFood, inCombat, reflex?, job?: { jobId, skill, progress? }, seat?: SeatTarget,
   playerDistance?, held?, zone?: string }` (`zone`: `in Base` or `12m from Base`). Node builds the Digest from it (with the
@@ -855,6 +867,11 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
 - `plan.decision` (request, `ChatSendResult`): `{ agentId, pendingId, decision: approve|revise, feedback? }`
   (`revise` needs `feedback`). `hire.decision` (request, `ChatSendResult`): `{ pendingId, decision:
   approve|decline, note? }`.
+- `hire.pay` (N→M request, `ok {}`): `{ pendingId, name, refund }`. Approving a hire (by `hire.decision`, a card
+  answer or chat) costs the player one Agent Core (PLAN §7.5): before the hire arrives Node asks the mod to take one
+  from the local player's inventory (nothing is taken in creative mode). `err NO_CORE` when there is none: Node then
+  refuses the approval with that message and the card stays up. `refund: true` gives the core back when the approved
+  hire could not arrive. A successful take grants the "Growing the team" advancement.
 - `agent.cmd` (request): `{ agentId, cmd, on?, level? }`, `cmd` one of `follow`, `stay`, `guard`, `wander`,
   `stop`, `interrupt`, `kick`, `dismiss`, `plan_first` (needs `on`), `ping_instead` (needs `on`), `autonomy`
   (needs `level`), `retry_brain`.
@@ -886,9 +903,11 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   wipeOnDeath?, virtualization?, android? }`. `type`, `cpus`, `memoryMiB`, `mounts` and `virtualization` recreate the
   PC; `android` starts or removes its phone and leaves the PC running (off deletes the phone's apps and data).
   Errors: `OVER_BUDGET`, `BAD_MOUNT`, `PC_UNKNOWN`, `BAD_MESSAGE` (a capability this Mac cannot have).
-- `pc.action` (request, `PcActionResult { pcId }`): `{ action, pcId?, type?, pos? }`. `create` takes `type` and
-  no `pcId`; every other action (`start`, `stop`, `restart`, `reimage`, `decommission`, `reissue`, `unplug`,
-  `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,
+- `pc.action` (request, `PcActionResult { pcId }`): `{ action, pcId?, type?, pos?, placed? }`. `create` takes `type`
+  and no `pcId`; it plugs an existing PC of the same family (Linux or macOS) that has no desk in this world instead of
+  creating a new one, and answers with its id (`placed`: the PCs the mod knows have a desk here; Node also remembers
+  the world each PC was last plugged into); every other action (`start`, `stop`, `restart`, `reimage`,
+  `decommission`, `reissue`, `unplug`, `plug`, `kick`, `watch`, `unwatch`) takes `pcId`. Errors: `OVER_BUDGET`, `NO_CAPACITY`, `MACOS_SLOTS_FULL`,
   `PC_UNKNOWN`, `ENGINE_DOWN`.
 - `pc.consent` (request): `{ pcId, consentId, accept }`. `err NOT_READY` when that prompt is no longer waiting. An
   accepted capability download applies its switch like `pc.config` (it may recreate the PC); the reply comes once that

@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/root",
+  "criteria": {
+    "amethyst_shard": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:amethyst_shard"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:amethyst_shard"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.spark.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.spark.description"
+    }
+  },
+  "requirements": [
+    [
+      "amethyst_shard"
+    ]
+  ]
+}

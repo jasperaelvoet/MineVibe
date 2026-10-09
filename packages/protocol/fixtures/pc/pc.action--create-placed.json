@@ -1,0 +1,13 @@
+{
+  "t": "pc.action",
+  "v": 1,
+  "id": "m-92",
+  "action": "create",
+  "type": "linux",
+  "pos": {
+    "x": 24,
+    "y": 64,
+    "z": -30
+  },
+  "placed": ["linux-2"]
+}
