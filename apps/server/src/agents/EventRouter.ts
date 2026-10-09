@@ -15,6 +15,7 @@ import { type McToolsVersion, mcRefs, mcToolsVersion } from '../contracts/mcRefs
 import type { WakePriority } from './BrainScheduler.js';
 import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE_MS } from './constants.js';
 import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
+import { BARKS, type BarkKey } from './prompts/barks.js';
 import type { UsageMode } from './UsageGovernor.js';
 import { failureText } from './world/guard.js';
 
@@ -365,6 +366,20 @@ export class EventRouter {
     };
   }
 }
+
+/**
+ * The bark an `agent.event` asks Node to say at once, or null: an urgency-2 `stuck` (PLAN §7.3, the body's WaterEscape
+ * reflex or a walk that keeps failing) says "I'm stuck in water — can you help or should I dig out?" (`data.why` is
+ * `water`) or "I'm stuck, I can't find a way there. Can you help?", while its wake brings the brain in. The agent
+ * never sits silently stuck, and the player hears it before the model has said a word.
+ */
+export function stuckBark(event: PayloadOf<'agent.event'>): BarkKey | null {
+  if (event.kind !== 'stuck' || event.urgency < 2) return null;
+  return event.data?.why === 'water' ? BARKS.stuckInWater : BARKS.stuck;
+}
+
+/** The key of the wake a critical `stuck` event queues (its turn opens without the "one sec" bark). */
+export const STUCK_WAKE_KEY = 'critical:stuck';
 
 /** A one-line summary of a job result object. */
 export function summarizeResult(result: Record<string, unknown> | undefined): string {

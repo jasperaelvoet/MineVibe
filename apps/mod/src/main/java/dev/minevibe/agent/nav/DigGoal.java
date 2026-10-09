@@ -21,6 +21,7 @@ import net.minecraft.world.phys.Vec3;
  *       does (no digging straight down), nor standing in it.</li>
  *   <li>{@link #trunk}: "reach a tree trunk": any standable cell next to any log of the trunk, at any height a pillar
  *       can reach.</li>
+ *   <li>{@link #ashore}: out of the water onto dry land that leads somewhere (the WaterEscape reflex).</li>
  * </ul>
  */
 public abstract class DigGoal {
@@ -41,7 +42,7 @@ public abstract class DigGoal {
 
 	public abstract String describe();
 
-	/** {@code near}, {@code pickup}, {@code block} or {@code trunk} (the {@code kind} of a {@code nav.failed} event). */
+	/** {@code near}, {@code pickup}, {@code block}, {@code trunk} or {@code ashore} (the {@code kind} of a {@code nav.failed} event). */
 	public abstract String kind();
 
 	@Override
@@ -77,6 +78,16 @@ public abstract class DigGoal {
 	/** Next to the trunk that {@code log} belongs to (all its logs, from the bottom of its column(s) to the top). */
 	public static DigGoal trunk(final BlockGetter level, final BlockPos log) {
 		return new Trunk(trunkOf(level, log));
+	}
+
+	/**
+	 * Out of the water (the WaterEscape reflex, PLAN 7.3): a dry feet cell (feet and head free and out of water, a floor
+	 * under them) from which a body walks on over at least {@code area} such cells without digging. A dry spot inside a
+	 * sealed pocket is no way out; the search goes on to dig out of it. {@code from} is where the search starts (its
+	 * radius is measured from there).
+	 */
+	public static DigGoal ashore(final BlockPos from, final int area) {
+		return new Ashore(from.immutable(), area);
 	}
 
 	static double flatCost(final double dx, final double dz) {
@@ -338,6 +349,109 @@ public abstract class DigGoal {
 		@Override
 		public String kind() {
 			return "trunk";
+		}
+	}
+
+	// ---------------------------------------------------------------- ashore
+
+	static final class Ashore extends DigGoal {
+		private final BlockPos from;
+		private final int area;
+		private final it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap known = new it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap();
+
+		Ashore(final BlockPos from, final int area) {
+			this.from = from;
+			this.area = Math.max(1, area);
+		}
+
+		@Override
+		public boolean satisfied(final BlockGetter level, final int x, final int y, final int z) {
+			if (!dry(level, x, y, z)) {
+				return false;
+			}
+			long key = BlockPos.asLong(x, y, z);
+			if (this.known.containsKey(key)) {
+				return this.known.get(key);
+			}
+			return this.walksOn(level, x, y, z);
+		}
+
+		/**
+		 * Flood over dry feet cells a walk reaches (sideways, a step up or down) until {@code area} of them are found. Every
+		 * cell the flood met gets the same answer (they walk to each other), so the search asks each region once.
+		 */
+		private boolean walksOn(final BlockGetter level, final int x, final int y, final int z) {
+			it.unimi.dsi.fastutil.longs.LongOpenHashSet seen = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+			it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue queue = new it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue();
+			long start = BlockPos.asLong(x, y, z);
+			seen.add(start);
+			queue.enqueue(start);
+			while (!queue.isEmpty()) {
+				long p = queue.dequeueLong();
+				int px = BlockPos.getX(p);
+				int py = BlockPos.getY(p);
+				int pz = BlockPos.getZ(p);
+				for (Direction d : Direction.Plane.HORIZONTAL) {
+					for (int dy = -1; dy <= 1; dy++) {
+						int nx = px + d.getStepX();
+						int ny = py + dy;
+						int nz = pz + d.getStepZ();
+						long q = BlockPos.asLong(nx, ny, nz);
+						if (seen.contains(q) || Math.abs(nx - x) > 16 || Math.abs(nz - z) > 16 || !dry(level, nx, ny, nz)) {
+							continue;
+						}
+						seen.add(q);
+						if (seen.size() >= this.area) {
+							return this.remember(seen, true);
+						}
+						queue.enqueue(q);
+					}
+				}
+			}
+			return this.remember(seen, seen.size() >= this.area);
+		}
+
+		private boolean remember(final it.unimi.dsi.fastutil.longs.LongOpenHashSet cells, final boolean out) {
+			it.unimi.dsi.fastutil.longs.LongIterator it = cells.iterator();
+			while (it.hasNext()) {
+				this.known.put(it.nextLong(), out);
+			}
+			return out;
+		}
+
+		/** Feet and head free of blocks and water (no lava or fire), a floor under them. */
+		static boolean dry(final BlockGetter level, final int x, final int y, final int z) {
+			BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos(x, y, z);
+			for (int i = 0; i < 2; i++) {
+				p.setY(y + i);
+				var state = level.getBlockState(p);
+				if (!state.getFluidState().isEmpty() || NavBlocks.isHazard(state) || !NavBlocks.isPassable(level, p, state) || NavBlocks.isClimbable(state)) {
+					return false;
+				}
+			}
+			p.setY(y - 1);
+			return NavBlocks.isFloor(level, p, level.getBlockState(p));
+		}
+
+		@Override
+		public double heuristic(final int x, final int y, final int z) {
+			// The nearest way out is not known: a search by cost alone.
+			return 0.0;
+		}
+
+		@Override
+		public BlockPos anchor() {
+			return this.from;
+		}
+
+		@Override
+		public String describe() {
+			return "ashore from " + this.from.toShortString();
+		}
+
+		@Override
+		public String kind() {
+			return "ashore";
 		}
 	}
 

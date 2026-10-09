@@ -66,6 +66,8 @@ public final class OfficeService {
 		final MinecraftServer server;
 		final Path file;
 		@Nullable OfficeLayout layout;
+		/** The layout {@code office.json} holds: what {@link #save} writes, whatever a GameTest made {@link #layout}. */
+		@Nullable OfficeLayout saved;
 		final Set<String> welcomed = new LinkedHashSet<>();
 		boolean attempted;
 
@@ -109,7 +111,9 @@ public final class OfficeService {
 	/**
 	 * GameTests: makes {@code layout} this running world's office (null: none again) without building, saving or moving
 	 * the world spawn, so code that asks where the office is (the door agents spawn at, the meeting table) can be
-	 * tested. Restore it before the test ends.
+	 * tested. Restore it before the test ends. Players who join meanwhile are not welcomed into it (tests running beside
+	 * this one spawn player stand-ins where they need them), and it is never written to {@code office.json} (it would
+	 * outlive the test in the GameTest world, which is kept from run to run).
 	 */
 	public static void overrideLayout(final MinecraftServer server, final @Nullable OfficeLayout layout) {
 		State s = stateOf(server);
@@ -135,7 +139,7 @@ public final class OfficeService {
 		ensureBuilt(server);
 		State s = stateOf(server);
 		String uuid = player.getUUID().toString();
-		if (s.layout == null || s.welcomed.contains(uuid)) {
+		if (s.layout == null || s.layout != s.saved || s.welcomed.contains(uuid)) {
 			return;
 		}
 		s.welcomed.add(uuid);
@@ -179,6 +183,7 @@ public final class OfficeService {
 		server.setRespawnData(new LevelData.RespawnData(GlobalPos.of(level.dimension(), layout.spawn()), layout.spawnYaw(), 0.0F));
 		State s = stateOf(server);
 		s.layout = layout;
+		s.saved = layout;
 		s.attempted = true;
 		save(s);
 		published = new Published(HardcoreHooks.levelId(server), layout);
@@ -208,6 +213,7 @@ public final class OfficeService {
 			JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
 			if (json.has("layout") && json.get("layout").isJsonObject()) {
 				s.layout = OfficeLayout.fromJson(json.getAsJsonObject("layout"));
+				s.saved = s.layout;
 			}
 			if (json.has("welcomed")) {
 				for (JsonElement e : json.getAsJsonArray("welcomed")) {
@@ -224,8 +230,8 @@ public final class OfficeService {
 	private static void save(final State s) {
 		JsonObject json = new JsonObject();
 		json.addProperty("version", 1);
-		if (s.layout != null) {
-			json.add("layout", s.layout.toJson());
+		if (s.saved != null) {
+			json.add("layout", s.saved.toJson());
 		}
 		JsonArray welcomed = new JsonArray();
 		s.welcomed.forEach(welcomed::add);

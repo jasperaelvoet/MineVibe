@@ -47,6 +47,26 @@ public final class Steering {
 		return false;
 	}
 
+	/**
+	 * True if walking ~0.8 blocks in direction {@code yawDegrees} leads into water: the cell ahead holds water, or the
+	 * first thing under it within a safe drop does.
+	 */
+	public static boolean waterAhead(final AgentPlayer agent, final float yawDegrees) {
+		double rad = Math.toRadians(yawDegrees);
+		ServerLevel level = agent.level();
+		BlockPos ahead = BlockPos.containing(agent.getX() - Math.sin(rad) * 0.8, agent.getY() + 0.05, agent.getZ() + Math.cos(rad) * 0.8);
+		for (int d = 0; d <= MAX_DROP + 1; d++) {
+			BlockPos p = ahead.below(d);
+			if (level.getFluidState(p).is(FluidTags.WATER)) {
+				return true;
+			}
+			if (!level.getBlockState(p).getCollisionShape(level, p).isEmpty()) {
+				return false;
+			}
+		}
+		return false;
+	}
+
 	private static boolean isHot(final ServerLevel level, final BlockPos pos) {
 		BlockState state = level.getBlockState(pos);
 		return level.getFluidState(pos).is(FluidTags.LAVA) || state.is(BlockTags.FIRE) || state.is(Blocks.MAGMA_BLOCK) || state.is(Blocks.CAMPFIRE);

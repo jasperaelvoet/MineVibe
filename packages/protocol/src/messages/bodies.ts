@@ -69,7 +69,11 @@ export const AGENT_EVENT_KINDS = [
   'killed',
   /** A reflex preempted the job. data: {reflex, priority}. */
   'reflex',
-  /** Navigation is stuck after jump, replan and the poof unstuck (urgency 2). */
+  /**
+   * Navigation is stuck. Urgency 1: one Tier-1 walk gave up after jump, replan and the poof unstuck. Urgency 2 (a wake,
+   * and Node says `data.bark`): a walk that keeps failing from the same spot (`data.why: "nav"`), or water the agent
+   * cannot get out of (`data.why: "water"`, the WaterEscape reflex). data: {why, reason, pos, bark}.
+   */
   'stuck',
   /** Left a seat. data: {reason}. */
   'unseated',

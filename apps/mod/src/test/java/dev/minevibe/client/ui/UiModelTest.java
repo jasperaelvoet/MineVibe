@@ -118,6 +118,9 @@ class UiModelTest {
 		assertEquals("Hmm, one sec…", Barks.text("thinking"));
 		assertEquals("Found iron", Barks.text("found_iron"));
 		assertEquals("…", Barks.text("_"));
+		// The body's urgency-2 "stuck" events (Node says the bark key the event carries).
+		assertEquals("I'm stuck in water — can you help or should I dig out?", Barks.text("stuck_in_water"));
+		assertEquals("I'm stuck, I can't find a way there. Can you help?", Barks.text("stuck"));
 	}
 
 	@Test

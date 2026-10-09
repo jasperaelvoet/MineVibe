@@ -71,6 +71,30 @@ public final class JobRunner {
 		return this.jobTicks;
 	}
 
+	/**
+	 * Ends the current job as failed with {@code code} and {@code message}, from outside it: a reflex that gave up on
+	 * what the job keeps leading into (the WaterEscape reflex's {@code STUCK_IN_WATER}). The job lets go of what it holds
+	 * ({@link Job#cancel}), then ends like a job that failed by itself ({@code job.failed}, {@link Job#onEnd} with
+	 * {@link Job.Status#FAILED}), so its caller gets the code.
+	 */
+	public void fail(final String code, final String message) {
+		Job job = this.current;
+		if (job == null) {
+			return;
+		}
+		if (this.started) {
+			job.cancel(this.agent);
+		}
+		job.failWith(code, message);
+		this.current = null;
+		this.preempted = false;
+		this.lastStatus = Job.Status.FAILED;
+		this.agent.controls().releaseAll();
+		this.agent.navigator().stop();
+		AgentEvents.emit(this.agent, "job.failed", Map.of("job", job.name(), "reason", job.failureReason()));
+		job.onEnd(this.agent, Job.Status.FAILED, job.failureReason());
+	}
+
 	/** Called by the brain when a reflex above priority 35 takes control. */
 	public void preempt() {
 		if (this.current != null && this.started && !this.preempted) {

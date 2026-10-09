@@ -46,6 +46,13 @@ public interface Job {
 	}
 
 	/**
+	 * The job is failed from outside ({@link JobRunner#fail}: a reflex gave up on it, e.g. {@code STUCK_IN_WATER}):
+	 * remember {@code code} and {@code message} for its report. Jobs without typed failures ignore it.
+	 */
+	default void failWith(final String code, final String message) {
+	}
+
+	/**
 	 * Called exactly once when the job leaves the {@link JobRunner}: with {@link Status#DONE} or {@link Status#FAILED}
 	 * when it finished, or with a null status when it was cancelled (replaced, stopped, the agent died or left) before it
 	 * did; {@code reason} says why. Called after {@link #cancel}, whether or not the job had started.

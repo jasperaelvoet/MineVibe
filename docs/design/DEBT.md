@@ -29,7 +29,11 @@ live") fixed a `(silent)` reply showing in the player's chat log and the body re
 The gathering polish of 2026-10-09 (ACCEPTANCE.md, "Gathering polish") fixed the high logs of tall
 trees left standing (a climb beside or in the trunk, with dirt dug nearby), one missed log giving up the rest of a
 tree, a felled big tree's drops left in its crown, `mine` / `collect` searching 24 blocks where `find` searched 32, and
-a cliff-side office porch with no stairs down.
+a cliff-side office porch with no stairs down. Water navigation (2026-10-09, PLAN §7.2 "Water" and §7.3) fixed "an agent
+in a water pocket under the ground drowns" and the live report behind it (the CEO silent in a cave pool whose ledge
+stood a block over the water, brains 0/3): water exits in both tiers, no digging while swimming, the WaterEscape
+reflex, `STUCK_IN_WATER`, and stuck agents speaking up; also a GameTest's office (`OfficeService.overrideLayout`) that
+was saved into the GameTest world, which is kept from run to run, so every later player stand-in was welcomed into it.
 
 ## Found by navigation v2 (2026-10-09)
 - **Bridges, and pillars outside tree felling, stay in the world.** Felling a tree, the miner clears the pillars
@@ -48,14 +52,6 @@ a cliff-side office porch with no stairs down.
     its last part.
 
 ## Found in the gathering polish (2026-10-09)
-- **An agent in a water pocket under the ground drowns.** In an intermediate build of the polish the CEO followed a
-  drop into an enclosed water pocket under seed `3207449953`'s oak (ACCEPTANCE.md, "Gathering polish"): Tier 2 planned
-  its way out by breaking the grass ceiling while swimming, every break timed out (`break_timeout`: mining under
-  water and off the ground is 25 times slower), and the Hazard reflex cannot surface under a solid ceiling; the job
-  resumed after each reflex until the agent drowned. The felling no longer opens such pockets (dirt is dug one block
-  deep on solid ground) and its sweep fetches no drop under the ground or in roofed water, but any walk can still
-  swim into one. **Fix:** Tier 2 should treat water with no air within reach above as a hazard to enter, and plan
-  a way out with breaks only from a standing cell; the Hazard reflex could cancel a job that keeps swimming back in.
 - **Logs no climb reaches stay up.** The climb rises at most 12 blocks (health minus 8) in one of the 9 columns
   around a log, so logs more than 17 above the stump (mega spruce and jungle tops) and branch ends with no standable
   column under or beside them (`no_column`) are left (`logsLeftHigh`; 2 of 86 targets in the polish runs). Once a
@@ -86,6 +82,30 @@ a cliff-side office porch with no stairs down.
   `Goals.nightOutside` reads `isDarkOutside()`, whose sky darkness only follows a clock change on the next tick, while
   the test world's saved clock (it keeps running from run to run) can stand at night when the batch starts. **Fix:**
   read the clock in `nightOutside`, or let the tests wait a tick before the approach.
+
+## Found in water navigation (2026-10-09)
+- **With nothing in the bag, deep water with high banks strands the agent.** No block is broken while swimming, so
+  water deeper than one block whose banks all stand over the water line, with no block to step on, has no way out the
+  agent finds: it treads water at the surface, says so once (urgency 2, "I'm stuck in water — can you help or should I
+  dig out?"), looks again every 15 s, and waits for help (a block handed over, a step built) or for its brain. Digging a
+  block from the wall while swimming to have one (25 times slower) is left out on purpose.
+- **Tier 1 cuts only partial paths that end in water.** A path that reaches its goal through water climbs out where
+  vanilla's evaluator says it can (a bank level with the water line), so it has an exit; but a dry spot inside an
+  enclosed pocket reached through water (a ledge in a cave lake) is not seen as a dead end, and a complete path whose
+  exit the water would not lift the body onto (a thin layer of flowing water) still leads in. The WaterEscape reflex
+  gets the agent out; without a job, 3 escapes in 3 minutes are said out loud.
+- **A stuck walk wakes the brain, a few times.** `nav.loop` (5 failed walks from about the same spot to about the
+  same goal) is an urgency-2 `stuck` event: following a player who stands where no walk leads (a roof, a pillar, a
+  boat) costs a brain turn and the bark, again after 2 minutes, then 4, 8 and every 16 while the agent gets nowhere
+  (review: it was every 2 minutes for as long as it lasted). Watch the token use in play.
+- **A step block is counted against the scaffold.** Tier 2 counts a block put in the water to step on and a pillar
+  block in one count, which pillars may only fill up to the scaffold in the bag (and the executor steps on scaffold
+  first, the plainest block): with one dirt and one plank, a way out that needs a step and a pillar is not planned
+  (the plank would do for the step, the dirt for the pillar), and the agent stays stranded until it has two scaffold
+  blocks. Two counts (steps, and scaffold kept for pillars) would plan it.
+- **The current is compensated for the water the body touches now.** A body swimming into faster water a block ahead
+  drifts until it gets there; `water_crosses_flowing_river` measured 0.01 blocks off its line (0.34 without the
+  upstream aim) in a stream one deep. Strong currents in deep, wide rivers are not tested.
 
 ## Found in the gathering polish review (2026-10-09)
 Fixed in the review (ACCEPTANCE.md, "Gathering polish", review): an agent left on its pillar by a cancelled, timed out
@@ -153,7 +173,9 @@ Still open:
   Getting block state` (`MissingPaletteEntryException: Missing Palette entry for index 3`, from
   `ThreadedLevelLightEngine` on a worker thread) two seconds into the 124-test batch, then logged nothing for 20
   minutes until the server was killed; the re-run passed all 124. A race between the batch's block edits and the light
-  thread, it seems. Add a GameTest timeout or a watchdog on the server thread so a crash fails the run instead.
+  thread, it seems. Add a GameTest timeout or a watchdog on the server thread so a crash fails the run instead. Seen
+  again in the water navigation work (1 of 5 full runs, 174 tests): the server thread waited for a chunk in
+  `StructureGridSpawner` (`TestInstanceBlockEntity.forceLoadChunks`) for 10 minutes; the re-run passed.
 - **`eval:world` runs the v2 tools against a fake mod without the v2 caps.** `EvalWorldSkills` has W1's shapes but
   an empty `hello.caps`, so with v2 (now its default) `craft` has no recipe tree (`MISSING_INGREDIENTS` for the table,
   then planks by hand, in every v2 reachable and legacy run so far) and `do` is Node's macro. Give the W1 scenarios

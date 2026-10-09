@@ -744,13 +744,20 @@ export function hintFor(
     case 'INTERNAL':
     case 'FAILED':
       return `tell ${p} briefly what failed; don't loop`;
+    case 'STUCK_IN_WATER':
+      return `ask ${p} with AskUserQuestion: help me out (a block to step on), or should I dig out? Don't retry the same job.`;
     default:
       return null;
   }
 }
 
 /** Codes after which the model must stop and ask instead of retrying or substituting. */
-export const HARD_STOP_CODES: ReadonlySet<string> = new Set(['PROTECTED', 'NO_NATURAL_SOURCE', 'BAD_TARGET']);
+export const HARD_STOP_CODES: ReadonlySet<string> = new Set([
+  'PROTECTED',
+  'NO_NATURAL_SOURCE',
+  'BAD_TARGET',
+  'STUCK_IN_WATER',
+]);
 
 /** `failed: gather oak_log 0/10 | NO_NATURAL_SOURCE: …` plus details and `next:`. */
 export function renderFailed(meta: JobMeta, outcome: JobOutcome, ctx: RenderContext): Rendered {

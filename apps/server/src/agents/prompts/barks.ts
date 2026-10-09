@@ -28,6 +28,13 @@ export const BARKS = {
   brainOffline: 'brain_offline',
   /** Promoted to CEO. */
   promoted: 'promoted',
+  /**
+   * The body's walk keeps failing from the same spot (an urgency-2 `stuck` event): "I'm stuck, I can't find a way
+   * there. Can you help?"
+   */
+  stuck: 'stuck',
+  /** The body cannot get out of water (the WaterEscape reflex gave up): "I'm stuck in water — can you help or should I dig out?" */
+  stuckInWater: 'stuck_in_water',
 } as const;
 
 export type BarkKey = (typeof BARKS)[keyof typeof BARKS];

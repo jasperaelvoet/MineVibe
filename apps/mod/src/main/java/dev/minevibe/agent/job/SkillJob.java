@@ -128,6 +128,11 @@ public abstract class SkillJob implements Job {
 		return Status.FAILED;
 	}
 
+	@Override
+	public final void failWith(final String code, final String message) {
+		this.fail(code, message);
+	}
+
 	protected final Status done() {
 		return Status.DONE;
 	}

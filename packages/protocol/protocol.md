@@ -553,7 +553,9 @@ records flatten every variant into one record with `@Nullable` fields.
 - `agent.event`: `{ agentId, kind, urgency 0-3, text, data? }`. Kinds: `hurt`, `hp_critical`, `starving`, `ate`,
   `killed`, `reflex`, `stuck`, `unseated`, `kicked`, `player_low_hp`, `dimension_changed`, `arrived`,
   `approach_blocked` (`data.why`: `combat|night|far|dimension|pc_screen`, so ApproachQueue falls back to a ping),
-  `fed_player`, `shared_food`, `picked_up`, `advancement`.
+  `fed_player`, `shared_food`, `picked_up`, `advancement`. An urgency-2 `stuck` (`data: { why: nav|water, reason, pos,
+  bark }`: a walk that keeps failing from the same spot, or water the agent cannot get out of) wakes the body's brain,
+  and Node says `data.bark` (`stuck`, `stuck_in_water`) at once.
 - `agent.died` (request, re-sent until `ok`, idempotent per `agentId`): `{ agentId, worldId, cause, killer?, day,
   pos, dim, grave? }`.
 - `agent.mode` (request): `{ agentId, mode: IdleMode, anchor? }`.
@@ -634,6 +636,7 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
 | `BAD_ARGS` | Arguments the job could only reject once running (an unknown emote, a `farm` crop that is no seed) |
 | `PROTECTED` | The job would change a player-built block or one in a protected zone (the Base), a natural block that holds one up or lies under its roof, light fire or pour lava within 5 blocks of one, build inside a zone, knock down a decoration, take from or retune a player's block (flower pot, lectern, repeater...), or take from a chest the player placed. Nothing was changed. `result.protected` is a `ProtectedDetail` (`pos`, `what`: `player-built` or `base`, `owner`, `block`, `zone?`, `count`, `consentId?`, `hint`); `msg` starts with the teaching line ("That's part of Steve's base — ask Steve before changing it.") |
 | `NO_NATURAL_SOURCE` | `mine` / `collect` found nothing natural and reachable within the radius. It never substitutes another block. `result.noNaturalSource` is a `NoNaturalSourceDetail` (`what`, `radius`, `candidates`: up to 8 `{ pos, block, distance, dir, why: unreachable\|too_far\|protected\|not_natural, owner? }`, `hint`); partial counts stay in `result`. For one kind of a material family (`oak_log`) the `hint` says to ask only if the player named that kind, else to gather the family (`#minecraft:logs`) |
+| `STUCK_IN_WATER` | The body's WaterEscape reflex gave up on the job: it led the agent a third time into water it could not walk out of, or its way out was not found twice (`msg` has the position). The agent also sent an urgency-2 `stuck` event; ask the player for help rather than retry |
 | `INTERNAL`, `FAILED` | The job crashed (`msg` has the exception) / a failure without a more specific code |
 
 #### 7.4.2 Skill conventions beyond the schemas

@@ -972,6 +972,12 @@ async function step3Scripted(r: StepResult): Promise<void> {
   }
   r.numbers.log = log;
   r.numbers.logNearest = matches.map((m) => (typeof m.distance === 'number' ? round(m.distance) : '?'));
+  // Water near the office (water navigation, PLAN §7.2): the nearest water blocks, and below how often the WaterEscape
+  // reflex took over and whether the body ever said it was stuck in water.
+  const water = (await find(boss.agentId, 'minecraft:water', 32).catch(() => ({}))) as Json;
+  r.numbers.waterNearest = ((water.matches as Match[] | undefined) ?? []).map((m) =>
+    typeof m.distance === 'number' ? round(m.distance) : '?',
+  );
   const logFrom = gameLogLines().length;
   const at = Date.now();
   const job = await runJob(boss.agentId, 'collect', { item: log, count: 10, radius: 48 }, 8 * 60_000);
@@ -1011,6 +1017,9 @@ async function step3Scripted(r: StepResult): Promise<void> {
   r.numbers.navFailedReasons = reasons;
   r.numbers.dropsLeft = failed.length - targetWalks;
   r.numbers.digPlans = jobLog.filter((l) => / nav\.dig /.test(l)).length;
+  r.numbers.waterEscapes = jobLog.filter((l) => / water\.escape /.test(l)).length;
+  r.numbers.stuckInWater = jobLog.filter((l) => / nav\.stuck_in_water /.test(l)).length;
+  r.numbers.navLoops = jobLog.filter((l) => / nav\.loop /.test(l)).length;
   const gaveUp = typeof result.unreachable === 'number' ? result.unreachable : targetWalks;
   r.numbers.unreachableTargets = gaveUp;
   const reached = typeof result.mined === 'number' ? result.mined : Math.min(10, logs);

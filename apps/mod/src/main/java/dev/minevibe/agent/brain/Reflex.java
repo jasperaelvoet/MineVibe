@@ -25,6 +25,14 @@ public interface Reflex {
 		agent.navigator().stop();
 	}
 
+	/**
+	 * True if taking control is reported as a {@code reflex} event (the brain's Digest hears of it): every reflex at
+	 * priority 60 and above, and the ones below that say so.
+	 */
+	default boolean reported() {
+		return this.priority() >= 60;
+	}
+
 	/** True if this reflex has to stand up from a seat to act (movement or melee). */
 	default boolean needsToStand() {
 		return true;

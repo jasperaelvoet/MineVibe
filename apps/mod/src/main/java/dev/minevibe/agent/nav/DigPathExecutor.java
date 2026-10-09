@@ -28,6 +28,11 @@ import org.jspecify.annotations.Nullable;
  * scaffold block failed to go into). A drop is only taken while it still lands within the safe fall (or in water) on
  * something that does not hurt: a landing mined away since the plan re-plans rather than fall further. A step that
  * takes too long, or an agent pushed off its path, also re-plans.
+ *
+ * <p>Water ({@link WaterMoves}): swimming never sprints and aims upstream of a current; a water exit presses against
+ * the bank holding jump, after putting a block in the water to step on when the step says so; a bank the body could
+ * not climb onto in time is not planned again ({@code noExit}). No block is broken while swimming: a break planned from
+ * the bottom of shallow water waits for the feet to touch it with the eyes dry, else plans again.
  */
 final class DigPathExecutor {
 	enum Result {
@@ -56,6 +61,7 @@ final class DigPathExecutor {
 
 	private final NavDoors doors;
 	private final LongSet forbidden;
+	private final LongSet noExit;
 	private @Nullable DigPath path;
 	private int index;
 	private Phase phase = Phase.START;
@@ -71,9 +77,10 @@ final class DigPathExecutor {
 	private int placed;
 	private final List<BlockPos> pillars = new java.util.ArrayList<>();
 
-	DigPathExecutor(final NavDoors doors, final LongSet forbidden) {
+	DigPathExecutor(final NavDoors doors, final LongSet forbidden, final LongSet noExit) {
 		this.doors = doors;
 		this.forbidden = forbidden;
+		this.noExit = noExit;
 	}
 
 	void setPath(final @Nullable DigPath path) {
@@ -172,7 +179,8 @@ final class DigPathExecutor {
 				this.forbidden.add(step.place().asLong());
 				return this.replan(agent, "place_blocked");
 			}
-			if (!already && NavBlocks.scaffoldCount(agent.getInventory()) == 0) {
+			int have = step.kind() == DigStep.Kind.EXIT_WATER ? NavBlocks.stepCount(agent.getInventory()) : NavBlocks.scaffoldCount(agent.getInventory());
+			if (!already && have == 0) {
 				return this.replan(agent, "no_scaffold");
 			}
 		} else if (step.kind() == DigStep.Kind.DROP ? !dropSafe(level, step, agent.getHealth()) : !this.destSupported(level, step)) {
@@ -201,7 +209,18 @@ final class DigPathExecutor {
 		if (next == null) {
 			controls.stopMining();
 			this.breaking = null;
-			this.enter(step.kind() == DigStep.Kind.PILLAR ? Phase.CENTER : step.kind() == DigStep.Kind.BRIDGE ? Phase.PLACE : Phase.MOVE);
+			this.enter(step.kind() == DigStep.Kind.PILLAR ? Phase.CENTER
+				: step.kind() == DigStep.Kind.BRIDGE || step.kind() == DigStep.Kind.EXIT_WATER && step.place() != null ? Phase.PLACE : Phase.MOVE);
+			return Result.RUNNING;
+		}
+		if (agent.isInWater() && !WaterMoves.standingInWater(agent)) {
+			// Never mining while swimming: let go of jump and wait for the feet to touch the bottom (the planner breaks from
+			// water only on the bottom of water at most one deep); a body that does not get there plans again.
+			controls.stopMining();
+			controls.stopMovement();
+			if (++this.waitTicks > PLACE_TIMEOUT) {
+				return this.replan(agent, "swimming");
+			}
 			return Result.RUNNING;
 		}
 		if (!next.equals(this.breaking)) {
@@ -297,12 +316,20 @@ final class DigPathExecutor {
 			if (agent.getY() < at.getY() + 1.0) {
 				return Result.RUNNING;
 			}
+		} else if (step.kind() == DigStep.Kind.EXIT_WATER) {
+			// A step in the water beside the body: keep the head up, and back to the middle of the swimmer's own cell if the
+			// body drifted into the step's.
+			if (agent.getBoundingBox().intersects(new AABB(at))) {
+				WaterMoves.swim(agent, Vec3.atBottomCenterOf(step.from()));
+				return Result.RUNNING;
+			}
+			WaterMoves.treadWater(agent);
 		} else {
 			// Bridge: crouch on the edge (sneaking never walks off it) and click the side of the block underfoot.
 			controls.stopMovement();
 			controls.setSneaking(true);
 		}
-		InteractionResult r = this.placeScaffold(agent, at);
+		InteractionResult r = this.placeScaffold(agent, at, step.kind() == DigStep.Kind.EXIT_WATER);
 		if (r == null) {
 			controls.setJumping(false);
 			controls.setSneaking(false);
@@ -339,6 +366,11 @@ final class DigPathExecutor {
 			return next == null ? Result.DONE : Result.RUNNING;
 		}
 		if (this.phaseTicks > MOVE_TIMEOUT) {
+			if (step.kind() == DigStep.Kind.EXIT_WATER) {
+				// The water would not lift the body onto that bank (a thin current, a bump in the way): never planned again.
+				this.noExit.add(step.dest().asLong());
+				return this.replan(agent, "no_exit");
+			}
 			return this.replan(agent, "stuck");
 		}
 		// The way must still be open (a block placed or water flowing in since the plan).
@@ -373,10 +405,8 @@ final class DigPathExecutor {
 				}
 				controls.setJumping(false);
 			}
-			case SWIM -> {
-				this.steer(agent, target, false);
-				controls.setJumping(target.y >= agent.getY() - 0.3 || agent.horizontalCollision);
-			}
+			case SWIM -> WaterMoves.swim(agent, target);
+			case EXIT_WATER -> WaterMoves.exit(agent, step.dest());
 			case ASCEND -> {
 				this.steer(agent, target, false);
 				double hd = horizontal(agent.position(), target);
@@ -384,6 +414,11 @@ final class DigPathExecutor {
 				controls.setJumping(below && (agent.onGround() || agent.isInWater()) && (hd < 1.4 || agent.horizontalCollision));
 			}
 			default -> {
+				if (agent.isInWater() && !WaterMoves.isWater(level, step.dest())) {
+					// Leaving shallow water on foot (a drop off its edge, a walk out): out first, like any water exit.
+					WaterMoves.exit(agent, step.dest());
+					break;
+				}
 				boolean last = this.index == this.path.steps().size() - 1;
 				this.steer(agent, target, last);
 				controls.setJumping(agent.isInWater() || agent.onGround() && agent.horizontalCollision && target.y >= agent.getY() - 0.1);
@@ -416,11 +451,14 @@ final class DigPathExecutor {
 		boolean last = this.index == this.path.steps().size() - 1;
 		DigStep next = last ? null : this.path.steps().get(this.index + 1);
 		boolean through = next != null && !next.breaksOrPlaces() && (next.kind() == DigStep.Kind.WALK || next.kind() == DigStep.Kind.DIAGONAL
-			|| next.kind() == DigStep.Kind.SWIM || next.kind() == DigStep.Kind.DROP || next.kind() == DigStep.Kind.ASCEND);
+			|| next.kind() == DigStep.Kind.SWIM || next.kind() == DigStep.Kind.DROP || next.kind() == DigStep.Kind.ASCEND
+			|| next.kind() == DigStep.Kind.EXIT_WATER);
 		double tol = through ? PASS_THROUGH : ARRIVE;
 		return switch (step.kind()) {
 			// The last swim ends in its own cell (the goal is checked by cell): 0.6 off is the next cell over.
 			case SWIM -> hd <= (last ? ARRIVE : Math.max(tol, 0.6)) && Math.abs(dy) < 1.2;
+			// Out of the water and on (or, passing through, over) the bank.
+			case EXIT_WATER -> hd <= tol && !agent.isInWater() && dy > -0.3 && dy < 0.6 && (agent.onGround() || through);
 			case CLIMB_UP -> dy >= -0.05 && hd <= 0.6;
 			case CLIMB_DOWN -> dy <= 0.2 && hd <= 0.6;
 			case PILLAR -> agent.onGround() && dy >= -0.05 && dy < 0.6;
@@ -535,12 +573,14 @@ final class DigPathExecutor {
 	 * Scaffold the agent mines back with its drop goes first ({@link NavBlocks#minedBack}: dirt before cobblestone when
 	 * there is no pickaxe), since a felling job clears its pillars again.
 	 */
-	private @Nullable InteractionResult placeScaffold(final AgentPlayer agent, final BlockPos at) {
+	private @Nullable InteractionResult placeScaffold(final AgentPlayer agent, final BlockPos at, final boolean step) {
 		Inventory inv = agent.getInventory();
 		ItemStack hand = agent.getMainHandItem();
 		if (!NavBlocks.isScaffoldItem(hand) || !NavBlocks.minedBack(inv, hand)) {
 			int slot = -1;
 			int fallback = -1;
+			int anyStep = -1;
+			int anyRank = Integer.MAX_VALUE;
 			for (int i = 0; i < Inventory.INVENTORY_SIZE; i++) {
 				ItemStack s = inv.getItem(i);
 				if (NavBlocks.isScaffoldItem(s)) {
@@ -551,15 +591,27 @@ final class DigPathExecutor {
 					if (fallback < 0) {
 						fallback = i;
 					}
+				} else if (step) {
+					int rank = NavBlocks.stepRank(s);
+					if (rank < anyRank) {
+						anyRank = rank;
+						anyStep = i;
+					}
 				}
 			}
 			if (slot < 0 && !NavBlocks.isScaffoldItem(hand)) {
 				slot = fallback;
 			}
+			if (slot < 0 && step && NavBlocks.stepRank(hand) > anyRank) {
+				// Out of the water on the plainest block the bag holds (dirt kinds, stone, planks before logs, wool last) when
+				// it has no scaffold.
+				slot = anyStep;
+			}
 			if (slot >= 0) {
 				AgentInventory.equip(agent, slot);
 			}
-			if (!NavBlocks.isScaffoldItem(agent.getMainHandItem())) {
+			ItemStack now = agent.getMainHandItem();
+			if (!(step ? NavBlocks.isStepItem(now) : NavBlocks.isScaffoldItem(now))) {
 				return null;
 			}
 		}

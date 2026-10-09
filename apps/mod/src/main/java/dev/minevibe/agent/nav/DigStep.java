@@ -22,6 +22,13 @@ public record DigStep(Kind kind, BlockPos from, BlockPos dest, List<BlockPos> br
 		DROP,
 		/** Through water, sideways, up or down. */
 		SWIM,
+		/**
+		 * Out of water onto the bank beside it: one block sideways and up, onto a floor whose top is level with the water
+		 * line (vanilla lifts a swimmer pressing against such a bank). With {@code place}, a block is first put in the
+		 * water there to step on (the bank is too high); with {@code breaks}, a step is dug into the bank from the bottom
+		 * of water at most one deep (standing, the head above the water: never while swimming).
+		 */
+		EXIT_WATER,
 		/** Up a ladder or vines. */
 		CLIMB_UP,
 		/** Down a ladder or vines. */
@@ -29,7 +36,12 @@ public record DigStep(Kind kind, BlockPos from, BlockPos dest, List<BlockPos> br
 		/** Jump and place a block under the feet. */
 		PILLAR,
 		/** Place a block in front of the feet, below the next cell, then walk onto it. */
-		BRIDGE
+		BRIDGE;
+
+		/** True for a move made in or out of water ({@link WaterMoves} steers it). */
+		public boolean water() {
+			return this == SWIM || this == EXIT_WATER;
+		}
 	}
 
 	public DigStep {
