@@ -32,7 +32,7 @@ async function play(q: FakeQuery, actions: readonly ReplayAction[]): Promise<voi
     }
     apiTurns++;
     const id = q.assistantToolUse(action.tool, action.input);
-    const { text, isError } = outcomeText(await q.callTool(action.tool, action.input));
+    const { text, isError } = outcomeText(await q.callTool(action.tool, action.input, { toolUseId: id }));
     q.emit({
       type: 'user',
       message: {

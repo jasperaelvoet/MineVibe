@@ -6,11 +6,18 @@ import {
   type EditRequest,
   type ExecRequest,
   type ExecResult,
+  type FileStat,
   type GlobRequest,
+  type GlobResult,
   type GrepRequest,
   type GrepResult,
+  type GuestWindow,
+  type JobEndReason,
+  type JobExit,
   type JobOutput,
   type KeyboardAction,
+  type OpenRequest,
+  type OpenResult,
   PC_ERROR_CODES,
   PC_LIMITS,
   type PcApi,
@@ -19,8 +26,14 @@ import {
   type ReadRequest,
   type ReadResult,
   type Screenshot,
+  type ScreenshotOptions,
+  type UiAction,
+  type UiFindRequest,
+  type UiSnapshot,
+  type UiTreeRequest,
+  type WindowOp,
 } from '../contracts/PcApi.js';
-import { DeadlineError, withDeadline } from './deadline.js';
+import { DeadlineError, delay as delayMs, withDeadline } from './deadline.js';
 import {
   absolutePaths,
   anchorGlob,
@@ -31,6 +44,7 @@ import {
   EXEC_PREFIX,
   exitCodeOf,
   formatRgJson,
+  GLOB_COUNT_CAP,
   GLOB_LIMIT,
   GLOB_SCRIPT,
   GREP_SCRIPT,
@@ -38,22 +52,43 @@ import {
   GUEST_HOME,
   GUEST_USER,
   grepArgs,
+  JOB_FILE_MAX_BYTES,
+  JOBS_DIR,
   JobBuffer,
   mirrorPrompt,
+  OPEN_SCRIPT,
   OutputCapture,
   parseRgCount,
   READ_MAX_BYTES,
   READ_SCRIPT,
   SCRIPT_EXIT,
+  STAT_TARGET_SCRIPT,
   SWEEP_LAUNCH,
   SWEEP_SCRIPT,
   splitGlob,
+  TRIM_JOB_SCRIPT,
   WRITE_MAX_BYTES,
   WRITE_SCRIPT,
+  ZOOM_SCRIPT,
 } from './guest.js';
-import { InputError, type InputRouter, type RouterEvent } from './InputRouter.js';
+import {
+  InputError,
+  type InputRouter,
+  MODIFIER_KEYS,
+  normalizeKeyName,
+  type RouterEvent,
+} from './InputRouter.js';
 import type { PcRecord, PcStatusInfo } from './PcManager.js';
 import { PC_TYPE_SPECS } from './PcTypes.js';
+import {
+  parseUiSnapshot,
+  parseWindows,
+  type RawWindow,
+  rpc,
+  rpcError,
+  uiActionEnum,
+  windowRef,
+} from './rpc.js';
 import { type SeatBook, seatTag, tagAgent } from './SeatBook.js';
 
 /**
@@ -84,6 +119,8 @@ export interface PcGuestApiOptions {
   readonly seats: SeatBook;
   /** `ImageFormat.Jpeg` of the loaded cua module. */
   readonly jpegFormat: () => number;
+  /** `ImageFormat.Png` of the loaded cua module (default: JPEG is used for everything). */
+  readonly pngFormat?: () => number;
   readonly logger?: Logger;
   /** Deadline of one guest script (file ops; default 60 s). */
   readonly scriptTimeoutMs?: number;
@@ -105,7 +142,21 @@ interface Job {
   exitCode: number | null;
   readonly startedAt: number;
   endedAt: number | null;
+  /** The guest file the output is teed to, when there is one. */
+  readonly outputPath: string | undefined;
+  /** Why it ended (set by whoever kills it before the pump stops). */
+  endReason: JobEndReason | null;
+  /** The lifetime and file-size timers. */
+  timers: NodeJS.Timeout[];
+  notified: boolean;
 }
+
+/** A job id the tool server may choose (it names the output file). */
+const JOB_ID_RE = /^[a-z0-9]{4,24}$/;
+/** How often a running job's output file is checked against {@link JOB_FILE_MAX_BYTES}. */
+const JOB_FILE_CHECK_MS = 60_000;
+/** Default wait for the window of an `open`. */
+const OPEN_WAIT_MS = 15_000;
 
 interface Foreground {
   readonly pcId: string;
@@ -132,6 +183,32 @@ function err(code: string, message: string): ApiError {
 
 function bytesOf(b: ArrayBuffer | Uint8Array): Buffer {
   return Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b));
+}
+
+/** Modifier names as cua names (an unknown one stays as it is and the router refuses it). */
+function modifierKeys(mods: readonly string[]): string[] {
+  return mods.map((m) => normalizeKeyName(m) ?? m);
+}
+
+/**
+ * One chord as router events: modifiers plus one key is a spacesd `press` (with its own repeat, a letter lowercased
+ * so ctrl+S stays ctrl+s); a lone key likewise; anything else is a hotkey, sent once per repeat.
+ */
+function chordEvents(keys: readonly string[], repeat: number): RouterEvent[] {
+  if (keys.length === 0) throw err(PC_ERROR_CODES.GUEST_ERROR, 'no keys given');
+  const names = keys.map((k) => normalizeKeyName(k) ?? k);
+  const mods = names.filter((n) => MODIFIER_KEYS.has(n));
+  const rest = names.filter((n) => !MODIFIER_KEYS.has(n));
+  const n = Math.max(1, Math.min(100, Math.round(repeat)));
+  if (rest.length === 1) {
+    const key = rest[0] as string;
+    const lowered = mods.length > 0 && /^[A-Z]$/.test(key) ? key.toLowerCase() : key;
+    return [{ k: 'press', key: lowered, modifiers: mods, repeat: n }];
+  }
+  if (rest.length === 0 && mods.length === 1) {
+    return [{ k: 'press', key: mods[0] as string, modifiers: [], repeat: n }];
+  }
+  return Array.from({ length: n }, () => ({ k: 'chord' as const, keys: [...keys] }));
 }
 
 function tail(s: string, n = 300): string {
@@ -176,6 +253,14 @@ export class PcGuestApi implements PcApi {
   readonly #foreground = new Map<string, Foreground>();
   readonly #screens = new Map<string, { w: number; h: number }>();
   readonly #osVersions = new Map<string, string>();
+  /** spacesd's supported features per PC (`a11y`, `windows`, …), measured once per boot. */
+  readonly #features = new Map<string, ReadonlySet<string>>();
+  readonly #jobListeners = new Set<(exit: JobExit) => void>();
+  /**
+   * Output files of a seat's commands (`pcId\ntag` → paths): a foreground command's file is normally deleted by its
+   * own exit trap, but one that replaced its shell (`exec`) leaves it, so the seat's end deletes them all.
+   */
+  readonly #seatFiles = new Map<string, Set<string>>();
   readonly #scriptTimeoutMs: number;
   readonly #callTimeoutMs: number;
   #disposed = false;
@@ -294,16 +379,47 @@ export class PcGuestApi implements PcApi {
   async #osVersion(pcId: string): Promise<string | null> {
     const known = this.#osVersions.get(pcId);
     if (known) return known;
+    await this.#capabilities(pcId);
+    return this.#osVersions.get(pcId) ?? null;
+  }
+
+  /** Reads spacesd's capabilities once per boot (OS version and supported features). Never throws. */
+  async #capabilities(pcId: string): Promise<void> {
     try {
       const c = await this.#o.client(pcId);
       const caps = await withDeadline(this.#callTimeoutMs, 'capabilities', (signal) =>
         c.capabilities({ signal }),
       );
-      const v = `${caps.osName} ${caps.osVersion}`.trim();
+      const v = `${caps.osName ?? ''} ${caps.osVersion ?? ''}`.trim();
       if (v) this.#osVersions.set(pcId, v);
-      return v || null;
+      const features = (caps as { features?: { name?: string; supported?: boolean }[] }).features;
+      if (Array.isArray(features)) {
+        this.#features.set(
+          pcId,
+          new Set(features.filter((f) => f.supported === true && f.name).map((f) => f.name as string)),
+        );
+      }
     } catch {
-      return null;
+      // unknown: the next call asks again
+    }
+  }
+
+  /**
+   * spacesd's supported features of a running PC (`a11y`, `windows`, `launch_app`, …). Unknown (an old spacesd that
+   * lists none) counts as everything supported: the call itself then says what is missing.
+   */
+  async features(pcId: string): Promise<ReadonlySet<string> | null> {
+    if (!this.#features.has(pcId)) await this.#capabilities(pcId);
+    return this.#features.get(pcId) ?? null;
+  }
+
+  async #need(pcId: string, feature: 'a11y' | 'windows'): Promise<void> {
+    const f = await this.features(pcId);
+    if (f && !f.has(feature)) {
+      throw err(
+        feature === 'a11y' ? PC_ERROR_CODES.A11Y_UNAVAILABLE : PC_ERROR_CODES.GUEST_ERROR,
+        `${pcId} has no ${feature === 'a11y' ? 'accessibility service' : 'window service'}`,
+      );
     }
   }
 
@@ -311,19 +427,29 @@ export class PcGuestApi implements PcApi {
   forgetGuest(pcId: string): void {
     this.#screens.delete(pcId);
     this.#osVersions.delete(pcId);
+    this.#features.delete(pcId);
   }
 
   // ------------------------------------------------------------------------------------------- screen and input
 
-  async screenshot(pcId: string, options: { maxDim?: number | undefined } = {}): Promise<Screenshot> {
+  async screenshot(pcId: string, options: ScreenshotOptions = {}): Promise<Screenshot> {
     const c = await this.#running(pcId);
     const screen = await this.#screen(pcId, true);
-    const maxDim = Math.round(Math.min(2560, Math.max(320, options.maxDim ?? Math.max(screen.w, screen.h))));
+    const png = options.format === 'png' && this.#o.pngFormat !== undefined;
+    const quality = Math.round(Math.min(100, Math.max(10, options.quality ?? 80)));
+    const includeCursor = options.includeCursor !== false;
+    if (options.region) return this.#regionShot(c, pcId, screen, options, png, quality, includeCursor);
+    const maxDim = Math.round(Math.min(2560, Math.max(160, options.maxDim ?? Math.max(screen.w, screen.h))));
     let shot: Awaited<ReturnType<SpacesdClientLike['screenshot']>>;
     try {
       shot = await withDeadline(this.#callTimeoutMs, 'screenshot', (signal) =>
         c.screenshot(
-          { format: this.#o.jpegFormat(), quality: 80, maxDimension: maxDim, includeCursor: true },
+          {
+            format: png ? (this.#o.pngFormat?.() ?? this.#o.jpegFormat()) : this.#o.jpegFormat(),
+            quality,
+            maxDimension: maxDim,
+            includeCursor,
+          },
           { signal },
         ),
       );
@@ -334,7 +460,7 @@ export class PcGuestApi implements PcApi {
       );
     }
     return {
-      mime: 'image/jpeg',
+      mime: png ? 'image/png' : 'image/jpeg',
       data: new Uint8Array(shot.image),
       w: shot.width,
       h: shot.height,
@@ -343,50 +469,153 @@ export class PcGuestApi implements PcApi {
     };
   }
 
+  /** A part of the screen (`ComputerService/Screenshot{region}`), at full resolution unless `maxDim` is smaller. */
+  async #regionShot(
+    c: SpacesdClientLike,
+    pcId: string,
+    screen: { w: number; h: number },
+    options: ScreenshotOptions,
+    png: boolean,
+    quality: number,
+    includeCursor: boolean,
+  ): Promise<Screenshot> {
+    const r = options.region as NonNullable<ScreenshotOptions['region']>;
+    const x = Math.max(0, Math.min(screen.w - 1, Math.round(r.x)));
+    const y = Math.max(0, Math.min(screen.h - 1, Math.round(r.y)));
+    const w = Math.max(1, Math.min(screen.w - x, Math.round(r.w)));
+    const h = Math.max(1, Math.min(screen.h - y, Math.round(r.h)));
+    if (options.fit && !png) {
+      // spacesd never scales a region up: the guest's ImageMagick captures and scales it (Lanczos) in one go.
+      const s = Math.min(options.fit.w / w, options.fit.h / h);
+      const fw = Math.max(1, Math.round(w * s));
+      const fh = Math.max(1, Math.round(h * s));
+      const z = await this.#script(
+        pcId,
+        ZOOM_SCRIPT,
+        [`${w}x${h}+${x}+${y}`, `${fw}x${fh}!`, String(quality)],
+        { env: { DISPLAY: GUEST_DISPLAY }, timeoutMs: 15_000 },
+      ).catch(() => null);
+      if (z && z.code === 0 && z.stdout.byteLength > 0) {
+        return { mime: 'image/jpeg', data: new Uint8Array(z.stdout), w: fw, h: fh, screen, scale: fw / w };
+      }
+    }
+    const answer = await rpc<{ image?: string; imageSize?: { width?: number; height?: number } }>(
+      c,
+      'ComputerService/Screenshot',
+      {
+        region: { x, y, width: w, height: h },
+        format: png ? 'IMAGE_FORMAT_PNG' : 'IMAGE_FORMAT_JPEG',
+        quality,
+        includeCursor,
+        ...(options.maxDim ? { maxDimension: Math.round(options.maxDim) } : {}),
+      },
+      this.#callTimeoutMs,
+    );
+    if (typeof answer.image !== 'string' || answer.image.length === 0) {
+      throw err(PC_ERROR_CODES.GUEST_ERROR, `${pcId} returned no image for the region`);
+    }
+    const iw = answer.imageSize?.width ?? w;
+    return {
+      mime: png ? 'image/png' : 'image/jpeg',
+      data: new Uint8Array(Buffer.from(answer.image, 'base64')),
+      w: iw,
+      h: answer.imageSize?.height ?? h,
+      screen,
+      scale: iw / w,
+    };
+  }
+
   async pointer(pcId: string, action: PointerAction): Promise<void> {
     const events: RouterEvent[] = [];
+    const at = (a: { x?: number | undefined; y?: number | undefined }) =>
+      a.x !== undefined && a.y !== undefined ? { x: a.x, y: a.y } : {};
     switch (action.action) {
       case 'move':
         events.push({ k: 'move', x: action.x, y: action.y });
         break;
       case 'click':
       case 'double_click':
-      case 'right_click':
+      case 'right_click': {
+        const count = action.action === 'double_click' ? 2 : Math.max(1, Math.min(3, action.count ?? 1));
         events.push({
           k: 'click',
-          x: action.x,
-          y: action.y,
+          ...at(action),
           button: action.action === 'right_click' ? 'right' : (action.button ?? 'left'),
-          count: action.action === 'double_click' ? 2 : 1,
+          count,
+          ...(action.modifiers?.length ? { modifiers: modifierKeys(action.modifiers) } : {}),
         });
         break;
+      }
       case 'down':
       case 'up':
-        events.push({
-          k: 'button',
-          button: action.button ?? 'left',
-          down: action.action === 'down',
-          x: action.x,
-          y: action.y,
-        });
+        if (action.x !== undefined && action.y !== undefined) {
+          events.push({
+            k: 'button',
+            button: action.button ?? 'left',
+            down: action.action === 'down',
+            x: action.x,
+            y: action.y,
+          });
+        } else {
+          events.push({ k: 'mouse', button: action.button ?? 'left', down: action.action === 'down' });
+        }
         break;
       case 'drag':
-        events.push({ k: 'drag', x: action.x, y: action.y, toX: action.toX, toY: action.toY });
+        events.push({
+          k: 'drag',
+          x: action.x,
+          y: action.y,
+          toX: action.toX,
+          toY: action.toY,
+          ...(action.modifiers?.length ? { modifiers: modifierKeys(action.modifiers) } : {}),
+        });
         break;
-      case 'scroll':
-        events.push({ k: 'scroll', dx: action.dx, dy: action.dy, x: action.x, y: action.y });
+      case 'scroll': {
+        // spacesd's scroll has no modifiers: they are held around it (and released by any release).
+        const mods = action.modifiers?.length ? modifierKeys(action.modifiers) : [];
+        for (const key of mods) events.push({ k: 'key', key, down: true });
+        events.push({ k: 'wheel', dx: action.dx, dy: action.dy, ...at(action) });
+        for (const key of [...mods].reverse()) events.push({ k: 'key', key, down: false });
         break;
+      }
     }
     await this.#input(pcId, events);
   }
 
   async keyboard(pcId: string, action: KeyboardAction): Promise<void> {
-    if (action.keys.length === 0) throw err(PC_ERROR_CODES.GUEST_ERROR, 'no keys given');
-    const events: RouterEvent[] =
-      action.action === 'press'
-        ? [{ k: 'chord', keys: [...action.keys] }]
-        : action.keys.map((key) => ({ k: 'key' as const, key, down: action.action === 'down' }));
+    const events: RouterEvent[] = [];
+    switch (action.action) {
+      case 'press':
+        events.push(...chordEvents(action.keys, action.repeat ?? 1));
+        break;
+      case 'sequence': {
+        if (action.chords.length === 0) throw err(PC_ERROR_CODES.GUEST_ERROR, 'no keys given');
+        const once = action.chords.flatMap((chord) => chordEvents(chord, 1));
+        for (let i = 0; i < Math.max(1, action.repeat ?? 1); i++) events.push(...once);
+        break;
+      }
+      case 'hold':
+        if (action.keys.length === 0) throw err(PC_ERROR_CODES.GUEST_ERROR, 'no keys given');
+        events.push({ k: 'hold', keys: [...action.keys], ms: action.ms });
+        break;
+      case 'down':
+      case 'up':
+        if (action.keys.length === 0) throw err(PC_ERROR_CODES.GUEST_ERROR, 'no keys given');
+        for (const key of action.keys) events.push({ k: 'key', key, down: action.action === 'down' });
+        break;
+    }
     await this.#input(pcId, events);
+  }
+
+  async cursor(pcId: string): Promise<{ x: number; y: number }> {
+    const c = await this.#running(pcId);
+    const a = await rpc<{ position?: { x?: number; y?: number } }>(
+      c,
+      'ComputerService/GetCursorPosition',
+      {},
+      this.#callTimeoutMs,
+    );
+    return { x: Math.round(a.position?.x ?? 0), y: Math.round(a.position?.y ?? 0) };
   }
 
   async type(pcId: string, text: string): Promise<void> {
@@ -435,27 +664,186 @@ export class PcGuestApi implements PcApi {
     }
   }
 
+  // ------------------------------------------------------------------------------------------- windows
+
+  async windows(pcId: string): Promise<GuestWindow[]> {
+    const c = await this.#running(pcId);
+    await this.#need(pcId, 'windows');
+    const a = await rpc<{ windows?: RawWindow[] }>(c, 'WindowsService/ListWindows', {}, this.#callTimeoutMs);
+    return parseWindows(a);
+  }
+
+  async window(pcId: string, windowId: string, op: WindowOp): Promise<void> {
+    const c = await this.#running(pcId);
+    this.#seatedAgent(pcId);
+    await this.#need(pcId, 'windows');
+    const method = {
+      activate: 'WindowsService/ActivateWindow',
+      maximize: 'WindowsService/MaximizeWindow',
+      minimize: 'WindowsService/MinimizeWindow',
+      restore: 'WindowsService/RestoreWindow',
+      close: 'WindowsService/CloseWindow',
+    }[op];
+    await rpc(c, method, { window: windowRef(windowId) }, this.#callTimeoutMs);
+  }
+
+  /**
+   * Opens a URL (Firefox when installed: its pages have an accessibility tree), a file (its default app, a text
+   * editor or the browser), a folder (Thunar) or an app, as the seat's tagged process (killed with the seat), and
+   * waits for a window that is new, or a known one whose title changed and that has the focus (a tab in a running
+   * browser). That window is activated.
+   */
+  async open(pcId: string, request: OpenRequest): Promise<OpenResult> {
+    await this.#running(pcId);
+    this.#checkTag(pcId, request.tag);
+    const before = await this.windows(pcId).catch(() => [] as GuestWindow[]);
+    const callId = randomBytes(6).toString('hex');
+    const r = await this.#script(pcId, OPEN_SCRIPT, [request.target, ...(request.args ?? [])], {
+      env: {
+        DISPLAY: GUEST_DISPLAY,
+        USER: GUEST_USER,
+        MV_TAG: request.tag,
+        MV_CALL: callId,
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      },
+      timeoutMs: 20_000,
+    });
+    const out = r.stdout.toString('utf8');
+    if (r.code !== 0) {
+      const installed = /^apps: (.*)$/m.exec(out)?.[1]?.trim() ?? '';
+      if (r.code === SCRIPT_EXIT.NOT_FOUND)
+        throw err(PC_ERROR_CODES.NOT_FOUND, `no such file or directory: ${request.target}`);
+      throw err(
+        PC_ERROR_CODES.OPEN_FAILED,
+        `nothing opens ${request.target}${installed ? `. Installed apps include: ${installed}` : ''}`,
+      );
+    }
+    const via = /^via (.*)$/m.exec(out)?.[1]?.trim() ?? 'xdg-open';
+    if (!this.#seatOwns(pcId, request.tag)) {
+      void this.sweep(pcId, 'MV_CALL', callId).catch(() => 0);
+      throw err(PC_ERROR_CODES.DENIED, `the seat ${request.tag} ended while ${request.target} opened`);
+    }
+    const known = new Map(before.map((w) => [w.id, w.title]));
+    const deadline = Date.now() + (request.waitMs ?? OPEN_WAIT_MS);
+    for (;;) {
+      await delayMs(250);
+      const now = await this.windows(pcId).catch(() => [] as GuestWindow[]);
+      const fresh = now.filter((w) => !known.has(w.id) && w.title !== '');
+      const changed = now.find((w) => w.focused && known.has(w.id) && known.get(w.id) !== w.title);
+      const win = fresh.find((w) => w.focused) ?? fresh[0] ?? changed ?? null;
+      if (win) {
+        if (!win.focused) {
+          await this.window(pcId, win.id, 'activate').catch(() => {});
+        }
+        return { window: { ...win, focused: true }, newWindow: fresh.includes(win), via };
+      }
+      if (Date.now() >= deadline) return { window: null, newWindow: false, via };
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------- accessibility
+
+  async uiFind(pcId: string, request: UiFindRequest): Promise<UiSnapshot> {
+    const c = await this.#running(pcId);
+    await this.#need(pcId, 'a11y');
+    const query = {
+      ...(request.nameContains ? { nameContains: request.nameContains } : {}),
+      ...(request.valueContains ? { valueContains: request.valueContains } : {}),
+      ...(request.role ? { role: request.role } : {}),
+    };
+    const a = await rpc<Parameters<typeof parseUiSnapshot>[0]>(
+      c,
+      'AccessibilityService/Find',
+      {
+        ...(request.windowId ? { window: windowRef(request.windowId) } : {}),
+        query,
+        maxResults: Math.max(1, Math.min(500, request.maxResults ?? 50)),
+      },
+      this.#callTimeoutMs,
+    );
+    return parseUiSnapshot(a);
+  }
+
+  async uiTree(pcId: string, request: UiTreeRequest): Promise<UiSnapshot> {
+    const c = await this.#running(pcId);
+    await this.#need(pcId, 'a11y');
+    const a = await rpc<Parameters<typeof parseUiSnapshot>[0]>(
+      c,
+      'AccessibilityService/GetTree',
+      {
+        ...(request.windowId ? { window: windowRef(request.windowId) } : {}),
+        maxDepth: Math.max(1, Math.min(64, request.maxDepth ?? 40)),
+        maxNodes: Math.max(1, Math.min(5_000, request.maxNodes ?? 600)),
+        ...(request.includeHidden ? { includeHidden: true } : {}),
+      },
+      this.#callTimeoutMs,
+    );
+    return parseUiSnapshot(a);
+  }
+
+  async uiAct(
+    pcId: string,
+    request: { snapshotId: string; elementId: string; action: UiAction; value?: string | undefined },
+  ): Promise<void> {
+    const c = await this.#running(pcId);
+    this.#seatedAgent(pcId);
+    await this.#need(pcId, 'a11y');
+    await rpc(
+      c,
+      'AccessibilityService/Act',
+      {
+        element: { snapshotId: request.snapshotId, elementId: request.elementId },
+        action: uiActionEnum(request.action),
+        ...(request.value !== undefined ? { value: request.value } : {}),
+      },
+      this.#callTimeoutMs,
+    );
+  }
+
   // ------------------------------------------------------------------------------------------- shell
+
+  /**
+   * The agent of `tag` sits at the PC under that very seat: DENIED otherwise. A call from an earlier seat of the same
+   * agent (its kill sweep may already have run) never starts: its processes would carry a tag nobody kills any more,
+   * and its job would belong to no current seat. Returns the seated agent.
+   */
+  #checkTag(pcId: string, tag: string): { agentId: string; seatEpoch: number | null } {
+    if (!TAG_RE.test(tag)) throw err(PC_ERROR_CODES.DENIED, 'exec needs an agentId:seatEpoch tag');
+    const agent = this.#seatedAgent(pcId);
+    if (tagAgent(tag) !== agent.agentId) {
+      throw err(PC_ERROR_CODES.DENIED, `${agent.agentId} sits at ${pcId}, not ${tagAgent(tag)}`);
+    }
+    if (agent.seatEpoch !== null && tag !== seatTag(agent.agentId, agent.seatEpoch)) {
+      throw err(
+        PC_ERROR_CODES.DENIED,
+        `the seat ${tag} has ended; ${agent.agentId} sits at ${pcId} as ${seatTag(agent.agentId, agent.seatEpoch)}`,
+      );
+    }
+    return agent;
+  }
 
   async exec(pcId: string, request: ExecRequest): Promise<ExecResult> {
     if (!TAG_RE.test(request.tag)) throw err(PC_ERROR_CODES.DENIED, 'exec needs an agentId:seatEpoch tag');
     const c = await this.#running(pcId);
-    const agent = this.#seatedAgent(pcId);
-    if (tagAgent(request.tag) !== agent.agentId) {
-      throw err(PC_ERROR_CODES.DENIED, `${agent.agentId} sits at ${pcId}, not ${tagAgent(request.tag)}`);
+    const agent = this.#checkTag(pcId, request.tag);
+    if (request.jobId !== undefined && !JOB_ID_RE.test(request.jobId)) {
+      throw err(PC_ERROR_CODES.GUEST_ERROR, `invalid job id ${request.jobId}`);
     }
-    // A call from an earlier seat of the same agent (its kill sweep may already have run) never starts: its
-    // processes would carry a tag nobody kills any more, and its job would belong to no current seat.
-    if (agent.seatEpoch !== null && request.tag !== seatTag(agent.agentId, agent.seatEpoch)) {
-      throw err(
-        PC_ERROR_CODES.DENIED,
-        `the seat ${request.tag} has ended; ${agent.agentId} sits at ${pcId} as ${seatTag(agent.agentId, agent.seatEpoch)}`,
-      );
+    if (request.jobId !== undefined && this.#jobs.has(request.jobId)) {
+      throw err(PC_ERROR_CODES.GUEST_ERROR, `job id ${request.jobId} is taken`);
     }
     const timeoutMs = Math.round(
       Math.min(PC_LIMITS.maxTimeoutMs, Math.max(1_000, request.timeoutMs ?? PC_LIMITS.defaultTimeoutMs)),
     );
+    const lifetimeMs = Math.round(
+      Math.min(
+        PC_LIMITS.maxJobLifetimeMs,
+        Math.max(1_000, request.lifetimeMs ?? PC_LIMITS.defaultJobLifetimeMs),
+      ),
+    );
     const callId = randomBytes(6).toString('hex');
+    const jobId = request.jobId ?? `bg${randomBytes(4).toString('hex')}`;
+    const outputPath = request.outputFile ? `${JOBS_DIR}/${jobId}.out` : undefined;
     const env = new Map<string, string>(Object.entries(request.env ?? {}));
     const cwd = request.cwd ?? GUEST_HOME;
     const prompt = mirrorPrompt(request.command, {
@@ -477,13 +865,16 @@ export class PcGuestApi implements PcApi {
       MV_CALL: callId,
       MV_EXEC_CWD: cwd,
       ...(prompt ? { MV_PROMPT: prompt } : {}),
+      ...(outputPath ? { MV_OUT: outputPath } : {}),
+      ...(outputPath && request.background ? { MV_KEEP: '1' } : {}),
     })) {
       env.set(k, v);
     }
     const script = `${EXEC_PREFIX}\n${request.command}`;
-    const preserve = 'HOME,DISPLAY,MV_TAG,MV_CALL,MV_CWD,MV_EXEC_CWD,MV_PROMPT';
+    const preserve = 'HOME,DISPLAY,MV_TAG,MV_CALL,MV_CWD,MV_EXEC_CWD,MV_PROMPT,MV_OUT,MV_KEEP';
     const program = request.root ? 'sudo' : 'bash';
     const args = request.root ? ['-n', `--preserve-env=${preserve}`, 'bash', '-lc', script] : ['-lc', script];
+    const toBackground = request.onTimeout === 'background';
     let proc: SpacesdProcessLike;
     try {
       proc = await withDeadline(this.#callTimeoutMs, 'spawn', (signal) =>
@@ -494,8 +885,9 @@ export class PcGuestApi implements PcApi {
             env,
             user: GUEST_USER,
             stdin: false,
-            // A backstop: Node's own timeout (and sweep) normally ends a foreground command first.
-            timeoutMs: request.background ? undefined : timeoutMs + 15_000,
+            // A backstop: Node's own timeout (and sweep) normally ends a foreground command first. A command that
+            // may move to the background gets none: its job lifetime ends it.
+            timeoutMs: request.background || toBackground ? undefined : timeoutMs + 15_000,
             tag: `mv-${callId}`,
           },
           { signal },
@@ -517,8 +909,15 @@ export class PcGuestApi implements PcApi {
         `the seat ${request.tag} ended while the command started; it was killed`,
       );
     }
-    if (request.background) return this.#startJob(pcId, request.tag, callId, proc);
-    return this.#runForeground(pcId, request.tag, callId, proc, timeoutMs);
+    const job = { jobId, outputPath, lifetimeMs };
+    if (outputPath) {
+      const key = `${pcId}\n${request.tag}`;
+      const files = this.#seatFiles.get(key) ?? new Set<string>();
+      if (files.size < 1_000) files.add(outputPath);
+      this.#seatFiles.set(key, files);
+    }
+    if (request.background) return this.#startJob(pcId, request.tag, callId, proc, job, null);
+    return this.#runForeground(pcId, request.tag, callId, proc, timeoutMs, toBackground ? job : null);
   }
 
   async #runForeground(
@@ -527,6 +926,7 @@ export class PcGuestApi implements PcApi {
     callId: string,
     proc: SpacesdProcessLike,
     timeoutMs: number,
+    background: { jobId: string; outputPath: string | undefined; lifetimeMs: number } | null,
   ): Promise<ExecResult> {
     const started = Date.now();
     const deadline = started + timeoutMs;
@@ -565,6 +965,15 @@ export class PcGuestApi implements PcApi {
       };
     } catch (e) {
       if (e instanceof DeadlineError) {
+        if (background && this.#seatOwns(pcId, tag)) {
+          // Claude Code 2.x: an overrun is moved to the background, not lost. Its output so far starts the job's.
+          if (background.outputPath) await this.#keepJobFile(pcId, background.outputPath);
+          return this.#startJob(pcId, tag, callId, proc, background, {
+            output: capture.text(),
+            startedAt: started,
+            timedOutAfterMs: timeoutMs,
+          });
+        }
         await this.#killCall(pcId, callId, proc);
         throw err(
           PC_ERROR_CODES.TIMEOUT,
@@ -580,6 +989,11 @@ export class PcGuestApi implements PcApi {
     } finally {
       this.#foreground.delete(callId);
     }
+  }
+
+  /** Marks a job's output file as kept (the command's exit trap deletes it otherwise). Best effort. */
+  async #keepJobFile(pcId: string, outputPath: string): Promise<void> {
+    await this.#script(pcId, ': > "$1.keep"', [outputPath], { timeoutMs: 10_000 }).catch(() => null);
   }
 
   /**
@@ -603,11 +1017,17 @@ export class PcGuestApi implements PcApi {
     }
   }
 
-  #startJob(pcId: string, tag: string, callId: string, proc: SpacesdProcessLike): ExecResult {
+  #startJob(
+    pcId: string,
+    tag: string,
+    callId: string,
+    proc: SpacesdProcessLike,
+    spec: { jobId: string; outputPath: string | undefined; lifetimeMs: number },
+    moved: { output: string; startedAt: number; timedOutAfterMs: number } | null,
+  ): ExecResult {
     this.#pruneJobs(pcId);
-    const id = `bg-${randomBytes(4).toString('hex')}`;
     const job: Job = {
-      id,
+      id: spec.jobId,
       pcId,
       tag,
       callId,
@@ -616,12 +1036,43 @@ export class PcGuestApi implements PcApi {
       proc,
       running: true,
       exitCode: null,
-      startedAt: Date.now(),
+      startedAt: moved?.startedAt ?? Date.now(),
       endedAt: null,
+      outputPath: spec.outputPath,
+      endReason: null,
+      timers: [],
+      notified: false,
     };
-    this.#jobs.set(id, job);
+    if (moved) job.buffer.append(moved.output);
+    this.#jobs.set(job.id, job);
+    const lifetime = setTimeout(() => {
+      if (!job.running) return;
+      job.endReason = 'lifetime';
+      void this.#stopJob(
+        job,
+        `\n[stopped: it ran longer than ${Math.round(spec.lifetimeMs / 60_000)} min]\n`,
+      );
+    }, spec.lifetimeMs);
+    lifetime.unref?.();
+    job.timers.push(lifetime);
+    if (spec.outputPath) {
+      const check = setInterval(() => {
+        if (job.running && spec.outputPath)
+          void this.#script(pcId, TRIM_JOB_SCRIPT, [spec.outputPath, String(JOB_FILE_MAX_BYTES)], {
+            timeoutMs: 20_000,
+          }).catch(() => null);
+      }, JOB_FILE_CHECK_MS);
+      check.unref?.();
+      job.timers.push(check);
+    }
     void this.#pumpJob(job);
-    return { kind: 'background', jobId: id };
+    return {
+      kind: 'background',
+      jobId: job.id,
+      ...(spec.outputPath ? { outputPath: spec.outputPath } : {}),
+      ...(moved ? { timedOutAfterMs: moved.timedOutAfterMs } : {}),
+      lifetimeMs: spec.lifetimeMs,
+    };
   }
 
   async #pumpJob(job: Job): Promise<void> {
@@ -641,6 +1092,7 @@ export class PcGuestApi implements PcApi {
       }
     } catch (e) {
       if (!job.abort.signal.aborted) {
+        job.endReason ??= 'lost';
         job.buffer.append(
           `\n[MineVibe lost track of this job: ${e instanceof Error ? e.message : String(e)}]\n`,
         );
@@ -649,7 +1101,54 @@ export class PcGuestApi implements PcApi {
       job.running = false;
       job.endedAt = Date.now();
       job.proc = null;
+      this.#jobEnded(job);
     }
+  }
+
+  /** Clears a job's timers and tells the listeners once. */
+  #jobEnded(job: Job): void {
+    for (const t of job.timers) clearTimeout(t);
+    job.timers = [];
+    if (job.notified || this.#disposed) return;
+    job.notified = true;
+    const exit: JobExit = {
+      pcId: job.pcId,
+      jobId: job.id,
+      tag: job.tag,
+      exitCode: job.exitCode,
+      reason: job.endReason ?? (job.exitCode !== null ? 'exited' : 'lost'),
+      ...(job.outputPath ? { outputPath: job.outputPath } : {}),
+      durationMs: (job.endedAt ?? Date.now()) - job.startedAt,
+    };
+    for (const listener of [...this.#jobListeners]) {
+      try {
+        listener(exit);
+      } catch (e) {
+        this.#log?.warn({ err: String(e) }, 'a job exit listener failed');
+      }
+    }
+  }
+
+  onJobExit(listener: (exit: JobExit) => void): () => void {
+    this.#jobListeners.add(listener);
+    return () => {
+      this.#jobListeners.delete(listener);
+    };
+  }
+
+  /** Kills a running job and everything it started; its pump ends and the listeners hear `job.endReason`. */
+  async #stopJob(job: Job, note: string): Promise<number> {
+    if (!job.running) return 0;
+    const proc = job.proc;
+    // Settled before the pump stops: its end reports this exit.
+    job.running = false;
+    job.exitCode = job.exitCode ?? 137;
+    job.buffer.append(note);
+    job.abort.abort();
+    const n = await this.#killCall(job.pcId, job.callId, proc);
+    job.endedAt ??= Date.now();
+    this.#jobEnded(job);
+    return Math.max(1, n);
   }
 
   /** Drops the oldest finished jobs of a PC beyond the per-PC cap. */
@@ -693,32 +1192,36 @@ export class PcGuestApi implements PcApi {
     if ('jobId' in target) {
       const job = this.#ownJob(pcId, target.jobId);
       if (!job.running) return 0;
-      const proc = job.proc;
-      job.abort.abort();
-      const n = await this.#killCall(pcId, job.callId, proc);
-      job.running = false;
-      job.exitCode = job.exitCode ?? 137;
-      job.buffer.append('\n[killed]\n');
-      return Math.max(1, n);
+      job.endReason = 'stopped';
+      return this.#stopJob(job, '\n[killed]\n');
     }
     return this.killTag(pcId, target.tag);
   }
 
   /**
    * Kills everything a seat started on a PC: its background jobs, its foreground commands and every guest process
-   * that carries its tag or descends from one (kick, stand-up, any unseat). The sweep goes first, while the process
-   * tree is intact; the job and command handles are killed afterwards as a backstop. Never throws; returns how many
-   * processes died.
+   * that carries its tag or descends from one (kick, stand-up, any unseat), and deletes its jobs' output files. The
+   * sweep goes first, while the process tree is intact; the job and command handles are killed afterwards as a
+   * backstop. Never throws; returns how many processes died.
    */
   async killTag(pcId: string, tag: string): Promise<number> {
     const procs: SpacesdProcessLike[] = [];
+    const seatKey = `${pcId}\n${tag}`;
+    const files: string[] = [...(this.#seatFiles.get(seatKey) ?? [])].flatMap((f) => [f, `${f}.keep`]);
+    this.#seatFiles.delete(seatKey);
+    const ended: Job[] = [];
     for (const job of this.#jobs.values()) {
-      if (job.pcId !== pcId || job.tag !== tag || !job.running) continue;
+      if (job.pcId !== pcId || job.tag !== tag) continue;
+      if (job.outputPath && !files.includes(job.outputPath))
+        files.push(job.outputPath, `${job.outputPath}.keep`);
+      if (!job.running) continue;
       if (job.proc) procs.push(job.proc);
+      job.endReason = 'seat';
       job.abort.abort();
       job.running = false;
       job.exitCode = job.exitCode ?? 137;
       job.buffer.append('\n[killed: the seat ended]\n');
+      ended.push(job);
     }
     for (const fg of this.#foreground.values()) {
       if (fg.pcId === pcId && fg.tag === tag) procs.push(fg.proc);
@@ -729,9 +1232,16 @@ export class PcGuestApi implements PcApi {
         this.#log?.warn({ pcId, err: String(e) }, 'guest process sweep failed');
         return null;
       });
+      if (files.length > 0) {
+        await this.#script(pcId, 'rm -f -- "$@"', files, { timeoutMs: 10_000 }).catch(() => null);
+      }
     }
     let byHandle = 0;
     for (const proc of procs) byHandle += await this.#killHandle(proc);
+    for (const job of ended) {
+      job.endedAt ??= Date.now();
+      this.#jobEnded(job);
+    }
     return swept ?? byHandle;
   }
 
@@ -757,12 +1267,19 @@ export class PcGuestApi implements PcApi {
     if (known) throw known;
     if (r.code !== 0)
       throw err(PC_ERROR_CODES.GUEST_ERROR, `reading ${request.path} failed: ${tail(r.stderr)}`);
-    const trailer = /(\d+) (\d+) (\d+)\s*$/.exec(r.stderr);
-    const total = trailer ? Number(trailer[1]) : 0;
-    const printed = trailer ? Number(trailer[2]) : 0;
+    const trailer = /(\d+) (\d+) (\d+)(?: (\d))?\s*$/.exec(r.stderr);
+    const records = trailer ? Number(trailer[1]) : 0;
+    let printed = trailer ? Number(trailer[2]) : 0;
     const cut = trailer ? trailer[3] === '1' : false;
+    // Like Claude Code's Read, a final newline ends in one more (empty) line.
+    const finalNewline = trailer?.[4] === '1';
+    const total = records + (finalNewline ? 1 : 0);
     let content = r.stdout.toString('utf8');
     if (content.endsWith('\n')) content = content.slice(0, -1);
+    if (finalNewline && !cut && offset - 1 + printed === records && printed < limit && offset <= total) {
+      content = printed > 0 ? `${content}\n` : '';
+      printed++;
+    }
     return {
       content,
       startLine: offset,
@@ -822,21 +1339,34 @@ export class PcGuestApi implements PcApi {
     return count;
   }
 
-  async glob(pcId: string, request: GlobRequest): Promise<{ paths: string[]; truncated: boolean }> {
+  async glob(pcId: string, request: GlobRequest): Promise<GlobResult> {
     const base = request.path ?? GUEST_HOME;
     const split = splitGlob(request.pattern, base);
-    if (split.pattern.length === 0) return { paths: [], truncated: false };
+    if (split.pattern.length === 0) return { paths: [], truncated: false, total: 0, countIsComplete: true };
     const r = await this.#script(pcId, GLOB_SCRIPT, [
       split.dir,
       anchorGlob(split.pattern),
-      String(GLOB_LIMIT + 1),
+      String(GLOB_LIMIT),
+      String(GLOB_COUNT_CAP),
     ]);
     if (r.code === SCRIPT_EXIT.NOT_FOUND)
       throw err(PC_ERROR_CODES.NOT_FOUND, `no such directory: ${split.dir}`);
     const known = scriptError(r, split.dir);
     if (known) throw known;
-    const paths = absolutePaths(r.stdout.toString('utf8'), split.dir);
-    return { paths: paths.slice(0, GLOB_LIMIT), truncated: paths.length > GLOB_LIMIT };
+    const text = r.stdout.toString('utf8');
+    // The script prints the newest paths, then a last line `__MV_TOTAL__<n>` (all matches, capped).
+    const totalMatch = /\n?__MV_TOTAL__(\d+)\s*$/.exec(text);
+    const total = totalMatch ? Number(totalMatch[1]) : undefined;
+    const paths = absolutePaths(totalMatch ? text.slice(0, totalMatch.index) : text, split.dir).slice(
+      0,
+      GLOB_LIMIT,
+    );
+    const truncated = total !== undefined ? total > paths.length : paths.length >= GLOB_LIMIT;
+    return {
+      paths,
+      truncated,
+      ...(total !== undefined ? { total, countIsComplete: total < GLOB_COUNT_CAP } : {}),
+    };
   }
 
   async grep(pcId: string, request: GrepRequest): Promise<GrepResult> {
@@ -855,24 +1385,91 @@ export class PcGuestApi implements PcApi {
     }
     let lines: string[];
     let matches: number;
+    let files: number | undefined;
     let truncated = r.code === 141;
     if (request.outputMode === 'content') {
       const f = formatRgJson(stdout, {
         lineNumbers: request.lineNumbers !== false,
         context: (request.before ?? 0) > 0 || (request.after ?? 0) > 0,
+        onlyMatching: request.onlyMatching === true,
       });
       lines = f.lines;
       matches = f.matches;
       truncated ||= f.incomplete;
     } else if (request.outputMode === 'count') {
       ({ lines, matches } = parseRgCount(stdout));
+      files = lines.length;
     } else {
       lines = stdout.split('\n').filter((l) => l.length > 0);
       matches = lines.length;
     }
+    // Offset first, then the head limit (Claude Code's Grep: "| tail -n +N | head -N").
+    const offset = Math.max(0, Math.floor(request.offset ?? 0));
+    const after = lines.slice(offset);
     const limit = request.headLimit !== undefined && request.headLimit > 0 ? request.headLimit : undefined;
-    const shown = limit !== undefined ? lines.slice(0, limit) : lines;
-    return { output: shown.join('\n'), matches, truncated: truncated || shown.length < lines.length };
+    const shown = limit !== undefined ? after.slice(0, limit) : after;
+    return {
+      output: shown.join('\n'),
+      matches,
+      total: lines.length,
+      ...(files !== undefined ? { files } : {}),
+      truncated: truncated || shown.length < after.length,
+    };
+  }
+
+  async stat(pcId: string, path: string): Promise<FileStat> {
+    const c = await this.#running(pcId);
+    try {
+      const e = await withDeadline(this.#callTimeoutMs, 'stat', (signal) => c.stat(path, { signal }));
+      // A symlink is described by what it points at: read-state compares the file the agent reads and edits.
+      if (/link/i.test(e.kind)) return await this.#statTarget(pcId, path);
+      const kind = /dir/i.test(e.kind) ? 'dir' : /file|regular/i.test(e.kind) ? 'file' : 'other';
+      return {
+        exists: true,
+        kind,
+        size: Number(e.size),
+        mtimeMs: e.modifiedMs !== undefined ? Number(e.modifiedMs) : 0,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/NotFound|not found|No such file/i.test(msg)) return { exists: false, size: 0, mtimeMs: 0 };
+      if (/PermissionDenied|permission denied/i.test(msg))
+        throw err(PC_ERROR_CODES.DENIED, `${path}: permission denied`);
+      if (e instanceof DeadlineError) throw err(PC_ERROR_CODES.TIMEOUT, `stat ${path} timed out`);
+      throw err(PC_ERROR_CODES.GUEST_ERROR, `stat ${path} failed: ${msg.slice(0, 200)}`);
+    }
+  }
+
+  /** {@link stat} of a symlink's target (a dangling link does not exist). */
+  async #statTarget(pcId: string, path: string): Promise<FileStat> {
+    const r = await this.#script(pcId, STAT_TARGET_SCRIPT, [path], { timeoutMs: 10_000 });
+    if (r.code === SCRIPT_EXIT.NOT_FOUND) return { exists: false, size: 0, mtimeMs: 0 };
+    if (r.code !== 0) throw err(PC_ERROR_CODES.GUEST_ERROR, `stat ${path} failed: ${tail(r.stderr)}`);
+    const [type = '', size = '0', mtime = '0'] = r.stdout.toString('utf8').trim().split('|');
+    return {
+      exists: true,
+      kind: /directory/i.test(type) ? 'dir' : /regular/i.test(type) ? 'file' : 'other',
+      size: Number(size) || 0,
+      mtimeMs: (Number(mtime) || 0) * 1000,
+    };
+  }
+
+  async readBytes(pcId: string, path: string, maxBytes: number): Promise<Uint8Array> {
+    const st = await this.stat(pcId, path);
+    if (!st.exists) throw err(PC_ERROR_CODES.NOT_FOUND, `no such file or directory: ${path}`);
+    if (st.kind === 'dir') throw err(PC_ERROR_CODES.NOT_A_FILE, `${path} is a directory`);
+    if (st.size > maxBytes) {
+      throw err(PC_ERROR_CODES.DENIED, `${path} is ${st.size} bytes, more than ${maxBytes}`);
+    }
+    const c = await this.#running(pcId);
+    try {
+      const data = await withDeadline(this.#scriptTimeoutMs, 'download', (signal) =>
+        c.download(path, { signal }),
+      );
+      return new Uint8Array(data);
+    } catch (e) {
+      throw rpcError('download', e);
+    }
   }
 
   // ------------------------------------------------------------------------------------------- scripts
@@ -885,13 +1482,14 @@ export class PcGuestApi implements PcApi {
     pcId: string,
     script: string,
     args: readonly string[],
-    options: { timeoutMs?: number; stdin?: Uint8Array } = {},
+    options: { timeoutMs?: number; stdin?: Uint8Array; env?: Readonly<Record<string, string>> } = {},
   ): Promise<ScriptResult> {
     const c = await this.#running(pcId);
     const timeoutMs = options.timeoutMs ?? this.#scriptTimeoutMs;
     const env = new Map<string, string>([
       ['HOME', GUEST_HOME],
       ['LC_ALL', 'C.UTF-8'],
+      ...Object.entries(options.env ?? {}),
     ]);
     const command = {
       program: 'bash',
@@ -945,12 +1543,17 @@ export class PcGuestApi implements PcApi {
   forgetPc(pcId: string): void {
     for (const job of [...this.#jobs.values()]) {
       if (job.pcId !== pcId) continue;
-      job.abort.abort();
       if (job.running) {
+        job.endReason ??= 'lost';
         job.running = false;
         job.buffer.append('\n[the PC stopped]\n');
       }
+      job.abort.abort();
+      job.endedAt ??= Date.now();
+      this.#jobEnded(job);
     }
+    for (const key of [...this.#seatFiles.keys()])
+      if (key.startsWith(`${pcId}\n`)) this.#seatFiles.delete(key);
     this.forgetGuest(pcId);
   }
 
@@ -958,7 +1561,11 @@ export class PcGuestApi implements PcApi {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    for (const job of this.#jobs.values()) job.abort.abort();
+    for (const job of this.#jobs.values()) {
+      for (const t of job.timers) clearTimeout(t);
+      job.abort.abort();
+    }
+    this.#jobListeners.clear();
     this.#jobs.clear();
     this.#foreground.clear();
   }

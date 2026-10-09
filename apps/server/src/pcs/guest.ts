@@ -37,10 +37,16 @@ export const WRITE_MAX_BYTES = 32 * 1024 * 1024;
 export const SEARCH_MAX_BYTES = 16 * 1024 * 1024;
 /** Paths a glob returns at most. */
 export const GLOB_LIMIT = 100;
+/** Matches a glob counts at most (its total beyond is a floor). */
+export const GLOB_COUNT_CAP = 10_000;
+/** Where background jobs tee their output (`<jobId>.out`), readable with the agent's read tool. */
+export const JOBS_DIR = `${GUEST_HOME}/.mv/jobs`;
+/** A running job's output file is cut back to half when it grows past this. */
+export const JOB_FILE_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * `readFile`: `$1` path, `$2` first line (1-based), `$3` line count, `$4` byte budget. Prints the selected lines
- * (long ones cut) and, on stderr, `<total lines> <printed lines> <cut>`.
+ * (long ones cut) and, on stderr, `<total lines> <printed lines> <cut> <ends with a newline>`.
  */
 export const READ_SCRIPT = `f=$1
 [ -e "$f" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
@@ -49,7 +55,8 @@ export const READ_SCRIPT = `f=$1
 a=$(head -c 8000 -- "$f" | wc -c)
 b=$(head -c 8000 -- "$f" | tr -d '\\000' | wc -c)
 [ "$a" = "$b" ] || exit ${SCRIPT_EXIT.BINARY}
-exec awk -v o="$2" -v l="$3" -v maxb="$4" -v maxl=${READ_LINE_MAX} '
+nl=0; [ -s "$f" ] && [ -z "$(tail -c 1 -- "$f")" ] && nl=1
+exec awk -v o="$2" -v l="$3" -v maxb="$4" -v maxl=${READ_LINE_MAX} -v nl="$nl" '
 NR >= o && NR < o + l && !cut {
   line = $0
   if (length(line) > maxl) line = substr(line, 1, maxl) "… (line truncated)"
@@ -57,7 +64,7 @@ NR >= o && NR < o + l && !cut {
   if (tot > maxb) cut = 1
   else { print line; n++ }
 }
-END { printf "%d %d %d\\n", NR, n, cut > "/dev/stderr" }' < "$f"`;
+END { printf "%d %d %d %d\\n", NR, n, cut, nl > "/dev/stderr" }' < "$f"`;
 
 /** `writeFile`: `$1` path; the content arrives on stdin. Creates parent directories; keeps the file's mode. */
 export const WRITE_SCRIPT = `f=$1
@@ -84,10 +91,84 @@ got=$(sha256sum < "$f" | cut -d' ' -f1) || exit ${SCRIPT_EXIT.DENIED}
 [ "$got" = "$2" ] || exit ${SCRIPT_EXIT.CHANGED}
 cat > "$f" || exit ${SCRIPT_EXIT.DENIED}`;
 
-/** `glob`: `$1` directory, `$2` gitignore-style pattern, `$3` how many paths at most. Newest first. */
+/**
+ * `glob`: `$1` directory, `$2` gitignore-style pattern, `$3` how many paths at most, `$4` how many matches to count at
+ * most. Prints the newest paths, then `__MV_TOTAL__<n>`.
+ */
 export const GLOB_SCRIPT = `[ -d "$1" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
 cd -- "$1" || exit ${SCRIPT_EXIT.DENIED}
-rg --files --hidden --no-config --no-messages -g "$2" -g '!.git' --sortr=modified . 2>/dev/null | head -n "$3"`;
+rg --files --hidden --no-config --no-messages -g "$2" -g '!.git' --sortr=modified . 2>/dev/null | head -n "$4" |
+  awk -v n="$3" 'NR <= n { print } END { printf "__MV_TOTAL__%d\\n", NR }'`;
+
+/**
+ * zoom: `$1` the crop (`WxH+X+Y`, screen pixels), `$2` the output size (`WxH!`), `$3` the JPEG quality. Captures the
+ * screen with ImageMagick (in the image) and scales the crop with Lanczos; prints the JPEG. 127 without ImageMagick.
+ */
+export const ZOOM_SCRIPT = `command -v import >/dev/null 2>&1 || exit 127
+exec import -silent -window root -crop "$1" +repage -filter Lanczos -resize "$2" -quality "$3" jpg:-`;
+
+/**
+ * `stat` of what a symlink (`$1`) points at: prints `<file type>|<size>|<mtime in seconds>`; NOT_FOUND for a dangling
+ * link. (spacesd's Stat describes the link itself, whose size and time never change with the file behind it.)
+ */
+export const STAT_TARGET_SCRIPT = `[ -e "$1" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
+exec stat -L -c '%F|%s|%Y' -- "$1"`;
+
+/**
+ * Cuts a running job's output file (`$1`) back to its last half when it is over `$2` bytes. The job appends with
+ * `tee -a` (O_APPEND), so writes after the cut still land at the end.
+ */
+export const TRIM_JOB_SCRIPT = `f=$1
+s=$(stat -c %s -- "$f" 2>/dev/null) || exit 0
+[ "$s" -gt "$2" ] || exit 0
+{ printf '[… earlier output was dropped …]\\n'; tail -c $(( $2 / 2 )) -- "$f"; } > "$f.trim" && cat -- "$f.trim" > "$f"
+rm -f -- "$f.trim"`;
+
+/**
+ * `open`: `$1` target (URL, absolute path or app), the rest the app's arguments. Picks the program, prints
+ * `via <program>`, and starts it detached (`setsid -f`), so it inherits the caller's `MV_TAG` and dies with the seat.
+ * URLs and pages go to Firefox (its pages have an accessibility tree; Chromium's has none unless asked), folders to
+ * Thunar, files to their default app, else a text editor, else the browser. Exits NOT_FOUND for a missing path and 2
+ * (printing `apps: …`, the installed launchers) when nothing opens the target.
+ */
+export const OPEN_SCRIPT = `t=$1; shift
+pick() { for p in "$@"; do command -v "$p" >/dev/null 2>&1 && { echo "$p"; return 0; }; done; return 1; }
+apps() { printf 'apps: '; ls /usr/share/applications ~/.local/share/applications 2>/dev/null | sed -n 's/\\.desktop$//p' | sort -u | head -n 20 | tr '\\n' ' '; echo; }
+prog=''; arg=$t
+case "$t" in
+  http://*|https://*|file://*|about:*) prog=$(pick firefox chromium xdg-open) ;;
+  /*)
+    [ -e "$t" ] || exit ${SCRIPT_EXIT.NOT_FOUND}
+    if [ -d "$t" ]; then prog=$(pick thunar xdg-open)
+    else
+      m=$(xdg-mime query filetype "$t" 2>/dev/null)
+      case "$m" in
+        text/html|application/xhtml*|image/*|application/pdf) prog=$(pick firefox xdg-open) ;;
+        *)
+          if [ -n "$m" ] && [ -n "$(xdg-mime query default "$m" 2>/dev/null)" ]; then prog=xdg-open
+          else case "$m" in
+            text/*|application/json|application/xml|application/javascript|application/x-shellscript|application/x-*script*|inode/x-empty|application/x-zerosize)
+              prog=$(pick mousepad gedit xed pluma code firefox) ;;
+            *) prog=$(pick xdg-open) ;;
+          esac; fi ;;
+      esac
+    fi ;;
+  *)
+    arg=''
+    if command -v "$t" >/dev/null 2>&1; then prog=$t
+    else
+      d=$(ls /usr/share/applications/"$t".desktop ~/.local/share/applications/"$t".desktop 2>/dev/null | head -n 1)
+      if [ -n "$d" ]; then
+        e=$(sed -n 's/^Exec=//p' "$d" | head -n 1 | sed 's/ %[fFuUdDnNickvm]//g')
+        [ -n "$e" ] && { echo "via $t"; setsid -f bash -c "exec $e" >/dev/null 2>&1 < /dev/null; exit 0; }
+      fi
+    fi ;;
+esac
+[ -n "$prog" ] || { apps; exit 2; }
+echo "via $prog"
+if [ "$prog" = xfce4-terminal ]; then set -- --disable-server "$@"; fi
+if [ -n "$arg" ]; then setsid -f "$prog" "$@" "$arg" >/dev/null 2>&1 < /dev/null
+else setsid -f "$prog" "$@" >/dev/null 2>&1 < /dev/null; fi`;
 
 /** `grep`: the ripgrep arguments are the script's arguments; output is capped. */
 export const GREP_SCRIPT = `rg "$@" | head -c ${SEARCH_MAX_BYTES}
@@ -152,11 +233,17 @@ else bash -c "$k" kill $pids; fi`;
 
 /**
  * Prefix of every `exec`: the working directory (an argument in `MV_EXEC_CWD`, falling back to the home when it is
- * gone) and, for commands that write the shell log, a prompt line so ShellMirror shows the command too.
+ * gone); for commands that write the shell log, a prompt line so ShellMirror shows the command too; and with
+ * `MV_OUT`, a tee of all output into that file, which the shell's exit deletes unless the command runs in the
+ * background (`MV_KEEP`) or Node moved it there (`$MV_OUT.keep`).
  */
 export const EXEC_PREFIX = `cd -- "$MV_EXEC_CWD" 2>/dev/null || cd ~
 if [ -n "\${MV_PROMPT:-}" ]; then mkdir -p ~/.mv && printf '\\n%s\\n' "$MV_PROMPT" >> ~/.mv/shell.log; fi
-unset MV_PROMPT MV_EXEC_CWD`;
+if [ -n "\${MV_OUT:-}" ]; then
+  mkdir -p -- "\${MV_OUT%/*}" && : > "$MV_OUT" && exec > >(tee -a -- "$MV_OUT") 2>&1
+  [ -n "\${MV_KEEP:-}" ] || trap '[ -e "$MV_OUT.keep" ] || rm -f -- "$MV_OUT"' EXIT
+fi
+unset MV_PROMPT MV_EXEC_CWD MV_KEEP`;
 
 /** The tool server's `pc__bash` wrapper writes the shell log; its own command sits between these lines. */
 const WRAP_START = 'exec > >(tee -a ~/.mv/shell.log) 2>&1';
@@ -385,8 +472,11 @@ export function grepArgs(r: GrepArgsInput): string[] {
   return args;
 }
 
-/** Longest line of grep output (a minified bundle would otherwise flood the result). */
-export const GREP_LINE_MAX = 2000;
+/**
+ * Longest line of grep output (a minified bundle would otherwise flood the result); Claude Code's Grep passes
+ * `--max-columns 500`.
+ */
+export const GREP_LINE_MAX = 500;
 
 interface RgText {
   text?: string;
@@ -396,7 +486,8 @@ interface RgText {
 const rgText = (t: RgText | undefined): string =>
   t?.text ?? (t?.bytes ? Buffer.from(t.bytes, 'base64').toString('utf8') : '');
 
-const clipLine = (s: string) => (s.length > GREP_LINE_MAX ? `${s.slice(0, GREP_LINE_MAX)}…` : s);
+const clipLine = (s: string) =>
+  s.length > GREP_LINE_MAX ? `${s.slice(0, GREP_LINE_MAX)}… [${s.length} characters]` : s;
 
 /**
  * Formats `rg --json` like `rg -n` prints: `path:line:text` for matches, `path-line-text` for context lines and `--`
@@ -405,8 +496,9 @@ const clipLine = (s: string) => (s.length > GREP_LINE_MAX ? `${s.slice(0, GREP_L
  */
 export function formatRgJson(
   stdout: string,
-  options: { lineNumbers: boolean; context: boolean },
+  options: { lineNumbers: boolean; context: boolean; onlyMatching?: boolean },
 ): { lines: string[]; matches: number; incomplete: boolean } {
+  if (options.onlyMatching) return formatRgJsonOnlyMatching(stdout, options.lineNumbers);
   const lines: string[] = [];
   let matches = 0;
   let incomplete = false;
@@ -450,6 +542,37 @@ export function formatRgJson(
     lastLine = first !== null ? first + parts.length - 1 : -1;
   }
   return { lines, matches, incomplete };
+}
+
+/** `rg -o`: one line per match (`path:line:match`), the matched text only; context lines are not printed. */
+function formatRgJsonOnlyMatching(
+  stdout: string,
+  lineNumbers: boolean,
+): { lines: string[]; matches: number; incomplete: boolean } {
+  const lines: string[] = [];
+  let incomplete = false;
+  for (const raw of stdout.split('\n')) {
+    if (raw.trim().length === 0) continue;
+    let msg: { type?: string; data?: Record<string, unknown> };
+    try {
+      msg = JSON.parse(raw) as typeof msg;
+    } catch {
+      incomplete = true;
+      continue;
+    }
+    if (msg.type !== 'match') continue;
+    const d = msg.data ?? {};
+    const path = rgText(d.path as RgText | undefined);
+    const n = typeof d.line_number === 'number' ? d.line_number : null;
+    const subs = Array.isArray(d.submatches) ? (d.submatches as { match?: RgText }[]) : [];
+    for (const s of subs) {
+      const text = rgText(s.match).replace(/\r?\n$/, '');
+      if (text.length === 0) continue;
+      const shown = clipLine(text.replace(/\r?\n/g, '\\n'));
+      lines.push(lineNumbers && n !== null ? `${path}:${n}:${shown}` : `${path}:${shown}`);
+    }
+  }
+  return { lines, matches: lines.length, incomplete };
 }
 
 /** `rg --count` output (`path:N`) as its lines and the total. */

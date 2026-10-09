@@ -93,39 +93,92 @@ export const MC_TOOLS = {
 
 export type McToolName = keyof typeof MC_TOOLS;
 
-/** `pc` tools (PLAN §6.2). */
+/**
+ * `pc` tools (PLAN §6.2, PC tools V2). The computer tools mirror the trained computer-use toolset member by member
+ * (`computer_toolset_20260801`); `ui`, `ui_act`, `open` and `wait_for` read and drive apps through the accessibility
+ * tree; the shell and file tools answer like Claude Code's built-ins (they are aliased to them).
+ */
 export const PC_TOOLS = [
+  // Computer (trained members)
   'screenshot',
-  'click',
-  'double_click',
+  'zoom',
+  'cursor_position',
+  'left_click',
   'right_click',
-  'move',
-  'drag',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'left_click_drag',
+  'left_mouse_down',
+  'left_mouse_up',
+  'mouse_move',
   'scroll',
   'type',
   'key',
+  'hold_key',
+  'wait',
+  // Perception and helpers
+  'ui',
+  'ui_act',
+  'open',
+  'wait_for',
   'clipboard',
+  // Shell and files
   'bash',
-  'bash_output',
-  'bash_kill',
+  'task_stop',
   'read',
   'write',
   'edit',
   'glob',
   'grep',
+  // About the PC
   'info',
   'handoff_note',
 ] as const;
 export type PcToolName = (typeof PC_TOOLS)[number];
 
-/** GUI mutators denied in plan mode (`clipboard` only when it sets). */
+/** Computer actions that change what is on screen or where input goes: denied in plan mode. */
 export const PC_PLAN_DENIED_GUI: ReadonlySet<PcToolName> = new Set([
-  'click',
-  'double_click',
+  'left_click',
   'right_click',
-  'drag',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'left_click_drag',
+  'left_mouse_down',
+  'left_mouse_up',
   'type',
   'key',
+  'hold_key',
+  'ui_act',
+  'open',
+]);
+
+/**
+ * The computer actions of the batch rules (PC tools V2 §4.2): run in order, and after one fails the rest of the same
+ * message do not run.
+ */
+export const PC_COMPUTER_ACTIONS: ReadonlySet<PcToolName> = new Set([
+  'screenshot',
+  'zoom',
+  'cursor_position',
+  'left_click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'left_click_drag',
+  'left_mouse_down',
+  'left_mouse_up',
+  'mouse_move',
+  'scroll',
+  'type',
+  'key',
+  'hold_key',
+  'wait',
+  'ui_act',
+  'open',
+  'wait_for',
 ]);
 
 /** File mutators denied in plan mode except under `~/.claude/plans/` (PlanCapture). */

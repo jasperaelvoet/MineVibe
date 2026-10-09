@@ -101,15 +101,16 @@ export const browserFind: PcScenario = {
   replay: {
     good: [
       [
+        // PC tools V2: the trained computer actions in screenshot pixels, then text first: the search box and the
+        // result link through the accessibility tree, the page read as text.
         { tool: pc('screenshot'), input: {} },
-        { tool: pc('double_click'), input: { x: 95, y: 265 } },
-        { tool: pc('screenshot'), input: {} },
-        { tool: pc('click'), input: { x: 640, y: 254 } },
-        { tool: pc('type'), input: { text: 'minevibe releases' } },
-        { tool: pc('key'), input: { keys: 'Enter' } },
-        { tool: pc('screenshot'), input: {} },
-        { tool: pc('click'), input: { x: 500, y: 327 } },
-        { tool: pc('screenshot'), input: {} },
+        { tool: pc('double_click'), input: { coordinate: [95, 265] } },
+        { tool: pc('ui'), input: { action: 'find', role: 'entry', query: 'search' } },
+        { tool: pc('ui_act'), input: { op: 'set_value', ref: 'ref_1', value: 'minevibe releases' } },
+        { tool: pc('key'), input: { text: 'Return' } },
+        { tool: pc('ui'), input: { action: 'find', query: 'releases', role: 'link' } },
+        { tool: pc('left_click'), input: { ref: 'ref_2' } },
+        { tool: pc('ui'), input: { action: 'text' } },
         { text: 'The latest release is 0.7.3, "Copper Golem".' },
       ],
     ],

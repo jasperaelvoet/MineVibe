@@ -101,9 +101,10 @@ describe('ScriptedPc shell', () => {
     const pc = new ScriptedPc();
     const read = await pc.readFile(PC_ID, { path: `${REPO}/src/cart.js`, offset: 2, limit: 1 });
     expect(read).toEqual({
-      content: '  return items.reduce((sum, item) => sum + item.price, 0);\n',
+      content: '  return items.reduce((sum, item) => sum + item.price, 0);',
       startLine: 2,
-      totalLines: 11,
+      // Claude Code's Read: the final newline ends in a 12th, empty line.
+      totalLines: 12,
       truncated: true,
     });
     for (const [req, code] of [

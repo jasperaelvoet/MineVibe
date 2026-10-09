@@ -41,7 +41,13 @@ import type {
 import { buildSessionOptions } from '../../src/agents/sessionOptions.js';
 import { createToolGateHook, type GateContext } from '../../src/agents/ToolGate.js';
 import { type McHost, mcToolDefinitions } from '../../src/agents/tools/mcServer.js';
-import { type PcHost, pcToolDefinitions } from '../../src/agents/tools/pcServer.js';
+import {
+  BatchBook,
+  jobNotification,
+  type PcHost,
+  PcJobBook,
+  pcToolDefinitions,
+} from '../../src/agents/tools/pcServer.js';
 import type { CallToolResult } from '../../src/agents/tools/results.js';
 import { agentActor } from '../../src/contracts/common.js';
 import { FakeOrgApi } from '../../src/contracts/FakeOrgApi.js';
@@ -226,6 +232,18 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     taskReported: () => {},
   };
   const plans = new PlanCapture([home, HOME]);
+  // PC tools V2: the batch book is fed from the stream (as AgentBrain does), background jobs notify like the brain's
+  // `<task-notification>` wakes, and the scripted screen settles at once (it never animates).
+  const batch = new BatchBook();
+  const pcJobs = new PcJobBook();
+  const pcNotices: string[] = [];
+  pc.onJobExit((exit) => {
+    const job = pcJobs.get(exit.pcId, exit.jobId);
+    if (!job) return;
+    pcJobs.delete(exit.pcId, exit.jobId);
+    const block = jobNotification(job, exit);
+    if (block) pcNotices.push(`${control(nonce, 'PC JOB', 'A background command ended.')}\n${block}`);
+  });
   const pcHost: PcHost = {
     agentId: AGENT_ID,
     pcs: pc,
@@ -233,6 +251,10 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     handoffs: new HandoffNotes(join(tmp, 'handoffs')),
     access: () => (seated ? { pcId: PC_ID, epoch: 1 } : null),
     authorName: () => 'Ada',
+    playerName: () => PLAYER,
+    batch,
+    jobs: pcJobs,
+    settle: { pollMs: 10, minMs: 0, maxMs: 100 },
   };
 
   const instrument = (server: 'mc' | 'pc', defs: Def[]): Def[] =>
@@ -400,6 +422,14 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         });
       },
       onMessage: (m) => metrics.onMessage(m),
+      onToolUse: (name, _input, toolUseId, messageId) => {
+        if (messageId) batch.toolUse(messageId, toolUseId, name);
+      },
+      onStream: (mark) => {
+        if (mark.kind === 'message_start') batch.messageStart(mark.messageId);
+        else if (mark.kind === 'tool_use') batch.toolUse(mark.messageId, mark.toolUseId, mark.name);
+        else batch.messageStop(mark.messageId);
+      },
       onTurnEnd: (r) => waiter?.(r),
       onExit: (err) => {
         exitError = err;
@@ -493,13 +523,17 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         }
       }
       const ended = [...tracked].filter(([id]) => !delivered.has(id) && skills.ended(id) !== undefined);
-      if (ended.length === 0) break;
-      text = ended
-        .map(([id, label]) => {
+      // Background PC commands that ended wake the agent with their task notification, like the brain's wakes.
+      await new Promise((r) => setTimeout(r, 0));
+      const notices = pcNotices.splice(0);
+      if (ended.length === 0 && notices.length === 0) break;
+      text = [
+        ...ended.map(([id, label]) => {
           delivered.add(id);
           return jobEndedText(nonce, skills.ended(id) as JobEnd, label);
-        })
-        .join('\n\n');
+        }),
+        ...notices,
+      ].join('\n\n');
     }
   } catch (err) {
     if (err instanceof FatalEvalError) {

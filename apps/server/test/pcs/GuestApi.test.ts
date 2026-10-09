@@ -3,6 +3,7 @@ import type { SpacesdClientLike } from '@trycua/cua';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { wrapBash } from '../../src/agents/tools/pcServer.js';
 import type { ApiError } from '../../src/contracts/common.js';
+import type { JobExit } from '../../src/contracts/PcApi.js';
 import { PcGuestApi } from '../../src/pcs/GuestApi.js';
 import {
   EDIT_READ_SCRIPT,
@@ -10,9 +11,12 @@ import {
   EXEC_PREFIX,
   GLOB_SCRIPT,
   GREP_SCRIPT,
+  OPEN_SCRIPT,
   READ_SCRIPT,
+  STAT_TARGET_SCRIPT,
   SWEEP_LAUNCH,
   WRITE_SCRIPT,
+  ZOOM_SCRIPT,
 } from '../../src/pcs/guest.js';
 import { type InputClient, InputRouter } from '../../src/pcs/InputRouter.js';
 import type { PcRecord, PcStatusInfo } from '../../src/pcs/PcManager.js';
@@ -84,15 +88,46 @@ type ScriptHandler = (args: string[], stdin: Buffer) => { code: number; stdout?:
 /** A fake spacesd: guest scripts answered by handlers keyed by the script, `bash -lc` spawns become FakeProcs. */
 class FakeGuest {
   readonly scripts = new Map<string, ScriptHandler>();
-  readonly runs: { script: string; args: string[] }[] = [];
+  readonly runs: { script: string; args: string[]; env?: Map<string, string> }[] = [];
   readonly execs: FakeProc[] = [];
+  /** JSON RPCs by method (without the `/cua.env.v1.` prefix), and every call made. */
+  readonly rpc = new Map<string, (request: Record<string, unknown>) => unknown>();
+  readonly rpcs: { method: string; request: Record<string, unknown> }[] = [];
+  /** Guest files for stat/download. */
+  readonly files = new Map<string, { data: Uint8Array; mtime: number }>();
   clipboard = '';
   /** Every stdin script exits before reading its input. */
   stdinGone = false;
   readonly client = {
-    run: async (cmd: { args: string[] }) => {
+    callJson: async (method: string, json: string) => {
+      const name = method.replace('/cua.env.v1.', '');
+      const request = JSON.parse(json) as Record<string, unknown>;
+      this.rpcs.push({ method: name, request });
+      const h = this.rpc.get(name);
+      if (!h) throw new Error(`CuaError.Unimplemented: ${name}`);
+      return JSON.stringify(await h(request));
+    },
+    stat: async (path: string) => {
+      const f = this.files.get(path);
+      if (!f) throw new Error(`CuaError.Env: env: not found: ${path} (NotFound)`);
+      return {
+        name: path,
+        path,
+        kind: 'file',
+        size: BigInt(f.data.byteLength),
+        mode: 0o644,
+        modifiedMs: BigInt(f.mtime),
+      };
+    },
+    download: async (path: string) => {
+      const f = this.files.get(path);
+      if (!f) throw new Error('not found (NotFound)');
+      return f.data.slice().buffer;
+    },
+    run: async (cmd: { args: string[]; env?: Map<string, string> }) => {
       const [, script = '', , ...args] = cmd.args;
-      this.runs.push({ script, args });
+      const extraEnv = cmd.env && [...cmd.env.keys()].some((k) => k !== 'HOME' && k !== 'LC_ALL');
+      this.runs.push({ script, args, ...(extraEnv && cmd.env ? { env: cmd.env } : {}) });
       const h = this.scripts.get(script);
       const r = h ? h(args, Buffer.alloc(0)) : { code: 0 };
       return {
@@ -254,7 +289,7 @@ describe('input through the router as the seated agent', () => {
     await api.type('linux-1', 'hello');
     expect(inputCalls).toEqual([
       'pointer {"click":{"position":{"x":10,"y":20},"button":"MOUSE_BUTTON_LEFT","count":2}}',
-      'hotkey KEY_CONTROL+s',
+      'keyboard {"press":{"key":{"character":"s"},"modifiers":["KEY_CONTROL"]}}',
       'type hello',
     ]);
     seats.seat('linux-1', { kind: 'player' });
@@ -371,13 +406,20 @@ describe('files in the guest', () => {
   it('globs relative to the directory, newest first, capped at 100', async () => {
     guest.scripts.set(GLOB_SCRIPT, () => ({
       code: 0,
-      stdout: Array.from({ length: 101 }, (_, i) => `./src/f${i}.ts`).join('\n'),
+      stdout: `${Array.from({ length: 100 }, (_, i) => `./src/f${i}.ts`).join('\n')}\n__MV_TOTAL__140\n`,
     }));
     const r = await api.glob('linux-1', { pattern: '*.ts', path: '/w' });
-    expect(guest.runs.at(-1)).toEqual({ script: GLOB_SCRIPT, args: ['/w', '/*.ts', '101'] });
+    expect(guest.runs.at(-1)).toEqual({ script: GLOB_SCRIPT, args: ['/w', '/*.ts', '100', '10000'] });
     expect(r.paths[0]).toBe('/w/src/f0.ts');
     expect(r.paths).toHaveLength(100);
-    expect(r.truncated).toBe(true);
+    expect(r).toMatchObject({ truncated: true, total: 140, countIsComplete: true });
+    guest.scripts.set(GLOB_SCRIPT, () => ({ code: 0, stdout: './a.ts\n__MV_TOTAL__1\n' }));
+    expect(await api.glob('linux-1', { pattern: '*.ts', path: '/w' })).toEqual({
+      paths: ['/w/a.ts'],
+      truncated: false,
+      total: 1,
+      countIsComplete: true,
+    });
     await api.glob('linux-1', { pattern: '/home/cua/app/**/*.md' });
     expect(guest.runs.at(-1)?.args.slice(0, 2)).toEqual(['/home/cua/app', '**/*.md']);
   });
@@ -399,10 +441,12 @@ describe('files in the guest', () => {
     expect(await api.grep('linux-1', { pattern: 'needle', path: '/w', outputMode: 'content' })).toEqual({
       output: '/w/a.ts:3:needle',
       matches: 1,
+      total: 1,
       truncated: false,
     });
     expect(await api.grep('linux-1', { pattern: 'needle', path: '/w', outputMode: 'count' })).toMatchObject({
       matches: 3,
+      files: 2,
     });
     expect(
       await api.grep('linux-1', {
@@ -411,7 +455,17 @@ describe('files in the guest', () => {
         outputMode: 'files_with_matches',
         headLimit: 1,
       }),
-    ).toEqual({ output: '/w/a.ts', matches: 2, truncated: true });
+    ).toEqual({ output: '/w/a.ts', matches: 2, total: 2, truncated: true });
+    // Offset first, then the head limit (V1 applied the offset after the guest's limit).
+    expect(
+      await api.grep('linux-1', {
+        pattern: 'needle',
+        path: '/w',
+        outputMode: 'files_with_matches',
+        offset: 1,
+        headLimit: 1,
+      }),
+    ).toEqual({ output: '/w/b.ts', matches: 2, total: 2, truncated: false });
     guest.scripts.set(GREP_SCRIPT, () => ({ code: 1 }));
     expect((await api.grep('linux-1', { pattern: 'x', outputMode: 'content' })).output).toBe('');
     guest.scripts.set(GREP_SCRIPT, () => ({
@@ -592,5 +646,411 @@ describe('the shell', () => {
       exitCode: 2,
       output: 'done\n',
     });
+  });
+});
+
+describe('PC tools V2: input', () => {
+  it('clicks at the pointer, with modifiers, a triple click; buttons and wheels without a position', async () => {
+    sit();
+    await api.pointer('linux-1', { action: 'click', button: 'left', count: 3 });
+    await api.pointer('linux-1', { action: 'click', x: 5, y: 6, modifiers: ['ctrl', 'shift'] });
+    await api.pointer('linux-1', { action: 'down' });
+    await api.pointer('linux-1', { action: 'up' });
+    await api.pointer('linux-1', { action: 'scroll', dx: 0, dy: 3 });
+    await api.pointer('linux-1', { action: 'scroll', x: 10, y: 20, dx: 0, dy: -2, modifiers: ['ctrl'] });
+    await api.pointer('linux-1', { action: 'drag', x: 1, y: 2, toX: 3, toY: 4, modifiers: ['shift'] });
+    expect(inputCalls).toEqual([
+      'pointer {"click":{"button":"MOUSE_BUTTON_LEFT","count":3}}',
+      'pointer {"click":{"position":{"x":5,"y":6},"button":"MOUSE_BUTTON_LEFT","count":1,"modifiers":["KEY_CONTROL","KEY_SHIFT"]}}',
+      'pointer {"down":{"button":"MOUSE_BUTTON_LEFT"}}',
+      'pointer {"up":{"button":"MOUSE_BUTTON_LEFT"}}',
+      'pointer {"scroll":{"deltaX":0,"deltaY":3,"unit":"SCROLL_UNIT_LINE"}}',
+      'keyboard {"down":{"key":{"named":"KEY_CONTROL"}}}',
+      'pointer {"scroll":{"position":{"x":10,"y":20},"deltaX":0,"deltaY":-2,"unit":"SCROLL_UNIT_LINE"}}',
+      'keyboard {"up":{"key":{"named":"KEY_CONTROL"}}}',
+      'pointer {"drag":{"from":{"x":1,"y":2},"to":{"x":3,"y":4},"button":"MOUSE_BUTTON_LEFT","modifiers":["KEY_SHIFT"]}}',
+    ]);
+    expect(router.held('linux-1')).toEqual({ keys: [], buttons: [] });
+  });
+
+  it('presses chords with spacesd modifiers and repeat, sequences in order, and holds keys', async () => {
+    sit();
+    await api.keyboard('linux-1', { action: 'press', keys: ['KEY_PAGE_DOWN'], repeat: 3 });
+    await api.keyboard('linux-1', { action: 'press', keys: ['ctrl', 'S'] });
+    await api.keyboard('linux-1', { action: 'sequence', chords: [['ctrl', 'a'], ['Delete']] });
+    await api.keyboard('linux-1', { action: 'hold', keys: ['shift'], ms: 20 });
+    expect(inputCalls).toEqual([
+      'keyboard {"press":{"key":{"named":"KEY_PAGE_DOWN"},"repeat":3}}',
+      'keyboard {"press":{"key":{"character":"s"},"modifiers":["KEY_CONTROL"]}}',
+      'keyboard {"press":{"key":{"character":"a"},"modifiers":["KEY_CONTROL"]}}',
+      'keyboard {"press":{"key":{"named":"KEY_DELETE"}}}',
+      'keyboard {"down":{"key":{"named":"KEY_SHIFT"}}}',
+      'keyboard {"up":{"key":{"named":"KEY_SHIFT"}}}',
+    ]);
+    expect(router.held('linux-1').keys).toEqual([]);
+  });
+
+  it('a hold is cut short when the player takes the chair, and its keys are released', async () => {
+    sit();
+    const hold = api.keyboard('linux-1', { action: 'hold', keys: ['alt'], ms: 60_000 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(router.held('linux-1').keys).toEqual(['KEY_ALT']);
+    const t0 = Date.now();
+    router.setOccupant('linux-1', { kind: 'player', id: 'player' });
+    await hold.catch(() => {});
+    await router.idle('linux-1');
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(router.held('linux-1').keys).toEqual([]);
+  });
+});
+
+describe('PC tools V2: screen, windows and accessibility', () => {
+  it('reads the cursor and the windows (focused first, mirror and all)', async () => {
+    guest.rpc.set('ComputerService/GetCursorPosition', () => ({
+      position: { x: 700, y: 500 },
+      displayId: '0',
+    }));
+    expect(await api.cursor('linux-1')).toEqual({ x: 700, y: 500 });
+    guest.rpc.set('WindowsService/ListWindows', () => ({
+      windows: [
+        {
+          ref: { id: 'w1', epoch: '1' },
+          title: 'Shell: ada',
+          app: { name: 'Xfce4-terminal', pid: 9 },
+          zOrder: 4,
+          onScreen: true,
+        },
+        {
+          ref: { id: 'w2', epoch: '1' },
+          title: 'notes - Mousepad',
+          app: { name: 'Mousepad', pid: 7 },
+          bounds: { x: 5, y: 56, width: 640, height: 480 },
+          state: 'WINDOW_STATE_MAXIMIZED',
+          focused: true,
+          onScreen: true,
+          zOrder: 3,
+        },
+      ],
+    }));
+    expect(await api.windows('linux-1')).toEqual([
+      {
+        id: 'w2',
+        title: 'notes - Mousepad',
+        app: 'Mousepad',
+        pid: 7,
+        bounds: { x: 5, y: 56, w: 640, h: 480 },
+        focused: true,
+        state: 'MAXIMIZED',
+        onScreen: true,
+        z: 3,
+      },
+      { id: 'w1', title: 'Shell: ada', app: 'Xfce4-terminal', pid: 9, focused: false, onScreen: true, z: 4 },
+    ]);
+  });
+
+  it('window operations need the seated agent and map a gone window to WINDOW_NOT_FOUND', async () => {
+    expect(await codeOf(api.window('linux-1', 'w2', 'activate'))).toBe('DENIED');
+    sit();
+    guest.rpc.set('WindowsService/CloseWindow', () => {
+      throw new Error('CuaError.Env: env: target unavailable: window is gone (NotFound)');
+    });
+    guest.rpc.set('WindowsService/ActivateWindow', () => ({ window: {} }));
+    await api.window('linux-1', 'w2', 'activate');
+    expect(guest.rpcs.at(-1)).toEqual({
+      method: 'WindowsService/ActivateWindow',
+      request: { window: { id: 'w2' } },
+    });
+    expect(await codeOf(api.window('linux-1', 'w2', 'close'))).toBe('WINDOW_NOT_FOUND');
+  });
+
+  it('finds, reads and acts on accessibility elements; an expired snapshot is STALE_REF', async () => {
+    guest.rpc.set('AccessibilityService/Find', () => ({
+      snapshotId: 'ax-1',
+      nodes: [
+        {
+          elementId: '3',
+          depth: 4,
+          role: 'button',
+          nativeRole: 'push button',
+          name: 'Home',
+          bounds: { x: 102, y: 85, width: 31, height: 31 },
+          states: ['enabled'],
+          actions: ['ACCESSIBILITY_ACTION_PRESS'],
+        },
+        { elementId: '9', depth: 2, role: 'paragraph', name: 'Hi￼ there', states: ['enabled'], actions: [] },
+      ],
+    }));
+    const found = await api.uiFind('linux-1', { windowId: 'w2', nameContains: 'home', maxResults: 5 });
+    expect(guest.rpcs.at(-1)?.request).toEqual({
+      window: { id: 'w2' },
+      query: { nameContains: 'home' },
+      maxResults: 5,
+    });
+    expect(found.snapshotId).toBe('ax-1');
+    expect(found.nodes[0]).toEqual({
+      elementId: '3',
+      depth: 4,
+      role: 'button',
+      nativeRole: 'push button',
+      name: 'Home',
+      bounds: { x: 102, y: 85, w: 31, h: 31 },
+      states: ['enabled'],
+      actions: ['press'],
+    });
+    expect(found.nodes[1]?.name).toBe('Hi there');
+    expect(await codeOf(api.uiAct('linux-1', { snapshotId: 'ax-1', elementId: '3', action: 'press' }))).toBe(
+      'DENIED',
+    );
+    sit();
+    guest.rpc.set('AccessibilityService/Act', (req) => {
+      if ((req.element as { snapshotId: string }).snapshotId === 'ax-old') {
+        throw new Error(
+          'CuaError.Env: env: stale accessibility snapshot: unknown or expired snapshot_id (FailedPrecondition)',
+        );
+      }
+      return { report: { delivery: 'DELIVERY_BACKGROUND' } };
+    });
+    await api.uiAct('linux-1', { snapshotId: 'ax-1', elementId: '3', action: 'set_value', value: '/tmp' });
+    expect(guest.rpcs.at(-1)?.request).toEqual({
+      element: { snapshotId: 'ax-1', elementId: '3' },
+      action: 'ACCESSIBILITY_ACTION_SET_VALUE',
+      value: '/tmp',
+    });
+    expect(
+      await codeOf(api.uiAct('linux-1', { snapshotId: 'ax-old', elementId: '3', action: 'press' })),
+    ).toBe('STALE_REF');
+  });
+
+  it('a PC whose spacesd lists no a11y feature refuses accessibility calls', async () => {
+    (guest.client as unknown as { capabilities: () => Promise<unknown> }).capabilities = async () => ({
+      osName: 'Ubuntu',
+      osVersion: '24.04',
+      features: [{ name: 'windows', supported: true }],
+    });
+    api.forgetGuest('linux-1');
+    expect(await codeOf(api.uiTree('linux-1', {}))).toBe('A11Y_UNAVAILABLE');
+  });
+
+  it('captures a region through spacesd, or scaled up by the guest for zoom', async () => {
+    guest.rpc.set('ComputerService/Screenshot', () => ({
+      image: Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]).toString('base64'),
+      imageSize: { width: 200, height: 100 },
+    }));
+    const shot = await api.screenshot('linux-1', { region: { x: 100, y: 100, w: 200, h: 100 } });
+    expect(guest.rpcs.at(-1)?.request).toMatchObject({
+      region: { x: 100, y: 100, width: 200, height: 100 },
+      format: 'IMAGE_FORMAT_JPEG',
+    });
+    expect(shot).toMatchObject({ w: 200, h: 100, mime: 'image/jpeg' });
+    guest.scripts.set(ZOOM_SCRIPT, () => ({ code: 0, stdout: 'ÿØzoomed' }));
+    const zoom = await api.screenshot('linux-1', {
+      region: { x: 100, y: 100, w: 200, h: 100 },
+      fit: { w: 1440, h: 900 },
+    });
+    expect(guest.runs.at(-1)).toMatchObject({
+      script: ZOOM_SCRIPT,
+      args: ['200x100+100+100', '1440x720!', '80'],
+    });
+    expect(zoom).toMatchObject({ w: 1440, h: 720 });
+    // No ImageMagick: the region at full size.
+    guest.scripts.set(ZOOM_SCRIPT, () => ({ code: 127 }));
+    expect(
+      await api.screenshot('linux-1', {
+        region: { x: 100, y: 100, w: 200, h: 100 },
+        fit: { w: 1440, h: 900 },
+      }),
+    ).toMatchObject({ w: 200, h: 100 });
+  });
+
+  it('opens a target as the seat, then finds and activates the window that appeared', async () => {
+    sit();
+    let calls = 0;
+    guest.rpc.set('WindowsService/ListWindows', () => {
+      calls++;
+      const term = {
+        ref: { id: 'w1' },
+        title: 'Terminal',
+        app: { name: 'Xfce4-terminal' },
+        focused: calls <= 1,
+        zOrder: 3,
+      };
+      const ff = {
+        ref: { id: 'w9' },
+        title: 'Example Domain — Mozilla Firefox',
+        app: { name: 'firefox' },
+        zOrder: 4,
+      };
+      return { windows: calls <= 1 ? [term] : [term, ff] };
+    });
+    guest.rpc.set('WindowsService/ActivateWindow', () => ({}));
+    guest.scripts.set(OPEN_SCRIPT, () => ({ code: 0, stdout: 'via firefox\n' }));
+    const r = await api.open('linux-1', { target: 'https://example.com', tag: 'ada:3', waitMs: 2_000 });
+    expect(r).toMatchObject({ via: 'firefox', newWindow: true, window: { id: 'w9', focused: true } });
+    const run = guest.runs.find((x) => x.script === OPEN_SCRIPT);
+    expect(run?.args).toEqual(['https://example.com']);
+    expect(run?.env?.get('MV_TAG')).toBe('ada:3');
+    expect(run?.env?.get('DISPLAY')).toBe(':1');
+    expect(guest.rpcs.some((x) => x.method === 'WindowsService/ActivateWindow')).toBe(true);
+    guest.scripts.set(OPEN_SCRIPT, () => ({ code: 2, stdout: 'apps: firefox thunar\n' }));
+    const e = await api.open('linux-1', { target: 'nope', tag: 'ada:3' }).catch((x: ApiError) => x);
+    expect(e).toMatchObject({ code: 'OPEN_FAILED', message: expect.stringContaining('firefox thunar') });
+    expect(await codeOf(api.open('linux-1', { target: 'x', tag: 'bram:3' }))).toBe('DENIED');
+  });
+});
+
+describe('PC tools V2: files', () => {
+  it('stat and readBytes go through spacesd; a missing path does not exist', async () => {
+    guest.files.set('/w/a.png', { data: new Uint8Array([1, 2, 3]), mtime: 1_700_000_000_123 });
+    expect(await api.stat('linux-1', '/w/a.png')).toEqual({
+      exists: true,
+      kind: 'file',
+      size: 3,
+      mtimeMs: 1_700_000_000_123,
+    });
+    expect(await api.stat('linux-1', '/w/none')).toEqual({ exists: false, size: 0, mtimeMs: 0 });
+    expect([...(await api.readBytes('linux-1', '/w/a.png', 10))]).toEqual([1, 2, 3]);
+    expect(await codeOf(api.readBytes('linux-1', '/w/a.png', 2))).toBe('DENIED');
+    expect(await codeOf(api.readBytes('linux-1', '/w/none', 2))).toBe('NOT_FOUND');
+  });
+
+  it('a symlink is described by the file it points at, so read-state sees that file change (review fix)', async () => {
+    guest.files.set('/w/notes.md', { data: new Uint8Array([1]), mtime: 5 });
+    guest.files.set('/w/gone.md', { data: new Uint8Array([1]), mtime: 5 });
+    const plain = guest.client.stat;
+    guest.client.stat = async (path: string) => ({ ...(await plain(path)), kind: 'symlink', size: 9n });
+    guest.scripts.set(STAT_TARGET_SCRIPT, ([path]) =>
+      path === '/w/notes.md' ? { code: 0, stdout: 'regular file|4096|1700000000\n' } : { code: 3 },
+    );
+    expect(await api.stat('linux-1', '/w/notes.md')).toEqual({
+      exists: true,
+      kind: 'file',
+      size: 4096,
+      mtimeMs: 1_700_000_000_000,
+    });
+    // A dangling link: nothing to read.
+    expect(await api.stat('linux-1', '/w/gone.md')).toEqual({ exists: false, size: 0, mtimeMs: 0 });
+    expect(guest.runs.filter((r) => r.script === STAT_TARGET_SCRIPT).map((r) => r.args)).toEqual([
+      ['/w/notes.md'],
+      ['/w/gone.md'],
+    ]);
+  });
+
+  it('a final newline makes one more, empty line (as Claude Code reads it)', async () => {
+    guest.scripts.set(READ_SCRIPT, () => ({ code: 0, stdout: 'a\nb\n', stderr: '2 2 0 1\n' }));
+    expect(await api.readFile('linux-1', { path: '/w/x' })).toEqual({
+      content: 'a\nb\n',
+      startLine: 1,
+      totalLines: 3,
+      truncated: false,
+    });
+    guest.scripts.set(READ_SCRIPT, () => ({ code: 0, stdout: 'a\n', stderr: '2 1 0 1\n' }));
+    expect(await api.readFile('linux-1', { path: '/w/x', limit: 1 })).toEqual({
+      content: 'a',
+      startLine: 1,
+      totalLines: 3,
+      truncated: true,
+    });
+    guest.scripts.set(READ_SCRIPT, () => ({ code: 0, stdout: 'a\nb\n', stderr: '2 2 0 0\n' }));
+    expect((await api.readFile('linux-1', { path: '/w/x' })).totalLines).toBe(2);
+  });
+
+  it('greps only the matched parts with -o', async () => {
+    guest.scripts.set(GREP_SCRIPT, () => ({
+      code: 0,
+      stdout: `${JSON.stringify({
+        type: 'match',
+        data: {
+          path: { text: '/w/a.ts' },
+          line_number: 3,
+          lines: { text: 'id=12 id=34\n' },
+          submatches: [{ match: { text: 'id=12' } }, { match: { text: 'id=34' } }],
+        },
+      })}\n`,
+    }));
+    const r = await api.grep('linux-1', {
+      pattern: 'id=\\d+',
+      path: '/w',
+      outputMode: 'content',
+      onlyMatching: true,
+    });
+    expect(r.output).toBe('/w/a.ts:3:id=12\n/w/a.ts:3:id=34');
+  });
+});
+
+describe('PC tools V2: background jobs', () => {
+  it('a foreground command that overruns moves to the background with its output so far and its file kept', async () => {
+    sit();
+    const exits: JobExit[] = [];
+    api.onJobExit((x) => exits.push(x));
+    const run = api.exec('linux-1', {
+      command: 'npm run build',
+      timeoutMs: 1_000,
+      tag: 'ada:3',
+      onTimeout: 'background',
+      jobId: 'b1234abcd',
+      outputFile: true,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    const p = guest.execs[0] as FakeProc;
+    expect(p.command.env.get('MV_OUT')).toBe('/home/cua/.mv/jobs/b1234abcd.out');
+    expect(p.command.env.has('MV_KEEP')).toBe(false);
+    p.out('compiling…\n');
+    const res = await run;
+    expect(res).toMatchObject({
+      kind: 'background',
+      jobId: 'b1234abcd',
+      outputPath: '/home/cua/.mv/jobs/b1234abcd.out',
+      timedOutAfterMs: 1_000,
+    });
+    expect(p.killed).toBe(false);
+    expect(guest.runs.some((r) => r.args[0] === '/home/cua/.mv/jobs/b1234abcd.out')).toBe(true);
+    p.out('done\n');
+    p.exit({ code: 0 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect((await api.jobOutput('linux-1', 'b1234abcd')).output).toBe('compiling…\ndone\n');
+    expect(exits).toMatchObject([{ jobId: 'b1234abcd', tag: 'ada:3', exitCode: 0, reason: 'exited' }]);
+  });
+
+  it('a background job keeps its file, is stopped at the end of its lifetime, and says why it ended', async () => {
+    sit();
+    guest.scripts.set(SWEEP_LAUNCH, () => ({ code: 0, stdout: '1\n' }));
+    const exits: JobExit[] = [];
+    api.onJobExit((x) => exits.push(x));
+    const started = await api.exec('linux-1', {
+      command: 'npm run dev',
+      background: true,
+      tag: 'ada:3',
+      lifetimeMs: 1_000,
+      jobId: 'bdev0001',
+      outputFile: true,
+    });
+    expect(started).toMatchObject({ kind: 'background', jobId: 'bdev0001', lifetimeMs: 1_000 });
+    expect((guest.execs[0] as FakeProc).command.env.get('MV_KEEP')).toBe('1');
+    await new Promise((r) => setTimeout(r, 1_200));
+    expect((guest.execs[0] as FakeProc).killed).toBe(true);
+    expect(exits).toMatchObject([{ jobId: 'bdev0001', reason: 'lifetime', exitCode: 137 }]);
+    // Stopped by id, and by the seat's end.
+    await api.exec('linux-1', { command: 'a', background: true, tag: 'ada:3', jobId: 'bstop001' });
+    await api.kill('linux-1', { jobId: 'bstop001' });
+    await api.exec('linux-1', {
+      command: 'b',
+      background: true,
+      tag: 'ada:3',
+      jobId: 'bseat001',
+      outputFile: true,
+    });
+    guest.runs.length = 0;
+    await api.killTag('linux-1', 'ada:3');
+    expect(exits.map((x) => `${x.jobId}:${x.reason}`)).toEqual([
+      'bdev0001:lifetime',
+      'bstop001:stopped',
+      'bseat001:seat',
+    ]);
+    // The seat's job files are deleted.
+    const rm = guest.runs.find((r) => r.script.startsWith('rm -f'));
+    expect(rm?.args).toContain('/home/cua/.mv/jobs/bseat001.out');
+    expect(await codeOf(api.exec('linux-1', { command: 'x', tag: 'ada:3', jobId: 'BAD id' }))).toBe(
+      'GUEST_ERROR',
+    );
   });
 });

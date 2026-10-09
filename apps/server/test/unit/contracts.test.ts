@@ -305,7 +305,15 @@ describe('FakePcApi', () => {
     });
     expect(filesOnly.matches).toBe(0);
     const count = await pc.grep('linux-1', { pattern: 'TODO', outputMode: 'count', headLimit: 1 });
-    expect(count).toEqual({ output: '/home/cua/foo/src/deep/x.ts:1', matches: 2, truncated: true });
+    expect(count).toEqual({
+      output: '/home/cua/foo/src/deep/x.ts:1',
+      matches: 2,
+      total: 2,
+      files: 2,
+      truncated: true,
+    });
+    const paged = await pc.grep('linux-1', { pattern: 'TODO', outputMode: 'count', offset: 1, headLimit: 1 });
+    expect(paged.output).toBe('/home/cua/foo/src/math.ts:1');
     expect(globToRegExp('/a/**/b?.ts').test('/a/x/y/b1.ts')).toBe(true);
     expect(globToRegExp('/a/*.ts').test('/a/x/b.ts')).toBe(false);
   });

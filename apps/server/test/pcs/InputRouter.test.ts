@@ -593,3 +593,84 @@ describe('H3: bounded calls, queues and batches', () => {
     expect(chunkText('')).toEqual([]);
   });
 });
+
+describe('agent input for PC tools V2', () => {
+  it('maps xdotool keysyms to cua names', () => {
+    expect(normalizeKeyName('Prior')).toBe('KEY_PAGE_UP');
+    expect(normalizeKeyName('Next')).toBe('KEY_PAGE_DOWN');
+    expect(normalizeKeyName('Page_Down')).toBe('KEY_PAGE_DOWN');
+    expect(normalizeKeyName('KP_Enter')).toBe('KEY_NUMPAD_ENTER');
+    expect(normalizeKeyName('KP_7')).toBe('KEY_NUMPAD_7');
+    expect(normalizeKeyName('Super_L')).toBe('KEY_META_LEFT');
+    expect(normalizeKeyName('Control_R')).toBe('KEY_CONTROL_RIGHT');
+    expect(normalizeKeyName('bracketleft')).toBe('KEY_BRACKET_LEFT');
+    expect(normalizeKeyName('apostrophe')).toBe('KEY_QUOTE');
+    expect(normalizeKeyName('grave')).toBe('KEY_BACKQUOTE');
+    expect(normalizeKeyName('XF86AudioMute')).toBe('KEY_VOLUME_MUTE');
+    expect(normalizeKeyName('XF86Back')).toBe('KEY_BROWSER_BACK');
+    expect(normalizeKeyName('BackSpace')).toBe('KEY_BACKSPACE');
+  });
+
+  it('parses press, hold, mouse and wheel events, and clicks at the pointer with modifiers', () => {
+    expect(parseInputEvent({ k: 'press', key: 'Page_Down', modifiers: ['ctrl'], repeat: 3 })).toEqual({
+      k: 'press',
+      key: 'KEY_PAGE_DOWN',
+      modifiers: ['KEY_CONTROL'],
+      repeat: 3,
+    });
+    expect(parseInputEvent({ k: 'press', key: 'a', modifiers: ['banana'] })).toBeNull();
+    expect(parseInputEvent({ k: 'press', key: 'a', repeat: 101 })).toBeNull();
+    expect(parseInputEvent({ k: 'hold', keys: ['shift'], ms: 1500 })).toEqual({
+      k: 'hold',
+      keys: ['KEY_SHIFT'],
+      ms: 1500,
+    });
+    expect(parseInputEvent({ k: 'hold', keys: ['shift'], ms: 400_000 })).toBeNull();
+    expect(parseInputEvent({ k: 'mouse', button: 'left', down: true })).toEqual({
+      k: 'mouse',
+      button: 'left',
+      down: true,
+    });
+    expect(parseInputEvent({ k: 'wheel', dx: 0, dy: 3 })).toEqual({ k: 'wheel', dx: 0, dy: 3 });
+    expect(parseInputEvent({ k: 'wheel', dx: 0, dy: 3, x: 1 })).toBeNull();
+    expect(parseInputEvent({ k: 'click', button: 'left', count: 3, modifiers: ['ctrl', 'Shift_L'] })).toEqual(
+      {
+        k: 'click',
+        button: 'left',
+        count: 3,
+        modifiers: ['KEY_CONTROL', 'KEY_SHIFT_LEFT'],
+      },
+    );
+  });
+
+  it('a hold keeps its keys down until its time is up or any release, then lets go', async () => {
+    const f = fakeClient();
+    const router = new InputRouter({ getClient: async () => f.client });
+    router.setOccupant('linux-1', ada);
+    const hold = router.perform('linux-1', ada, [{ k: 'hold', keys: ['alt', 'Tab'], ms: 60_000 }]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(router.held('linux-1').keys).toEqual(['KEY_ALT', 'KEY_TAB']);
+    const t0 = Date.now();
+    await router.releaseAll('linux-1');
+    await hold;
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(router.held('linux-1').keys).toEqual([]);
+    expect(f.calls.map(([kind, j]) => `${kind} ${JSON.stringify(j)}`)).toEqual([
+      'keyboard {"down":{"key":{"named":"KEY_ALT"}}}',
+      'keyboard {"down":{"key":{"named":"KEY_TAB"}}}',
+      'keyboard {"up":{"key":{"named":"KEY_TAB"}}}',
+      'keyboard {"up":{"key":{"named":"KEY_ALT"}}}',
+    ]);
+  });
+
+  it('a mouse button pressed where the pointer is stays held until released, and a release lets it go', async () => {
+    const f = fakeClient();
+    const router = new InputRouter({ getClient: async () => f.client });
+    router.setOccupant('linux-1', ada);
+    await router.perform('linux-1', ada, [{ k: 'mouse', button: 'left', down: true }]);
+    expect(router.held('linux-1').buttons).toEqual(['left']);
+    await router.releaseAll('linux-1');
+    expect(router.held('linux-1').buttons).toEqual([]);
+    expect(f.calls.at(-1)).toEqual(['pointer', { up: { button: 'MOUSE_BUTTON_LEFT' } }]);
+  });
+});

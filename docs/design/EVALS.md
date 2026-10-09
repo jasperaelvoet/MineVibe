@@ -226,7 +226,7 @@ results, wiki home, Releases, Roadmap). The shell runs a whitelist of commands o
 (coreutils, grep/rg/find/sed, git, npm/node test runs, df/du/free, a browser launcher; network tools fail like an
 offline box); it never executes model-written code. `~/repo` is a small Node package whose `subtotal()` ignores
 quantities, so `npm test` fails until it multiplies price by quantity. Read, Write, Edit, Glob and Grep follow the
-guest's semantics (`EDIT_NOT_FOUND`, `EDIT_AMBIGUOUS`, `cat -n` output through the `pc` tools).
+guest's semantics (`EDIT_NOT_FOUND`, `EDIT_AMBIGUOUS`, Claude Code's numbered Read lines through the `pc` tools).
 
 ### Scenarios
 

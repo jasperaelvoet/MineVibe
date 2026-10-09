@@ -29,6 +29,7 @@ export type ControlKind =
   | 'STOOD UP'
   | 'KICKOFF'
   | 'JOB DONE'
+  | 'PC JOB'
   | 'JOB FAILED'
   | 'HIRE DECISION'
   | 'HIRE APPROVED'

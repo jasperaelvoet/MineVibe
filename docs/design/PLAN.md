@@ -214,22 +214,22 @@ query({ prompt: gatedInbox, options: {
 ### 6.2 Tools per state (ToolGate = PreToolUse hook)
 - **Plan-mode detection.** ToolGate uses `input.permission_mode ?? nodeTrackedMode`. The field is optional in the types, but S2 saw it on every call (the bypass check saw `bypassPermissions` and `plan`). Node tracks the mode from its own `setPermissionMode` calls and the brokered ExitPlanMode.
 - **Plan mode is never automatic (USER DECISION 2026-10-08).** Agents can't put themselves into plan mode: EnterPlanMode is not in the tool list and ToolGate denies it. Plan mode only comes from the player's per-agent Plan-first toggle (6.3), and ExitPlanMode is denied outside plan mode.
-- **Aliased inputs.** `toolAliases` only renames the tool, so the built-in input arrives unchanged. Every `pc__` schema must therefore be a **superset of the built-in input**:
-  - Read `{file_path, offset?, limit?, pages?}` with `cat -n` style output.
-  - Edit `{file_path, old_string, new_string, replace_all?}`.
-  - Write, Glob and Grep likewise (including Grep's output modes).
-  - Bash `{command, timeout?, description?, run_in_background?}`, ignoring `dangerouslyDisableSandbox`.
+- **Aliased inputs.** `toolAliases` only renames the tool, so the built-in input arrives unchanged. Every `pc__` schema must therefore be a **superset of the built-in input**, and since PC tools V2 the answers are the built-ins' own, byte for byte (Claude Code 2.1.293):
+  - Read `{file_path, offset?, limit?, pages?}`: `<n>\t<line>` numbering (unpadded; a final newline is one more, empty line), the empty-file and short-file reminders, `File does not exist. Note: your current working directory is …`, an unchanged re-read answered with "Wasted call — …", and a view too large for one result cut at a line with the `[Truncated: PARTIAL view — …]` note.
+  - Edit `{file_path, old_string, new_string, replace_all?}` and Write `{file_path, content}`: the built-in success and error texts, and read-state: an existing file must have been read in this seat and must not have changed since (`File has not been read yet…`, `File has been modified since read…`), so an agent never blindly overwrites the player's Vault files.
+  - Glob and Grep: paths relative to the working directory, Grep's three output modes with `head_limit` (default 250) and `offset` applied in the guest, `-o` wired through.
+  - Bash `{command, timeout?, description?, run_in_background?}`, ignoring `dangerouslyDisableSandbox`; a non-zero exit is an error starting `Exit code N` (except grep/find/diff/test's "nothing found" exits). TaskStop and KillShell are aliased to `pc__task_stop`.
 
 | Tool | Wandering (Haiku/xhigh) | Seated at PC *P* (Opus/medium) |
 |---|---|---|
 | `mc__` observe / social / eat / equip / remember / `stand_up` | allow (`stand_up` denied) | allow |
 | `mc__` movement / world jobs / `sit_at_pc` | allow | deny: "stand up first" |
 | `mc__request_hire` | CEO only | CEO only |
-| `pc__*` (screenshot, click, double/right_click, move, drag, scroll, type, key, clipboard, bash, bash_output, bash_kill, read, write, edit, glob, grep, info, handoff_note) | deny: "walk to a PC and sit" | allow only if `occupant(P)==agent` and the SeatFSM is `seated`. Mutating tools are denied while `permission_mode==='plan'`. |
+| `pc__*` (V2, 31 tools: the computer-use members screenshot, zoom, cursor_position, left/right/middle/double/triple_click, left_click_drag, left_mouse_down/up, mouse_move, scroll, type, key, hold_key, wait; ui, ui_act, open, wait_for, clipboard; bash, task_stop, read, write, edit, glob, grep; info, handoff_note) | deny: "walk to a PC and sit" | allow only if `occupant(P)==agent` and the SeatFSM is `seated`. Mutating tools are denied while `permission_mode==='plan'`. |
 | WebSearch / WebFetch | deny | allow. WebFetch denies loopback, RFC1918 and link-local targets. |
 | `mc__codex_*` | reads allowed anywhere; writes allowed, within the write budget | allow |
 | `mc__calendar_*`, `report_task` | allow for self. Scheduling others is CEO only; agents can't edit events the player created. | same |
-| Plan mode (seated) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (click, type, key, drag, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: `pc__bash`, with the instruction "read-only commands only, e.g. git status or running tests". |
+| Plan mode (seated) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (the clicks, left_click_drag, left_mouse_down/up, type, key, hold_key, ui_act, open, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: reads (screenshot, zoom, ui, read, glob, grep), mouse_move, scroll, wait, wait_for, task_stop, and `pc__bash` with the instruction "read-only commands only, e.g. git status or running tests". |
 | AskUserQuestion | broker | broker |
 | ExitPlanMode | deny ("not in plan mode") | broker in plan mode (plan-first sessions only); deny otherwise |
 | EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
@@ -237,8 +237,16 @@ query({ prompt: gatedInbox, options: {
 - **All file and shell work happens inside the PC.** `pc__read/write/edit/glob/grep` run in the guest through spacesd (`rg`, upload/download, an exact-string edit with the same semantics as Edit). The host never opens a path an agent controls, so there's no symlink race.
 - **`pc__bash`** uses spacesd `spawn` as the `cua` user (root as a fallback if bind-mount permissions require it [U S5]). Details:
   - Wrapper: `exec > >(tee -a ~/.mv/shell.log) 2>&1; cd "$MV_CWD"; <cmd>; ec=$?; printf '\n__MV_PWD__%s' "$PWD"; exit $ec`. The command runs in the current shell, so cwd persists per agent and PC.
-  - Output capped at 30k characters; timeouts default 120 s, max 600 s; background jobs supported.
+  - Output capped at 30k characters, head and tail; timeouts default 120 s, max 600 s.
+  - Background commands (Claude Code 2.x): `run_in_background` tees into `~/.mv/jobs/<id>.out`, which the agent reads with `read`; a foreground command that overruns its timeout moves to the background instead of being killed; a job lives at most its `timeout` (default 30 min, max 2 h). When one ends, the brain wakes the agent with a nonce-tagged `<task-notification>` (P3), dropped once the seat ended; `task_stop` stops one. Job files are deleted with the seat.
   - Every spawn is tagged `agentId:seatEpoch`.
+- **Computer tools (PC tools V2).** The members of the trained computer-use toolset (`computer_toolset_20260801`), one MCP tool each with the trained names and inputs, plus `ref` (an accessibility element) on the click tools:
+  - Coordinates are pixels of the screenshots the agent sees. Linux PCs are 1280×800 (1:1); a larger screen is shown scaled to a 1280-long-edge image of at most ~1.02 MP and coordinates are scaled back. The model never picks the image size.
+  - **Batches.** Several computer actions in one assistant message run in order (Claude Code runs MCP tools that are not read-only one at a time) and stop at the first failure: later ones answer the trained `Not executed: an earlier computer action in this turn failed.` AgentSession feeds a per-agent BatchBook from the stream (`message_start`, each `tool_use` start, `message_stop`); a handler learns its tool_use id from Claude Code's `_meta['claudecode/toolUseId']` (the gate's id as a fallback).
+  - **End-of-batch screenshot.** Only the last `pc` call of a message answers with the screen (settled: two equal 320 px thumbnails, at most 1.5 s); the others say `OK`. A screen identical to the last image the agent saw costs one line (`(Screen unchanged since your last screenshot.)`). Answers add what changed (`focused: "Save As" (new window)`).
+  - `zoom` enlarges a region (ImageMagick in the guest scales it to the screenshot size); `key` takes xdotool names (`ctrl+s`, `Page_Down`, `KP_Enter`, sequences `"ctrl+a Delete"`, `repeat`); `hold_key` is released by any occupant change.
+- **Perception and helpers (PC tools V2).** `ui` reads apps through spacesd's AccessibilityService (find, tree, text, windows): elements come as `ref_N` with role, name and centre in screenshot pixels, for a fraction of a screenshot's tokens. `ui_act` presses, focuses, sets values, toggles and operates windows without the mouse (it works on covered windows). spacesd keeps one live snapshot per window, so a ref whose snapshot a newer look replaced is found again by role and name; a pixel action on a named ref looks the element up again first, so it lands where the element is now. `open` starts a URL (Firefox: its pages have an accessibility tree; Chromium's has none), file, folder or app as the seat's tagged process (it dies with the seat) and returns its window and the screen; `wait_for` waits for text, an element, a window or a still screen. A `wait_for` that times out is not an MCP error (Claude Code passes only the text of those on, so the screenshot would be lost): it says so with the screen, and the computer actions after it in the message do not run. The ShellMirror window cannot be closed through `ui_act`.
+- **Every `pc` result stays under 60k characters** (D7): above Claude Code's MCP output limit the CLI would save it to a host file that the aliased Read cannot reach.
 - **ShellMirror.** On sit, a visible terminal in the PC tails `~/.mv/shell.log`, so bystanders can watch the agent work on the monitor.
 
 ### 6.3 SeatFSM and model swap
