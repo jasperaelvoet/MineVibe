@@ -63,13 +63,18 @@ hunger, an inventory and a skin for its role (CEO, Engineer, Miner, Farmer, Guar
   The crew is capped at 4 agents.
 - **Two brains at a time.** At most 2 agents think at once, and at most 2 sit at PCs. A separate slot is
   always kept free so your messages get answered even while others work.
-- **Models.** A wandering agent runs on **Haiku 5.5** at `xhigh` effort. An agent seated at a PC runs on
-  **Opus 5.5** at `medium` effort. The name tag shows `[H]` or `[O]`. The switch happens between turns, and
-  a quick stand-up and re-sit within 60 seconds skips it.
+- **Two sessions per agent.** In the world an agent thinks with its **body session** on **Haiku 5.5** at
+  `xhigh` effort. When it sits at a PC, its **desk session** for that PC takes over, on **Opus 5.5** at `medium`
+  effort, with a handoff of the task and what you said to it lately; when it stands up, the body gets a short
+  report of what it did. The desk session is kept: the next time the agent sits at the same PC it carries on
+  where it left off (after 6 idle hours it starts fresh). The name tag shows `[H]` or `[O]`.
 - **Minecraft mode and PC mode.** A seated agent works the computer: it can still check on its body and
   surroundings, talk, take notes and use the calendar, but it stands up before it walks, mines, crafts or
   builds. A wandering agent has no computer and no web until it sits at a PC. At the meeting table agents
   only talk, take notes and plan.
+- **Your account stays private.** Claude Code tells every agent session the e-mail address of the Claude
+  account it runs on. Agents are told never to repeat it, and MineVibe blanks it out (`[redacted]`) in their
+  bubbles, transcripts, messages, Codex pages, calendar events, meeting minutes and notes.
 - **Reflexes, not tokens.** Survival is handled by in-game reflexes at zero cost: escaping lava and
   drowning, backing off from creepers, eating, fighting, protecting you, feeding you when you are hungry,
   and sheltering at dusk. The language model only hands out long-running jobs, so it is never on a
@@ -81,7 +86,8 @@ hunger, an inventory and a skin for its role (CEO, Engineer, Miner, Farmer, Guar
 ### Bubbles and icons
 
 Agents talk in bubbles above their heads. Bubbles wrap at about 32 characters, show at most 3 lines and fade
-with distance; beyond 32 blocks you get a toast instead. Every agent's full history is in its AgentScreen
+with distance; beyond 32 blocks you get a toast instead. Every agent's full history (one history for both of
+its sessions: lines from its desk session carry the PC, `Ada @linux-1: …`) is in its AgentScreen
 and in the Crew log.
 
 | Head icon | Meaning |

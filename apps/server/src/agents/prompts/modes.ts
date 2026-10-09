@@ -1,6 +1,7 @@
 /**
- * The mode-specific prompt text (agents/modes.ts): the persona section of each mode, the MODE banner that opens the
- * first turn after a mode switch, and ToolGate's teaching text for a tool outside the current mode.
+ * The mode-specific prompt text (agents/modes.ts): the persona section of each mode (the body persona carries
+ * Minecraft mode's, a desk persona PC mode's), the MODE banner that opens the body session's first turn after it
+ * switches between Minecraft and Meeting mode, and ToolGate's teaching text for a tool outside the current mode.
  *
  * Everything here is built from Node-controlled values only (the session nonce, the player's validated name, the
  * catalog of the agent's mc tool set), and a mode's banner is the same text every time that agent enters the mode, so
@@ -37,7 +38,7 @@ export function modeSection(
       return [
         `Your body has reflexes that already eat, flee, fight, shelter and feed ${p}. Don't micromanage them.`,
         'The mcp__mc__* tools move your body and observe the world. World jobs are long: when a tool says "running", END YOUR TURN. You will be woken with the result.',
-        'To use a computer, walk to an office PC and call mcp__mc__sit_at_pc with a purpose; PC mode starts with your next turn.',
+        'To use a computer, walk to an office PC and call mcp__mc__sit_at_pc with a purpose; once you sit, your PC session takes over.',
       ];
     case 'seated':
       return [
@@ -142,15 +143,16 @@ export function modeBanner(mode: BrainMode, input: ModeBannerInput): string {
 }
 
 /**
- * `mcp__mc__stand_up`'s reply after leaving a seat (AgentBrain.standUp, and the tool eval's stand-in for it): the rest
- * of the turn is Minecraft mode already; the full MODE banner follows with the next turn.
+ * `mcp__mc__stand_up`'s reply after leaving a seat (AgentBrain.standUp, and the tool eval's stand-in for it). At a PC
+ * the desk session's turn is its last at this sit: its PC tools stop now, and what it said goes to the body session
+ * in the DESK REPORT. At the meeting table the body is back in Minecraft mode; the MODE banner follows next turn.
  */
 export function stoodUpText(
   seat: { kind: 'pc'; pcId: string | null } | { kind: 'meeting' },
   playerName: string,
 ): string {
   return seat.kind === 'pc'
-    ? `Stood up from ${seat.pcId ?? 'the PC'}: Minecraft mode, your PC tools stop now. Tell ${playerName} the result if you haven't.`
+    ? `Stood up from ${seat.pcId ?? 'the PC'}: your PC tools stop now and this PC session ends with this turn. Tell ${playerName} the result in 1-2 sentences if you haven't, then end your turn.`
     : 'You left the meeting chair: Minecraft mode.';
 }
 

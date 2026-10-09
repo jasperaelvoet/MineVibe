@@ -22,16 +22,30 @@ export interface KickoffInput {
   /** CLAUDE.md of the primary mount, if any (already clipped or not). */
   readonly claudeMd: { readonly path: string; readonly text: string } | null;
   readonly handoffs: readonly HandoffNote[];
+  /** The desk session continues an earlier one at this PC (resumed), or starts fresh. */
+  readonly resumed?: boolean | undefined;
+  /** The player's latest lines to this agent, oldest first, verbatim (the handoff quotes them). */
+  readonly playerLines?: readonly string[] | undefined;
+  /** The agent's `memory.md` ("" or absent: none). */
+  readonly memory?: string | undefined;
+  /** The Codex digest context (Node-made, already enveloped), or null. */
+  readonly codexDigest?: string | null | undefined;
 }
 
-/** The P1 kickoff after the swap to Opus (PLAN §6.3 "Swaps happen only at turn boundaries" step 3). */
+/**
+ * The handoff that opens a desk session's turn at every sit (PLAN §6.3 "Handoffs"): the PC, the task, the player's
+ * recent lines verbatim, the agent's memory, the Codex digest, the notes left at this PC and its Vault folders, the
+ * mount's CLAUDE.md, plan-first, and how to work the PC.
+ */
 export function kickoffMessage(input: KickoffInput): string {
   const pc = input.pc;
   const lines = [
     control(
       input.nonce,
       'KICKOFF',
-      `You are seated at ${pc.pcId} (${pc.type}, ${pc.os}, screen ${pc.screen.w}x${pc.screen.h}). You are now the brain of this PC session.`,
+      input.resumed
+        ? `You sat down at ${pc.pcId} again (${pc.type}, ${pc.os}, screen ${pc.screen.w}x${pc.screen.h}). Your earlier work at this PC is above; here is the handoff from your body.`
+        : `You are seated at ${pc.pcId} (${pc.type}, ${pc.os}, screen ${pc.screen.w}x${pc.screen.h}). This is your PC session; here is the handoff from your body.`,
     ),
     `User ${pc.user}, home ${pc.home}.`,
   ];
@@ -44,6 +58,15 @@ export function kickoffMessage(input: KickoffInput): string {
   }
   if (pc.codexPath) lines.push(`The Codex is readable at ${pc.codexPath}.`);
   if (input.task) lines.push(`Your task: ${escapeShared(input.task)}`);
+  const said = (input.playerLines ?? []).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (said.length > 0) {
+    lines.push(`What ${input.playerName} said to you lately (oldest first, word for word):`);
+    for (const l of said) lines.push(`- ${input.playerName}: ${escapeShared(l).replace(/\s*\n\s*/g, ' / ')}`);
+  }
+  if (input.memory && input.memory.trim().length > 0) {
+    lines.push(wrapNote({ author: 'your own memory', kind: 'memory', text: input.memory }));
+  }
+  if (input.codexDigest) lines.push(input.codexDigest);
   for (const note of input.handoffs) {
     lines.push(
       wrapNote({
@@ -90,6 +113,78 @@ export function pcPrimer(pc: PcGuestInfo, playerName: string): string {
     '- Code and files: bash, read, edit, write, grep, glob, not the GUI. Long commands: bash run_in_background (you are notified when they end).',
     `- What you open closes when you stand up. Leave the "Shell: …" window open: ${playerName} watches your commands there.`,
   ].join('\n');
+}
+
+/** How a desk session's sit ended, for the DESK REPORT. */
+export type DeskOutcome = 'done' | 'interrupted' | 'kicked';
+
+/** One foreground `pc__bash` command and its exit code. */
+export interface DeskCommand {
+  readonly command: string;
+  readonly exitCode: number;
+}
+
+export interface DeskReportInput {
+  readonly nonce: string;
+  readonly playerName: string;
+  readonly pcId: string;
+  readonly outcome: DeskOutcome;
+  /** Why the sit ended, when the agent did not stand up itself ("Jasper kicked you off linux-1 mid-task."). */
+  readonly why?: string | null | undefined;
+  /** The desk session's last words at this sit (its final text), or null. */
+  readonly summary: string | null;
+  /** Files the desk wrote or edited at this sit, oldest first. */
+  readonly changedFiles: readonly string[];
+  /** The last foreground commands at this sit, oldest first. */
+  readonly commands: readonly DeskCommand[];
+}
+
+/** Files and commands a DESK REPORT names at most. */
+export const DESK_REPORT_FILES = 8;
+export const DESK_REPORT_COMMANDS = 3;
+
+/**
+ * The compact report that wakes the body session after a sit (PLAN §6.3 "Handoffs"): how it ended, the desk's last
+ * words (enveloped: the body reads them as information), the files it changed and the exit codes of its last commands.
+ */
+export function deskReportMessage(input: DeskReportInput): string {
+  const head =
+    input.outcome === 'done'
+      ? `You stood up from ${input.pcId} (outcome: done). You are on your feet again.`
+      : `You are no longer at ${input.pcId} (outcome: ${input.outcome}). ${input.why ?? ''}`.trim();
+  const lines = [control(input.nonce, 'DESK REPORT', head)];
+  if (input.summary && input.summary.trim().length > 0) {
+    lines.push(
+      wrapNote({
+        author: `your PC session at ${input.pcId}`,
+        kind: 'session',
+        text: input.summary,
+        maxChars: 1_500,
+      }),
+    );
+  } else {
+    lines.push('Your PC session said nothing at the end.');
+  }
+  const files = [...new Set(input.changedFiles)];
+  if (files.length > 0) {
+    const shown = files.slice(-DESK_REPORT_FILES).map((f) => escapeShared(f));
+    const more = files.length - shown.length;
+    lines.push(`Files changed: ${shown.join(', ')}${more > 0 ? ` (+${more} more)` : ''}.`);
+  }
+  if (input.commands.length > 0) {
+    const cmds = input.commands
+      .slice(-DESK_REPORT_COMMANDS)
+      .map((c) => `\`${escapeShared(c.command.split('\n')[0] ?? '').slice(0, 80)}\` exit ${c.exitCode}`);
+    lines.push(`Last commands: ${cmds.join('; ')}.`);
+  }
+  lines.push(
+    input.outcome === 'done'
+      ? `If ${input.playerName} already heard the result, don't repeat it: carry on with what is next, or reply (silent).`
+      : input.outcome === 'kicked'
+        ? `Ask ${input.playerName} what they want, or do something else.`
+        : 'Deal with that first; sit down again later to continue (your PC session picks up where it left off).',
+  );
+  return lines.join('\n');
 }
 
 export interface WelcomeInput {

@@ -1,7 +1,6 @@
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it } from 'vitest';
 import { AgentSession, checkStartup } from '../../../src/agents/AgentSession.js';
-import { SEATED_PROFILE, WANDERING_PROFILE } from '../../../src/agents/constants.js';
 import type { SDKResultMessage } from '../../../src/agents/sdk.js';
 import { buildSessionOptions } from '../../../src/agents/sessionOptions.js';
 import { FAKE_MODELS, type FakeQuery, fakeQueryFactory, settle, userText } from '../../helpers/fakeSdk.js';
@@ -9,6 +8,7 @@ import { FAKE_MODELS, type FakeQuery, fakeQueryFactory, settle, userText } from 
 function makeSession(callbacks: ConstructorParameters<typeof AgentSession>[1] = {}) {
   const factory = fakeQueryFactory();
   const options = buildSessionOptions({
+    kind: 'body',
     claude: { source: 'bundled', path: undefined, version: null },
     env: { HOME: '/Users/j' },
     cwd: '/tmp/agent-home',
@@ -16,7 +16,6 @@ function makeSession(callbacks: ConstructorParameters<typeof AgentSession>[1] = 
     sessionId: '11111111-1111-4111-8111-111111111111',
     persona: 'PERSONA',
     mc: createSdkMcpServer({ name: 'mc', tools: [] }),
-    pc: createSdkMcpServer({ name: 'pc', tools: [] }),
   });
   const session = new AgentSession(
     {
@@ -25,7 +24,6 @@ function makeSession(callbacks: ConstructorParameters<typeof AgentSession>[1] = 
       gate: async () => ({}),
       canUseTool: async () => ({ behavior: 'deny', message: 'no' }),
       queryFactory: factory,
-      swapAckTimeoutMs: 200,
     },
     callbacks,
   );
@@ -34,10 +32,11 @@ function makeSession(callbacks: ConstructorParameters<typeof AgentSession>[1] = 
 }
 
 describe('AgentSession', () => {
-  it('starts one streaming query with hooks (PreToolUse gate, PostModelSwitch) and canUseTool added', () => {
+  it('starts one streaming query with the PreToolUse gate and canUseTool added, on one fixed model', () => {
     const { q } = makeSession();
     expect(q.options.hooks?.PreToolUse).toHaveLength(1);
-    expect(q.options.hooks?.PostModelSwitch).toHaveLength(1);
+    // Dual sessions: no model swaps, so no PostModelSwitch hook either.
+    expect(q.options.hooks?.PostModelSwitch).toBeUndefined();
     expect(typeof q.options.canUseTool).toBe('function');
     expect(q.options).not.toHaveProperty('allowedTools');
     expect(q.options.model).toBe('claude-haiku-5-5');
@@ -153,36 +152,16 @@ describe('AgentSession', () => {
     ]);
   });
 
-  it('swaps model and effort with applyFlagSettings, acknowledged by PostModelSwitch (S3)', async () => {
-    const switched: string[] = [];
-    const { session, q } = makeSession({
-      onModelSwitched: (i) => switched.push(`${i.from_model}->${i.to_model}`),
-    });
-    const up = await session.applyProfile(SEATED_PROFILE);
-    expect(q.calls.at(-1)).toEqual({
-      method: 'applyFlagSettings',
-      args: { model: 'claude-opus-5-5', effortLevel: 'medium' },
-    });
-    expect(up).toMatchObject({
-      from: 'claude-haiku-5-5',
-      to: 'claude-opus-5-5',
-      acked: true,
-      estimatedCacheWriteUsd: 0.07,
-    });
-    expect(session.model).toBe('claude-opus-5-5');
-    const down = await session.applyProfile(WANDERING_PROFILE);
-    expect(down).toMatchObject({ to: 'claude-haiku-5-5', acked: true });
-    expect(q.effort).toBe('xhigh');
-    expect(switched).toEqual(['claude-haiku-5-5->claude-opus-5-5', 'claude-opus-5-5->claude-haiku-5-5']);
-    const same = await session.applyProfile(WANDERING_PROFILE);
-    expect(same.acked).toBe(true);
-  });
-
-  it('reports an unacknowledged swap after the timeout', async () => {
+  it('never swaps the model: no flag-layer calls, the model stays the one the session started with', async () => {
     const { session, q } = makeSession();
-    q.options.hooks = { ...q.options.hooks, PostModelSwitch: [] };
-    const res = await session.applyProfile(SEATED_PROFILE);
-    expect(res.acked).toBe(false);
+    session.send('go');
+    await q.waitForSent(1);
+    q.assistantText('Going.');
+    q.result();
+    await settle();
+    expect(q.calls.filter((c) => c.method === 'applyFlagSettings')).toEqual([]);
+    expect(session.model).toBe('claude-haiku-5-5');
+    expect(q.effort).toBe('xhigh');
   });
 
   it('notifies the exit: null after close(), an error after a crash', async () => {
@@ -260,7 +239,25 @@ describe('startup assertions (PLAN §6.1)', () => {
       supportedModels: async () => FAKE_MODELS,
     };
     expect(
-      await checkStartup({ apiKeySource: 'ANTHROPIC_API_KEY', tools: [] } as never, q, 'api_key'),
+      await checkStartup({ apiKeySource: 'ANTHROPIC_API_KEY', tools: [] } as never, q, 'api_key', () => {}),
     ).toEqual([]);
+  });
+
+  it('hands the account to the redactor in both modes, and a failing listener fails nothing', async () => {
+    const account = {
+      subscriptionType: 'Claude Max',
+      apiProvider: 'firstParty' as const,
+      email: 'jasper@example.com',
+      organization: "jasper@example.com's Organization",
+    };
+    const q = { accountInfo: async () => account, supportedModels: async () => FAKE_MODELS };
+    const seen: unknown[] = [];
+    expect(await checkStartup(init, q, 'subscription', (a) => seen.push(a))).toEqual([]);
+    expect(await checkStartup(init, q, 'api_key', (a) => seen.push(a))).toEqual([]);
+    expect(seen).toEqual([account, account]);
+    const throwing = () => {
+      throw new Error('listener');
+    };
+    expect(await checkStartup(init, q, 'subscription', throwing)).toEqual([]);
   });
 });

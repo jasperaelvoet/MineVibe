@@ -9,24 +9,27 @@ import type { ModelTier } from '@minevibe/protocol';
 export const HAIKU = 'claude-haiku-5-5';
 export const OPUS = 'claude-opus-5-5';
 
-/** A model/effort pair the session runs with. */
+/** A model/effort pair a session runs with (fixed for the session's whole life: there are no swaps). */
 export interface BrainProfile {
   readonly tier: ModelTier;
   readonly model: string;
   readonly effort: EffortLevel;
 }
 
-/** Wandering: Haiku 5.5 at xhigh (PLAN §1). */
-export const WANDERING_PROFILE: BrainProfile = Object.freeze({
-  tier: 'haiku',
-  model: HAIKU,
-  effort: 'xhigh',
-});
-/** Seated at a PC: Opus 5.5 at medium. */
-export const SEATED_PROFILE: BrainProfile = Object.freeze({ tier: 'opus', model: OPUS, effort: 'medium' });
+/**
+ * The two sessions of an agent (PLAN §6.1, dual sessions): the BODY session lives in the world (wandering, meetings,
+ * everything away from a PC); a DESK session works one PC. Each runs one fixed model and one fixed tool list.
+ */
+export type SessionKind = 'body' | 'desk';
 
-export function profileOf(tier: ModelTier): BrainProfile {
-  return tier === 'opus' ? SEATED_PROFILE : WANDERING_PROFILE;
+/** The body session: Haiku 5.5 at xhigh (PLAN §1). */
+export const BODY_PROFILE: BrainProfile = Object.freeze({ tier: 'haiku', model: HAIKU, effort: 'xhigh' });
+/** A desk session (one per agent and PC): Opus 5.5 at medium. */
+export const DESK_PROFILE: BrainProfile = Object.freeze({ tier: 'opus', model: OPUS, effort: 'medium' });
+
+/** The profile of a session kind. */
+export function profileOf(kind: SessionKind): BrainProfile {
+  return kind === 'desk' ? DESK_PROFILE : BODY_PROFILE;
 }
 
 /**
@@ -41,12 +44,24 @@ export function profileOf(tier: ModelTier): BrainProfile {
 export const AGENT_PERMISSION_MODE = 'bypassPermissions' as const;
 
 /**
- * `options.tools`: TodoWrite is silently dropped by CC 2.1.293 (S2), so it is not listed.
- *
- * USER DECISION 2026-10-08: no EnterPlanMode. Agents never put themselves into plan mode; only the player's per-agent
- * Plan-first toggle does (Node's `setPermissionMode('plan')` at the sit boundary). ExitPlanMode stays listed for those
- * plan-first sessions; ToolGate denies it outside plan mode.
+ * `options.tools` of the body session: only AskUserQuestion. TodoWrite is silently dropped by CC 2.1.293 (S2), and
+ * USER DECISION 2026-10-08: no EnterPlanMode (agents never put themselves into plan mode).
  */
+export const BODY_BUILTIN_TOOLS = ['AskUserQuestion'] as const;
+
+/**
+ * `options.tools` of a desk session. ExitPlanMode is added only while the player's Plan-first toggle is on
+ * ({@link deskBuiltinTools}); a resumed desk session whose toggle changed gets the difference as an in-message tool
+ * delta (spike S3b: the list is pinned to the first request, later changes arrive as `deferred_tools_delta`).
+ */
+export const DESK_BUILTIN_TOOLS = ['AskUserQuestion', 'WebSearch', 'WebFetch'] as const;
+
+/** The desk session's built-ins for the agent's Plan-first toggle. */
+export function deskBuiltinTools(planFirst: boolean): string[] {
+  return planFirst ? [...DESK_BUILTIN_TOOLS, 'ExitPlanMode'] : [...DESK_BUILTIN_TOOLS];
+}
+
+/** Every built-in either session may list (the ToolGate and the mode tables know these). */
 export const BUILTIN_TOOLS = ['AskUserQuestion', 'ExitPlanMode', 'WebSearch', 'WebFetch'] as const;
 
 /** Host tools that must never run on the host. */
@@ -63,8 +78,9 @@ export const DISALLOWED_TOOLS = [
 ] as const;
 
 /**
- * Built-in names routed to the PC tool server (S2: the hook sees the alias target). A model that calls a built-in by
- * habit (Bash, Read, TaskStop, KillShell, …) reaches the PC's tool, which answers in the built-in's format.
+ * Built-in names routed to the PC tool server in desk sessions (S2: the hook sees the alias target). A model that calls
+ * a built-in by habit (Bash, Read, TaskStop, KillShell, …) reaches the PC's tool, which answers in the built-in's
+ * format. Body sessions have no pc server and no aliases.
  */
 export const TOOL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   Bash: 'mcp__pc__bash',
@@ -114,18 +130,17 @@ export const TURN_CAPS = Object.freeze({
   seated: { calls: 400, ms: 45 * 60_000 },
 });
 
-/** A stand and re-sit on the same PC within this window skips the swap (PLAN §6.3). */
-export const SWAP_DEBOUNCE_MS = 60_000;
 /** An agent away from its seat loses the reservation after this long (PLAN §6.4). */
 export const AWAY_RESERVATION_MS = 3 * 60_000;
-/** Compact before an Opus→Haiku swap above this share of Haiku's window (PLAN §6.3). */
-export const CONTEXT_GUARD_RATIO = 0.7;
-/** Haiku 5.5 context window used by the context guard. */
-export const HAIKU_CONTEXT_TOKENS = 200_000;
-/** The context guard's `/compact` never holds the seat mutex longer than this. */
-export const CONTEXT_GUARD_TIMEOUT_MS = 180_000;
-/** How long to wait for the PostModelSwitch acknowledgement after `applyFlagSettings`. */
-export const SWAP_ACK_TIMEOUT_MS = 5_000;
+/**
+ * A desk session idle longer than this (since its last turn) is not resumed: the next sit at that PC starts a fresh
+ * one (PLAN §6.1, dual sessions). Desk sessions also end with the world: their records live in the world's crew file.
+ */
+export const DESK_SESSION_TTL_MS = 6 * 60 * 60_000;
+/** How many of the player's latest lines to the agent the desk handoff quotes verbatim. */
+export const HANDOFF_PLAYER_LINES = 6;
+/** A desk turn that keeps calling tools after its seat ended is interrupted after this many refused calls. */
+export const DESK_CLOSED_STRIKES = 2;
 
 /** UsageGovernor thresholds (PLAN §6.5). */
 export const TIRED_UTILIZATION = 0.75;
@@ -163,11 +178,6 @@ export const LAST_WORDS_MS = 8_000;
 
 /** A meeting turn (CrewHooks.meetingTurn) is interrupted after this long, queue wait included. */
 export const MEETING_TURN_TIMEOUT_MS = 90_000;
-/**
- * The re-sit debounce of an agent pulled from its PC into a meeting: the longest meeting (10 min) plus 2 min, so the
- * walk back to the reserved PC costs no model swap (PLAN §6.6).
- */
-export const MEETING_SWAP_DEBOUNCE_MS = 12 * 60_000;
 
 /** Autonomous wake budgets per agent per hour (full design §5.8). */
 export const AUTONOMY_BUDGET_PER_HOUR = Object.freeze({ listen: 0, helpful: 20, proactive: 40 });

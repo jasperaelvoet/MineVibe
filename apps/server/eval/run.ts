@@ -20,7 +20,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { agentEnv } from '../src/agents/agentEnv.js';
 import { type ResolvedClaude, resolveClaudeBinary } from '../src/agents/claudeBinary.js';
-import { type BrainProfile, SEATED_PROFILE, WANDERING_PROFILE } from '../src/agents/constants.js';
+import { BODY_PROFILE, type BrainProfile, DESK_PROFILE } from '../src/agents/constants.js';
 import { type QueryFactory, sdkQueryFactory } from '../src/agents/sdk.js';
 import { SERVER_VERSION } from '../src/version.js';
 import { formatRuns, formatTable, summarize } from './harness/metrics.js';
@@ -120,7 +120,7 @@ export function planLive(scenarios: readonly Scenario[], runs: number | null, fi
 }
 
 function profileFor(s: Scenario): BrainProfile {
-  return s.suite === 'pc' ? SEATED_PROFILE : WANDERING_PROFILE;
+  return s.suite === 'pc' ? DESK_PROFILE : BODY_PROFILE;
 }
 
 const BUNDLED: ResolvedClaude = { source: 'bundled', path: undefined, version: null };

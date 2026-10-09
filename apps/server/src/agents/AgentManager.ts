@@ -10,7 +10,10 @@
  * - **Chat.** `chat.send` lines are routed by the ChatRouter (mentions, broadcasts, meetings, card answers),
  *   debounced per agent and delivered as P0 wakes or context.
  * - **Events.** Body events, job ends, tells, task reports, calendar tasks and autonomy nudges become digest lines,
- *   context or wakes (EventRouter) on each agent's brain, through the BrainScheduler and the UsageGovernor.
+ *   context or wakes (EventRouter) on each agent's brain, through the BrainScheduler and the UsageGovernor. Each brain
+ *   runs a body session and, at a PC, a desk session (PLAN §6.1, dual sessions); everything goes to its active one.
+ * - **Privacy.** The outbound redactor (agents/redact.ts) learns the account's e-mail address and organisation from
+ *   the sessions' `accountInfo()` and blanks them in everything agent-authored that leaves a session.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -56,7 +59,7 @@ import { formatAnswerEcho, frontCard } from './chat/answerGrammar.js';
 import { type ChatContext, ChatInbox, ChatRouter, type Delivery } from './chat/ChatRouter.js';
 import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
-import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID } from './constants.js';
+import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID, type SessionKind } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
@@ -71,6 +74,7 @@ import {
   welcomeMessage,
 } from './prompts/kickoff.js';
 import { sanitizeDisplayName } from './prompts/persona.js';
+import { AccountRedactor, redactingOrgApi } from './redact.js';
 import { type QueryFactory, type SDKResultMessage, sdkQueryFactory } from './sdk.js';
 import { TranscriptStore } from './TranscriptStore.js';
 import { UsageGovernor } from './UsageGovernor.js';
@@ -139,8 +143,8 @@ export interface AgentManagerOptions {
    */
   readonly approveCalendarEvent?: (eventId: string) => Promise<void>;
   readonly lastWordsMs?: number;
-  /** Re-sit debounce after a stand (default 60 s). */
-  readonly swapDebounceMs?: number;
+  /** How long a desk session stays resumable after its last turn (default 6 h, PLAN §6.1). */
+  readonly deskTtlMs?: number;
   /** The agents' `mc` tool set (default: `MINEVIBE_MC_TOOLS`; tools-v2-mc.md §14). */
   readonly mcTools?: McToolsVersion | undefined;
   /** Restart policy overrides (tests). */
@@ -176,9 +180,14 @@ export type ManagerEvents = CrewEvents & {
   meetingMessage: [payload: { readonly text: string; readonly agentIds: readonly string[] }];
   /** A ToolGate decision, with the model the session ran and the effort the CLI applied. */
   tool: [payload: ToolObservation];
-  /** A real turn of an agent ended. */
+  /** A real turn of an agent ended (in its body or desk session). */
   turn: [
-    payload: { readonly agentId: string; readonly result: SDKResultMessage; readonly model: string | null },
+    payload: {
+      readonly agentId: string;
+      readonly result: SDKResultMessage;
+      readonly model: string | null;
+      readonly session: SessionKind;
+    },
   ];
 };
 
@@ -191,6 +200,8 @@ export interface ToolObservation {
   readonly code: string | null;
   /** The mode of the agent's seat when the call came (agents/modes.ts). */
   readonly mode: BrainMode;
+  /** The session that made the call: the body or the desk (PLAN §6.1, dual sessions). */
+  readonly session: SessionKind;
   readonly effort: string | null;
   readonly permissionMode: string | null;
   readonly model: string | null;
@@ -256,7 +267,16 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   #seatRestore = true;
   /** Set by {@link shutdown}: no brain is created or started any more (a world open still in flight stops). */
   #closed = false;
+  /** Cumulative tokens per agent and session (`<agentId>:body`, `<agentId>:desk`). */
   #tokens = new Map<string, number>();
+  /**
+   * The outbound redactor (agents/redact.ts): the account's e-mail address and organisation, learned from the
+   * sessions' `accountInfo()` and kept only in memory, are replaced by `[redacted]` in everything agents write that
+   * leaves their sessions.
+   */
+  readonly redactor = new AccountRedactor();
+  /** The OrgApi the agents' `mc` tools write through: Codex, calendar and task-report text redacted. */
+  readonly #toolOrg: OrgApi;
 
   constructor(options: AgentManagerOptions) {
     super();
@@ -281,10 +301,14 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       fileOf: (agentId) => (this.#world ? join(this.#agentDir(agentId), 'chat.jsonl') : null),
       now: this.#now,
       onError: (err) => this.#log.warn({ err }, 'transcript store'),
+      redact: (text) => this.redactor.redact(text),
     });
     this.#memory = new MemoryStore((agentId) => join(this.#agentDir(agentId), 'memory.md'));
     this.chronicle = new Chronicle(join(options.stateDir, 'chronicle.json'));
-    this.handoffs = new HandoffNotes(join(options.stateDir, 'vault-handoffs'));
+    this.handoffs = new HandoffNotes(join(options.stateDir, 'vault-handoffs'), {
+      redact: (text) => this.redactor.redact(text),
+    });
+    this.#toolOrg = redactingOrgApi(options.org, this.redactor);
     this.consents = new ConsentLedger({ now: this.#now });
     this.#chatInbox = new ChatInbox(options.chatDebounceMs ?? 2_000);
 
@@ -411,6 +435,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       claude: () => (typeof o.claude === 'function' ? o.claude() : o.claude),
       agentEnv: o.agentEnv,
       agentHome: (agentId) => join(this.#agentDir(agentId), 'home'),
+      // Each desk session has a cwd of its own (Claude Code keeps its transcripts per cwd): `agents/<id>/desk/<pc>`.
+      deskHome: (agentId, pcId) => join(this.#agentDir(agentId), 'desk', pcId),
       playerName: o.playerName,
       occupant: (pcId) => this.#occupants.get(pcId) ?? null,
       seatedOthers: (agentId) =>
@@ -435,14 +461,18 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         for (const r of this.router.taskReport(
           this.#routerAgent(from.record),
           ceo ? this.#routerAgent(ceo) : undefined,
-          report,
+          this.redactor.redactDeep(report),
         )) {
           this.#deliver(r);
         }
       },
-      say: (payload) => this.emit('say', payload),
+      say: (payload) =>
+        this.emit(
+          'say',
+          payload.text === undefined ? payload : { ...payload, text: this.redactor.redact(payload.text) },
+        ),
       brainChanged: (brain) => this.emit('brain', brain.brainPayload()),
-      sessionExited: (brain, error) => this.#onSessionCrash(brain, error),
+      sessionExited: (brain, error, session) => this.#onSessionCrash(brain, error, session),
       assertionsFailed: (brain, problems) =>
         this.emit('toast', {
           text: `${brain.record.name} can't think: ${problems[0] ?? 'startup check failed'}`,
@@ -450,7 +480,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
           agentId: brain.agentId,
           ttlMs: 15_000,
         }),
-      turnEnded: (brain, result) => this.#onTurnEnded(brain, result),
+      turnEnded: (brain, result, session) => this.#onTurnEnded(brain, result, session),
       toolObserved: (brain, o) =>
         this.emit('tool', {
           agentId: brain.agentId,
@@ -459,15 +489,27 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
           reason: o.decision.reason,
           code: o.decision.behavior === 'deny' ? o.decision.code : null,
           mode: brain.mode,
+          session: o.session ?? brain.activeSession,
           effort: o.effort,
           permissionMode: o.permissionMode,
-          model: brain.session?.model ?? null,
+          model:
+            (o.session === 'desk'
+              ? brain.deskSession
+              : o.session === 'body'
+                ? brain.bodySession
+                : brain.session
+            )?.model ?? null,
         }),
       cardRaised: (_brain, card) => this.emit('card', card),
       authMode: () => o.authMode ?? 'subscription',
-      swapDebounceMs: o.swapDebounceMs,
+      deskTtlMs: o.deskTtlMs,
       recordChanged: () => void this.#persist(),
       seatRestore: () => this.#seatRestore,
+      codexDigest: (nonce) => this.#codexDigest(nonce),
+      noteAccount: (account) => this.redactor.noteAccount(account),
+      redact: (text) => this.redactor.redact(text),
+      toolOrg: this.#toolOrg,
+      worldGen: () => this.#world?.gen ?? null,
     };
   }
 
@@ -513,7 +555,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         this.#occupants.clear();
         this.#bodies.clear();
         for (const r of this.#records.filter((x) => x.status === 'alive')) {
-          // Not awaited: the swap back to Haiku may compact first (minutes), and the world open must not wait.
+          // Not awaited: the desk session (if any) hands back to the body first, and the world open must not wait.
           void this.#brains
             .get(r.agentId)
             ?.gameRestarted()
@@ -1121,8 +1163,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     }
   }
 
-  #onTurnEnded(brain: AgentBrain, result: SDKResultMessage): void {
-    this.emit('turn', { agentId: brain.agentId, result, model: brain.session?.model ?? null });
+  #onTurnEnded(brain: AgentBrain, result: SDKResultMessage, session: SessionKind): void {
+    const model = (session === 'desk' ? brain.deskSession : brain.bodySession)?.model ?? null;
+    this.emit('turn', { agentId: brain.agentId, result, model, session });
     const tokens = Object.values(result.modelUsage ?? {}).reduce(
       (sum, u) =>
         sum +
@@ -1132,18 +1175,28 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         (u.cacheCreationInputTokens ?? 0),
       0,
     );
-    this.#tokens.set(brain.agentId, tokens);
+    this.#tokens.set(`${brain.agentId}:${session}`, tokens);
   }
 
-  /** Cumulative tokens of an agent's current session (HUD). */
+  /** Cumulative tokens of an agent's current sessions, body and desk together (HUD). */
   tokensOf(agentId: string): number {
-    return this.#tokens.get(agentId) ?? 0;
+    return (this.#tokens.get(`${agentId}:body`) ?? 0) + (this.#tokens.get(`${agentId}:desk`) ?? 0);
   }
 
-  #onSessionCrash(brain: AgentBrain, error: Error): void {
-    this.supervisor.onCrash(brain.agentId, error, {
+  /**
+   * A session crashed (PLAN §6.5 "Brain supervisor"). Each session has its own restart budget: the body restarts
+   * (resumed) with its start contexts; a desk restarts while its seat holds. A body over its budget goes offline (Retry);
+   * a desk over its budget stands the agent up and the body takes back with a DESK REPORT.
+   */
+  #onSessionCrash(brain: AgentBrain, error: Error, session: SessionKind): void {
+    const key = session === 'desk' ? `${brain.agentId}:desk` : brain.agentId;
+    this.supervisor.onCrash(key, error, {
       restart: () => {
         if (!this.#brains.has(brain.agentId) || brain.record.status !== 'alive') return;
+        if (session === 'desk') {
+          void brain.restartDesk().catch((err: unknown) => this.#log.error({ err }, 'desk restart failed'));
+          return;
+        }
         void this.#startContexts(brain.record).then((contexts) => {
           try {
             brain.start({ contexts });
@@ -1153,6 +1206,15 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         });
       },
       offline: (reason) => {
+        if (session === 'desk') {
+          void brain.deskFailed(reason).catch((err: unknown) => this.#log.error({ err }, 'desk failure'));
+          this.emit('toast', {
+            text: `${brain.record.name}'s PC session stopped working (${reason}); they got up.`,
+            kind: 'error',
+            agentId: brain.agentId,
+          });
+          return;
+        }
         brain.markOffline();
         brain.bark(BARKS.brainOffline);
         this.emit('toast', {
@@ -1183,17 +1245,25 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     );
   }
 
-  async #tell(from: AgentBrain, to: string, text: string): Promise<string> {
+  async #tell(from: AgentBrain, to: string, said: string): Promise<string> {
     const target = this.#resolveCrewRef(to);
     if (!target) throw new ApiError(ERROR_CODES.UNKNOWN_AGENT, `Nobody in the crew is called ${to}.`);
     if (target.status !== 'alive')
       throw new ApiError(ERROR_CODES.CHAT_UNAVAILABLE, `${target.name} is ${target.status}.`);
     if (target.agentId === from.agentId) throw new ApiError('BAD_ARGS', 'That is you.');
-    this.transcripts.append(target.agentId, { kind: 'tell', text, fromAgentId: from.agentId });
+    // A tell leaves the sender's session: account identifiers never reach the other agent (agents/redact.ts).
+    const text = this.redactor.redact(said);
+    this.transcripts.append(target.agentId, {
+      kind: 'tell',
+      text,
+      fromAgentId: from.agentId,
+      ...this.#tagOf(target.agentId),
+    });
     this.transcripts.append(from.agentId, {
       kind: 'tell',
       text: `→ ${target.name}: ${text}`,
       fromAgentId: target.agentId,
+      ...from.transcriptTag(),
     });
     this.emit('say', {
       agentId: from.agentId,
@@ -1203,6 +1273,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     });
     this.#deliver(this.router.tell(this.#routerAgent(from.record), this.#routerAgent(target), text));
     return `Told ${target.name}.`;
+  }
+
+  /** The session tag of a transcript line for `agentId` now: its active session (body, or desk at a PC). */
+  #tagOf(agentId: string): { session?: SessionKind; pcId?: string } {
+    return this.#brains.get(agentId)?.transcriptTag() ?? {};
   }
 
   /** The agents' `mc` tool set (texts that name tools follow it). */
@@ -1252,8 +1327,9 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       role: req.role,
       name,
       handle,
-      reason: req.reason.slice(0, 500),
-      firstTask: req.firstTask.slice(0, 2000),
+      // The card shows agent-authored text to the player and becomes the hire's first task: redacted.
+      reason: this.redactor.redact(req.reason).slice(0, 500),
+      firstTask: this.redactor.redact(req.firstTask).slice(0, 2000),
     };
     this.pending.add(card);
     this.transcripts.append(from.agentId, {
@@ -1563,6 +1639,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       this.transcripts.append(d.agentId, {
         kind: 'player',
         text: route.body.length > 0 ? route.body : delivery.text,
+        // The line reaches the agent's active session: its tag says which (AgentScreen's merged history).
+        ...this.#tagOf(d.agentId),
       });
     }
     if (meetingIds.length > 0) this.emit('meetingMessage', { text: route.body, agentIds: meetingIds });
@@ -1768,7 +1846,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
   /** One meeting turn of an agent; resolves with what it said (CrewHooks.meetingTurn). */
   async meetingTurn(agentId: string, prompt: string, opts: { maxSentences: number }): Promise<string> {
     const brain = this.#livingBrain(agentId);
-    return brain.meetingTurn(neutralizeControlTags(prompt).trim(), { maxSentences: opts.maxSentences });
+    const said = await brain.meetingTurn(neutralizeControlTags(prompt).trim(), {
+      maxSentences: opts.maxSentences,
+    });
+    // What an agent says at the table becomes the meeting minutes: account identifiers never get there.
+    return this.redactor.redact(said);
   }
 
   /** Every crew member's fate, for the Game Over summary of the current world (call before it closes). */
@@ -1839,10 +1921,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       case 'retry_brain':
         this.supervisor.reset(agentId);
         if (this.governor.state.reason === 'auth') this.governor.wake();
-        if (brain && !brain.session?.started) {
+        this.supervisor.reset(`${agentId}:desk`);
+        if (brain && !brain.bodySession?.started) {
           await brain.closeSession();
           brain.start({ contexts: await this.#startContexts(record) });
         }
+        if (brain && brain.deskPc !== null && !brain.deskSession?.started) await brain.restartDesk();
         return { echo: `${record.name}: brain restarting` };
     }
     await this.#persist();

@@ -90,8 +90,10 @@ visible around the edges and keeps running.
 
 ## Agents at PCs
 
-An agent that needs a computer walks to a free PC and sits down. Once seated it switches to **Opus 5.5** and
-**PC mode**, and gets its PC tools: screenshots and zoom, mouse and keyboard, reading apps' text and buttons
+An agent that needs a computer walks to a free PC and sits down. Once seated, its **desk session** for that PC
+takes over (on **Opus 5.5**, in **PC mode**), with a handoff of the task, what you said to it lately, its notes and
+the notes left at that PC. The next time it sits at the same PC, that desk session picks up where it left off. It
+has its PC tools: screenshots and zoom, mouse and keyboard, reading apps' text and buttons
 directly (through the desktop's accessibility tree, much cheaper than looking at the screen), opening apps, files and
 web pages, a shell, file tools (read, write, edit, search) and the web. All of them act **inside that PC**. Of its
 game tools it keeps only what a seated body needs (its status and surroundings, talking, notes, the Codex and the
@@ -102,8 +104,11 @@ calendar); walking, mining, crafting and building wait until it stands up.
 - **Long commands** (servers, builds) run in the background; the agent hears when they finish.
 - **Apps it opens close when it stands up**, like its commands.
 
-- **Plan first.** Coding roles start in plan mode: the agent can look around and run read-only commands, and
-  nothing changes until you approve its plan card.
+- **Plan first.** Turn on Plan-first in an agent's AgentScreen (it is off for every role) and its PC sessions
+  start in plan mode: the agent can look around and run read-only commands, and nothing changes until you approve
+  its plan card.
+- **When it stands up** (done, kicked, attacked, called to a meeting), its body gets a short report: how the
+  sitting ended, what it said last, the files it changed and how its last commands exited.
 - **Watch it work.** A terminal on the PC's screen mirrors the agent's shell, so you can follow along from
   across the room.
 - **Kicking.** Sneak + right-click a seated agent (and confirm), use Kick in its AgentScreen or in the PC

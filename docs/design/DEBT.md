@@ -12,16 +12,12 @@ missing `/mnt/codex` in PCs, the mod's `ok` replies dropping nested nulls, plan 
 leaking PC instances (`npm run doctor -- --clean-orphans`, and the E2E harness removes its own instance on exit), the
 lint no-op inside worktrees, the monitor stopping strays while `bootAll` runs, and a `devServer` contract test that
 booted a real linux-1 from `npm test`; the doubled status footer had already been fixed (Node splits the mod's
-`footer` off, `mcServer.ts` `splitFooter`).
+`footer` off, `mcServer.ts` `splitFooter`). Dual sessions (2026-10-09, PLAN §6.1) fixed "wandering agents carry
+the 31 `pc` tools" (the body session has no `pc` server; EVALS.md "Dual sessions") and the per-turn `ai-title`
+question (a fixed session `title` skips the AI title generation, verified live), and mitigated the account e-mail in
+agent prompts (outbound redactor and persona rule; what is left is below).
 
 ## Found in the after-v2 tool eval (2026-10-09, docs/design/EVALS.md "After v2")
-- **Wandering agents carry the 31 `pc` tools.** Both MCP servers are attached to every session, so a wandering Haiku
-  pays for the PC tools V2 list (31 tools, 19,558 chars, ~4.9k tokens; it was 20 tools, 8,751 chars) on every round
-  trip although the gate denies them all until it sits. That ate most of the mc v2 saving: about 24k prompt tokens
-  per Haiku round trip after v2 against 26k before, where the mc list alone shrank by ~4k tokens. One dark_safe run
-  even called `mcp__pc__wait` while standing in a field. **Fix:** attach the `pc` server only while seated (the SDK's
-  dynamic MCP server update at sit / stand, if it keeps the cache prefix stable enough), or defer the pc tools behind
-  tool search for wandering sessions once tool search is verified on Haiku 5.5 (tools-v2-mc.md §16.8).
 - **"Keep me safe" is still unsolved.** With v2, every `mc.dark_safe` run built a shelter from gathered dirt or
   planks (71 blocks) instead of sending Jasper into his house next door and guarding: 33 calls and ~1.2M prompt
   tokens per run (40.7 and 1.0M before); after the `033c096` fixes 22 calls and 613k, but 1/3 passed: gathering takes
@@ -44,15 +40,37 @@ booted a real linux-1 from `npm test`; the doubled status footer had already bee
   v1 (`MINEVIBE_MC_TOOLS`); the §14 flip gates call for N=5 runs per scenario and `eval:world -- --tools v2`.
 
 ## Found in the mode-profiles work (2026-10-09)
-- **The player's e-mail address reaches every agent prompt.** With the allowlisted env and `settingSources: []`, the
-  CLI still injects `session_context` (the account's e-mail address) and `credential_org` (the organisation id)
-  attachments into agent sessions (spike S3b, `spikes/s3b-mode-switch/result.md`, "Side effects"). Agents can read and
-  repeat them. Source not investigated (presumably the CLI's account profile); decide whether an env switch or a
-  persona rule is needed (PLAN §6.1 env).
-- **Per-turn `ai-title` generation in persisted sessions.** S3b saw an `ai-title` transcript entry after every turn
-  (`persistSession: true`), probably a small background model call per turn that no usage number counts.
 - **`runLock.test.ts` "never shows a reader an empty or partial lock" times out (5 s) under a full `npm test`** on a
   busy machine (4 of 6 full runs here); it passes alone.
+
+## Found in the dual-sessions work (2026-10-09)
+- **The account e-mail still reaches every agent prompt.** Claude Code 2.1.293 injects it as a `session_context`
+  attachment in every session and has no supported switch (only `ANTHROPIC_UNIX_SOCKET`, which reroutes the transport,
+  leaves it out; checked in the CLI source). Mitigated, not removed: the personas forbid repeating account identifiers
+  and `agents/redact.ts` redacts the e-mail and organisation name from everything agent-authored that leaves a session
+  (PLAN §6.1). Gaps: (1) the match is literal, so an obfuscated form ("jasper dot …", spaces) passes; (2) typing and
+  the clipboard inside a PC are out of scope; (3) question and plan cards are not redacted (only the player sees them,
+  and an answer is keyed by the question's exact text); (4) in API-key mode `accountInfo()` reports no e-mail, while a
+  stored OAuth login may still put one into `session_context`: the redactor then knows nothing; (5) the organisation
+  *id* (`credential_org`) never reaches the model's prompt (it renders to nothing) but sits in the on-disk transcripts
+  under `~/.claude/projects/`, and Node never learns it. Fix when Claude Code offers a switch; otherwise consider a
+  generic e-mail pattern for agent text.
+- **Claude Code's `[Image: source: …]` notes are only handled by a persona line.** The CLI saves every image an MCP
+  tool returns on the host (`mcp-pc-blob-….png`) and adds the note to the result. `CLAUDE_CODE_SKIP_PROMPT_HISTORY`
+  appears to skip that persistence (CLI source: `persistence_off`), which would also drop the note and the host copies
+  of PC screenshots; its other effects (prompt history, transcripts) are unverified, so it is not set.
+- **The KICKOFF repeats itself on resumed desks.** Every sit sends memory.md (up to 8 KB), the Codex digest, the notes
+  and the PC primer, also to a desk session that already has them in its transcript (≈1-3k tokens per sit). A resumed
+  desk could get only what changed since its last sit.
+- **A resumed desk session grows without bound.** It keeps its whole transcript within the 6 h TTL; Claude Code's own
+  auto-compaction is the only limit. A desk that crossed the TTL starts fresh and keeps only what the handoff carries.
+- **Plan-first toggled during a desk's life** changes its built-ins (ExitPlanMode) on resume through Claude Code's
+  in-message tool delta (S3b's M3 mechanism); not verified live for ExitPlanMode.
+- **Two claude processes per seated agent.** The body session stays open (idle) while its desk works: with the crew cap
+  of 4 and `maxSeated=2` up to 6 `claude` processes. Closing an idle body while seated (and resuming it at the
+  handoff back) would save memory at the cost of ~1 s per stand.
+- **Only one live sample of the handoffs** (EVALS.md "Dual sessions": 4 turns); the tool evals were not re-run live
+  after the switch (their replays pass). `test/live/brain.live.ts` was rewritten for dual sessions but not re-run.
 
 ## Found in the live acceptance run (2026-10-09)
 - **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to

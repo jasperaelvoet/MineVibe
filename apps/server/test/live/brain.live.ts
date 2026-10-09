@@ -7,11 +7,13 @@
  * 1. the CEO session starts and passes the startup assertions;
  * 2. an `mcp__mc__*` call reaches the (fake) SkillApi, on Haiku at xhigh;
  * 3. AskUserQuestion becomes a pending card and resolves from a chat answer;
- * 4. sit → swap to Opus/medium at the turn boundary → stand → back to Haiku/xhigh.
- * The numbers (turn times, swap times and acks, models, efforts, cost) are printed and written to
- * `test/live/out/brain-live.json` (gitignored).
+ * 4. sit → the desk session (Opus/medium, PLAN §6.1 dual sessions) takes over with the KICKOFF → stand → the body
+ *    session (Haiku/xhigh) wakes with the DESK REPORT.
+ * The numbers (turn times, sessions, models, efforts, cost) are printed and written to `test/live/out/brain-live.json`
+ * (gitignored).
  *
- * Recorded 2026-10-08 (SDK 0.3.293, bundled claude 2.1.293, Claude Max), 6 model turns, $0.242 list estimate:
+ * Recorded 2026-10-08, before dual sessions (one session, flag-layer swaps; SDK 0.3.293, bundled claude 2.1.293,
+ * Claude Max), 6 model turns, $0.242 list estimate:
  *
  * | Turn            | Model / effort  | API turns | Wall time | Tools                 |
  * |-----------------|-----------------|-----------|-----------|-----------------------|
@@ -34,7 +36,6 @@ import { join } from 'node:path';
 import { pino } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { AgentManager, type ToolObservation } from '../../src/agents/AgentManager.js';
-import type { SwapResult } from '../../src/agents/AgentSession.js';
 import { agentEnv } from '../../src/agents/agentEnv.js';
 import { resolveClaudeBinary } from '../../src/agents/claudeBinary.js';
 import { type QueryFactory, type SDKResultMessage, sdkQueryFactory } from '../../src/agents/sdk.js';
@@ -104,12 +105,10 @@ describe('live brain smoke (subscription)', () => {
       queryFactory: factory,
       chatDebounceMs: 0,
       autonomyTickMs: 0,
-      swapDebounceMs: 2_000,
     });
 
     const toasts: string[] = [];
     const results: SDKResultMessage[] = [];
-    const swaps: SwapResult[] = [];
     const turns: TurnRecord[] = [];
     let current: TurnRecord = {
       label: 'welcome',
@@ -163,11 +162,6 @@ describe('live brain smoke (subscription)', () => {
     };
     let agentId = '';
     const brain = () => manager.brain(agentId);
-    const watchSwap = () => {
-      const s = brain()?.lastSwap;
-      if (s && swaps.at(-1) !== s) swaps.push(s);
-    };
-    const swapTimer = setInterval(watchSwap, 10);
     /** One player-driven turn: waits for its result and the brain to settle. */
     const turn = async (label: string, start: () => Promise<unknown>, during?: () => Promise<void>) => {
       const before = results.length;
@@ -219,7 +213,7 @@ describe('live brain smoke (subscription)', () => {
       );
       expect(ask.text.toLowerCase()).toContain('spruce');
 
-      // 4. Sit → Opus/medium at the boundary → kickoff turn stands up → Haiku/xhigh after the (2 s) debounce.
+      // 4. Sit → the desk session (Opus/medium) takes over with the kickoff, stands up → the body gets the report.
       await manager.command(agentId, { cmd: 'plan_first', on: false });
       skills.onSeat = (req, jobId) => {
         manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId }, seatEpoch: req.seatEpoch });
@@ -231,15 +225,20 @@ describe('live brain smoke (subscription)', () => {
           text: '@ada call mcp__mc__sit_at_pc with pc "linux-1" and purpose "smoke test: call mcp__mc__stand_up right away, then reply done". When it says Seated, end your turn and reply: sitting',
         }),
       );
-      await waitFor(() => brain()?.model === 'opus', 'swap to opus', 30_000);
-      const kickoff = await turn('kickoff on opus', async () => {
+      await waitFor(() => brain()?.activeSession === 'desk', 'desk session', 30_000);
+      const beforeKickoff = results.length;
+      const kickoff = await turn('kickoff in the desk', async () => {
         await waitFor(() => brain()?.session?.inTurn === true, 'kickoff turn', 30_000);
       });
       expect(kickoff.models).toContain('claude-opus-5-5');
       expect(kickoff.efforts).toContain('medium');
       expect(kickoff.tools.some((t) => t.startsWith('mc__stand_up'))).toBe(true);
       await waitFor(() => brain()?.fsm.state === 'wandering', 'stood up', 30_000);
-      await waitFor(() => brain()?.model === 'haiku', 'swap back to haiku', 30_000);
+      await waitFor(() => brain()?.activeSession === 'body', 'back in the body', 30_000);
+      // The body's DESK REPORT turn (it may already be over).
+      await waitFor(() => results.length >= beforeKickoff + 2, 'desk report turn');
+      await waitFor(() => brain()?.session?.inTurn === false, 'report settled', 30_000);
+      expect(turns.at(-1)?.models).toContain('claude-haiku-5-5');
 
       // 5. Back on Haiku at xhigh.
       const back = await turn('back on haiku', () =>
@@ -250,16 +249,11 @@ describe('live brain smoke (subscription)', () => {
       );
       expect(back.models).toContain('claude-haiku-5-5');
       expect(back.efforts).toContain('xhigh');
-      watchSwap();
-      expect(swaps.map((s) => s.to)).toEqual(['claude-opus-5-5', 'claude-haiku-5-5']);
-      expect(swaps.every((s) => s.acked)).toBe(true);
     } finally {
-      clearInterval(swapTimer);
       const summary = {
         at: new Date().toISOString(),
         claude: { source: claude.source, version: claude.version },
         turns,
-        swaps,
         modelTurns: results.length,
         totalCostUsd: results.at(-1)?.total_cost_usd ?? null,
         usage: manager.governor.state,

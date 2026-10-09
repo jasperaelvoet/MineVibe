@@ -41,7 +41,8 @@ public final class CrewLogScreen extends Screen {
 		List<Integer> cs = new ArrayList<>();
 		for (UiState.LogLine line : state.crewLog()) {
 			Ui.ChatEntry e = line.entry();
-			String who = state.nameOf(line.agentId());
+			// Dual sessions (PLAN §6.1): lines of a desk session carry their PC after the agent's name.
+			String who = state.nameOf(line.agentId()) + e.sessionTag();
 			String text = switch (e.kind()) {
 				case "player" -> "You → " + who + ": " + e.text();
 				case "agent" -> who + ": " + e.text();

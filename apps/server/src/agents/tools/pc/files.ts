@@ -206,7 +206,9 @@ function staleCheck(
   return null;
 }
 
+/** After a write or edit changed `path`: the read state follows the file, and the host hears of the change. */
 async function remember(ctx: PcToolContext, pcId: string, path: string): Promise<void> {
+  ctx.host.onFileChanged?.({ pcId, path });
   const st = await ctx.host.pcs.stat(pcId, path).catch(() => null);
   if (st?.exists) ctx.readState.set(pcId, path, { mtimeMs: st.mtimeMs, size: st.size });
   else ctx.readState.delete(pcId, path);

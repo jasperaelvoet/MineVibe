@@ -1,17 +1,19 @@
 /**
- * Tool-list size per mode (docs/design/EVALS.md "Mode profiles"). Zero model turns.
+ * Tool-list size per session (docs/design/EVALS.md "Dual sessions"). Zero model turns.
  *
  *   node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts          # offline estimate
  *   node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts --cli    # + the CLI's own counts
  *
- * Offline: builds the real `mc` (both tool sets) and `pc` tool definitions, renders each one the way the API receives
- * it (`{name, description, input_schema}`), and estimates tokens as characters / 4. `--cli` starts the SDK-bundled
- * claude with the production session options once per mc tool set and reads `getContextUsage()` (per-tool token
- * counts, the system prompt), using a `shouldQuery:false` message, so no model turn runs (spike S3b, "zero-turn
- * preflight").
+ * Each agent has two sessions (PLAN §6.1, dual sessions), each with its own tool list, pinned to its first request:
+ * - body: every `mc` tool of the set, AskUserQuestion;
+ * - desk: the `pc` tools (with the host aliases), WebSearch, WebFetch, AskUserQuestion, PC mode's minimal `mc` set
+ *   (and ExitPlanMode while Plan-first is on).
  *
- * Prints a JSON report per tool set: the full list every session is offered (pinned to its first request, spike S3b),
- * the subset each mode profile allows, the persona and the MODE banners.
+ * Offline: builds the real tool definitions of each session, renders each one the way the API receives it
+ * (`{name, description, input_schema}`), and estimates tokens as characters / 4. `--cli` starts the SDK-bundled
+ * claude with the production session options of each session once per mc tool set and reads `getContextUsage()`
+ * (per-tool token counts, the built-ins, the system prompt), using a `shouldQuery:false` message, so no model turn
+ * runs (spike S3b, "zero-turn preflight").
  */
 
 import { randomUUID } from 'node:crypto';
@@ -22,8 +24,13 @@ import { createSdkMcpServer, query, type SDKUserMessage } from '@anthropic-ai/cl
 import { z } from 'zod';
 import { agentEnv } from '../src/agents/agentEnv.js';
 import { resolveClaudeBinary } from '../src/agents/claudeBinary.js';
-import type { McToolsVersion } from '../src/agents/constants.js';
-import { BRAIN_MODES, MC_TOOL_SETS, modeProfile, toolInMode } from '../src/agents/modes.js';
+import {
+  BODY_BUILTIN_TOOLS,
+  deskBuiltinTools,
+  type McToolsVersion,
+  type SessionKind,
+} from '../src/agents/constants.js';
+import { MC_TOOL_SETS, sessionMcTools } from '../src/agents/modes.js';
 import { modeBanner } from '../src/agents/prompts/modes.js';
 import { personaPrompt } from '../src/agents/prompts/persona.js';
 import { buildSessionOptions } from '../src/agents/sessionOptions.js';
@@ -31,6 +38,8 @@ import { MC_PREFIX, PC_PREFIX } from '../src/agents/tools/catalog.js';
 import { type McHost, mcServerOptions, mcToolDefinitions } from '../src/agents/tools/mcServer.js';
 import { type PcHost, pcToolDefinitions } from '../src/agents/tools/pcServer.js';
 import { SERVER_VERSION } from '../src/version.js';
+
+const SESSIONS: readonly SessionKind[] = ['body', 'desk'];
 
 /**
  * A host whose every member is a no-op: the definitions are only rendered, never run (a tool server may still
@@ -62,7 +71,7 @@ function render(prefix: string, def: { name: string; description: string; inputS
 
 const approx = (chars: number) => Math.round(chars / 4);
 
-function persona(version: McToolsVersion): string {
+function persona(version: McToolsVersion, session: SessionKind): string {
   return personaPrompt({
     name: 'Ada',
     handle: 'ada',
@@ -71,14 +80,28 @@ function persona(version: McToolsVersion): string {
     playerName: 'Jasper',
     nonce: 'abc123',
     mcTools: version,
+    session,
   });
 }
 
-function tools(version: McToolsVersion): Rendered[] {
-  return [
-    ...mcToolDefinitions(inert<McHost>(), version).map((d) => render(MC_PREFIX, d)),
-    ...pcToolDefinitions(inert<PcHost>()).map((d) => render(PC_PREFIX, d)),
-  ];
+/** The mc tool definitions a session registers. */
+function mcDefs(version: McToolsVersion, session: SessionKind) {
+  return mcToolDefinitions(
+    inert<McHost>(),
+    version,
+    session === 'desk' ? sessionMcTools('desk', version) : undefined,
+  );
+}
+
+/** The `mcp__*` tools of a session, rendered. */
+function tools(version: McToolsVersion, session: SessionKind): Rendered[] {
+  const mc = mcDefs(version, session).map((d) => render(MC_PREFIX, d));
+  if (session === 'body') return mc;
+  return [...mc, ...pcToolDefinitions(inert<PcHost>()).map((d) => render(PC_PREFIX, d))];
+}
+
+function builtins(session: SessionKind): string[] {
+  return session === 'desk' ? deskBuiltinTools(false) : [...BODY_BUILTIN_TOOLS];
 }
 
 interface CliCounts {
@@ -88,8 +111,8 @@ interface CliCounts {
   model: string;
 }
 
-/** The CLI's per-tool counts for one tool set (`--cli`): a session that never runs a model turn. */
-async function cliCounts(version: McToolsVersion): Promise<CliCounts> {
+/** The CLI's per-tool counts for one session of one tool set (`--cli`): a session that never runs a model turn. */
+async function cliCounts(version: McToolsVersion, session: SessionKind): Promise<CliCounts> {
   const env = process.env;
   const claude = await resolveClaudeBinary({
     env,
@@ -97,24 +120,33 @@ async function cliCounts(version: McToolsVersion): Promise<CliCounts> {
     allowBundled: true,
   });
   const dir = mkdtempSync(join(tmpdir(), 'mv-tool-tokens-'));
-  const options = buildSessionOptions({
+  const mc = createSdkMcpServer({
+    ...mcServerOptions(version, { world: session === 'body' }),
+    tools: mcDefs(version, session),
+  });
+  const common = {
     claude,
     env: agentEnv({ version: SERVER_VERSION, source: env }),
     cwd: dir,
     resume: null,
     sessionId: randomUUID(),
-    persona: persona(version),
-    mc: createSdkMcpServer({
-      ...mcServerOptions(version),
-      tools: mcToolDefinitions(inert<McHost>(), version),
-    }),
-    pc: createSdkMcpServer({
-      name: 'pc',
-      version: '2.0.0',
-      alwaysLoad: true,
-      tools: pcToolDefinitions(inert<PcHost>()),
-    }),
-  });
+    persona: persona(version, session),
+    title: `MineVibe tool-tokens · ${session}`,
+  };
+  const options =
+    session === 'desk'
+      ? buildSessionOptions({
+          ...common,
+          kind: 'desk',
+          mc,
+          pc: createSdkMcpServer({
+            name: 'pc',
+            version: '2.0.0',
+            alwaysLoad: true,
+            tools: pcToolDefinitions(inert<PcHost>()),
+          }),
+        })
+      : buildSessionOptions({ ...common, kind: 'body', mc });
   let push: ((m: SDKUserMessage) => void) | null = null;
   let done = false;
   const inbox: AsyncIterable<SDKUserMessage> = {
@@ -173,36 +205,23 @@ async function cliCounts(version: McToolsVersion): Promise<CliCounts> {
 
 const withCli = process.argv.includes('--cli');
 
-async function report(version: McToolsVersion) {
-  const rendered = tools(version);
-  const cli = withCli ? await cliCounts(version) : null;
+async function sessionReport(version: McToolsVersion, session: SessionKind) {
+  const rendered = tools(version, session);
+  const cli = withCli ? await cliCounts(version, session) : null;
   const sizeOf = (names: readonly string[]) => {
     const chars = names.reduce((n, name) => n + (rendered.find((t) => t.name === name)?.chars ?? 0), 0);
     const cliTokens = cli ? names.reduce((n, name) => n + (cli.tools.get(name) ?? 0), 0) : null;
     return { tools: names.length, chars, approxTokens: approx(chars), cliTokens };
   };
   const all = rendered.map((t) => t.name);
-  const text = persona(version);
+  const text = persona(version, session);
   return {
-    everyMode: {
-      ...sizeOf(all),
-      mc: sizeOf(all.filter((n) => n.startsWith(MC_PREFIX))),
-      pc: sizeOf(all.filter((n) => n.startsWith(PC_PREFIX))),
-      builtinsCliTokens: cli?.systemTools ?? null,
-    },
-    perMode: Object.fromEntries(
-      BRAIN_MODES.map((m) => [
-        m,
-        { ...sizeOf(all.filter((n) => toolInMode(m, n))), builtins: modeProfile(m, version).builtins },
-      ]),
-    ),
+    mcpTools: sizeOf(all),
+    mc: sizeOf(all.filter((n) => n.startsWith(MC_PREFIX))),
+    pc: sizeOf(all.filter((n) => n.startsWith(PC_PREFIX))),
+    builtins: { names: builtins(session), cliTokens: cli?.systemTools ?? null },
+    totalToolTokens: cli ? (sizeOf(all).cliTokens ?? 0) + cli.systemTools : null,
     persona: { chars: text.length, approxTokens: approx(text.length) },
-    banners: Object.fromEntries(
-      BRAIN_MODES.map((m) => {
-        const banner = modeBanner(m, { nonce: 'abc123', playerName: 'Jasper', mcTools: version });
-        return [m, { chars: banner.length, approxTokens: approx(banner.length) }];
-      }),
-    ),
     cli: cli
       ? {
           model: cli.model,
@@ -213,8 +232,16 @@ async function report(version: McToolsVersion) {
   };
 }
 
+async function report(version: McToolsVersion) {
+  const out: Record<string, unknown> = {};
+  for (const session of SESSIONS) out[session] = await sessionReport(version, session);
+  const banner = modeBanner('meeting', { nonce: 'abc123', playerName: 'Jasper', mcTools: version });
+  out.meetingBanner = { chars: banner.length, approxTokens: approx(banner.length) };
+  return out;
+}
+
 const out: Record<string, unknown> = {
-  note: 'approxTokens = chars / 4 of the rendered {name, description, input_schema}; cliTokens from getContextUsage()',
+  note: 'per session (body, desk); approxTokens = chars / 4 of the rendered {name, description, input_schema}; cliTokens from getContextUsage()',
 };
 for (const version of MC_TOOL_SETS) out[version] = await report(version);
 console.log(JSON.stringify(out, null, 2));

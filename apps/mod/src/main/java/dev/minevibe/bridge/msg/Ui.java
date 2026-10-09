@@ -10,6 +10,7 @@ import static dev.minevibe.bridge.msg.Types.EVENT_ID;
 import static dev.minevibe.bridge.msg.Types.HANDLE;
 import static dev.minevibe.bridge.msg.Types.MODEL_TIER;
 import static dev.minevibe.bridge.msg.Types.NON_NEG_INT;
+import static dev.minevibe.bridge.msg.Types.PC_ID;
 import static dev.minevibe.bridge.msg.Types.PENDING_ID;
 import static dev.minevibe.bridge.msg.Types.type;
 import static dev.minevibe.bridge.protocol.Schema.array;
@@ -80,8 +81,36 @@ public final class Ui {
 		public static final String CALENDAR = "calendar";
 	}
 
-	/** One transcript line. {@code kind}: player, agent, activity, card, answer, tell, system. */
-	public record ChatEntry(long seq, long at, String kind, String text, @Nullable String fromAgentId, @Nullable String cardId) {}
+	/**
+	 * One transcript line. {@code kind}: player, agent, activity, card, answer, tell, system. {@code session}: which of
+	 * the agent's two sessions the line belongs to (PLAN §6.1, dual sessions): {@code body}, or {@code desk} at
+	 * {@code pcId}; absent on older lines. One merged history: AgentScreen tags desk lines with their PC.
+	 */
+	public record ChatEntry(
+			long seq,
+			long at,
+			String kind,
+			String text,
+			@Nullable String fromAgentId,
+			@Nullable String cardId,
+			@Nullable String session,
+			@Nullable String pcId) {
+		public ChatEntry(long seq, long at, String kind, String text, @Nullable String fromAgentId, @Nullable String cardId) {
+			this(seq, at, kind, text, fromAgentId, cardId, null, null);
+		}
+
+		/** The PC of a desk line ("PC" when Node sent none), or null for a body line. */
+		public @Nullable String deskPc() {
+			if (!"desk".equals(session)) return null;
+			return pcId != null ? pcId : "PC";
+		}
+
+		/** " @linux-1" for a desk line, "" otherwise: the session tag the screens put after a name. */
+		public String sessionTag() {
+			String pc = deskPc();
+			return pc == null ? "" : " @" + pc;
+		}
+	}
 
 	/** N→M. {@code status}: idle, thinking, queued, waiting_player, asleep, offline. */
 	public record AgentBrain(
@@ -181,7 +210,9 @@ public final class Ui {
 			.req("kind", oneOf("player", "agent", "activity", "card", "answer", "tell", "system"))
 			.req("text", string(1, 8000))
 			.opt("fromAgentId", AGENT_ID)
-			.opt("cardId", PENDING_ID);
+			.opt("cardId", PENDING_ID)
+			.opt("session", oneOf("body", "desk"))
+			.opt("pcId", PC_ID);
 
 	static final Schema.Node CARD_ANSWER = union(
 			object().req("kind", literal("options")).req("picks", array(integer(1, 10), 1, 10)),

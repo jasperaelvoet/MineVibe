@@ -8,7 +8,8 @@ import { attachAgentBridge, type RuntimeBridge } from '../../../src/agents/runti
 import { PLAYER } from '../../../src/contracts/common.js';
 import { TypedEmitter } from '../../../src/util/TypedEmitter.js';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
-import { resultText } from '../../helpers/fakeSdk.js';
+import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
+import { type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
 
 const dirs: string[] = [];
 const harnesses: Harness[] = [];
@@ -46,20 +47,10 @@ describe('app restart (same world)', () => {
     expect(resultText(await q.callTool('mcp__mc__remember', { note: 'Jasper likes spruce' }))).toMatch(
       /Remembered/,
     );
-    // Sit, then the app stops while seated and while a question is pending.
-    const sitting = q.callTool('mcp__mc__sit_at_pc', { pc: 'linux-1', purpose: 'work' });
-    await a.until(() => a.skills.seats.length > 0, 'seat');
-    const seat = a.skills.seats[0] as { jobId: string; seatEpoch: number };
-    a.manager.onPcSeat({
-      pcId: 'linux-1',
-      occupant: { kind: 'agent', agentId: id },
-      seatEpoch: seat.seatEpoch,
-    });
-    a.skills.finish(seat.jobId, { status: 'done' });
-    await sitting;
-    q.result();
-    await a.until(() => a.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-    void q.callTool('AskUserQuestion', QUESTION);
+    // Sit, then the app stops while seated and while the desk's question is pending.
+    const d = await sitAtDesk(a, q, id, 'linux-1', 'work');
+    const deskId = a.manager.brain(id)?.record.desks?.['linux-1']?.sessionId;
+    void d.callTool('AskUserQuestion', QUESTION);
     await a.until(() => a.manager.pendingCards().length === 1, 'card');
     await a.manager.shutdown();
     harnesses.splice(harnesses.indexOf(a), 1);
@@ -68,9 +59,15 @@ describe('app restart (same world)', () => {
     const b = await harness(dir);
     await b.manager.openWorld({ worldId: 'w1', gen: 1 });
     expect(b.skills.spawned[0]).toMatchObject({ agentId: id, restore: true });
+    // The body resumes (everyone loads unseated); the desk stays a resumable record.
     const q2 = b.query(0);
+    expect(b.factory.queries).toHaveLength(1);
     expect(q2.options.resume).toBe(q.options.sessionId);
     expect(q2.options.model).toBe('claude-haiku-5-5');
+    expect(b.manager.brain(id)?.record.desks?.['linux-1']).toMatchObject({
+      sessionId: deskId,
+      sessionStarted: true,
+    });
     await b.until(() => b.texts(q2).some((t) => t.includes('RESTARTED')), 'restart notice');
     const texts = b.texts(q2);
     expect(texts.find((t) => t.includes('RESTARTED'))).toContain('You are no longer seated at linux-1.');
@@ -86,7 +83,7 @@ describe('app restart (same world)', () => {
     expect(b.texts(q2).find((t) => t.includes('ANSWER'))).toContain('"Oak or spruce?" → Spruce');
   });
 
-  it('worker restart: the mod still seats the agent, so the seat is rebuilt and Opus comes back', async () => {
+  it('worker restart: the mod still seats the agent, so the seat is rebuilt and its desk session takes over', async () => {
     const h = await harness();
     await h.manager.openWorld({ worldId: 'w1', gen: 1 });
     const id = h.manager.listAgents()[0]?.agentId ?? '';
@@ -97,12 +94,12 @@ describe('app restart (same world)', () => {
     h.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: 4 });
     await h.until(() => h.manager.brain(id)?.fsm.state === 'seated', 'seated');
     expect(h.manager.brain(id)?.fsm.epoch).toBe(4);
-    await h.until(() => q.calls.some((c) => c.method === 'applyFlagSettings'), 'swap');
-    expect(q.calls.find((c) => c.method === 'applyFlagSettings')?.args).toEqual({
-      model: 'claude-opus-5-5',
-      effortLevel: 'medium',
-    });
-    expect(h.texts(q).some((t) => t.includes('still seated at linux-1'))).toBe(true);
+    const d = deskQuery(h, id) as FakeQuery;
+    expect(d.options.model).toBe('claude-opus-5-5');
+    expect(q.calls.some((c) => c.method === 'applyFlagSettings')).toBe(false);
+    d.init();
+    await h.until(() => h.texts(d).some((t) => t.includes('KICKOFF')), 'kickoff');
+    await h.until(() => h.texts(d).some((t) => t.includes('still seated at linux-1')), 'restart note');
   });
 });
 

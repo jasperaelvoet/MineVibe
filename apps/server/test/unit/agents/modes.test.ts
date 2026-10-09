@@ -5,10 +5,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  BODY_PROFILE,
   BUILTIN_TOOLS,
-  SEATED_PROFILE,
+  DESK_PROFILE,
+  deskBuiltinTools,
   TOOL_ALIASES,
-  WANDERING_PROFILE,
 } from '../../../src/agents/constants.js';
 import {
   BRAIN_MODES,
@@ -19,6 +20,8 @@ import {
   modeForSeat,
   modeProfile,
   profileToolNames,
+  sessionMcTools,
+  sessionMode,
   toolInMode,
 } from '../../../src/agents/modes.js';
 import { PlanCapture } from '../../../src/agents/PlanCapture.js';
@@ -87,7 +90,8 @@ describe('ModeProfile registry (tool metadata)', () => {
     expect(p.pc).toEqual([]);
     expect(p.aliases).toEqual([]);
     expect(p.builtins).toEqual(['AskUserQuestion']);
-    expect(p.brain).toBe(WANDERING_PROFILE);
+    expect(p.brain).toBe(BODY_PROFILE);
+    expect(p.session).toBe('body');
     expect(p.title).toBe('Minecraft mode');
   });
 
@@ -99,7 +103,8 @@ describe('ModeProfile registry (tool metadata)', () => {
     expect([...p.mc].sort()).toEqual([...SEATED_MC].sort());
     for (const hidden of ['goto', 'mine', 'craft', 'build', 'sit_at_pc', 'inventory', 'request_hire'])
       expect(p.mc, hidden).not.toContain(hidden);
-    expect(p.brain).toBe(SEATED_PROFILE);
+    expect(p.brain).toBe(DESK_PROFILE);
+    expect(p.session).toBe('desk');
     const v2 = modeProfile('seated', 'v2');
     expect([...v2.mc].sort()).toEqual([...SEATED_MC_V2].sort());
     expect(v2.pc).toEqual(p.pc);
@@ -115,6 +120,22 @@ describe('ModeProfile registry (tool metadata)', () => {
     expect(p.pc).toEqual([]);
     expect(p.aliases).toEqual([]);
     expect(p.builtins).toEqual(['AskUserQuestion']);
+    expect(p.session).toBe('body');
+    expect(p.brain).toBe(BODY_PROFILE);
+  });
+
+  it('sessions (PLAN §6.1): the body registers every mc tool, a desk only PC mode’s; their built-ins match the modes', () => {
+    for (const v of MC_TOOL_SETS) {
+      expect(sessionMcTools('body', v)).toEqual(mcToolsIn(v));
+      expect(sessionMcTools('desk', v)).toEqual(modeProfile('seated', v).mc);
+      // Meeting mode is a subset of the body's list (the gate holds the body to it at the table).
+      for (const t of modeProfile('meeting', v).mc) expect(sessionMcTools('body', v)).toContain(t);
+    }
+    expect(sessionMode('body')).toBe('wander');
+    expect(sessionMode('desk')).toBe('seated');
+    // The desk lists ExitPlanMode only while Plan-first is on; the seated profile allows it for that case.
+    expect([...deskBuiltinTools(true)].sort()).toEqual([...modeProfile('seated').builtins].sort());
+    expect(deskBuiltinTools(false)).not.toContain('ExitPlanMode');
   });
 
   it('defaults conservatively: an untagged mc tool is wander-only, an untagged pc tool seated-only', () => {
@@ -200,7 +221,7 @@ function fsmIn(state: SeatCase): SeatFSM {
   fsm.stand('stand');
   if (state === 'standing') return fsm;
   fsm.boundary();
-  return fsm; // wandering within the re-sit debounce
+  return fsm; // wandering again right after a PC seat
 }
 
 const seat = (state: SeatCase): SeatSnapshot => fsmIn(state).snapshot;
@@ -222,9 +243,7 @@ describe('modeForSeat', () => {
       expect(modeForSeat(seat(state as SeatCase)), state).toBe(mode);
   });
 
-  it("agrees with the SeatFSM's model choice outside the re-sit debounce", () => {
-    // A PC seat runs on Opus; Minecraft and Meeting mode on Haiku once no debounce holds Opus any more.
-    const later = 1000 + 24 * 3_600_000;
+  it("agrees with the SeatFSM's desk: PC mode exactly while a desk session owns the seat (no debounce)", () => {
     const states = [
       'wandering',
       'walking',
@@ -237,13 +256,12 @@ describe('modeForSeat', () => {
     ] as const;
     for (const state of states) {
       const fsm = fsmIn(state);
-      const tier = modeProfile(modeForSeat(fsm.snapshot)).brain.tier;
-      expect(tier === 'opus', state).toBe(fsm.wantsOpus(later));
+      const p = modeProfile(modeForSeat(fsm.snapshot));
+      expect(p.session === 'desk', state).toBe(fsm.deskPc !== null);
+      expect(p.brain.tier, state).toBe(fsm.deskPc !== null ? 'opus' : 'haiku');
     }
-    // Within the debounce the model stays Opus while the mode is Minecraft mode already (debounce rules unchanged).
-    const debounce = fsmIn('debounce');
-    expect(debounce.wantsOpus(1001)).toBe(true);
-    expect(modeForSeat(debounce.snapshot)).toBe('wander');
+    // Right after a PC seat the body runs again on Haiku: Minecraft mode, no Opus debounce any more.
+    expect(modeForSeat(fsmIn('debounce').snapshot)).toBe('wander');
   });
 });
 
@@ -304,18 +322,28 @@ describe('MODE banner and persona sections', () => {
     );
   });
 
-  it('the persona (system prompt) is the same in every mode and leaves the mode sections to the banner', () => {
-    const p = personaPrompt({
+  it('each session persona carries its own mode section; Meeting mode is left to the banner', () => {
+    const input = {
       name: 'Ada',
       handle: 'ada',
-      role: 'engineer',
+      role: 'engineer' as const,
       ceo: false,
       playerName: 'Jasper',
       nonce: 'abc123',
-    });
-    expect(p).toContain('## Modes');
-    expect(p).toContain('[MV:abc123 MODE]');
-    for (const m of BRAIN_MODES) for (const line of modeSection(m, 'Jasper')) expect(p).not.toContain(line);
+    };
+    for (const v of MC_TOOL_SETS) {
+      const body = personaPrompt({ ...input, mcTools: v });
+      const desk = personaPrompt({ ...input, mcTools: v, session: 'desk' });
+      expect(body).toContain('[MV:abc123 MODE]');
+      for (const line of modeSection('wander', 'Jasper', v)) expect(body).toContain(line);
+      for (const line of modeSection('seated', 'Jasper', v)) expect(desk).toContain(line);
+      for (const line of modeSection('seated', 'Jasper', v)) expect(body).not.toContain(line);
+      for (const line of modeSection('wander', 'Jasper', v)) expect(desk).not.toContain(line);
+      for (const line of modeSection('meeting', 'Jasper', v)) {
+        expect(body).not.toContain(line);
+        expect(desk).not.toContain(line);
+      }
+    }
   });
 });
 

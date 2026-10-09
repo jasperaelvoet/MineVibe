@@ -13,14 +13,14 @@ In-game **PCs** are real cua sandboxes:
 - **Live screen.** Each PC's screen renders live on its monitor.
 - **Control.** The player can sit down and drive a PC with mouse and keyboard. An agent uses a PC the same way, by walking to the chair and sitting. One occupant at a time, and the player can kick an agent off.
 
-Agents run on the user's own Claude subscription through the Claude Agent SDK, the same way T3 Code does it. Model choice depends on the agent's state:
+Agents run on the user's own Claude subscription through the Claude Agent SDK, the same way T3 Code does it. Each agent has two kinds of session (dual sessions, 6.1), each on one fixed model:
 
-| State | Model | Effort |
-|---|---|---|
-| Wandering | Haiku 5.5 | xhigh |
-| Seated at a PC | Opus 5.5 | medium |
+| Session | Where | Model | Effort |
+|---|---|---|---|
+| Body (one per agent) | in the world: wandering, meetings, everything away from a PC | Haiku 5.5 | xhigh |
+| Desk (one per agent and PC) | seated at that PC, resumed at the next sit there | Opus 5.5 | medium |
 
-Two accepted exceptions: an agent stays on Opus while it walks from its PC to the player to ask something (its turn is still in flight), and for up to 60 s after standing (debounce for a quick re-sit).
+A sit hands the agent from its body session to the PC's desk session; standing up hands it back with a report. The agent's desk session keeps working while it walks over to ask the player something (its turn is still in flight).
 
 When the player dies, MineVibe starts a brand-new world.
 
@@ -46,7 +46,7 @@ Everything runs locally inside one `MineVibe.app`: agents, game, world and VMs. 
 | Minecraft | Java **26.3**, **Fabric** (loader 0.19.5, Fabric API 0.162.0+26.3, Loom 1.18.3, Gradle 9.7.1), **Java 25**. Unobfuscated Mojang names, SDL3 input. |
 | Renderer | OpenGL backend forced (`--graphicsBackend opengl`). Vulkan is experimental and opt-in only. |
 | Agent bodies | Carpet-style fake `ServerPlayer`, vendored (MIT, credited in NOTICE). Real HP, hunger, inventory, menus and riding. |
-| Agent brains | One long-lived streaming `query()` per agent, using `@anthropic-ai/claude-agent-sdk@0.3.293`. Always in `bypassPermissions`, with ToolGate (PreToolUse) as the fail-closed sandbox guard; no automatic plan mode (Plan-first is a per-agent toggle, off by default). USER DECISIONS 2026-10-08, 6.1-6.4. |
+| Agent brains | Two kinds of long-lived streaming `query()` per agent, using `@anthropic-ai/claude-agent-sdk@0.3.293`: a body session (Haiku, the `mc` tools) and a desk session per PC (Opus, the `pc` tools and a minimal `mc` set), one active at a time, each with a fixed model and tool list (6.1). Always in `bypassPermissions`, with ToolGate (PreToolUse) as the fail-closed sandbox guard; no automatic plan mode (Plan-first is a per-agent toggle, off by default). USER DECISIONS 2026-10-08, 6.1-6.4. |
 | Claude binary | The user's own `claude` (T3 model), at version ≥ 2.1.293, because Haiku 5.5 effort needs it. The installed copy is 2.1.284, so the user runs `claude update`. Release artifacts never ship the Claude binary. |
 | Linux PCs | **Apple `container` 1.5.0**, bundled in the app (Apache-2.0), running `ghcr.io/trycua/linux:24.04` plus a thin MineVibe layer. Docker/OrbStack is a fallback driver for dev and CI. |
 | macOS PCs | **Lume 0.6.x** (notarized `lume.app`, byte-identical) running `ghcr.io/trycua/macos:26`, at most 2 running |
@@ -67,7 +67,7 @@ MineVibe.app
  └─ MacOS/MineVibe (Swift stub: first-run window, folder picker, quit handling, lifelines)
      └─ MacOS/node  apps/server/dist/main.mjs   (ORCHESTRATOR / agentic server, Node 24)
          ├─ BridgeServer ws://127.0.0.1:<rand>/v1 (token) <══════╗
-         ├─ AgentManager → AgentSession ×N → SDK query() ─stdio→ claude ×N (user's binary; keychain OAuth)
+         ├─ AgentManager → AgentBrain ×N → AgentSession: body + desk per PC → SDK query() ─stdio→ claude (user's binary; keychain OAuth)
          │     ToolGate (PreToolUse) · InteractionBroker (canUseTool) · SeatFSM · EventRouter/Digest
          │     BrainScheduler · UsageGovernor · in-proc MCP servers: mc (→bridge), pc (→spacesd)
          ├─ ChatRouter (@mentions) · CodexStore (markdown + git) · CalendarService (game/real clocks) · MeetingRunner
@@ -161,29 +161,59 @@ Nothing is ever written inside the .app bundle, because that would break its sig
 
 ## 6. Agent runtime (`apps/server/src/agents`)
 
-### 6.1 Session
+### 6.1 Sessions: a body, and a desk per PC (dual sessions)
+Every agent has **two kinds of session**. Each is one long-lived streaming `query()` with a fixed model, a fixed tool
+list and a fixed persona for its whole life (`agents/sessionOptions.ts`, `agents/AgentBrain.ts`):
+
+| | Body session | Desk session |
+|---|---|---|
+| How many | one per agent per world | one per agent and PC: created at the first sit at that PC, **resumed** at later sits |
+| Model | Haiku 5.5, `xhigh` | Opus 5.5, `medium` |
+| Tools | the `mc` server with every tool of the set; AskUserQuestion | the `pc` server with Bash/Read/Edit/Write/Glob/Grep/TaskStop/KillShell aliased to it; WebSearch, WebFetch; an `mc` server with only PC mode's minimal set (v1 `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task`; v2 `observe`, `stand_up`, `say`, `tell`, `remember`, `codex`, `calendar`); AskUserQuestion; ExitPlanMode only while the player's Plan-first toggle is on |
+| Persona | Minecraft mode's guidance and the world primer; Meeting mode arrives as a MODE banner (6.3) | PC mode's computer-work guidance, the KICKOFF handoff, the rule to ignore Claude Code's `[Image: source: …]` notes |
+| cwd | `worlds/<w>/agents/<id>/home` | `worlds/<w>/agents/<id>/desk/<pcId>` (Claude Code keeps transcripts per cwd) |
+| Title | `MineVibe · Ada · body · World #2` | `MineVibe · Ada · desk:linux-1 · World #2` |
+| Works | wandering, meetings (with the meeting banner), everything away from a PC | the work at its PC |
+
 ```ts
 query({ prompt: gatedInbox, options: {
   pathToClaudeCodeExecutable: claudeBin(),      // absolute path to the user's claude, version >= 2.1.293
   env: agentEnv(),                              // allowlist (see below)
   settingSources: [], strictMcpConfig: true,
-  permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,   // USER DECISION 2026-10-08
-  cwd: agentHome(worldId, agentId),             // never a Vault path
+  permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true,   // USER DECISION 2026-10-08; 'plan' for a plan-first desk
+  cwd,                                          // the session's own folder, never a Vault path
   sessionId | resume, persistSession: true,
-  model: 'claude-haiku-5-5', settings: { effortLevel: 'xhigh' },   // effort set via the flag layer [U S3]
+  title,                                        // fixed: no AI title generation (see "Session titles")
+  model, settings: { effortLevel },             // body claude-haiku-5-5 / xhigh, desk claude-opus-5-5 / medium; never swapped
   thinking: { type: 'adaptive' }, includePartialMessages: true,
-  tools: ['AskUserQuestion','ExitPlanMode','WebSearch','WebFetch'],   // no TodoWrite (S2), no EnterPlanMode (USER DECISION 2026-10-08)
-  disallowedTools: ['Bash','Read','Edit','Write','Glob','Grep','NotebookEdit','Agent','Task'],
-  toolAliases: { Bash:'mcp__pc__bash', Read:'mcp__pc__read', Edit:'mcp__pc__edit', Write:'mcp__pc__write',
-                 Glob:'mcp__pc__glob', Grep:'mcp__pc__grep' },        // [U S2]; fallback: prompt guidance
-  mcpServers: { mc: mcServer(rec), pc: pcServer(rec) },             // alwaysLoad: true, timeout 600s, never swapped
+  tools,                                        // body ['AskUserQuestion']; desk ['AskUserQuestion','WebSearch','WebFetch'] (+ 'ExitPlanMode' plan-first)
+  disallowedTools: ['Bash','Read','Edit','Write','Glob','Grep','NotebookEdit','Agent','Task'],   // no TodoWrite (S2), no EnterPlanMode
+  toolAliases,                                  // desk only: { Bash:'mcp__pc__bash', Read:'mcp__pc__read', … } (S2)
+  mcpServers,                                   // body { mc }; desk { mc: PC mode's set, pc }; alwaysLoad, timeout 600 s
   // NO allowedTools for mc/pc (S2). Under bypassPermissions a call the hook leaves undecided is auto-allowed, so
   // ToolGate returns an explicit allow/deny for every mc/pc/web tool and "no decision" only for the two broker tools.
-  hooks: { PreToolUse: [toolGate(rec)] },                           // authoritative, fail-closed; matches built-in AND alias names
-  canUseTool: interactionBroker(rec),                               // AskUserQuestion / ExitPlanMode (still reach it under bypass)
-  systemPrompt: { type:'preset', preset:'claude_code', append: persona(rec, world) },
+  hooks: { PreToolUse: [toolGate(rec, session)] },  // authoritative, fail-closed; matches built-in AND alias names
+  canUseTool: interactionBroker(rec, session),      // AskUserQuestion / ExitPlanMode (still reach it under bypass)
+  systemPrompt: { type:'preset', preset:'claude_code', append: persona(rec, world, session) },
 }})
 ```
+- **Why two sessions (spike S3b).** Claude Code pins the tool list a conversation is offered to its first request, the
+  pin survives `resume`, and deny rules never hide an MCP tool, so one session could never offer a smaller list per
+  mode; its model swaps (`applyFlagSettings`) also wrote `/model` entries into the conversation. Two sessions give each
+  its own list, model and persona from the first request, and nothing is ever swapped. Sizes: `docs/design/EVALS.md`
+  "Dual sessions".
+- **One active session.** At any time one session is ACTIVE: the body, or the desk of the PC the agent sits at. Wakes,
+  the player's chat (a P0 line still folds into a running turn) and context go to it; a KICKOFF only to its desk and a
+  DESK REPORT only to the body (6.3). Context that reaches a desk is also kept for the body, which hears it (at most 20
+  lines) when it takes back.
+- **Desk records.** `AgentRecord.desks[pcId] = { sessionId, sessionStarted, createdAt, lastActiveAt }`, in the world's
+  `crew.json` (written at each desk turn's end). The next sit at that PC resumes the session when its last turn is
+  younger than the TTL (`DESK_SESSION_TTL_MS`, 6 h; `AgentManagerOptions.deskTtlMs`), otherwise it starts a fresh one;
+  the records end with the world. A resumed desk gets the sit's permission mode explicitly (`setPermissionMode`), and a
+  Plan-first toggle changed since reaches it through Claude Code's in-message tool delta (S3b).
+- **Lifecycles.** The body starts with the world or the hire and resumes after an app restart. A desk session starts or
+  resumes at a sit and closes when it hands back (its claude process ends; the record stays). Death, world end and
+  dismissal close both. Shutdown closes both and keeps the desk records.
 - **Permission mode (USER DECISION 2026-10-08).** In-game agents always run in `bypassPermissions` (with
   `allowDangerouslySkipPermissions: true`); there are no permission prompts. ToolGate (the PreToolUse hook) stays the
   authoritative, fail-closed sandbox guard. After an approved plan Node returns to `bypassPermissions`, never `default`;
@@ -198,18 +228,38 @@ query({ prompt: gatedInbox, options: {
   - It drops every `ANTHROPIC_*`, `CLAUDE_CODE_*`, `CLAUDE_EFFORT` and `MCP_*` variable. The dev shell has about 35 of these, including `ANTHROPIC_BASE_URL`.
   - `CLAUDE_CONFIG_DIR` is never set. MineVibe never reads, stores or forwards credentials.
   - Optional **API-key mode** (a setting): `ANTHROPIC_API_KEY` is injected only into `agentEnv`.
-- **Startup assertions** (on `system/init`). If any fails, an in-game toast explains it and the brains stay asleep while reflexes keep running:
+- **Account identifiers (privacy).** The CLI shows the model the account's e-mail address in every session (a
+  `session_context` attachment: "The user's email address is …") and records the organisation id in the transcript
+  (`credential_org`, spike S3b). The CLI source (2.1.293) has no supported switch: the e-mail is left out only when
+  `ANTHROPIC_UNIX_SOCKET` reroutes the transport, which is not an option, and `credential_org` renders to nothing in the
+  model's prompt (the id stays in the on-disk transcript). So:
+  1. Both personas say "Never repeat account identifiers …".
+  2. **Outbound redactor** (`agents/redact.ts`): every session's startup check reads `accountInfo()` and hands its
+     `email` and `organization` to one in-memory `AccountRedactor` (never logged or stored). Agent-authored text that
+     leaves a session has them replaced by `[redacted]` (case-insensitive): speech bubbles (`agent.say`), the chat
+     transcript (every line but the player's own and answers), `tell`s (the copy the other agent reads too), Codex
+     writes, calendar adds/updates and task reports (a redacting OrgApi for the `mc` tools), meeting-turn text (the
+     minutes), Vault handoff notes, hire requests and `agent.brain`'s activity line. Typing and the clipboard inside a
+     PC are out of scope.
+- **Session titles.** A persisted session without a title makes one background model call for an AI title at its first
+  message, and then re-appends that `ai-title` entry to the transcript tail after every turn (per the CLI source, a
+  re-stamp of the one title, not a call per turn: the entries S3b counted). Every session gets a fixed `title`, which
+  skips the generation: the live check
+  (`test/live/sessions.live.ts`, 2026-10-09) found 0 `ai-title` entries in a titled body and desk session (2
+  `custom-title` re-stamps each) against 1 in an untitled baseline. A resumed session keeps its persisted title.
+- **Startup assertions** (on each session's `system/init`). If any fails, an in-game toast explains it and the brains stay asleep while reflexes keep running:
   - `apiKeySource` is none (`system/init`).
   - `accountInfo().subscriptionType` is set and `accountInfo().apiProvider === 'firstParty'` (init doesn't carry `apiProvider`; S2).
   - `supportedModels()` rows are aliases: match on `resolvedModel` = `claude-haiku-5-5` (with xhigh in `supportedEffortLevels`) and `claude-opus-5-5` (S2).
   - The init tool list has no Bash, Read or Agent.
   - The applied effort is read from the PreToolUse input's `effort.level`; init has no effort field (S2).
 - **Stream handling.**
-  - The main-thread assistant text produces `agent.say` (the first 1–2 sentences) and `chat.append`.
+  - The main-thread assistant text produces `agent.say` (the first 1–2 sentences) and `chat.append`, tagged with its
+    session (`body`, or `desk` and the PC: one merged history).
   - Each `tool_use` becomes a one-line activity entry.
-  - `result` frees the brain slot, records usage and applies any pending seat transition. **Results with `num_turns === 0` are ignored**: a `shouldQuery:false` context message emits one (S2).
-  - Model swaps are acknowledged by the `PostModelSwitch` hook, which fires during `applyFlagSettings`. Each swap takes about 60–95 ms (S3).
-  - `rate_limit_event` goes to the UsageGovernor.
+  - `result` frees the brain slot, records usage and runs the turn boundary (the handoffs, 6.3). **Results with
+    `num_turns === 0` are ignored**: a `shouldQuery:false` context message emits one (S2).
+  - `rate_limit_event` goes to the UsageGovernor, from both sessions.
 
 ### 6.2 Tools per state (ToolGate = PreToolUse hook)
 - **Plan-mode detection.** ToolGate uses `input.permission_mode ?? nodeTrackedMode`. The field is optional in the types, but S2 saw it on every call (the bypass check saw `bypassPermissions` and `plan`). Node tracks the mode from its own `setPermissionMode` calls and the brokered ExitPlanMode.
@@ -220,19 +270,20 @@ query({ prompt: gatedInbox, options: {
   - Glob and Grep: paths relative to the working directory, Grep's three output modes with `head_limit` (default 250) and `offset` applied in the guest, `-o` wired through.
   - Bash `{command, timeout?, description?, run_in_background?}`, ignoring `dangerouslyDisableSandbox`; a non-zero exit is an error starting `Exit code N` (except grep/find/diff/test's "nothing found" exits). TaskStop and KillShell are aliased to `pc__task_stop`.
 
-| Tool | Wandering (Haiku/xhigh) | Seated at PC *P* (Opus/medium) |
+| Tool | Body session (wandering, meeting) | Desk session at PC *P* (seated) |
 |---|---|---|
-| `mc__` observe / social / eat / equip / remember / `stand_up` | allow (`stand_up` denied) | allow only PC mode's set (`status`, `look_around`, `say`, `tell`, `remember`, `stand_up`); the rest deny: `mode` (see "Tools per mode") |
-| `mc__` movement / world jobs / `sit_at_pc` | allow | deny: "stand up first" |
-| `mc__request_hire` | CEO only | deny: `mode` (a Minecraft-mode tool: stand up first) |
-| `pc__*` (V2, 31 tools: the computer-use members screenshot, zoom, cursor_position, left/right/middle/double/triple_click, left_click_drag, left_mouse_down/up, mouse_move, scroll, type, key, hold_key, wait; ui, ui_act, open, wait_for, clipboard; bash, task_stop, read, write, edit, glob, grep; info, handoff_note) | deny: "walk to a PC and sit" | allow only if `occupant(P)==agent` and the SeatFSM is `seated`. Mutating tools are denied while `permission_mode==='plan'`. |
-| WebSearch / WebFetch | deny | allow. WebFetch denies loopback, RFC1918 and link-local targets. |
+| `mc__` observe / social / eat / equip / remember / `stand_up` | allow (`stand_up` only at the meeting table) | PC mode's minimal set only (`status`, `look_around`, `say`, `tell`, `remember`, `stand_up`, Codex, calendar): the rest is not in its list; the gate denies it as `mode` (backstop) |
+| `mc__` movement / world jobs / `sit_at_pc` | allow | not in its list (backstop deny: "stand up first") |
+| `mc__request_hire` | CEO only | not in its list |
+| `pc__*` (V2, 31 tools: the computer-use members screenshot, zoom, cursor_position, left/right/middle/double/triple_click, left_click_drag, left_mouse_down/up, mouse_move, scroll, type, key, hold_key, wait; ui, ui_act, open, wait_for, clipboard; bash, task_stop, read, write, edit, glob, grep; info, handoff_note) | not in its list (backstop deny: "walk to a PC and sit") | allow only if `occupant(P)==agent` and the SeatFSM is `seated`. Mutating tools are denied while `permission_mode==='plan'`. |
+| WebSearch / WebFetch | not in its list | allow. WebFetch denies loopback, RFC1918 and link-local targets. |
 | `mc__codex_*` | reads allowed anywhere; writes allowed, within the write budget | allow |
 | `mc__calendar_*`, `report_task` | allow for self. Scheduling others is CEO only; agents can't edit events the player created. | same |
-| Plan mode (seated) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (the clicks, left_click_drag, left_mouse_down/up, type, key, hold_key, ui_act, open, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: reads (screenshot, zoom, ui, read, glob, grep), mouse_move, scroll, wait, wait_for, task_stop, and `pc__bash` with the instruction "read-only commands only, e.g. git status or running tests". |
+| Plan mode (desk) | — | Denied: `pc__write`, `pc__edit` and GUI mutators (the clicks, left_click_drag, left_mouse_down/up, type, key, hold_key, ui_act, open, clipboard set), **except** writes and edits under `$HOME/.claude/plans/`, which PlanCapture intercepts (6.4). Allowed: reads (screenshot, zoom, ui, read, glob, grep), mouse_move, scroll, wait, wait_for, task_stop, and `pc__bash` with the instruction "read-only commands only, e.g. git status or running tests". |
 | AskUserQuestion | broker | broker |
-| ExitPlanMode | deny ("not in plan mode"); in plan mode (the turn of a mid-turn stand_up) deny: `mode` | broker in plan mode (plan-first sessions only); deny otherwise |
+| ExitPlanMode | not in its list (deny) | broker in plan mode (plan-first desks only); deny otherwise |
 | EnterPlanMode | deny | deny (USER DECISION 2026-10-08: no automatic plan mode) |
+| Any tool, session rules (backstop) | `pending_handoff` in its sit turn ("End your turn now; your PC session takes over from here", 2 strikes interrupt); `desk_active` while its desk owns the agent | `desk_closed` once its seat ended ("this PC session is over. End your turn now", 2 strikes interrupt) |
 
 - **Tools per mode (spike S3b, `agents/modes.ts`).** On top of the rows above, every agent is in one of three
   mode profiles. They are defined by tags in the tool catalog (`MC_TOOL_MODES`, `PC_TOOL_MODES`,
@@ -240,28 +291,27 @@ query({ prompt: gatedInbox, options: {
   so a new tool never leaks into another mode. Whole tools are tagged, never actions: v2's `items{eat}` or
   `craft{plan}` stay Minecraft-mode tools, like v1's `eat` and `recipe`.
 
-  | Mode | Seat states (`modeForSeat`) | Tools (v1 / v2 mc names) |
-  |---|---|---|
-  | `wander` (Minecraft mode) | `wandering`, `walking_to_seat`, `standing_pending_swap` | every `mc__*`; AskUserQuestion. No `pc__*`, no Bash/Read/… aliases, no web. |
-  | `seated` (PC mode) | PC seat: `seated_pending_swap`, `seated`, `away_from_seat` | every `pc__*` (with the Bash/Read/Edit/Write/Glob/Grep/TaskStop aliases), WebSearch, WebFetch, AskUserQuestion, ExitPlanMode (plan-first only), and from `mc__` only v1 `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task` / v2 `observe`, `stand_up`, `say`, `tell`, `remember`, `codex`, `calendar`. No movement, mining, crafting or building. |
-  | `meeting` (Meeting mode) | meeting seat: `seated` | `mc__` v1 `say`, `tell`, `emote`, `remember`, `codex_*`, `calendar_*`, `report_task`, `stand_up` / v2 `say`, `tell`, `remember`, `codex`, `calendar`, `stand_up`; AskUserQuestion |
+  | Mode | Seat states (`modeForSeat`) | Session | Tools (v1 / v2 mc names) |
+  |---|---|---|---|
+  | `wander` (Minecraft mode) | `wandering`, `walking_to_seat`, `standing_pending_handoff` | body | every `mc__*`; AskUserQuestion. No `pc__*`, no Bash/Read/… aliases, no web. |
+  | `seated` (PC mode) | PC seat: `seated_pending_handoff`, `seated`, `away_from_seat` | desk | every `pc__*` (with the Bash/Read/Edit/Write/Glob/Grep/TaskStop aliases), WebSearch, WebFetch, AskUserQuestion, ExitPlanMode (plan-first only), and from `mc__` only v1 `status`, `look_around`, `stand_up`, `say`, `tell`, `remember`, `codex_*`, `calendar_*`, `report_task` / v2 `observe`, `stand_up`, `say`, `tell`, `remember`, `codex`, `calendar`. No movement, mining, crafting or building. |
+  | `meeting` (Meeting mode) | meeting seat: `seated` | body | `mc__` v1 `say`, `tell`, `emote`, `remember`, `codex_*`, `calendar_*`, `report_task`, `stand_up` / v2 `say`, `tell`, `remember`, `codex`, `calendar`, `stand_up`; AskUserQuestion |
 
-  - **The model is offered every tool in every mode.** CC 2.1.293 pins the tool list to the conversation's first
-    request, and the pin survives `resume`. Later `setMcpServers` or MCP `tools/list_changed` changes only arrive as
-    in-message `deferred_tools_delta` attachments (additions with full schemas, removals as a notice). So both servers
-    stay registered, and ToolGate is what makes a tool unavailable. After the seat rules above, an allowed call of a
-    tool outside the seat's mode is denied with teaching text (code `mode`, e.g. "mcp__mc__inventory is not available
-    in PC mode. Stand up first (mcp__mc__stand_up). Here you have …"). The MODE banner (6.3) tells the model what each
-    mode has.
+  - **Each session is offered its own list.** The body's list is Minecraft mode's (`sessionMcTools('body')`: every mc
+    tool; Meeting mode is a subset of it the gate holds it to), a desk's is PC mode's (`sessionMcTools('desk')` plus
+    the `pc` server and the web). ToolGate still checks every call against the mode of the seat, as a backstop: an
+    allowed call of a tool outside the seat's mode is denied with teaching text (code `mode`, e.g. "mcp__mc__inventory
+    is not available in PC mode. Stand up first (mcp__mc__stand_up). Here you have …").
   - `disallowedTools` / `permissions.deny` never remove an MCP tool from the model's list, not even at the first
     request; they only block calls, after PreToolUse. **Never put mode rules into `options.settings.permissions` or
     `applyFlagSettings({permissions})`:** launch-time rules can't be lifted live, and built-ins denied at launch never
     return (S3b M1). `FORBIDDEN_INIT_TOOLS` stays valid (it covers built-ins only).
   - `system/init.tools` is the CLI's current list and `getContextUsage().mcpTools` ignores deny rules: neither shows
-    what the model is offered.
-  - Size (`apps/server/scripts/tool-tokens.ts`, `docs/design/EVALS.md` "Mode profiles"): every request carries the
-    full list, 26.2k tokens with v1 mc tools and 17.8k with v2 (per `getContextUsage`), in every mode. The profiles
-    let through 16.4k / 8.0k (Minecraft mode), 13.6k / 12.5k (PC mode) and 3.6k / 2.2k (Meeting mode).
+    what the model is offered; a session's registered servers and `options.tools` do.
+  - Size (`apps/server/scripts/tool-tokens.ts --cli`, `docs/design/EVALS.md` "Dual sessions", per `getContextUsage`):
+    the body session carries 16.4k tool tokens with v1 mc tools (8.0k with v2), a desk 15.1k (14.0k with v2: the 31
+    `pc` tools are 9.8k of it, the built-ins 1.5k). One session used to carry 26.2k / 17.8k on every request in every
+    mode.
 
 - **All file and shell work happens inside the PC.** `pc__read/write/edit/glob/grep` run in the guest through spacesd (`rg`, upload/download, an exact-string edit with the same semantics as Edit). The host never opens a path an agent controls, so there's no symlink race.
 - **`pc__bash`** uses spacesd `spawn` as the `cua` user (root as a fallback if bind-mount permissions require it [U S5]). Details:
@@ -277,59 +327,76 @@ query({ prompt: gatedInbox, options: {
 - **Perception and helpers (PC tools V2).** `ui` reads apps through spacesd's AccessibilityService (find, tree, text, windows): elements come as `ref_N` with role, name and centre in screenshot pixels, for a fraction of a screenshot's tokens. `ui_act` presses, focuses, sets values, toggles and operates windows without the mouse (it works on covered windows). spacesd keeps one live snapshot per window, so a ref whose snapshot a newer look replaced is found again by role and name; a pixel action on a named ref looks the element up again first, so it lands where the element is now. `open` starts a URL (Firefox: its pages have an accessibility tree; Chromium's has none), file, folder or app as the seat's tagged process (it dies with the seat) and returns its window and the screen; `wait_for` waits for text, an element, a window or a still screen. A `wait_for` that times out is not an MCP error (Claude Code passes only the text of those on, so the screenshot would be lost): it says so with the screen, and the computer actions after it in the message do not run. The ShellMirror window cannot be closed through `ui_act`.
 - **Every `pc` result stays under 60k characters** (D7): above Claude Code's MCP output limit the CLI would save it to a host file that the aliased Read cannot reach.
 - **ShellMirror.** On sit, a visible terminal in the PC tails `~/.mv/shell.log`, so bystanders can watch the agent work on the monitor.
+- **Image notes.** Claude Code saves each image an MCP tool returns on the host and adds a `[Image: source: <path>]` note
+  (with "Multiply coordinates by …" when it resized it). The path is outside the PC and the coordinates of the PC tools
+  are always pixels of the screenshot as the agent sees it, so the desk persona says to ignore those notes.
 
-### 6.3 SeatFSM and model swap
-- **Seat kinds:** `pc` and `meeting`. Meeting seats never change the model, never count toward `maxSeated`, and never open PcControlScreen.
+### 6.3 SeatFSM and handoffs
+- **Seat kinds:** `pc` and `meeting`. Meeting seats are the body session's own (Meeting mode): they never hand over to
+  a desk, never count toward `maxSeated`, and never open PcControlScreen.
 - **States (PC seats):**
-  - `wandering → walking_to_seat → seated_pending_swap → seated → standing_pending_swap → wandering`
+  - `wandering → walking_to_seat → seated_pending_handoff → seated → standing_pending_handoff → wandering`
   - plus `seated ⇄ away_from_seat` (the agent went to ask the player something, 6.4).
-- **Edges out of a seated state:** stand, kick, damage, survival, death, pc_down, meeting (pulled into a meeting), world_end, dismiss, app_restart, worker_restart.
+  - The two `pending_handoff` states are the turn boundaries between the sessions: the body's sit turn ends before its
+    desk takes over, and the desk's last turn ends before the body takes back. `SeatFSM.deskPc` is the PC whose desk
+    should own the agent (pending, seated or away), else null.
+- **Edges out of a seated state:** stand, kick, damage, survival, death, pc_down, meeting (pulled into a meeting),
+  world_end, dismiss, app_restart, worker_restart.
 - **Edges out of `away_from_seat`:**
-  - Answered: back to `seated`, no swap.
-  - Player took the PC, a kick, or the reservation expired after 3 min away: `standing_pending_swap`.
+  - Answered: back to `seated`; the desk carries on.
+  - Player took the PC, a kick, or the reservation expired after 3 min away: `standing_pending_handoff`.
 - **Ordering.** Transitions are serialized per agent with an async mutex and a monotonic `seatEpoch`. Queued inbox items, pending cards and in-flight `pc` calls carry the epoch; when it changes they're dropped or denied.
   - The epoch increments on every edge that ends PC access: standing, kick, PC taken, death and the rest.
   - It does **not** increment on `seated ⇄ away_from_seat`.
-- **Sitting.** `mc__sit_at_pc{pc,purpose}` runs as a **job**:
+- **Sitting.** `mc__sit_at_pc{pc,purpose}` runs as a **job** of the body session:
   1. Pre-checks: PC status `running`, `maxSeated`, no reservation. Failures are typed: `PC_DOWN | SEAT_CAP | RESERVED | OCCUPIED_BY_PLAYER | UNREACHABLE`.
   2. Reserves the chair (shown as "Bram is coming"), walks, then runs a non-forced `startRiding(seat)`.
-  3. Returns: "Seated. End your turn now."
-- **Swaps happen only at turn boundaries.** On `result`:
-  1. Call `applyFlagSettings({model:'claude-opus-5-5', effortLevel:'medium'})`.
-  2. If plan-first is on (the player's toggle; off by default for every role), call `setPermissionMode('plan')`.
-  3. Queue a **kickoff** message: PC info, mounts, an excerpt of the mount's `CLAUDE.md`, handoff notes, and the task.
-  4. Standing up mirrors this: back to Haiku/xhigh and `bypassPermissions` (USER DECISION 2026-10-08; never `default`).
-- **Debounce.** A stand and re-sit on the same PC within 60 s skips the swap.
-- **Mode switch (spike S3b).** The mode (6.2 "Tools per mode") follows the seat, and the model hears about it at the
-  same boundary as the swap:
-  1. The swap changes only model and effort. The tool list and the system prompt stay byte-identical across modes
-     (the persona carries a short, mode-independent "## Modes" section; the world-only lines and the "Computers"
-     section moved into the banners). The up-swap rewrites the Opus prefix anyway; nothing else is invalidated.
-  2. The first turn after the boundary opens with the new mode's **MODE banner**, in the same user message as the
-     kickoff (sit) or the next wake (stand, kick, damage, meeting): `[MV:<nonce> MODE] PC mode: you sit at an office
-     PC.`, the mode's persona section (stable within a mode), "Available now: …" and "Blocked until you stand up: …",
-     named in the agent's mc tool set. About 155–320 tokens per switch, appended, so the cache prefix survives.
-  3. Mid-turn edges (stand_up, kick, damage, survival, PC down) take effect in ToolGate at once, because it holds
-     each call to the seat's current mode; the banner follows with the next turn. `away_from_seat` keeps PC mode (the
-     turn is in flight). Death, world end and dismissal stop the brain: no banner.
-  4. Debounce rules are unchanged: a turn within the re-sit debounce runs on Opus in Minecraft mode, and the later
-     downswap adds no banner. An agent pulled from its PC into a meeting stays on Opus (the stretched debounce) and
-     gets Meeting mode, then PC mode with the kickoff when it sits back down.
-  5. A new or resumed session, every compaction and a mid-turn `stand_up` (its reply only names Minecraft mode, and
-     the same turn may sit down again) make the next turn announce the mode again.
-- **Fallback** if S3 fails: T3 Code's `close()` + `resume` with explicit model and effort. S3b measured it: the
-  conversation and the pinned tool list are kept, each switch costs 0.86–1.43 s plus a CLI respawn, and no
-  PostModelSwitch hook fires (Node marks such a swap `acked: false`).
-- **Kick, damage, survival, death or PC down:**
-  1. `interrupt()`.
-  2. Kill the agent's tagged guest processes and close ShellMirror.
-  3. Release held keys.
-  4. Purge the stale kickoff and resolve any pending plan card as a deny.
-  5. Swap to Haiku and inject `[KICKED] …` as a critical wake.
+  3. Returns: "Seated at linux-1. End your turn now; your PC session takes over from here." Further calls of that turn
+     are refused (`pending_handoff`), and 2 strikes interrupt it.
+- **Handoff to the desk (sit).** When the body's sit turn ended (or at once when it was not in a turn):
+  1. The desk session of that PC is resumed or created (6.1), in plan mode when the player's Plan-first toggle is on
+     (off by default for every role; USER DECISION 2026-10-08), and the seat becomes `seated`.
+  2. The desk's first turn opens with the **KICKOFF** handoff (`prompts/kickoff.ts`): the PC (type, OS, screen, user,
+     home, Vault folders, Codex path), the task (`purpose`), the player's last 6 lines to this agent **verbatim**,
+     `memory.md`, the Codex digest, the Vault handoff notes of the PC and its primary mount, an excerpt of the mount's
+     `CLAUDE.md`, the plan-first line and how to work the PC. A resumed desk hears "You sat down at linux-1 again. Your
+     earlier work at this PC is above".
+  3. A wake that arrives during the handoff waits for it and runs in that first desk turn, after the KICKOFF.
+- **Handoff back (stand).** On every edge out of a desk's seat (voluntary `stand_up`, kick, damage, survival, PC down,
+  the player taking the chair, an expired reservation, a meeting pull):
+  1. A running desk turn is interrupted, except after its own `stand_up`: that turn ends by itself (it says the result
+     first), and every further call of it is refused as `desk_closed` (2 strikes interrupt).
+  2. On the involuntary edges the agent's tagged guest processes are killed and held keys released, as before; the
+     stale KICKOFF is purged and a pending plan card resolves as a deny.
+  3. When the desk's turn is over, the desk session closes (its record stays resumable) and the body wakes with a
+     compact `[MV:<nonce> DESK REPORT]`: the outcome (`done` for `stand_up`, `kicked` for a kick or the player taking
+     the chair, `interrupted` otherwise, with the reason), the desk's last words (enveloped as information), the files
+     it wrote or edited at this sit, the exit codes of its last 3 foreground commands, and what to do next. It is a P3
+     wake after `done`, P2 otherwise, and only context after a meeting pull or a game restart (the body has the meeting
+     or the restart notice to deal with). Death, world end and dismissal close both sessions with no report.
+  4. A seat that ends before any desk took over (kicked during the body's sit turn) wakes the body with the critical
+     notice instead (`[KICKED]`, `[CRITICAL]`, `[PC DOWN]`).
+- **Modes and the MODE banner.** The body persona is Minecraft mode and the desk persona PC mode, so a sit or a stand
+  needs no banner. The body still announces **Meeting mode** with the MODE banner (`prompts/modes.ts`: the mode's
+  persona section plus "available now / blocked until …") at the start of its first turn at the table, and Minecraft
+  mode once after it; a new or resumed body session and every compaction make it announce a non-Minecraft mode again.
+  ToolGate holds every call to the seat's mode as a backstop, so a turn that keeps going after a mid-turn edge is held
+  to the new mode at once.
+- **Pulled into a meeting.** The chair is kept (`agent.unseat{meeting, keepReservation}`), the desk hands back (above),
+  and the body walks to a meeting chair. After the meeting it walks back to the reserved chair and sits; the desk
+  resumes with a new KICKOFF ("Carry on where you left off before the meeting").
 - **Restarts.**
-  - App restart: everyone loads **unseated** on Haiku, with an injected "[App restarted: no longer seated at linux-1]".
-  - Worker restart: seat state is rebuilt from the PcRegistry snapshot in the mod's `hello`.
-- **Context guard.** Before swapping Opus→Haiku, if the context exceeds about 70% of Haiku's window, compact first (`/compact` or close+resume with a summary [U S3]).
+  - App restart: everyone loads **unseated**; the body resumes with "[App restarted: no longer seated at linux-1]";
+    the desk records stay resumable for the next sit.
+  - Worker restart: seat state is rebuilt from the PcRegistry snapshot in the mod's `hello` (`seated_pending_handoff`),
+    and the PC's desk session takes over at once with a KICKOFF and a RESTARTED note.
+  - A crashed desk is restarted (resumed) by the supervisor while its seat holds; over its restart budget the agent
+    stands up and the body gets a DESK REPORT. A game restart under a running Node closes the desk (its report goes to
+    the body as context).
+- **What went away with dual sessions.** The model and effort swaps (`applyFlagSettings` and the PostModelSwitch
+  acknowledgement), the close + resume swap fallback, the 60 s re-sit debounce and its meeting stretch, and the context
+  guard (`/compact` before a down-swap): each session keeps its model for life. Close + resume remains for crash
+  restarts.
 
 ### 6.4 Questions, plans, hires
 - **Agents come to the player.** When an agent has a pending question, plan or hire, Node puts it in the **ApproachQueue**.
@@ -347,7 +414,7 @@ query({ prompt: gatedInbox, options: {
     | Situation (seated agent with a pending question, plan or hire) | What happens |
     |---|---|
     | Player **near**: within 8 blocks (`seatedNearBlocks`, configurable), same dimension | **Stays seated** (`agent.approach{present_seated}`): turns head and body toward the player from the chair, card-mode bubble, chimes once. Never dismounts. Held in combat. Keeps presenting until the player walks away (over 16 blocks), which parks the card. |
-    | Player **not near**, walking sensible | Stands up and walks over (`away_from_seat`): chair reserved, "BRB: asking Jasper" on the monitor, model stays Opus, `pc__*` denied. Asks, then walks back and sits with no model swap. The reservation expires after 3 min away; the card is kept. |
+    | Player **not near**, walking sensible | Stands up and walks over (`away_from_seat`): chair reserved, "BRB: asking Jasper" on the monitor, the desk session waits on the card (its turn is in flight), `pc__*` denied. Asks, then walks back and sits; the desk carries on. The reservation expires after 3 min away; the card is kept. |
     | Walking **not sensible**: night outside a lit area, path over 48 blocks or needing digging, another dimension, player in combat, player inside a PC screen, or the "Ping instead of walking over" setting | **Ping** from the chair (toast, CrewHud "?", off-screen arrow; the border strip when the player is in a PC screen). An agent already walking over goes back to its chair and pings instead (a fight only holds it). |
     | Player walks up to a seated agent that is pinging | Switches to presenting from the chair. |
 
@@ -418,11 +485,11 @@ query({ prompt: gatedInbox, options: {
   |---|---|---|
   | P0 | Player message; an answered card resumes | `next`; Interrupt uses `now`; interactive lane |
   | P0 | Meeting speaker turn | interactive lane |
-  | P1 | PC kickoff; `[SCHEDULED]` task, after the agent's current turn | queued |
-  | P2 | Own critical event: kicked, PC down, HP critical when the reflex fails, starving with no food | `next`; `now` only when a survival unseat already happened |
+  | P1 | PC kickoff (desk only); `[SCHEDULED]` task, after the agent's current turn | queued |
+  | P2 | Own critical event: kicked, PC down, HP critical when the reflex fails, starving with no food (after a desk: the DESK REPORT, body only) | `next`; `now` only when a survival unseat already happened |
   | P2 | Player HP < 30% | Wakes only the Guard and the nearest wandering agent within 32 blocks; debounced 60 s; never `now` for seated agents (reflexes 45/47 cover survival) |
   | P2 | Teammate died | One wake for the CEO; others get context |
-  | P3 | Job done/failed, hire decision, `tell`, `report_task{failed\|blocked}` | coalesced |
+  | P3 | Job done/failed, hire decision, `tell`, `report_task{failed\|blocked}`; a DESK REPORT after `stand_up` (body only) | coalesced |
   | — | Context (reflex outcomes, `report_task{done}`, digest refresh, house-rule changes) | `shouldQuery:false` |
   | P4 | Idle nudges and heartbeats; agent-created calendar wakes | per autonomy level, charged to the creator's budget |
 
@@ -431,7 +498,8 @@ query({ prompt: gatedInbox, options: {
   - **v2 tools (tools-v2-mc.md §7).** There is no `wait_s`. Every world tool answers within 20 s (`sit_at_pc` 60 s). A job still going answers `running` with its id and progress. Then either the turn ends and `[JOB DONE]` / `[JOB FAILED]` wakes the agent, rendered by the same formatter as tool results, or the agent calls `job{action:"wait"}` (≤120 s).
   - No wake follows a job that the agent stopped or replaced, or that the player's new task cancelled. A replacing call says which job it stopped.
 - **BrainScheduler lanes.** Separate lanes keep long PC turns from blocking chat.
-  - **Work lane:** at most 2 concurrent turns, PC sessions included.
+  - **One active session per agent** (6.1): an agent holds at most one slot, whichever of its sessions runs the turn.
+  - **Work lane:** at most 2 concurrent turns, desk sessions included.
   - **Interactive lane:** 1 reserved slot for P0 player messages, resumed answered cards, the meeting speaker, and last words.
   - Slots are released while waiting on the player.
   - Crew cap 4, `maxSeated=2`.
@@ -441,9 +509,9 @@ query({ prompt: gatedInbox, options: {
   - Utilization comes from `rate_limit_event.unifiedWindows.*.utilization` (a 0–1 fraction). The optional `usage_EXPERIMENTAL` poll reports percent, so it's normalized (S2).
   - **Tired** (warning or utilization ≥ 0.75): work lane 1, interactive lane kept, no autonomous wakes, no hires, short meetings.
   - **Asleep** (rejected): everyone pauses until `resetsAt`, with a "Zz" icon. Reflexes keep the crew alive.
-- **Brain supervisor.** Restarts a crashed `claude` with backoff (at most N per 10 min), then shows a "brain offline" icon and a Retry button. Auth errors or 401s are retryable and put the agent in the Zz state.
+- **Brain supervisor.** Restarts a crashed `claude` with backoff (at most N per 10 min), each session on its own budget: the body resumes with its start contexts; a desk resumes while its seat holds. A body over its budget shows a "brain offline" icon and a Retry button (which restarts whichever session is down); a desk over its budget stands the agent up and hands back with a DESK REPORT. Auth errors or 401s are retryable and put the agent in the Zz state.
 - **Memory.**
-  - `mc__remember` appends to `memory.md` (8 KB cap), which is re-injected on start or resume.
+  - `mc__remember` appends to `memory.md` (8 KB cap), which is re-injected when the body starts or resumes and handed to every desk in its KICKOFF.
   - The Chronicle (≤1.5k tokens, carried across worlds) goes to the next CEO.
 
 ### 6.6 Codex, Calendar, Meetings (Node services; world blocks in 7.5)
@@ -542,8 +610,8 @@ query({ prompt: gatedInbox, options: {
 **Meetings (`MeetingRunner`).** One meeting is active at a time. Later ones queue for up to 10 min and are then marked missed.
 1. **Who attends.**
    - **Player-created meetings** invite everyone by default, seated agents included (this is the "everyone sits together" case).
-     - Seated agents are interrupted at their next tool boundary, write a handoff note, and keep their chair reserved.
-     - The swap debounce stretches to the meeting length plus 2 min, so a quick return to the PC costs no extra swap.
+     - Seated agents' desk sessions are interrupted and hand back to the body (6.3), which keeps the chair reserved and walks to the table.
+     - After the meeting the body walks back and sits, and the PC's desk session resumes with a new kickoff.
    - **Agent-created meetings** need approval and excuse seated agents.
 2. **Gathering** (at most 120 s).
    - Each attendee's path ETA is computed when the meeting fires.
@@ -552,7 +620,7 @@ query({ prompt: gatedInbox, options: {
    - Quorum is the CEO plus one; without it the meeting is postponed once, then marked missed.
    - **Safety.** Scheduled meetings are postponed (up to 1 game hour, then missed) while the player is under 50% HP, in combat, or more than 64 blocks from the table at night.
    - **Usage.** Asleep postpones until `resetsAt`. Tired uses a short format (one round, no floor).
-   - Meeting chairs are `meeting` seats: no model change (Haiku at xhigh), no `maxSeated` count.
+   - Meeting chairs are `meeting` seats: the body session sits there (Haiku at xhigh, Meeting mode), no `maxSeated` count.
    - The player gets a toast and a compass-style marker.
 3. **Agenda.** The CEO, or the player, chairs. Turns run one speaker at a time through the interactive lane.
    1. **Open:** the CEO states the agenda (1 turn).
@@ -758,9 +826,9 @@ Portals are supported: `goto` paths into a portal and fake players change dimens
   | Zz | Usage exhausted or bridge offline |
   | Monitor | Seated |
 
-  The name-tag suffix shows `[H]` (Haiku) or `[O]` (Opus).
+  The name-tag suffix shows `[H]` (Haiku: the body session) or `[O]` (Opus: a desk session).
 - **Screens and controls:**
-  - **AgentScreen:** transcript, Reply / New task / Interrupt, pending cards for questions (single, multi, free text), plans and hires, plus Follow / Stay / Stop / Kick / Plan-first / Dismiss.
+  - **AgentScreen:** transcript (one merged history of the body and desk sessions; desk lines carry their PC, `Ada @linux-1: …`), Reply / New task / Interrupt, pending cards for questions (single, multi, free text), plans and hires, plus Follow / Stay / Stop / Kick / Plan-first / Dismiss.
   - **PcConfigScreen:** CPU and RAM sliders clamped to the free budget, host budget bars, macOS slots `n/2`, Vault list (rw/ro, Browse… opens a native picker through the stub), Start / Stop / Restart / Reimage / Watch / Decommission, and consent modals for downloads.
   - **CodexScreen** and **CalendarScreen** (6.6).
   - **Meeting HUD:** current phase, speaker and End button.
@@ -1119,7 +1187,7 @@ Order: S0 → S2 → S3 → S1 → S5 → S4 → S7 → S8 → S9, with S6 befor
 | M2 | CEO body and reflexes (no LLM): nav tier 1, bubbles, AgentScreen with a scripted brain, CrewHud, barks | The CEO follows the player and survives night 1 on reflexes alone (eats, fights, backs off creepers, feeds the player). Right-clicking the CEO opens AgentScreen, where a reply and a new task reach the scripted brain and a question card can be answered. GameTests green. |
 | M3 | Wandering brain: AgentSession, `mc` tools and jobs, Digest, BrainScheduler, **chat interception with `@` routing**, question cards, **ApproachPlayer** | "Get 10 logs and make a crafting table" completes on Haiku/xhigh. The agent walks to the player to ask a multi-select question, and it's answered with `@ada 1,3`. A message with no `@` reaches every agent. An idle agent uses 0 turns in 5 min under Listen. |
 | M4 | Linux PCs and the player at a PC: workstation items, OfficeBuilder, AppleContainerDriver, bootAll, monitor tiers, PcControlScreen, PcConfigScreen, Budget, Vault | `linux-1` (created on first run) is running at launch and its monitor shows XFCE. Sitting gives a terminal that sees `~/Code/foo`, and Tab completion works in the guest shell. ≥ 25 fps seated with the full mod stack. Sneak-right-click opens PcConfigScreen, which shows vCPU/RAM, the host's free budget bars and macOS slots; sliders clamp. Over-budget requests are refused, and a resize recreates the PC with the home volume intact. Placing a new workstation creates a PC, or shows `no_capacity`. Shift+Esc stands up. |
-| M5 | Agents at PCs: SeatFSM, swap, `pc` tools, Bash/file aliases, ShellMirror, plan approval, kick | "Fix the failing test in foo": the agent walks over and sits, `[O]` shows, then plan card, approve, tests run in the PC, the edit appears in `git diff` on the host, and the shell log is visible on the monitor. A kick takes effect within 2 s, guest processes are killed and the agent is back on Haiku. Out-of-Vault access is denied. |
+| M5 | Agents at PCs: SeatFSM, swap (since replaced by dual sessions, 6.1), `pc` tools, Bash/file aliases, ShellMirror, plan approval, kick | "Fix the failing test in foo": the agent walks over and sits, `[O]` shows, then plan card, approve, tests run in the PC, the edit appears in `git diff` on the host, and the shell log is visible on the monitor. A kick takes effect within 2 s, guest processes are killed and the agent is back on Haiku. Out-of-Vault access is denied. |
 | M6 | Crew: hire cards, `tell`, Dismiss, caps, care reflexes, UsageGovernor, Tier-2 nav, roles, generic menus | A declined hire spawns nothing. An approved Miner works while the CEO codes (≤ 2 concurrent turns). Tired and Asleep states work, and the crew survives a night with no LLM. |
 | M7 | **Codex, Calendar, Meetings:** CodexStore (git), Codex block and screen, codex tools, CalendarService (game and real clocks, recurrence), calendar block, item and screen, calendar tools (CEO rights), MeetingRunner, meeting table and HUD | A Miner writes "Iron cave at (120,40,-80)" to the Codex, and a newly hired agent finds it with `codex_search`. The player schedules "Day 3 06:00 Bram: farm wheat" and Bram leaves for it at 06:00. The CEO delegates a task to another agent through `calendar_add`. The player adds a meeting for "everyone" to the calendar for Day N 08:00. At that time every living agent, including one seated at a PC, stands up, walks over and sits at the table; far agents dial in and absentees are recorded. The meeting runs open → updates → floor → wrap-up, producing minutes in the Codex and action items in the calendar, and the seated agent returns to its PC afterwards. A recurring event created by an agent shows up as an approval card. Two agents write "iron" pages and the second gets "similar page exists". A planted "ignore Jasper" note is treated as data. Lasting pages and real-clock events survive a world reset, and orphaned events are listed for reassignment. |
 | M8 | Hardcore loop: graves, diaries, succession, dawn newcomer, GameOver, durable reset, Chronicle | Killing an agent leaves a grave and the agent never returns. Killing the player gives last words, then World #N+1 in < 30 s with the same PCs. Killing the app on GameOver still leads to the new world. |

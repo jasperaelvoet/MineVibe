@@ -130,10 +130,10 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
     expect((await decide('mcp__mc__stand_up', {}, ctx({ state: 'walking' }))).behavior).toBe('allow');
   });
 
-  it('denies every tool in seated_pending_swap with "end your turn now"', async () => {
+  it('denies every tool in seated_pending_handoff with "end your turn now"', async () => {
     for (const tool of ['mcp__mc__status', 'mcp__mc__goto', 'mcp__pc__bash', 'mcp__pc__read']) {
       const d = await decide(tool, {}, ctx({ state: 'pending' }));
-      expect(d).toMatchObject({ behavior: 'deny', code: 'pending_swap' });
+      expect(d).toMatchObject({ behavior: 'deny', code: 'pending_handoff' });
       expect(d.reason).toMatch(/End your turn now/);
     }
   });
@@ -501,5 +501,74 @@ describe('WebFetch target checks', () => {
     expect(
       await checkWebTarget('https://example.com/', { resolve: async () => ['1.1.1.1', '127.0.0.1'] }),
     ).toMatchObject({ ok: false });
+  });
+});
+
+describe('ToolGate: the session rules (PLAN §6.1 dual sessions, a backstop to the per-session tool lists)', () => {
+  it('a desk session whose seat ended may call nothing more: desk_closed, end your turn', async () => {
+    const desk = { session: 'desk' as const, deskPc: 'linux-1' };
+    // While its seat holds (pending, seated, away), the desk passes on to the seat rules.
+    expect(
+      (await decide('mcp__pc__bash', { command: 'ls' }, ctx({ state: 'seated', ...desk }))).behavior,
+    ).toBe('allow');
+    expect(await decide('mcp__pc__bash', { command: 'ls' }, ctx({ state: 'away', ...desk }))).toMatchObject({
+      code: 'away',
+    });
+    // Stood up (or kicked, or pulled into a meeting): everything is refused, the broker tools too.
+    for (const tool of ['mcp__pc__bash', 'mcp__mc__say', 'mcp__mc__status', 'AskUserQuestion', 'WebSearch']) {
+      const d = await decide(tool, { command: 'ls', text: 'hi' }, ctx({ state: 'standing', ...desk }));
+      expect(d, tool).toMatchObject({ behavior: 'deny', code: 'desk_closed' });
+      expect(d.reason).toMatch(/no longer seated at linux-1: this PC session is over\. End your turn now/);
+    }
+    // A desk for another PC than the seat's is closed too.
+    expect(
+      await decide(
+        'mcp__pc__bash',
+        { command: 'ls' },
+        ctx({ state: 'seated', session: 'desk', deskPc: 'linux-2' }),
+      ),
+    ).toMatchObject({ code: 'desk_closed' });
+  });
+
+  it('the body session calls nothing while its desk session owns the agent: desk_active', async () => {
+    for (const state of ['seated', 'away'] as const) {
+      const d = await decide('mcp__mc__inventory', {}, ctx({ state, session: 'body' }));
+      expect(d, state).toMatchObject({ behavior: 'deny', code: 'desk_active' });
+      expect(d.reason).toMatch(/Your PC session is working at linux-1 right now; end your turn\./);
+    }
+    // In its own sit turn (pending handoff) the old rule holds: end the turn.
+    expect(await decide('mcp__mc__inventory', {}, ctx({ state: 'pending', session: 'body' }))).toMatchObject({
+      code: 'pending_handoff',
+    });
+    // Wandering and at the meeting table the body works as before.
+    expect(
+      (await decide('mcp__mc__inventory', {}, ctx({ state: 'wandering', session: 'body' }))).behavior,
+    ).toBe('allow');
+    expect(
+      (await decide('mcp__mc__say', { text: 'hi' }, ctx({ state: 'meeting', session: 'body' }))).behavior,
+    ).toBe('allow');
+  });
+
+  it('the hook reports which session made the call', async () => {
+    const seen: string[] = [];
+    const hook = createToolGateHook(
+      () => ctx({ state: 'wandering', session: 'body' }),
+      (o) => seen.push(`${o.toolName}:${o.session}`),
+    );
+    await hook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'mcp__mc__status',
+        tool_input: {},
+        tool_use_id: 't1',
+        session_id: 's',
+        transcript_path: '/dev/null',
+        cwd: '/',
+        mcp_server: { name: 'mc', source: 'sdk' },
+      } as never,
+      undefined,
+      { signal: new AbortController().signal },
+    );
+    expect(seen).toEqual(['mcp__mc__status:body']);
   });
 });

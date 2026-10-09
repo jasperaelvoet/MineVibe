@@ -23,6 +23,7 @@ import { FakeOrgApi } from '../../../src/contracts/FakeOrgApi.js';
 import { FakePcApi } from '../../../src/contracts/FakePcApi.js';
 import { FakeSkillApi } from '../../../src/contracts/FakeSkillApi.js';
 import { createHarness, type Harness } from '../../helpers/agentHarness.js';
+import { deskQuery, sitAtDesk } from '../../helpers/desk.js';
 import { FAKE_MODELS, type FakeQuery, resultText } from '../../helpers/fakeSdk.js';
 
 let h: Harness | null = null;
@@ -82,24 +83,17 @@ async function wake(w: Harness, q: FakeQuery, text: string) {
   await w.until(() => w.texts(q).some((t) => t.includes(text)), `wake ${text}`);
 }
 
-/** Sits the CEO at linux-1 and ends the sit turn; resolves once seated (on Opus). */
-async function seatAtPc(w: Harness, q: FakeQuery, id: string) {
+/**
+ * Sits the CEO at linux-1 and ends the sit turn; resolves once its desk session (Opus) ran its kickoff turn. Returns
+ * the desk's query.
+ */
+async function seatAtPc(w: Harness, q: FakeQuery, id: string): Promise<FakeQuery> {
   await wake(w, q, 'go work at the pc');
-  const calling = q.callTool('mcp__mc__sit_at_pc', { pc: 'linux-1', purpose: 'fix the tests' });
-  await w.until(() => w.skills.seats.length > 0, 'agent.seat');
-  const seat = w.skills.seats.at(-1) as { jobId: string; seatEpoch: number };
-  w.manager.onPcSeat({
-    pcId: 'linux-1',
-    occupant: { kind: 'agent', agentId: id },
-    seatEpoch: seat.seatEpoch,
-  });
-  w.skills.finish(seat.jobId, { status: 'done' });
-  await calling;
-  q.result();
-  await w.until(() => w.manager.brain(id)?.fsm.state === 'seated', 'seated');
-  await w.until(() => w.texts(q).some((t) => t.includes('KICKOFF')), 'kickoff');
-  q.result();
+  const d = await sitAtDesk(w, q, id, 'linux-1', 'fix the tests');
+  expect(w.manager.brain(id)?.fsm.state).toBe('seated');
+  d.result();
   await w.until(() => w.manager.brain(id)?.status === 'idle', 'idle after kickoff');
+  return d;
 }
 
 describe('CrewHooks on the agent runtime', () => {
@@ -120,18 +114,19 @@ describe('CrewHooks on the agent runtime', () => {
     expect(brain?.fsm.state).toBe('seated');
   });
 
-  it('pullIntoMeeting keeps the PC reserved and the model; releaseFromMeeting walks back with no swap', async () => {
+  it('pullIntoMeeting keeps the PC reserved; the body goes to the table; releaseFromMeeting walks back to the desk', async () => {
     const { w, id, q } = await world();
-    await seatAtPc(w, q, id);
-    const flagsBefore = q.calls.filter((c) => c.method === 'applyFlagSettings').length;
+    const d1 = await seatAtPc(w, q, id);
     await w.manager.pullIntoMeeting(id, 'm-1');
     const brain = w.manager.brain(id);
     expect(w.skills.seats.at(-2)).toMatchObject({ reason: 'meeting', keepReservation: true });
     expect(w.skills.seats.at(-1)).toMatchObject({ target: { kind: 'meeting', meetingId: 'm-1' } });
     expect(brain?.fsm.snapshot).toMatchObject({ state: 'walking_to_seat', kind: 'meeting' });
-    // Off the PC: no pc tools, but still Opus (the debounce stretches over the meeting).
+    // Off the PC: no pc tools; the body session (Haiku) has the agent again.
     expect(brain?.fsm.hasPcAccess).toBe(false);
-    expect(brain?.fsm.wantsOpus()).toBe(true);
+    expect(brain?.activeSession).toBe('body');
+    expect(brain?.model).toBe('haiku');
+    expect(d1.closed).toBe(true);
     w.skills.finish((w.skills.seats.at(-1) as { jobId: string }).jobId, { status: 'done' });
     await w.until(() => brain?.fsm.state === 'seated', 'meeting chair');
     expect(brain?.fsm.snapshot.kind).toBe('meeting');
@@ -156,8 +151,9 @@ describe('CrewHooks on the agent runtime', () => {
     });
     w.skills.finish(back.jobId, { status: 'done' });
     await w.until(() => brain?.fsm.state === 'seated' && brain.fsm.snapshot.kind === 'pc', 'back at the PC');
-    expect(q.calls.filter((c) => c.method === 'applyFlagSettings')).toHaveLength(flagsBefore);
+    // Its desk session for linux-1 takes over again (resumed).
     expect(brain?.model).toBe('opus');
+    expect(deskQuery(w, id)?.options.resume).toBe(brain?.record.desks?.['linux-1']?.sessionId);
   });
 
   it('a refused meeting chair rejects with the mod code and leaves the agent wandering', async () => {
@@ -173,7 +169,6 @@ describe('CrewHooks on the agent runtime', () => {
     const { w, id, q } = await world();
     await seatAtPc(w, q, id);
     const brain = w.manager.brain(id);
-    const flagsBefore = q.calls.filter((c) => c.method === 'applyFlagSettings').length;
     const realSeat = w.skills.seat.bind(w.skills);
     w.skills.seat = async (request) => {
       if (request.target.kind === 'meeting') throw Object.assign(new Error('no chair'), { code: 'NO_SEAT' });
@@ -195,7 +190,7 @@ describe('CrewHooks on the agent runtime', () => {
     });
     w.skills.finish(back.jobId, { status: 'done' });
     await w.until(() => brain?.fsm.state === 'seated' && brain.fsm.snapshot.kind === 'pc', 'back at the PC');
-    expect(q.calls.filter((c) => c.method === 'applyFlagSettings')).toHaveLength(flagsBefore);
+    expect(brain?.activeSession).toBe('desk');
     // Nothing is left to walk back to when the meeting ends.
     const n = w.skills.seats.length;
     await w.manager.releaseFromMeeting(id);
@@ -334,9 +329,9 @@ describe('restarts: worker vs app (PLAN §6.3)', () => {
 });
 
 describe('the game restarts into the same world while Node runs (review fix)', () => {
-  it('unseats the brains (no PC access, back to Haiku), forgets the jobs and tells the agent', async () => {
+  it('unseats the brains (no PC access, the desk hands back to the body), forgets the jobs and tells the agent', async () => {
     const { w, id, q } = await world();
-    await seatAtPc(w, q, id);
+    const d = await seatAtPc(w, q, id);
     const brain = w.manager.brain(id);
     expect(brain?.fsm.hasPcAccess).toBe(true);
     expect(brain?.model).toBe('opus');
@@ -345,10 +340,18 @@ describe('the game restarts into the same world while Node runs (review fix)', (
     expect(w.skills.spawned.at(-1)).toMatchObject({ agentId: id, restore: true });
     await w.until(() => brain?.fsm.state === 'wandering', 'seat reset');
     expect(brain?.fsm.hasPcAccess).toBe(false);
-    await w.until(() => brain?.model === 'haiku', 'swap back to Haiku');
-    const notice = q.sent.find((m) => JSON.stringify(m).includes('The game restarted.'));
+    await w.until(() => brain?.model === 'haiku', 'the body takes back');
+    expect(d.closed).toBe(true);
+    await w.until(
+      () => q.sent.some((m) => JSON.stringify(m).includes('RESTARTED] The game restarted.')),
+      'notice',
+    );
+    const notice = q.sent.find((m) => JSON.stringify(m).includes('RESTARTED] The game restarted.'));
     expect((notice as { shouldQuery?: boolean } | undefined)?.shouldQuery).toBe(false);
     expect(JSON.stringify(notice)).toContain('You are no longer seated at linux-1.');
+    // What the desk did reaches the body as context (no wake for it).
+    const report = q.sent.find((m) => JSON.stringify(m).includes('DESK REPORT'));
+    expect((report as { shouldQuery?: boolean } | undefined)?.shouldQuery).toBe(false);
     // A late pc.seat of the old seat (epoch before the reset) stands the body up instead of re-seating the brain.
     const n = w.skills.seats.length;
     w.manager.onPcSeat({ pcId: 'linux-1', occupant: { kind: 'agent', agentId: id }, seatEpoch: oldEpoch });
@@ -358,15 +361,42 @@ describe('the game restarts into the same world while Node runs (review fix)', (
 });
 
 describe('a seated agent whose claude crashes (review fix)', () => {
-  it('resumes on the seat model (Opus/medium), not on Haiku until the next boundary', async () => {
+  it('a desk crash resumes the desk session on its fixed model (Opus/medium)', async () => {
     const { w, id, q } = await world({ supervisor: { maxRestarts: 3, backoff: { base: 1, max: 1 } } });
-    await seatAtPc(w, q, id);
+    const d = await seatAtPc(w, q, id);
     const before = w.factory.queries.length;
-    q.crash('claude exited with code 1');
+    d.crash('claude exited with code 1');
     await w.until(() => w.factory.queries.length === before + 1, 'restart', 4000);
     const restarted = w.factory.queries.at(-1);
     expect(restarted?.options.model).toBe('claude-opus-5-5');
-    expect(restarted?.options.resume).toBeDefined();
+    expect(restarted?.options.settings).toMatchObject({ effortLevel: 'medium' });
+    expect(restarted?.options.resume).toBe(w.manager.brain(id)?.record.desks?.['linux-1']?.sessionId);
+  });
+
+  it('a body crash while the desk works restarts the body on Haiku and leaves the desk alone', async () => {
+    const { w, id, q } = await world({ supervisor: { maxRestarts: 3, backoff: { base: 1, max: 1 } } });
+    const d = await seatAtPc(w, q, id);
+    const before = w.factory.queries.length;
+    q.crash('claude exited with code 1');
+    await w.until(() => w.factory.queries.length === before + 1, 'restart', 4000);
+    const body = w.factory.queries.at(-1);
+    expect(body?.options.model).toBe('claude-haiku-5-5');
+    expect(body?.options.resume).toBe(w.manager.brain(id)?.record.sessionId);
+    expect(d.closed).toBe(false);
+    expect(w.manager.brain(id)?.activeSession).toBe('desk');
+  });
+
+  it('a desk over its restart budget stands the agent up; the body takes back with a DESK REPORT', async () => {
+    const { w, id, q } = await world({ supervisor: { maxRestarts: 0, backoff: { base: 1, max: 1 } } });
+    const d = await seatAtPc(w, q, id);
+    d.crash('claude exited with code 1');
+    await w.until(() => w.texts(q).some((t) => t.includes('DESK REPORT')), 'report', 4000);
+    const report = w.texts(q).find((t) => t.includes('DESK REPORT')) ?? '';
+    expect(report).toContain('(outcome: interrupted). Your PC session at linux-1 stopped working');
+    expect(w.manager.brain(id)?.activeSession).toBe('body');
+    expect(w.manager.brain(id)?.fsm.state).toBe('wandering');
+    expect(w.skills.seats.some((s) => 'reason' in s && s.reason === 'stand')).toBe(true);
+    expect(w.manager.brain(id)?.offline).toBe(false);
   });
 });
 
@@ -438,45 +468,6 @@ describe('calendar approval cards of gone agents', () => {
     const { w, card } = await withCard('dismissed');
     expect(w.manager.pending.get(card.id)).toBeUndefined();
     expect(w.manager.pendingCards()).toEqual([]);
-  });
-});
-
-describe('PLAN §6.3 fallback: close + resume when applyFlagSettings fails', () => {
-  it('resumes the same session with the new model and effort, and the kickoff still arrives', async () => {
-    const { w, id, q } = await world();
-    q.applyFlagSettings = async () => {
-      throw new Error('flag layer refused');
-    };
-    await wake(w, q, 'go work at the pc');
-    const calling = q.callTool('mcp__mc__sit_at_pc', { pc: 'linux-1', purpose: 'fix it' });
-    await w.until(() => w.skills.seats.length > 0, 'agent.seat');
-    const seat = w.skills.seats[0] as { jobId: string; seatEpoch: number };
-    w.manager.onPcSeat({
-      pcId: 'linux-1',
-      occupant: { kind: 'agent', agentId: id },
-      seatEpoch: seat.seatEpoch,
-    });
-    w.skills.finish(seat.jobId, { status: 'done' });
-    await calling;
-    q.result();
-    await w.until(() => w.factory.queries.length === 2, 'a resumed session');
-    const resumed = w.factory.queries[1] as FakeQuery;
-    const brain = w.manager.brain(id);
-    expect(resumed.options).toMatchObject({
-      model: 'claude-opus-5-5',
-      settings: { effortLevel: 'medium' },
-      resume: brain?.record.sessionId,
-    });
-    expect(q.closed).toBe(true);
-    expect(brain?.lastSwap).toMatchObject({ to: 'claude-opus-5-5', resumed: true });
-    await w.until(
-      () => w.texts(resumed).some((t) => t.includes('KICKOFF')),
-      'kickoff on the resumed session',
-    );
-    expect(brain?.model).toBe('opus');
-    expect(brain?.fsm.state).toBe('seated');
-    // Nothing was treated as a crash: no restart notice, the supervisor never ran.
-    expect(w.events.some((e) => e.type === 'toast' && /offline/.test(JSON.stringify(e.payload)))).toBe(false);
   });
 });
 
@@ -739,25 +730,25 @@ void resultText;
 describe('PC tools V2 in the brain', () => {
   it('a background command that ends wakes its agent with a task notification; a stopped one does not', async () => {
     const { w, id, q } = await world();
-    await seatAtPc(w, q, id);
-    await wake(w, q, 'start the dev server');
-    const started = await q.callTool(
+    const d = await seatAtPc(w, q, id);
+    await wake(w, d, 'start the dev server');
+    const started = await d.callTool(
       'mcp__pc__bash',
       { command: 'npm run dev', description: 'Start the dev server', run_in_background: true },
       { toolUseId: 'toolu_dev' },
     );
     const jobId = /ID: (b[0-9a-f]{8})\./.exec(resultText(started))?.[1] as string;
     expect(jobId).toBeTruthy();
-    const stopped = await q.callTool('mcp__pc__bash', { command: 'sleep 9', run_in_background: true });
+    const stopped = await d.callTool('mcp__pc__bash', { command: 'sleep 9', run_in_background: true });
     const stoppedId = /ID: (b[0-9a-f]{8})\./.exec(resultText(stopped))?.[1] as string;
-    expect(resultText(await q.callTool('mcp__pc__task_stop', { task_id: stoppedId }))).toBe(
+    expect(resultText(await d.callTool('mcp__pc__task_stop', { task_id: stoppedId }))).toBe(
       `Successfully stopped task: ${stoppedId} (sleep 9)`,
     );
-    q.result();
+    d.result();
     await w.until(() => w.manager.brain(id)?.status === 'idle', 'idle');
     w.pcs.finishJob('linux-1', jobId, 1, 'boom\n');
-    await w.until(() => w.texts(q).some((t) => t.includes('<task-notification>')), 'task notification');
-    const note = w.texts(q).find((t) => t.includes('<task-notification>')) as string;
+    await w.until(() => w.texts(d).some((t) => t.includes('<task-notification>')), 'task notification');
+    const note = w.texts(d).find((t) => t.includes('<task-notification>')) as string;
     expect(note).toMatch(/\[MV:[0-9a-f]{6} PC JOB\] A background command ended\./);
     expect(note).toContain(
       [
@@ -770,13 +761,13 @@ describe('PC tools V2 in the brain', () => {
         '</task-notification>',
       ].join('\n'),
     );
-    expect(w.texts(q).filter((t) => t.includes(stoppedId))).toEqual([]);
+    expect(w.texts(d).filter((t) => t.includes(stoppedId))).toEqual([]);
   });
 
   it('the stream tells the pc tools which call ends a batch: only the last one answers with the screen', async () => {
     const { w, id, q } = await world();
-    await seatAtPc(w, q, id);
-    await wake(w, q, 'type hi into the terminal');
+    const d = await seatAtPc(w, q, id);
+    await wake(w, d, 'type hi into the terminal');
     // One assistant message with two computer actions, streamed as the CLI does with partial messages.
     for (const event of [
       { type: 'message_start', message: { id: 'msg_batch' } },
@@ -792,20 +783,20 @@ describe('PC tools V2 in the brain', () => {
       },
       { type: 'message_stop' },
     ]) {
-      q.emit({
+      d.emit({
         type: 'stream_event',
         event,
         parent_tool_use_id: null,
         uuid: randomUUID(),
-        session_id: q.sessionId,
+        session_id: d.sessionId,
       } as never);
     }
-    const kinds = (r: Awaited<ReturnType<typeof q.callTool>>) =>
+    const kinds = (r: Awaited<ReturnType<typeof d.callTool>>) =>
       ((r.kind === 'allowed' ? r.result : null) as { content: { type: string }[] } | null)?.content.map(
         (c) => c.type,
       );
-    const click = await q.callTool('mcp__pc__left_click', { coordinate: [10, 10] }, { toolUseId: 't1' });
-    const typed = await q.callTool('mcp__pc__type', { text: 'hi' }, { toolUseId: 't2' });
+    const click = await d.callTool('mcp__pc__left_click', { coordinate: [10, 10] }, { toolUseId: 't1' });
+    const typed = await d.callTool('mcp__pc__type', { text: 'hi' }, { toolUseId: 't2' });
     expect(kinds(click)).toEqual(['text']);
     expect(kinds(typed)).toEqual(['text', 'image']);
     expect(w.pcs.input.map((i) => i.kind)).toEqual(['pointer', 'type']);

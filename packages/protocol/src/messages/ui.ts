@@ -11,6 +11,7 @@ import {
   Handle,
   ModelTier,
   NonNegInt,
+  PcId,
   PendingId,
 } from './common.js';
 import { type CatalogEntry, defineMessage } from './define.js';
@@ -100,6 +101,13 @@ export const ChatEntry = z.object({
   fromAgentId: AgentId.optional(),
   /** The card of a `card` / `answer` entry. */
   cardId: PendingId.optional(),
+  /**
+   * Which of the agent's two sessions the line belongs to (PLAN §6.1, dual sessions): `body` (in the world) or `desk`
+   * (at a PC, with `pcId`). One merged history; AgentScreen tags desk lines with their PC. Absent on older lines.
+   */
+  session: z.enum(['body', 'desk']).optional(),
+  /** The PC of a `desk` line. */
+  pcId: PcId.optional(),
 });
 export type ChatEntry = z.infer<typeof ChatEntry>;
 

@@ -97,6 +97,23 @@ class UiModelTest {
 	}
 
 	@Test
+	void transcriptLinesCarryTheirSessionTag() {
+		// Dual sessions (PLAN §6.1): one merged history, desk lines tagged with their PC.
+		Ui.ChatEntry body = new Ui.ChatEntry(1, 1, "agent", "On my way.", null, null, "body", null);
+		Ui.ChatEntry desk = new Ui.ChatEntry(2, 1, "agent", "Tests pass.", null, null, "desk", "linux-1");
+		Ui.ChatEntry old = new Ui.ChatEntry(3, 1, "agent", "Hi.", null, null);
+		Ui.ChatEntry noPc = new Ui.ChatEntry(4, 1, "activity", "bash", null, null, "desk", null);
+		assertEquals("", body.sessionTag());
+		assertEquals(" @linux-1", desk.sessionTag());
+		assertEquals("linux-1", desk.deskPc());
+		assertEquals("", old.sessionTag());
+		assertEquals(" @PC", noPc.sessionTag());
+		Transcript t = new Transcript();
+		t.addPage(List.of(body, desk, old), false);
+		assertEquals(List.of("", " @linux-1", ""), t.entries().stream().map(Ui.ChatEntry::sessionTag).toList());
+	}
+
+	@Test
 	void barksComeFromTheTableOrAreHumanised() {
 		assertEquals("Hmm, one sec…", Barks.text("thinking"));
 		assertEquals("Found iron", Barks.text("found_iron"));

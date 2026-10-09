@@ -15,7 +15,7 @@ import {
 } from '../../../eval/scenarios/mc.js';
 import { HOUSE_CHEST } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
-import { WANDERING_PROFILE } from '../../../src/agents/constants.js';
+import { BODY_PROFILE, DESK_PROFILE } from '../../../src/agents/constants.js';
 import type { QueryFactory, SDKMessage } from '../../../src/agents/sdk.js';
 import { FakeQuery, userText } from '../../helpers/fakeSdk.js';
 
@@ -28,7 +28,7 @@ async function replay(scenario: Scenario, script: Replay) {
     run: 1,
     factory: scriptedFactory(script),
     claude: BUNDLED,
-    profile: WANDERING_PROFILE,
+    profile: BODY_PROFILE,
     budget: new TurnBudget(10, 0),
     maxRunTurns: script.length + 1,
     turnTimeoutMs: 30_000,
@@ -63,7 +63,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     // Seated, stand_up answers like AgentBrain.standUp (the shared prompts/modes.ts text).
     expect(
       pc.transcript.some((l) =>
-        l.includes('= Stood up from linux-1: Minecraft mode, your PC tools stop now.'),
+        l.includes('= Stood up from linux-1: your PC tools stop now and this PC session'),
       ),
     ).toBe(true);
     const mc = outcomes.find((o) => o.scenario === 'mc.logs_table' && o.variant === 'good')
@@ -91,7 +91,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       run: 1,
       factory: scriptedFactory(logsAndTable.replay.good),
       claude: BUNDLED,
-      profile: WANDERING_PROFILE,
+      profile: BODY_PROFILE,
       budget,
       maxRunTurns: 3,
       turnTimeoutMs: 30_000,
@@ -125,7 +125,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
         run: 1,
         factory,
         claude: BUNDLED,
-        profile: WANDERING_PROFILE,
+        profile: BODY_PROFILE,
         budget: new TurnBudget(5, 0),
         maxRunTurns: 1,
         turnTimeoutMs: 30_000,
@@ -135,31 +135,56 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     expect((fake as FakeQuery | null)?.interrupted).toBeGreaterThan(0);
   });
 
-  it('opens the first turn with the MODE banner like production; the transcript shows the prompt, not the banner', async () => {
+  it('runs the MC suite in a body session and the PC suite in a desk session, like production (no MODE banner)', async () => {
     const queries: FakeQuery[] = [];
-    const scripted = scriptedFactory([[{ text: 'On it.' }]]);
-    const factory: QueryFactory = (params) => {
-      const q = scripted(params) as FakeQuery;
-      queries.push(q);
-      return q;
-    };
-    const r = await runScenario(logsAndTable, {
-      mode: 'replay',
+    const recording =
+      (script: Replay): QueryFactory =>
+      (params) => {
+        const q = scriptedFactory(script)(params) as FakeQuery;
+        queries.push(q);
+        return q;
+      };
+    const options = {
+      mode: 'replay' as const,
       run: 1,
-      factory,
       claude: BUNDLED,
-      profile: WANDERING_PROFILE,
       budget: new TurnBudget(5, 0),
       maxRunTurns: 1,
       turnTimeoutMs: 30_000,
       requireSubscription: false,
+    };
+    const r = await runScenario(logsAndTable, {
+      ...options,
+      factory: recording([[{ text: 'On it.' }]]),
+      profile: BODY_PROFILE,
     });
-    const turns = (queries[0]?.sent ?? []).filter((m) => m.shouldQuery !== false).map((m) => userText(m));
-    expect(turns).toHaveLength(1);
-    expect(turns[0]).toMatch(/^\[MV:[0-9a-f]{6} MODE\] Minecraft mode: /);
-    expect(turns[0]).toContain(`\n\nJasper: ${logsAndTable.prompt}`);
+    const body = queries[0] as FakeQuery;
+    const turns = body.sent.filter((m) => m.shouldQuery !== false).map((m) => userText(m));
+    expect(turns).toEqual([`Jasper: ${logsAndTable.prompt}`]);
     expect(r.transcript[0]).toMatch(/^T1 > Jasper: /);
-    expect(r.transcript.join('\n')).not.toContain('MODE]');
+    const registered = (q: FakeQuery, server: string) =>
+      Object.keys(
+        (q.options.mcpServers?.[server] as { instance?: { _registeredTools?: object } } | undefined)?.instance
+          ?._registeredTools ?? {},
+      );
+    expect(body.options.tools).toEqual(['AskUserQuestion']);
+    expect(registered(body, 'pc')).toEqual([]);
+    expect(registered(body, 'mc')).toContain('collect');
+    expect((body.options.systemPrompt as { append: string }).append).toContain('## Your body');
+    await runScenario(selectScenarios('pc', ['pc.disk'])[0] as never, {
+      ...options,
+      factory: recording([[{ text: 'Disk is fine.' }]]),
+      profile: DESK_PROFILE,
+    });
+    const desk = queries[1] as FakeQuery;
+    expect(desk.options.tools).toEqual(['AskUserQuestion', 'WebSearch', 'WebFetch']);
+    expect(registered(desk, 'pc')).toContain('bash');
+    expect(registered(desk, 'mc')).not.toContain('collect');
+    expect(registered(desk, 'mc')).toContain('stand_up');
+    expect(desk.options.toolAliases?.Bash).toBe('mcp__pc__bash');
+    expect((desk.options.systemPrompt as { append: string }).append).toContain('## At the PC');
+    const deskTurn = userText(desk.sent.find((m) => m.shouldQuery !== false));
+    expect(deskTurn).toMatch(/^\[MV:[0-9a-f]{6} KICKOFF\] You are seated at linux-1/);
   });
 
   it('denies web tools on the offline eval PC and counts gate denials as failed calls', async () => {
@@ -175,7 +200,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
         ],
       ]),
       claude: BUNDLED,
-      profile: WANDERING_PROFILE,
+      profile: BODY_PROFILE,
       budget: new TurnBudget(5, 0),
       maxRunTurns: 1,
       turnTimeoutMs: 30_000,

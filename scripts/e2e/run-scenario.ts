@@ -9,7 +9,7 @@
  * inventories, and the runtime's own events (turns with their model, tool calls with model and effort, swaps).
  *
  * Steps (each records PASS/FAIL and numbers):
- *   1 cold boot   2 CEO at the door   3 logs + crafting table   4 ask flow   5 PC flow + swaps   6 kick
+ *   1 cold boot   2 CEO at the door   3 logs + crafting table   4 ask flow   5 PC flow (body → desk → body)   6 kick
  *   7 Codex + calendar   8 hardcore death -> World #2   9 quit: no orphans
  *
  * Usage (repo root, after `npm install` and `cd apps/mod && ./gradlew build`):
@@ -952,7 +952,7 @@ async function step5(r: StepResult): Promise<void> {
   ).catch(() => false);
   check(r, seated === true, 'seated at linux-1 (client atPc, SEATED icon possible)');
   const opusBrain = await waitFor(
-    'swap to Opus',
+    'the desk session (Opus)',
     120_000,
     () =>
       events.find(
@@ -1024,10 +1024,10 @@ async function step5(r: StepResult): Promise<void> {
     'a turn on Opus while seated (message.model)',
   );
   r.numbers.compactedBeforeDownswap = turnsSince(at, boss.agentId).some((t) => t.numTurns === 0);
-  // Back on Haiku once standing (the swap waits out the 60 s re-sit debounce).
+  // Back on Haiku once standing: the body session takes back at the handoff (dual sessions, PLAN §6.1).
   const standAt = stand?.at ?? Date.now();
   const haiku = await waitFor(
-    'swap back to Haiku',
+    'the body session (Haiku) again',
     150_000,
     () =>
       events.find(

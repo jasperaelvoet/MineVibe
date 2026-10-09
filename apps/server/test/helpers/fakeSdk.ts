@@ -2,8 +2,9 @@
  * A fake Claude Agent SDK `query()` for unit tests: no process, no network. The test drives the stream (init,
  * assistant text and tool_use, results, rate limits) and simulates what the CLI does around a tool call: the
  * PreToolUse hook, canUseTool for "no decision", then the in-process MCP tool handler (with the tool's own input
- * validation). Control calls (`applyFlagSettings`, `setPermissionMode`, `interrupt`) are recorded, and
- * `applyFlagSettings` fires the PostModelSwitch hook during the call, as CC 2.1.293 does (S3).
+ * validation). Control calls (`setPermissionMode`, `interrupt`, and `applyFlagSettings`, which the runtime no longer
+ * makes since dual sessions: tests assert it stays unused) are recorded; `applyFlagSettings` would fire the
+ * PostModelSwitch hook during the call, as CC 2.1.293 does (S3).
  *
  * Permission modes follow what the live check of USER DECISION 2026-10-08 showed (spikes/s2-s3-sdk/result.md, "bypass
  * mode"): under `bypassPermissions` a call the hook leaves undecided is auto-allowed without canUseTool, except the
@@ -45,6 +46,9 @@ export const FAKE_MODELS: ModelInfo[] = [
   { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default', description: '' },
 ];
 
+/** The fake account's e-mail address (what Claude Code's `session_context` would show the model). */
+export const FAKE_ACCOUNT_EMAIL = 'player@example.com';
+
 export type ToolCallOutcome =
   | { readonly kind: 'denied'; readonly by: 'gate' | 'broker'; readonly reason: string }
   | {
@@ -70,7 +74,13 @@ export class FakeQuery implements QueryLike {
   readonly sent: SDKUserMessage[] = [];
   readonly calls: { method: string; args: unknown }[] = [];
   readonly sessionId = randomUUID();
-  account: AccountInfo = { subscriptionType: 'Claude Max', apiProvider: 'firstParty' };
+  /** The account the fake CLI runs on (its e-mail address and organisation feed the outbound redactor). */
+  account: AccountInfo = {
+    subscriptionType: 'Claude Max',
+    apiProvider: 'firstParty',
+    email: FAKE_ACCOUNT_EMAIL,
+    organization: `${FAKE_ACCOUNT_EMAIL}'s Organization`,
+  };
   models: ModelInfo[] = FAKE_MODELS;
   model: string;
   effort: EffortLevel | null;
