@@ -11,6 +11,7 @@
  */
 
 import type { AgentRole, Autonomy, PayloadOf } from '@minevibe/protocol';
+import { type McToolsVersion, mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 import type { WakePriority } from './BrainScheduler.js';
 import { AUTONOMY_BUDGET_PER_HOUR, AUTONOMY_MIN_GAP_MS, HEARTBEAT_MS, IDLE_NUDGE_MS } from './constants.js';
 import { type ControlKind, control, escapeShared, singleLine, wrapNote } from './envelope.js';
@@ -108,10 +109,15 @@ export class EventRouter {
   readonly #tellWakes = new Map<string, number[]>();
   readonly #autonomous = new Map<string, number[]>();
   readonly #playerName: () => string;
+  /** The agents' `mc` tool set: the texts name its tools. */
+  readonly #mcTools: McToolsVersion;
 
-  constructor(options: { now?: () => number; playerName?: () => string } = {}) {
+  constructor(
+    options: { now?: () => number; playerName?: () => string; mcTools?: McToolsVersion | undefined } = {},
+  ) {
     this.#now = options.now ?? Date.now;
     this.#playerName = options.playerName ?? (() => 'the player');
+    this.#mcTools = options.mcTools ?? mcToolsVersion();
   }
 
   /** An `agent.event` from the mod. `kicked` / `unseated` are handled by the seat flow, not here. */
@@ -175,8 +181,29 @@ export class EventRouter {
     }));
   }
 
-  /** A job that returned `running` ended (P3, coalesced per job). */
-  jobEnded(agent: RouterAgent, end: PayloadOf<'skill.result'>, label: string): RoutedFor {
+  /**
+   * A job that returned `running` ended (P3, coalesced per job). `rendered` is the v2 tools' own wake text
+   * (tools/format.ts `wakeText`: line 1 of the result plus `next:` for failures, ≤ 400 characters, no footer).
+   */
+  jobEnded(
+    agent: RouterAgent,
+    end: PayloadOf<'skill.result'>,
+    label: string,
+    rendered?: { readonly ok: boolean; readonly text: string },
+  ): RoutedFor {
+    if (rendered) {
+      const k: ControlKind = rendered.ok ? 'JOB DONE' : 'JOB FAILED';
+      return {
+        agentId: agent.agentId,
+        item: {
+          mode: 'wake',
+          priority: 3,
+          kind: k,
+          text: control(agent.nonce, k, singleLine(rendered.text, 400)),
+          key: `job:${end.jobId}`,
+        },
+      };
+    }
     const kind: ControlKind = end.status === 'done' ? 'JOB DONE' : 'JOB FAILED';
     const detail =
       end.status === 'done'
@@ -261,7 +288,7 @@ export class EventRouter {
         mode: 'wake',
         priority: 1,
         kind: 'SCHEDULED',
-        text: `${control(agent.nonce, 'SCHEDULED', `Calendar task ${fired.eventId} (occurrence ${fired.occurrence}). When done, call mcp__mc__report_task{eventId:"${fired.eventId}", status}.`)}\n${wrapNote({ author: 'calendar', kind: 'calendar', attrs: { event: fired.eventId }, text: body })}`,
+        text: `${control(agent.nonce, 'SCHEDULED', `Calendar task ${fired.eventId} (occurrence ${fired.occurrence}). When done, call ${mcRefs(this.#mcTools).reportTaskWith(fired.eventId)}.`)}\n${wrapNote({ author: 'calendar', kind: 'calendar', attrs: { event: fired.eventId }, text: body })}`,
         key: `scheduled:${fired.eventId}:${fired.occurrence}`,
       },
     };

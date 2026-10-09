@@ -733,8 +733,10 @@ public final class WorldJobs {
 				}
 			}
 			int have = Inv.count(agent, this.item);
-			if (have < this.count) {
-				return this.fail("NO_ITEM", "have only " + have + " " + this.item.ref() + ", need " + this.count);
+			// count 0: everything of the item (give.all, tools-v2-mc.md M6).
+			int want = this.count > 0 ? this.count : have;
+			if (have == 0 || have < want) {
+				return this.fail("NO_ITEM", "have only " + have + " " + this.item.ref() + (this.count > 0 ? ", need " + this.count : ""));
 			}
 			Walk.State s = this.walk.toEntity(agent, this.receiver, 2.2);
 			if (s == Walk.State.MOVING) {
@@ -745,7 +747,7 @@ public final class WorldJobs {
 			}
 			int before = Inv.count(agent, this.item);
 			List<ItemEntity> nearby = agent.level().getEntitiesOfClass(ItemEntity.class, agent.getBoundingBox().inflate(3.0));
-			this.given = throwItems(agent, this.item, this.count, this.receiver);
+			this.given = throwItems(agent, this.item, this.count > 0 ? this.count : Inv.count(agent, this.item), this.receiver);
 			for (ItemEntity e : agent.level().getEntitiesOfClass(ItemEntity.class, agent.getBoundingBox().inflate(3.0))) {
 				if (!nearby.contains(e)) {
 					this.thrown.add(e);

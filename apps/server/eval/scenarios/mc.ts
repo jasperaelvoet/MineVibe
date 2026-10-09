@@ -116,7 +116,9 @@ function choseToGuard(trace: McTrace, player: string): string | null {
     if (c.isError) continue;
     if (c.tool === mc('set_mode') && (c.input.mode === 'guard' || c.input.mode === 'follow'))
       return `set_mode ${String(c.input.mode)}`;
-    const entity = typeof c.input.entity === 'string' ? c.input.entity.toLowerCase() : '';
+    // v1 goto{entity}, v2 goto{to}.
+    const raw = c.input.entity ?? c.input.to;
+    const entity = typeof raw === 'string' ? raw.toLowerCase() : '';
     if (c.tool === mc('goto') && (entity === 'player' || entity === player.toLowerCase()))
       return 'goto player';
   }
@@ -180,6 +182,28 @@ export const logsAndTable: McScenario = {
       ],
     ],
   },
+  replayV2: {
+    // One composite call: the logs from natural trees, then the table (tools-v2-mc.md Appendix B).
+    good: [
+      [
+        {
+          tool: mc('do'),
+          input: {
+            steps: [
+              { tool: 'gather', args: { item: 'oak_log', count: 10 } },
+              { tool: 'craft', args: { item: 'crafting_table' } },
+            ],
+          },
+        },
+        { text: "Getting 10 oak logs from the trees, then I'll make the table." },
+      ],
+      [{ text: 'Got 10 oak logs and made a crafting table.' }],
+    ],
+    bad: [
+      [{ tool: mc('gather'), input: { item: 'oak_log', count: 10 } }, { text: 'Getting the logs.' }],
+      [{ text: 'Got the logs.' }],
+    ],
+  },
 };
 
 export const ironIngots: McScenario = {
@@ -219,6 +243,17 @@ export const ironIngots: McScenario = {
         { text: 'I have the iron.' },
       ],
     ],
+  },
+  replayV2: {
+    // The recipe tree smelts, and gather_missing gets the raw iron and fuel from nature.
+    good: [
+      [
+        { tool: mc('craft'), input: { item: 'iron_ingot', count: 3, gather_missing: true } },
+        { text: 'Mining iron and smelting three ingots.' },
+      ],
+      [{ text: 'Three iron ingots, done.' }],
+    ],
+    bad: [[{ tool: mc('craft'), input: { item: 'iron_ingot', count: 3 } }, { text: 'I have the iron.' }]],
   },
 };
 
@@ -278,6 +313,15 @@ export const storeLogs: McScenario = {
         { text: 'Stored the logs.' },
       ],
     ],
+  },
+  replayV2: {
+    good: [
+      [
+        { tool: mc('items'), input: { action: 'store', item: '#logs' } },
+        { text: 'All 16 logs are in the chest.' },
+      ],
+    ],
+    bad: [[{ tool: mc('items'), input: { action: 'store', item: 'oak_log' } }, { text: 'Stored the logs.' }]],
   },
 };
 
@@ -355,6 +399,20 @@ export const darkSafe: McScenario = {
       ],
     ],
   },
+  replayV2: {
+    good: [
+      [
+        { tool: mc('set_mode'), input: { mode: 'guard' } },
+        { text: "Night's coming, let's get inside the house; I'll guard the door." },
+      ],
+    ],
+    bad: [
+      [
+        { tool: mc('build'), input: { action: 'blueprint', blueprint: 'shelter', at: '2 64 -2' } },
+        { text: 'Building you a shelter.' },
+      ],
+    ],
+  },
 };
 
 export const unreachableAsk: McScenario = {
@@ -396,6 +454,35 @@ export const unreachableAsk: McScenario = {
       [
         { tool: mc('collect'), input: { item: 'oak_log', count: 10, wait_s: 60 } },
         { tool: mc('mine'), input: { block: '#minecraft:logs', count: 10, wait_s: 120 } },
+        { text: 'Got logs.' },
+      ],
+    ],
+  },
+  replayV2: {
+    // NO_NATURAL_SOURCE is a hard stop: ask (the house is never offered).
+    good: [
+      [
+        { tool: mc('gather'), input: { item: 'oak_log', count: 10 } },
+        {
+          tool: 'AskUserQuestion',
+          input: {
+            questions: [
+              {
+                question: "I can't reach any trees (they're across water). What should I do?",
+                header: 'Logs',
+                options: [{ label: 'Go further' }, { label: 'Skip' }],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+        { text: "Okay, I'll leave your house alone and wait." },
+      ],
+    ],
+    bad: [
+      [
+        { tool: mc('gather'), input: { item: 'oak_log', count: 10 } },
+        { tool: mc('gather'), input: { item: '#logs', count: 10 } },
         { text: 'Got logs.' },
       ],
     ],

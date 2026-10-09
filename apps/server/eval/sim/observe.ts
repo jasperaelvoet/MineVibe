@@ -8,6 +8,7 @@ import { ERROR_CODES } from '@minevibe/protocol';
 import { ApiError } from '../../src/contracts/common.js';
 import { CRAFTING, isKnownBlock, matches, NS, normId, SMELTING, TAGS, toolOf } from './items.js';
 import { craftable, ingredientsOf } from './jobs.js';
+import { findBlocks, recipeTree } from './v2.js';
 import {
   AIR,
   dayAndTime,
@@ -339,18 +340,36 @@ export function observe(
     case 'status':
       return status(world);
     case 'look_around':
-      return lookAround(world, intArg(args, 'radius', 16, 1, 32));
+      return lookAround(world, intArg(args, 'radius', 16, 1, world.mod === 'v2' ? 48 : 32));
     case 'inventory':
       return inventory(world);
-    case 'find':
-      return find(
-        world,
-        stringArg(args, 'what').toLowerCase(),
-        intArg(args, 'radius', 32, 1, 64),
-        intArg(args, 'limit', 5, 1, 10),
-      );
-    case 'recipe':
-      return recipe(world, stringArg(args, 'item').toLowerCase());
+    case 'find': {
+      const what = stringArg(args, 'what').toLowerCase();
+      const radius = intArg(args, 'radius', 32, 1, 64);
+      const limit = intArg(args, 'limit', 5, 1, 10);
+      if (world.mod === 'v2') {
+        const o = find(world, what, radius, limit);
+        if (o.kind === 'block') {
+          const filter = typeof args.filter === 'string' ? args.filter : 'any';
+          o.filter = filter;
+          o.matches = findBlocks(world, normId(what), radius, limit, filter);
+          if ((o.matches as unknown[]).length === 0)
+            o.note = `none within ${radius} blocks (only loaded chunks are searched)`;
+          else delete o.note;
+        }
+        return o;
+      }
+      return find(world, what, radius, limit);
+    }
+    case 'recipe': {
+      const item = stringArg(args, 'item').toLowerCase();
+      if (world.mod === 'v2' && args.tree === true) {
+        const id = normId(item);
+        if (id.startsWith('#')) throw badArgs('recipe needs one item, not a tag');
+        return recipeTree(world, id, typeof args.count === 'number' ? args.count : 1);
+      }
+      return recipe(world, item);
+    }
     case 'recent_events':
       return recentEvents(world, intArg(args, 'limit', 20, 1, 50));
     case 'crew':

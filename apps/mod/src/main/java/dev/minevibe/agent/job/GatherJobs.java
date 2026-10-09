@@ -5,9 +5,11 @@ import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.perception.Sources;
 import dev.minevibe.agent.skill.Refs;
 import dev.minevibe.world.provenance.Protection;
+import dev.minevibe.world.provenance.Zones;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -156,13 +158,30 @@ public final class GatherJobs {
 		private final int count;
 		private final int radius;
 		private final boolean replant;
+		private final @Nullable BlockPos near;
+		private final boolean makeTools;
 		private final @Nullable Predicate<BlockState> sources;
+		/**
+		 * Animals whose drops are the item (M2): beef and leather from cows, wool from sheep... Empty for most items. Known
+		 * once the job starts (item components and tags are bound only in a running server).
+		 */
+		private Set<EntityType<?>> animals = Set.of();
 		private final Walk walk = new Walk();
 		private final Set<ItemEntity> ignored = new HashSet<>();
+		private final ChildRunner toolMaker = new ChildRunner();
+		private final List<String> toolsMade = new ArrayList<>();
+		private final Map<String, Miner.Source> animalSources = new LinkedHashMap<>();
 		private int lastLooks;
 		private @Nullable Miner miner;
 		private int startCount;
 		private Map<String, Integer> before = Map.of();
+		private @Nullable LivingEntity prey;
+		private @Nullable Vec3 lastDeath;
+		private int collectTicks;
+		private boolean triedTool;
+		private int skippedAnimals;
+		/** No block source was left (wool: no natural wool blocks): the animals that drop the item are next. */
+		private boolean animalsNext;
 
 		public Collect(final Refs.ItemMatcher item, final int count, final int radius) {
 			this(item, count, radius, false);
@@ -170,11 +189,23 @@ public final class GatherJobs {
 
 		/** {@code replant}: plant a sapling of the same kind on each stump (when one is in the bag). */
 		public Collect(final Refs.ItemMatcher item, final int count, final int radius, final boolean replant) {
+			this(item, count, radius, replant, null, false);
+		}
+
+		/**
+		 * The v2 gather (tools-v2-mc.md M2): {@code near} searches around a spot instead of the agent; {@code makeTools}
+		 * crafts a tool the source needs from the inventory (the recipe tree, no gathering) instead of failing
+		 * {@code NEEDS_TOOL}.
+		 */
+		public Collect(final Refs.ItemMatcher item, final int count, final int radius, final boolean replant, final @Nullable BlockPos near,
+			final boolean makeTools) {
 			super("collect");
 			this.item = item;
 			this.count = count;
 			this.radius = radius;
 			this.replant = replant;
+			this.near = near;
+			this.makeTools = makeTools;
 			this.sources = sourcesOf(item);
 		}
 
@@ -187,36 +218,69 @@ public final class GatherJobs {
 		public void start(final AgentPlayer agent) {
 			this.startCount = Inv.count(agent, this.item);
 			this.before = Inv.counts(agent);
+			this.animals = animalsFor(this.item);
+		}
+
+		@Override
+		public void onPreempt(final AgentPlayer agent) {
+			super.onPreempt(agent);
+			this.toolMaker.preempt(agent);
 		}
 
 		@Override
 		public void onResume(final AgentPlayer agent) {
 			this.walk.reset();
+			this.toolMaker.resume(agent);
 			if (this.miner != null) {
 				this.miner.reset();
 			}
 		}
 
 		@Override
+		public void cancel(final AgentPlayer agent) {
+			super.cancel(agent);
+			this.toolMaker.cancel(agent, "cancelled");
+		}
+
+		@Override
 		protected Status step(final AgentPlayer agent) {
 			int got = Inv.count(agent, this.item) - this.startCount;
 			this.progress((double)Math.min(this.count, Math.max(0, got)) / this.count, Math.max(0, got) + "/" + this.count + " " + this.item.ref());
+			if (this.toolMaker.active()) {
+				return this.makeTool(agent);
+			}
+			if (this.lastDeath != null) {
+				// The drops of an animal: picked up where it fell.
+				if (this.collectTicks-- > 0 && Miner.collectNear(agent, this.walk, BlockPos.containing(this.lastDeath), 5.0, s -> true)) {
+					return Status.RUNNING;
+				}
+				this.lastDeath = null;
+			}
 			boolean busy = this.miner != null && this.miner.busy();
 			if (got >= this.count && !busy) {
 				agent.controls().stopMining();
 				this.report(agent, got);
 				return this.done();
 			}
+			if (got <= 0 && !busy && this.miner != null && !this.miner.treeMode() && !this.miner.collecting() && this.miner.mined() >= this.count
+				&& !Inv.gained(this.before, Inv.counts(agent)).isEmpty()) {
+				// The item's own block drops something else (stone: cobblestone, an ore: its raw metal): as many blocks as
+				// asked were broken, as mine counts. Going on would break every one in reach for an item that never comes.
+				agent.controls().stopMining();
+				this.report(agent, got);
+				this.put("note", this.item.ref().replace("minecraft:", "") + " drops something else: broke " + this.miner.mined());
+				return this.done();
+			}
 			if (Inv.freeSlots(agent) == 0 && !Inv.hasRoomFor(agent, new ItemStack(this.item.item() != null ? this.item.item() : Items.STONE))) {
 				this.report(agent, got);
 				return this.fail("INVENTORY_FULL", "no room for more " + this.item.ref());
 			}
-			if (this.ticks == 1 && this.sources != null && Sources.acceptsNothing(this.sources)) {
+			if (this.ticks == 1 && this.sources != null && this.animals.isEmpty() && Sources.acceptsNothing(this.sources)) {
 				this.report(agent, got);
 				return this.noNaturalSource(agent, this.item.ref() + " (not found in nature: craft it from what is)", this.radius, List.of());
 			}
 			// Loose items first (only while not in the middle of breaking a block or felling a tree).
-			if (this.miner == null || this.miner.target() == null && !busy) {
+			if (this.prey == null && (this.miner == null || this.miner.target() == null && !busy)) {
 				ItemEntity loose = Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s));
 				if (loose != null && !this.ignored.contains(loose)) {
 					if (agent.position().distanceTo(loose.position()) > 0.6 && this.walk.to(agent, loose.position(), 0.5) == Walk.State.FAILED) {
@@ -225,18 +289,26 @@ public final class GatherJobs {
 					return Status.RUNNING;
 				}
 			}
-			if (this.sources == null) {
+			if (this.sources == null || this.animalsNext) {
+				if (!this.animals.isEmpty()) {
+					return this.hunt(agent, got);
+				}
 				this.report(agent, got);
 				return this.fail("NOT_FOUND", "no loose " + this.item.ref() + " nearby, and it is not dropped by any block MineVibe knows");
 			}
 			if (this.miner == null) {
-				this.miner = new Miner(this.sources, null, this.radius, null, this.replant);
+				this.miner = new Miner(this.sources, this.near, this.radius, null, this.replant);
 			}
 			Miner.Tick t = this.miner.tick(agent);
 			return switch (t) {
 				case WORKING -> Status.RUNNING;
 				case NONE_LEFT -> {
 					if (Miner.nearestItem(agent, agent.position(), Math.min(this.radius, 16), s -> this.item.test(s)) != null && ++this.lastLooks < 200) {
+						yield Status.RUNNING;
+					}
+					if (got < this.count && !this.animals.isEmpty() && !this.miner.busy()) {
+						// Blocks and animals both drop it (wool): no natural block left, so the animals.
+						this.animalsNext = true;
 						yield Status.RUNNING;
 					}
 					this.report(agent, got);
@@ -246,16 +318,108 @@ public final class GatherJobs {
 					yield shortOfSources(this, agent, this.miner, this.item.ref(), this.radius);
 				}
 				case FAILED -> {
+					if ("NEEDS_TOOL".equals(this.miner.failureCode()) && this.makeTools && !this.triedTool) {
+						this.triedTool = true;
+						BlockState needs = this.miner.toolNeededFor();
+						Item tool = needs == null ? null : craftableToolFor(agent, needs);
+						if (tool != null) {
+							this.toolMaker.begin(agent, new CraftTreeJob(tool, 1, null, false));
+							this.toolsMade.add(Refs.itemId(tool).replace("minecraft:", ""));
+							yield Status.RUNNING;
+						}
+					}
 					this.report(agent, got);
 					yield this.fail(this.miner.failureCode(), this.miner.failure());
 				}
 			};
 		}
 
+		/** Runs the child craft of a missing tool; then mining starts over with it in the bag. */
+		private Status makeTool(final AgentPlayer agent) {
+			Status s = this.toolMaker.tick(agent);
+			if (s == Status.RUNNING) {
+				return Status.RUNNING;
+			}
+			SkillJob.Outcome o = this.toolMaker.last();
+			if (o == null || !o.done()) {
+				this.toolsMade.clear();
+				this.report(agent, Inv.count(agent, this.item) - this.startCount);
+				return this.fail("NEEDS_TOOL", (this.miner == null ? "" : this.miner.failure()) + "; making the tool failed: "
+					+ (o == null ? "?" : o.code() + " " + o.message()));
+			}
+			this.miner = new Miner(this.sources, this.near, this.radius, null, this.replant);
+			return Status.RUNNING;
+		}
+
+		/** Animals for drops (M2): the nearest one outside protected zones that is no pet, named, leashed or baby. */
+		private Status hunt(final AgentPlayer agent, final int got) {
+			if (this.prey != null && (!this.prey.isAlive() || this.prey.isRemoved())) {
+				if (this.prey.isDeadOrDying()) {
+					this.lastDeath = this.prey.position();
+					this.collectTicks = 100;
+					String what = Refs.entityTypeId(this.prey).replace("minecraft:", "");
+					Miner.Source prev = this.animalSources.get(what);
+					this.animalSources.put(what, prev == null ? new Miner.Source("animal", what, this.prey.blockPosition(), 1)
+						: new Miner.Source("animal", what, prev.pos(), prev.n() + 1));
+				}
+				this.prey = null;
+				return Status.RUNNING;
+			}
+			if (this.prey == null) {
+				ServerLevel level = agent.level();
+				BlockPos from = this.near != null ? this.near : agent.blockPosition();
+				List<LivingEntity> found = level.getEntitiesOfClass(LivingEntity.class, new net.minecraft.world.phys.AABB(from).inflate(this.radius),
+					e -> e.isAlive() && this.animals.contains(e.getType()));
+				found.sort(Comparator.comparingDouble(e -> e.distanceToSqr(agent)));
+				this.skippedAnimals = 0;
+				for (LivingEntity e : found) {
+					if (Protection.isPetOrNamed(e) || e.isBaby() || e instanceof net.minecraft.world.entity.Leashable l && l.isLeashed()
+						|| Zones.at(level, e.blockPosition()) != null) {
+						this.skippedAnimals++;
+						continue;
+					}
+					this.prey = e;
+					this.walk.reset();
+					break;
+				}
+				if (this.prey == null) {
+					this.report(agent, got);
+					String why = this.skippedAnimals > 0
+						? " (" + this.skippedAnimals + " left alone: in the Base, pets, named, leashed or young)"
+						: "";
+					return this.noNaturalSource(agent, this.item.ref() + why, this.radius,
+						this.miner == null ? List.of() : this.miner.candidates(agent));
+				}
+			}
+			if (!Fight.tick(agent, this.prey, this.walk)) {
+				this.prey = null;
+				this.report(agent, got);
+				return this.fail("UNREACHABLE", "cannot reach the animal (" + this.walk.failure() + ")");
+			}
+			return Status.RUNNING;
+		}
+
 		private void report(final AgentPlayer agent, final int got) {
+			this.put("item", this.item.item() != null ? Refs.itemId(this.item.item()) : this.item.ref());
+			this.put("got", Math.max(0, got));
 			this.put("collected", Math.max(0, got));
 			this.put("have", Inv.count(agent, this.item));
 			this.put("items", Inv.gained(this.before, Inv.counts(agent)));
+			com.google.gson.JsonArray src = new com.google.gson.JsonArray();
+			List<Miner.Source> all = new ArrayList<>(this.miner == null ? List.of() : this.miner.sources());
+			all.addAll(this.animalSources.values());
+			for (Miner.Source s : all) {
+				com.google.gson.JsonObject o = new com.google.gson.JsonObject();
+				o.addProperty("kind", s.kind());
+				o.addProperty("what", s.what());
+				o.add("pos", SkillJob.pos(s.pos()));
+				o.addProperty("n", s.n());
+				src.add(o);
+			}
+			this.put("sources", src);
+			if (!this.toolsMade.isEmpty()) {
+				this.put("tools_made", this.toolsMade);
+			}
 			if (this.miner != null && this.miner.treeMode()) {
 				this.put("trees", this.miner.treesFelled());
 				if (this.miner.replanted() > 0) {
@@ -269,6 +433,56 @@ public final class GatherJobs {
 				}
 			}
 		}
+	}
+
+	/**
+	 * The best tool tier the agent can craft from its inventory (no gathering) that harvests {@code state}, or null:
+	 * iron, then stone, then wooden.
+	 */
+	static @Nullable Item craftableToolFor(final AgentPlayer agent, final BlockState state) {
+		String kind = state.is(BlockTags.MINEABLE_WITH_PICKAXE) ? "pickaxe"
+			: state.is(BlockTags.MINEABLE_WITH_AXE) ? "axe"
+			: state.is(BlockTags.MINEABLE_WITH_SHOVEL) ? "shovel"
+			: state.is(BlockTags.MINEABLE_WITH_HOE) ? "hoe" : null;
+		if (kind == null) {
+			return null;
+		}
+		ServerLevel level = agent.level();
+		RecipeTree.Stations stations = CraftTreeJob.stations(agent, null);
+		for (String tier : List.of("iron", "stone", "wooden")) {
+			Item tool = net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(net.minecraft.resources.Identifier.withDefaultNamespace(tier + "_" + kind));
+			if (tool == null || tool == Items.AIR || !new ItemStack(tool).isCorrectToolForDrops(state)) {
+				continue;
+			}
+			RecipeTree.Plan plan = RecipeTree.plan(Recipes.book(level), tool, 1, Recipes.inventory(agent), stations);
+			if (plan.complete()) {
+				return tool;
+			}
+		}
+		return null;
+	}
+
+	/** Animals whose drops are {@code item} (M2): meat, leather, wool, feathers. */
+	static Set<EntityType<?>> animalsFor(final Refs.ItemMatcher item) {
+		Set<EntityType<?>> out = new HashSet<>();
+		java.util.function.BiConsumer<Item, EntityType<?>> add = (it, type) -> {
+			if (item.test(new ItemStack(it))) {
+				out.add(type);
+			}
+		};
+		add.accept(Items.BEEF, net.minecraft.world.entity.EntityTypes.COW);
+		add.accept(Items.LEATHER, net.minecraft.world.entity.EntityTypes.COW);
+		add.accept(Items.PORKCHOP, net.minecraft.world.entity.EntityTypes.PIG);
+		add.accept(Items.MUTTON, net.minecraft.world.entity.EntityTypes.SHEEP);
+		if (item.item() != null && new ItemStack(item.item()).is(net.minecraft.tags.ItemTags.WOOL)
+			|| item.tag() != null && item.tag().equals(net.minecraft.tags.ItemTags.WOOL)) {
+			out.add(net.minecraft.world.entity.EntityTypes.SHEEP);
+		}
+		add.accept(Items.CHICKEN, net.minecraft.world.entity.EntityTypes.CHICKEN);
+		add.accept(Items.FEATHER, net.minecraft.world.entity.EntityTypes.CHICKEN);
+		add.accept(Items.RABBIT, net.minecraft.world.entity.EntityTypes.RABBIT);
+		add.accept(Items.RABBIT_HIDE, net.minecraft.world.entity.EntityTypes.RABBIT);
+		return out;
 	}
 
 	/**

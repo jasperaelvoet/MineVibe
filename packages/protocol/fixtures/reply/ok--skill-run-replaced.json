@@ -1,0 +1,12 @@
+{
+  "t": "ok",
+  "v": 1,
+  "re": "n-38",
+  "jobId": "job-43",
+  "status": "running",
+  "replaced": {
+    "jobId": "job-41",
+    "skill": "collect",
+    "text": "4/10 oak_log"
+  }
+}

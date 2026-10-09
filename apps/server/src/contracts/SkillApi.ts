@@ -86,6 +86,11 @@ export interface SkillApi extends Subscribable<SkillEvents> {
   unseat(request: PayloadOf<'agent.unseat'>): Promise<void>;
   spawn(request: PayloadOf<'agent.spawn'>): Promise<AgentSpawnResult>;
   despawn(request: PayloadOf<'agent.despawn'>): Promise<void>;
+  /**
+   * The connected mod's optional features (`hello.caps`, protocol §6.1): empty for an older mod or before the first
+   * `hello`. Callers use an additive feature only when its cap is listed.
+   */
+  caps?(): ReadonlySet<string>;
 }
 
 /** Default `waitMs` of `skill.run` (the tools' `wait_s` default of 20 s). */
@@ -143,6 +148,7 @@ class BridgeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
   readonly #results = new Map<string, JobEnd>();
   readonly #waiters = new Map<string, Set<(end: JobEnd) => void>>();
   readonly #off: (() => void)[] = [];
+  #caps: ReadonlySet<string> = new Set();
 
   constructor(bridge: SkillBridge) {
     super();
@@ -152,7 +158,15 @@ class BridgeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
       bridge.on('skill.progress', ({ t: _t, v: _v, id: _id, re: _re, ...progress }) => {
         this.emit('progress', progress);
       }),
+      // Every (re)connect starts with `hello`: a mod that lists no caps is an older build.
+      bridge.on('hello', (hello) => {
+        this.#caps = new Set(hello.caps ?? []);
+      }),
     );
+  }
+
+  caps(): ReadonlySet<string> {
+    return this.#caps;
   }
 
   dispose(): void {

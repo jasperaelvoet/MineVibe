@@ -1,0 +1,12 @@
+{
+  "t": "obs.query",
+  "v": 1,
+  "id": "n-37",
+  "agentId": "ada",
+  "query": "recipe",
+  "args": {
+    "item": "iron_pickaxe",
+    "count": 1,
+    "tree": true
+  }
+}

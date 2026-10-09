@@ -283,6 +283,14 @@ public abstract class SkillJob implements Job {
 			o.addProperty("z", Math.round(v.z * 100.0) / 100.0);
 			return o;
 		}
+		if (value instanceof int[] ints) {
+			// v1 craft's `ingredients: {name: [need, have]}`.
+			JsonArray a = new JsonArray();
+			for (int i : ints) {
+				a.add(i);
+			}
+			return a;
+		}
 		if (value instanceof Iterable<?> it) {
 			JsonArray a = new JsonArray();
 			for (Object o : it) {

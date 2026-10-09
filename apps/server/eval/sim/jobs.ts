@@ -21,6 +21,7 @@ import {
   type SmeltRecipe,
   toolOf,
 } from './items.js';
+import { craftTreeJob, gatherJob, protectedIn, sequenceJob } from './v2.js';
 import {
   AIR,
   dist,
@@ -517,7 +518,12 @@ function contentsOf(items: ReadonlyMap<string, number>): Record<string, unknown>
 }
 
 function containerJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
-  const at = args.pos as Pos;
+  // v2 mod (container.nearest): without pos, the nearest chest or barrel within 24 blocks.
+  const at =
+    (args.pos as Pos | undefined) ??
+    nearestBlock(world, (id) => id === `${NS}chest` || id === `${NS}barrel`, 24) ??
+    null;
+  if (!at) return oneShot(2, () => fail('NOT_FOUND', 'no chest or barrel within 24 blocks'));
   const action = String(args.action);
   const ref = typeof args.item === 'string' ? normId(args.item) : null;
   const count = typeof args.count === 'number' ? args.count : 0;
@@ -536,7 +542,8 @@ function containerJob(world: SimWorld, args: Record<string, unknown>): JobLogic 
             effect: () => (world.agent.pos = world.standSpot(at)),
           };
         }
-        const result: Record<string, unknown> = {};
+        // The v2 mod says which container it used (container.nearest).
+        const result: Record<string, unknown> = world.mod === 'v2' ? { pos: pos(at) } : {};
         const match = (id: string) => ref !== null && matches(ref, id);
         if (action === 'put') {
           const have = world.count(match);
@@ -842,7 +849,8 @@ function dropJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
 
 function giveJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
   const id = normId(String(args.item));
-  const count = Number(args.count);
+  // v2 mod (give.all): without count, everything of the item.
+  const count = typeof args.count === 'number' ? args.count : world.count((i) => matches(id, i));
   const to = String(args.to);
   if (to !== 'player' && to.toLowerCase() !== world.player.name.toLowerCase())
     return oneShot(TPS, () => fail('NOT_FOUND', `cannot find ${to}`));
@@ -1057,6 +1065,10 @@ function buildJob(world: SimWorld, args: Record<string, unknown>): JobLogic {
 
 /** Builds the job logic of `skill` (args already validated against `SkillArgs`). */
 export function buildJobLogic(world: SimWorld, skill: string, args: Record<string, unknown>): JobLogic {
+  if (world.mod === 'v2') {
+    const v2 = buildV2Logic(world, skill, args);
+    if (v2) return v2;
+  }
   switch (skill) {
     case 'goto':
       return gotoJob(world, args);
@@ -1105,5 +1117,57 @@ export function buildJobLogic(world: SimWorld, skill: string, args: Record<strin
       return oneShot(5, () => done({ item: world.agent.held ?? 'nothing', result: 'nothing happened' }));
     default:
       return oneShot(5, () => fail('FAILED', `${skill} is not simulated in the eval world`));
+  }
+}
+
+/**
+ * The v2 mod's skills (W1 world awareness plus tools-v2-mc.md M1-M8): natural-only gathering, the craft tree,
+ * sequences, and PROTECTED for what a player built. Null: the v1 logic applies.
+ */
+function buildV2Logic(world: SimWorld, skill: string, args: Record<string, unknown>): JobLogic | null {
+  switch (skill) {
+    case 'collect':
+      return gatherJob(world, args, 'collect');
+    case 'mine':
+      return gatherJob(world, args, 'mine');
+    case 'craft':
+      return args.tree === true
+        ? craftTreeJob(world, args, {
+            craft: (a) => craftJob(world, a),
+            smelt: (a) => smeltJob(world, a),
+          })
+        : null;
+    case 'sequence':
+      return sequenceJob(args, (s, a) => buildJobLogic(world, s, a));
+    case 'dig': {
+      const a = args.from as Pos;
+      const b = args.to as Pos;
+      const min = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: Math.min(a.z, b.z) };
+      const max = { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y), z: Math.max(a.z, b.z) };
+      const prot = protectedIn(world, min, max);
+      return prot
+        ? oneShot(2, () =>
+            fail(
+              'PROTECTED',
+              `${(prot.protected as { count: number }).count} block(s) in the box were built by ${world.player.name}`,
+              {
+                ...prot,
+                dug: 0,
+              },
+            ),
+          )
+        : null;
+    }
+    case 'place': {
+      const at = args.pos as Pos;
+      const prot = protectedIn(world, at, at);
+      return prot
+        ? oneShot(2, () =>
+            fail('PROTECTED', `the block at ${short(at)} was built by ${world.player.name}`, prot),
+          )
+        : null;
+    }
+    default:
+      return null;
   }
 }

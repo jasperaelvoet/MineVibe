@@ -40,8 +40,10 @@ import type {
   DeliveryResult,
 } from '../contracts/CrewApi.js';
 import { ApiError, isApiError, PLAYER } from '../contracts/common.js';
+import { mcRefs, mcToolsVersion } from '../contracts/mcRefs.js';
 import type { OrgApi } from '../contracts/OrgApi.js';
 import type { PcApi } from '../contracts/PcApi.js';
+import { withSequenceFallback } from '../contracts/SequenceFallback.js';
 import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
 import { writeFileAtomic } from '../util/atomicFile.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
@@ -54,7 +56,7 @@ import { formatAnswerEcho, frontCard } from './chat/answerGrammar.js';
 import { type ChatContext, ChatInbox, ChatRouter, type Delivery } from './chat/ChatRouter.js';
 import { handleFromName, validateHandle } from './chat/handles.js';
 import type { ResolvedClaude } from './claudeBinary.js';
-import { CREW_CAP, LAST_WORDS_MS, MOD_AGENT_ID } from './constants.js';
+import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID } from './constants.js';
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
@@ -138,6 +140,8 @@ export interface AgentManagerOptions {
   readonly lastWordsMs?: number;
   /** Re-sit debounce after a stand (default 60 s). */
   readonly swapDebounceMs?: number;
+  /** The agents' `mc` tool set (default: `MINEVIBE_MC_TOOLS`; tools-v2-mc.md §14). */
+  readonly mcTools?: McToolsVersion | undefined;
   /** Restart policy overrides (tests). */
   readonly supervisor?: Omit<SupervisorOptions, 'now'>;
   /**
@@ -251,13 +255,19 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
 
   constructor(options: AgentManagerOptions) {
     super();
-    this.#o = options;
+    // `sequence` (the v2 `do` tool) runs in Node when the mod has no `skill.sequence` cap (tools-v2-mc.md §11).
+    this.#o = { ...options, skills: withSequenceFallback(options.skills) };
+    options = this.#o;
     this.#log = options.log.child({ component: 'agents' });
     this.#now = options.now ?? Date.now;
     this.scheduler = new BrainScheduler({ now: this.#now });
     this.governor = new UsageGovernor({ now: this.#now });
     this.supervisor = new BrainSupervisor({ now: this.#now, ...options.supervisor });
-    this.router = new EventRouter({ now: this.#now, playerName: options.playerName });
+    this.router = new EventRouter({
+      now: this.#now,
+      playerName: options.playerName,
+      mcTools: options.mcTools,
+    });
     this.pending = new PendingStore({
       fileOf: (agentId) => (this.#world ? join(this.#agentDir(agentId), 'pending.json') : null),
       onError: (err) => this.#log.warn({ err }, 'pending store'),
@@ -306,6 +316,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
         );
       }),
       options.skills.on('result', (end) => this.#onJobEnd(end)),
+      options.skills.on('progress', (p) => this.#brains.get(p.agentId)?.toolJobs.progress(p.jobId, p.text)),
       options.org.on('codexIndex', (index) => void this.#onCodexIndex(index)),
     );
     if (options.calendarWakes !== false) {
@@ -404,6 +415,15 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       base: () => this.base(),
       consents: this.consents,
       tell: (from, to, text) => this.#tell(from, to, text),
+      crewMember: (ref) => {
+        const r = this.#resolveCrewRef(ref);
+        return r && r.status === 'alive' ? { agentId: r.agentId, name: r.name, handle: r.handle } : null;
+      },
+      crewNames: (agentId) => {
+        const r = this.#records.find((x) => x.agentId === agentId);
+        return r ? { handle: r.handle, name: r.name, role: r.role } : null;
+      },
+      mcTools: o.mcTools,
       requestHire: (from, req) => this.#requestHire(from, req),
       taskReported: (from, report) => {
         const ceo = this.#ceoRecord();
@@ -594,7 +614,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       control(
         nonce,
         'CODEX DIGEST',
-        `The Codex has ${index.pages.length} page(s). Read with mcp__mc__codex_read.`,
+        `The Codex has ${index.pages.length} page(s). Read with ${mcRefs(this.#mcTools()).codexRead}.`,
       ),
     ];
     if (lines.length > 0)
@@ -1029,6 +1049,12 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
       return;
     }
     brain.forgetJob(end.jobId);
+    if (brain.mcTools === 'v2') {
+      // v2: the result in the tool set's own format; no wake for a job the agent (or the player's task) cancelled.
+      const wake = brain.toolJobEnded(end);
+      if (wake) this.#deliver(this.router.jobEnded(this.#routerAgent(brain.record), end, label, wake));
+      return;
+    }
     this.#deliver(this.router.jobEnded(this.#routerAgent(brain.record), end, label));
   }
 
@@ -1170,6 +1196,11 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
     });
     this.#deliver(this.router.tell(this.#routerAgent(from.record), this.#routerAgent(target), text));
     return `Told ${target.name}.`;
+  }
+
+  /** The agents' `mc` tool set (texts that name tools follow it). */
+  #mcTools(): McToolsVersion {
+    return this.#o.mcTools ?? mcToolsVersion();
   }
 
   #ceoRecord(): AgentRecord | undefined {

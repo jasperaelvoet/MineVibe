@@ -53,7 +53,8 @@ public final class Miner {
 	}
 
 	private static final int MAX_SKIPS = 8;
-	private static final int COLLECT_TICKS = 40;
+	/** Ticks to pick up the drops of a broken block (M2: 100, was 40, which lost drops that bounced away). */
+	private static final int COLLECT_TICKS = 100;
 	private static final int TREE_COLLECT_TICKS = 100;
 	private static final int MAX_PILLAR = 2;
 	private static final int MAX_REACH_CHECKS = 6;
@@ -70,7 +71,7 @@ public final class Miner {
 	private @Nullable BlockPos target;
 	private @Nullable BlockPos collectAt;
 	private int collectTicks;
-	private double collectRadius = 3.5;
+	private double collectRadius = 5.0;
 	private int mined;
 	private int mineTicks;
 	private String failureCode = "FAILED";
@@ -165,9 +166,47 @@ public final class Miner {
 			|| this.treeMode() && this.collectAt != null;
 	}
 
+	/** True while it picks up the drops of the block it broke last. */
+	public boolean collecting() {
+		return this.collectAt != null;
+	}
+
 	/** Protected matches the miner left alone, nearest first. */
 	public List<Protection.Verdict> protectedSeen() {
 		return List.copyOf(this.protectedSeen);
+	}
+
+	/**
+	 * Where what the miner broke came from (tools-v2-mc.md M2 `sources`): one entry per felled tree ({@code kind} tree,
+	 * {@code what} its species, {@code pos} its trunk base) or per block kind ({@code ore} / {@code stone}).
+	 */
+	public record Source(String kind, String what, BlockPos pos, int n) {
+	}
+
+	private final Map<String, Source> sources = new LinkedHashMap<>();
+	private int treeStartMined;
+	private @Nullable String targetId;
+	private @Nullable BlockState toolNeededFor;
+
+	public List<Source> sources() {
+		return List.copyOf(this.sources.values());
+	}
+
+	/** The block that needed a better tool, when the last failure was {@code NEEDS_TOOL}. */
+	public @Nullable BlockState toolNeededFor() {
+		return this.toolNeededFor;
+	}
+
+	/** A plain block was broken: counted under its kind. */
+	private void countBlock(final BlockPos at) {
+		String id = this.targetId;
+		if (id == null || this.treeMode()) {
+			return;
+		}
+		String what = id.replace("minecraft:", "");
+		String kind = what.endsWith("_ore") ? "ore" : "stone";
+		Source prev = this.sources.get(id);
+		this.sources.put(id, prev == null ? new Source(kind, what, at, 1) : new Source(kind, what, prev.pos(), prev.n() + 1));
 	}
 
 	/** After a preemption: re-plan the walk. */
@@ -196,6 +235,7 @@ public final class Miner {
 			// Broken by the held attack at the end of the last tick (or by someone else while we hit it).
 			if (this.mineTicks > 0) {
 				this.mined++;
+				this.countBlock(this.target);
 				if (!this.treeMode()) {
 					this.collectAt = this.target;
 					this.collectTicks = COLLECT_TICKS;
@@ -224,6 +264,7 @@ public final class Miner {
 			if (this.target == null) {
 				return Tick.NONE_LEFT;
 			}
+			this.targetId = Refs.blockId(level.getBlockState(this.target).getBlock());
 			this.mineTicks = 0;
 			this.walk.reset();
 			this.triedColumn = false;
@@ -259,6 +300,7 @@ public final class Miner {
 		}
 		BlockState state = level.getBlockState(t);
 		if (BlockOps.wouldDropNothing(agent, state)) {
+			this.toolNeededFor = state;
 			return this.failed("NEEDS_TOOL", "breaking " + Refs.blockId(state.getBlock()) + " drops nothing without the right tool");
 		}
 		if (++this.mineTicks > 20 * 30) {
@@ -267,6 +309,7 @@ public final class Miner {
 		}
 		if (BlockOps.mineTick(agent, t)) {
 			this.mined++;
+			this.countBlock(t);
 			this.target = null;
 			if (!this.treeMode()) {
 				this.collectAt = t;
@@ -329,6 +372,7 @@ public final class Miner {
 				return null;
 			}
 			this.tree = next;
+			this.treeStartMined = this.mined;
 		}
 		return null;
 	}
@@ -400,6 +444,7 @@ public final class Miner {
 		}
 		this.doneTrees.add(t.base());
 		this.treesFelled++;
+		this.sources.put("tree@" + t.base().toShortString(), new Source("tree", t.species(), t.base(), Math.max(0, this.mined - this.treeStartMined)));
 		this.finishedJustNow = true;
 		this.climbing = false;
 		agent.controls().setJumping(false);

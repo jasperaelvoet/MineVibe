@@ -183,8 +183,23 @@ First message on every connection. Send it as a request (`id`) so `hello.ok` car
 | `phase` | `boot` \| `in_world` | `boot`: on BootScreen. `in_world`: a world is open (reconnect). |
 | `worldId` | WorldId? | The open world when `in_world` |
 | `playerName` | PlayerName? | The local profile name |
+| `caps` | string[]? | Optional features this mod build has (lowercase dotted words, at most 64). Absent: an older mod. |
 
-Fixtures: `hello.json`, `hello--in-world.json`.
+Fixtures: `hello.json`, `hello--in-world.json`, `hello--caps.json`.
+
+**Caps.** Every new skill feature is additive, and Gson drops fields a mod does not know, so Node uses one only when
+the mod lists its cap (`MOD_CAPS` in `world.ts`, `SkillCaps` in the mod) and falls back otherwise:
+
+| Cap | Feature (section 7.4) | Node without it |
+|---|---|---|
+| `skill.sequence` | `skill.run{skill:"sequence"}` | runs the steps itself as one macro job (`m…` id) |
+| `collect.gather` | `collect{near?, make_tools?}`, animals for drops, `result.sources` | plain `collect` |
+| `craft.tree` | `craft{tree?, gather_missing?}` | single-level `craft` (or `smelt` when only a furnace makes it) |
+| `obs.recipe.tree` | `obs.query recipe{item, count?, tree:true}` | the one-level `recipe` |
+| `container.nearest` | `container` without `pos` | finds the nearest chest with `find` |
+| `give.all` | `give` without `count` | counts the item with `inventory` |
+| `run.replaced` | `SkillRunResult.replaced` | its own job registry |
+| `obs.look_around.48` | `look_around{radius}` up to 48 | radius capped at 32 |
 
 ### 6.2 `hello.ok` (N→M)
 
@@ -547,7 +562,7 @@ records flatten every variant into one record with `@Nullable` fields.
 
 ### 7.4 skills
 
-- `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error? }`):
+- `skill.run` (request, `SkillRunResult { jobId, status: running|done|failed|cancelled, result?, error?, replaced? }`):
   `{ jobId, agentId, skill, args, waitMs, replace, consent? }`. `consent: { token }` (W1) is the player's consent to
   change protected blocks; see "Protection and consent" in section 7.4.2. The mod starts the job and replies when it ends or when
   `waitMs` passes, whichever comes first; a job that is still going replies `running` and later sends `skill.result`.
@@ -555,14 +570,15 @@ records flatten every variant into one record with `@Nullable` fields.
   120 000** (the tools offer `wait_s` ≤ 120), so a longer wait still answers `running` after 2 minutes. A `skill.run`
   repeating a known `jobId` answers that job's current state instead of starting another. Errors: `UNKNOWN_AGENT`,
   `UNKNOWN_SKILL`, `BAD_ARGS`, `BUSY` (a job is running and `replace` is false), `UNKNOWN_BLUEPRINT` (`build`).
-  A job that fails replies `failed` with `error: { code, msg }` (section 7.4.1).
+  A job that fails replies `failed` with `error: { code, msg }` (section 7.4.1). With `replace: true` and a job
+  running, the reply's `replaced: { jobId, skill, text? }` names the job it cancelled (cap `run.replaced`).
 - **Lost replies.** If the bridge reconnects while a `skill.run` reply is waiting, that reply belonged to the old
   connection and is dropped; the outcome follows as `skill.result` on the new one. Outcomes of jobs that end while
   Node is away go out after the next handshake. If the socket dies before either side notices, an outcome can still
   be lost: Node recovers with `obs.query job_status` or by repeating the `skill.run` with the same `jobId`.
 - Skills: `goto`, `mine`, `collect`, `hunt`, `dig`, `place`, `use_block`, `use_item`, `attack`, `equip`, `eat`,
   `sleep`, `pickup`, `drop`, `give`, `craft`, `smelt`, `container`, `open_menu`, `menu_click`, `menu_close`, `build`,
-  `farm`, `ride`, `dismount`, `emote`. Their `args` schemas are exported as `SkillArgs.<skill>` (Node validates
+  `farm`, `ride`, `dismount`, `emote`, `sequence`. Their `args` schemas are exported as `SkillArgs.<skill>` (Node validates
   before sending and builds the `mcp__mc__*` tool schemas from them); on the wire `args` is only required to be an
   object. Node-side tools (`say`, `tell`, `remember`, `wait`, `request_hire`, `codex_*`, `calendar_*`,
   `report_task`) never reach the mod; `set_mode` is `agent.mode`, `stop` is `skill.cancel`, `sit_at_pc` /
@@ -573,7 +589,9 @@ records flatten every variant into one record with `@Nullable` fields.
   relative to the nearest protected zone when there is one (`in Base`, W1), what the body does, the held item). **The mod's footer is the source:** Node takes `footer` out of the result the agent reads and
   appends it as the tool result's last line, never adding a second one. Only tool results that never reach the mod
   (Codex, calendar, social and seat tools, a `running` reply without a result) get the same line built by Node from
-  the latest `agent.state`. A job summary (`[JOB DONE]`) never repeats the footer.
+  the latest `agent.state`. A job summary (`[JOB DONE]`) never repeats the footer. With the v2 tools
+  (docs/design/tools-v2-mc.md §6.4) Node always takes `footer` out and appends it only to world, `do`, `job`, `find`,
+  `menu` and `observe` (without `status`) results; the mod's side is unchanged.
 - `skill.progress`: `{ jobId, agentId, progress?, text }`, at most one per job per second.
 - `skill.cancel` (request, `SkillCancelResult { cancelled: JobId[] }`): `{ agentId, jobId?, reason }`; without
   `jobId` every job of the agent.
@@ -581,11 +599,14 @@ records flatten every variant into one record with `@Nullable` fields.
 - `obs.query` (request, `ObsQueryResult { result }`): `{ agentId, query, args }`, `query` one of `status`,
   `look_around`, `inventory`, `find`, `recipe`, `recent_events`, `crew`, `list_pcs`, `job_status`, `menu_state`.
   Arguments: `look_around { radius?, detail?: brief|full }`, `find { what, radius?, limit?, filter?:
-  natural|built|any }`, `recipe { item }`, `recent_events { limit? }`, `job_status { jobId? }`; the others take none
+  natural|built|any }`, `recipe { item, count?, tree? }`, `recent_events { limit? }`, `job_status { jobId? }`; the others take none
   (`LookAroundArgs`, `FindArgs`). `look_around` answers a scene (section 7.4.2, `LookAroundResult`); `find` labels each
   block match with its `provenance` (`natural`, `player-built`, `base`, `agent-built`, plus `owner` and `zone`), the
   natural `tree` a log belongs to, `dir` (compass) and, for the nearest three, `reachable`. `status` carries `zone`
   (`in Base`, `12m from Base`). `menu_state` lists the open menu's slots and its button numbers (section 7.4.2).
+  `recipe{tree:true}` (cap `obs.recipe.tree`) answers the craft tree's plan for `count` items without acting:
+  `{ item, count, tree: true, ok, have, steps: [{ action: craft|smelt, item, count, from: {item: n}, ready?, station? }],
+  missing: [{ item, need, have, for? }], stations: { table?: { pos } | { how }, furnace?: … } }`.
 - A higher reflex (danger, combat, eating, approach, attend) pauses a running job; the job resumes afterwards. Only
   its own time counts toward its `TIMEOUT`.
 
@@ -626,6 +647,29 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   less presses menu button `-slot - 2`: a merchant's trade offer (then take the result from slot 2), an enchanting
   option (`-2`, `-3`, `-4`), a stonecutter recipe. `obs.query menu_state` lists the button numbers of the open menu.
 - **`smelt.item`** is either what goes in (`raw_iron`) or what should come out (`iron_ingot`).
+- **`sequence{steps: [{skill, args}], stop_on_fail?, allow_protected?}`** (cap `skill.sequence`; docs/design/tools-v2-mc.md
+  M1) runs 2-8 skills in order as one job: one `jobId`, one `skill.result`, no wake between steps. Every step is
+  built when the request arrives, so a bad one (an unknown skill, bad args, a nested `sequence`, an `emote`) rejects
+  the whole request with `BAD_ARGS: step i: …` and nothing runs. Steps run as the parent's children: reflexes pause
+  and resume the running step, a cancel or `replace` cancels it. Progress reads `step i/n <the step's progress>`.
+  With `stop_on_fail` (default true) the first failed step fails the sequence with that step's code and
+  `msg: "step i/n <skill>: <msg>"`; without it the remaining steps run and the sequence fails at the end if any step
+  did. `result: { completed, steps: [{ skill, status, code?, msg?, result }] }` (steps that never ran are absent). The
+  timeout is the sum of the steps' timeouts, at most 40 minutes. `allow_protected` with the `skill.run` consent
+  token covers every step (the grant lasts while the sequence runs).
+- **The craft tree.** `craft{item, count, table?, tree:true, gather_missing?, allow_protected?}` (cap `craft.tree`;
+  M4; `allow_protected` with the consent token covers its child jobs, like a sequence's steps) makes `count`
+  new items end to end: it plans from the inventory (intermediates such as logs → planks → sticks, smelting in a
+  furnace, recipes picked by what the inventory fits, at most 4 levels deep, never a recipe that consumes an item
+  being made higher up, never a compressed form such as a block of iron unless it is carried), gathers missing raw
+  materials from nature with child `collect{make_tools:true}` jobs when `gather_missing` (fuel: logs; felled trees
+  replanted), plans again, then crafts and
+  smelts step by step. A table or furnace within 24 blocks (the Base's are fine to use) or the given `table` is used;
+  else the agent's own is put down, crafted first if needed; never inside a protected zone (the agent walks out, at
+  most 16 blocks, else `NO_ROOM`). Missing raw materials without `gather_missing`: `MISSING_INGREDIENTS` with
+  `result.missing: [{ item, need, have, for }]`, before anything is crafted. `result: { item, crafted, have, steps:
+  ["oak_log 1 → oak_planks 4", …], station?: { kind, pos, placed }, gathered?: { item: n } }`. Without `tree`,
+  `craft` is the one-level craft.
 - **Natural sources (W1).** `mine`, `collect` and `find{filter:natural}` resolve a block or tag to natural sources:
   - A `#tag` leaves out building variants: stripped logs, wood, hyphae and planks. Named outright to `mine`
     (`stripped_spruce_log`) they count, but stay protected; `collect` of one finds nothing in nature (craft it).
@@ -672,7 +716,19 @@ The `error.code` of a `skill.run` reply or `skill.result` whose status is `faile
   facts as data. The status footer names the zone after the position: `| in Base |` or `| 12m from Base |`.
 - **`collect`** picks up loose items first, then breaks blocks that drop the item: the item's own block or tag, plus
   stone → cobblestone, ores → raw metals and gems, gravel → flint, grass → seeds. Like `mine`, it only breaks natural
-  blocks (section 7.4.3).
+  blocks (section 7.4.3). With cap `collect.gather` (M2): `near` searches around a spot instead of the agent;
+  `make_tools: true` crafts the tool a source needs (iron, stone, then wooden tier) from what is carried, through the
+  craft tree, instead of failing `NEEDS_TOOL`; animal drops (beef and leather: cows, porkchop: pigs, mutton and wool:
+  sheep, chicken and feathers: chickens, rabbit and rabbit hide: rabbits) come from the nearest animal outside
+  protected zones that is no pet, named, leashed or young (none: `NO_NATURAL_SOURCE`, saying how many were left
+  alone), also once no natural block of an item both drop is left (wool); drops are picked up within 5 blocks for
+  up to 5 seconds after each break. A block that drops something else (`stone`: cobblestone, an ore: its raw metal)
+  is broken `count` times, as `mine` counts, and the job is done with `result.note` saying so (Node's v2 `gather`
+  asks for the drop instead). `result` adds `item`, `got` (the same as `collected`: more of the item than at the
+  start), `sources: [{ kind: tree|ore|stone|animal, what, pos, n }]`, `tools_made` and `note`.
+- **`container`** without `pos` (cap `container.nearest`) uses the nearest chest, trapped chest or barrel within 24
+  blocks (none: `NOT_FOUND`); the result's `pos` says which. **`give`** without `count` (cap `give.all`) gives
+  everything of the item.
 - **`build` blueprints** (built-in; Codex-page blueprints are not supported yet): `shelter` (5×5, door gap facing
   north at rotation 0, roof), `wall_ring` (9×9, 2 high), `torch_ring` (8 torches 5 blocks out), `bridge` (8 blocks
   ahead at foot level), `stairs_down` (8 steps down, ahead), `farm_plot` (water in the middle, 9×9 tilled and

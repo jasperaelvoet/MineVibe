@@ -1,0 +1,21 @@
+{
+  "t": "skill.run",
+  "v": 1,
+  "id": "n-35",
+  "jobId": "job-41",
+  "agentId": "ada",
+  "skill": "collect",
+  "args": {
+    "item": "oak_log",
+    "count": 10,
+    "radius": 48,
+    "near": {
+      "x": 6,
+      "y": 66,
+      "z": 24
+    },
+    "make_tools": true
+  },
+  "waitMs": 20000,
+  "replace": true
+}

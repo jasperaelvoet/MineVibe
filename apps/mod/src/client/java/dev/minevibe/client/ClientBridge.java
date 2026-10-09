@@ -54,7 +54,8 @@ public final class ClientBridge {
 				ProtocolCodec.clip(mc != null ? mc : "unknown", 32),
 				worldId != null ? Messages.Hello.PHASE_IN_WORLD : Messages.Hello.PHASE_BOOT,
 				worldId,
-				Messages.isPlayerName(name) ? name : null);
+				Messages.isPlayerName(name) ? name : null,
+				dev.minevibe.agent.skill.SkillCaps.ALL);
 	}
 
 	public static void register(BridgeClient bridge) {

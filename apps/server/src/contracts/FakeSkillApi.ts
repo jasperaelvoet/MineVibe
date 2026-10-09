@@ -38,7 +38,7 @@ export type FakeSkillOutcome =
  * (default: done at once), running jobs end through {@link finish} or a cancel, and every call is recorded.
  */
 export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi {
-  readonly #running = new Map<string, { agentId: string; started: number }>();
+  readonly #running = new Map<string, { agentId: string; started: number; skill?: string }>();
   readonly #ended = new Map<string, JobEnd>();
   readonly #waiters = new Map<string, ((end: JobEnd) => void)[]>();
   readonly #modes = new Map<string, IdleMode>();
@@ -50,21 +50,39 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
   skillHandler: (request: SkillRunRequest) => FakeSkillOutcome = () => ({ status: 'done' });
   /** `obs.query` answers by query name. */
   readonly observations = new Map<ObsQueryName, Record<string, unknown>>();
+  /** Answers `obs.query` from its arguments when set (before {@link observations}); null falls through. */
+  obsHandler:
+    | ((query: ObsQueryName, args: Record<string, unknown>) => Record<string, unknown> | null)
+    | null = null;
+  /** Every `obs.query`, in order. */
+  readonly obsCalls: { readonly query: ObsQueryName; readonly args: Record<string, unknown> }[] = [];
+  /** The mod's `hello.caps` this fake claims (protocol §6.1). */
+  capSet: Set<string> = new Set();
+
+  caps(): ReadonlySet<string> {
+    return this.capSet;
+  }
 
   async runSkill<S extends SkillName>(request: SkillRunRequest<S>): Promise<SkillRunResult> {
     validateSkillArgs(request.skill, request.args);
     this.runs.push(request as SkillRunRequest);
     const jobId = request.jobId ?? newJobId();
-    const busy = [...this.#running.values()].some((j) => j.agentId === request.agentId);
+    const busy = [...this.#running.entries()].find(([, j]) => j.agentId === request.agentId);
     if (busy && !request.replace) throw new ApiError(ERROR_CODES.BUSY, `${request.agentId} is busy`);
     if (busy) await this.cancelSkill(request.agentId, { reason: 'replaced' });
+    // Like the mod with cap run.replaced (M9): the reply names the skill job the replace cancelled.
+    const replaced =
+      busy && busy[1].skill !== undefined && this.capSet.has('run.replaced')
+        ? { jobId: busy[0], skill: busy[1].skill }
+        : undefined;
     const outcome = this.skillHandler(request as SkillRunRequest);
     if (outcome.status === 'running') {
-      this.#running.set(jobId, { agentId: request.agentId, started: Date.now() });
-      return { jobId, status: 'running' };
+      this.#running.set(jobId, { agentId: request.agentId, started: Date.now(), skill: request.skill });
+      return replaced ? { jobId, status: 'running', replaced } : { jobId, status: 'running' };
     }
     const end = this.#end(jobId, request.agentId, outcome);
     const result: SkillRunResult = { jobId, status: end.status };
+    if (replaced) result.replaced = replaced;
     if (end.result !== undefined) result.result = end.result;
     if (end.error !== undefined) result.error = end.error;
     return result;
@@ -112,15 +130,35 @@ export class FakeSkillApi extends TypedEmitter<SkillEvents> implements SkillApi 
     return cancelled;
   }
 
-  awaitJob(jobId: string): Promise<JobEnd> {
+  awaitJob(jobId: string, timeoutMs?: number): Promise<JobEnd> {
     const end = this.#ended.get(jobId);
     if (end) return Promise.resolve(end);
-    return new Promise((resolve) => {
-      this.#waiters.set(jobId, [...(this.#waiters.get(jobId) ?? []), resolve]);
+    return new Promise((resolve, reject) => {
+      const timer =
+        timeoutMs === undefined
+          ? null
+          : setTimeout(
+              () => reject(new ApiError(ERROR_CODES.TIMEOUT, `job ${jobId} still running`)),
+              timeoutMs,
+            );
+      this.#waiters.set(jobId, [
+        ...(this.#waiters.get(jobId) ?? []),
+        (e) => {
+          if (timer) clearTimeout(timer);
+          resolve(e);
+        },
+      ]);
     });
   }
 
-  async obsQuery(agentId: string, query: ObsQueryName): Promise<Record<string, unknown>> {
+  async obsQuery(
+    agentId: string,
+    query: ObsQueryName,
+    args: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    this.obsCalls.push({ query, args });
+    const handled = this.obsHandler?.(query, args) ?? null;
+    if (handled) return handled;
     const result = this.observations.get(query);
     if (!result) throw new ApiError(ERROR_CODES.NOT_HANDLED, `no scripted ${query} for ${agentId}`);
     return result;

@@ -20,6 +20,37 @@ import { PendingCard } from './ui.js';
 // Session
 // ---------------------------------------------------------------------------------------------
 
+/** A mod feature flag in `hello.caps` (`skill.sequence`, `craft.tree`, ...): lowercase dotted words. */
+export const ModCap = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$/);
+
+/**
+ * The caps this protocol defines (protocol §6.1). The mod may list others (Node ignores unknown ones); Node checks
+ * these before relying on the matching additive arguments, because Gson drops unknown fields silently.
+ */
+export const MOD_CAPS = {
+  /** `skill.run{skill:"sequence"}`: several skills as one job. */
+  SEQUENCE: 'skill.sequence',
+  /** `collect{near?, make_tools?}`: gather end to end (loose drops, natural sources, animals for drops, tools). */
+  COLLECT_GATHER: 'collect.gather',
+  /** `craft{tree?, gather_missing?}`: resolve the whole recipe tree, stations and smelting included. */
+  CRAFT_TREE: 'craft.tree',
+  /** `obs.query recipe{item, count?, tree:true}`: the craft plan without acting. */
+  RECIPE_TREE: 'obs.recipe.tree',
+  /** `container{pos?}`: the nearest chest or barrel within 24 blocks when `pos` is absent. */
+  CONTAINER_NEAREST: 'container.nearest',
+  /** `give{count?}`: everything of the item when `count` is absent. */
+  GIVE_ALL: 'give.all',
+  /** `SkillRunResult.replaced`: the job a `replace:true` run cancelled. */
+  RUN_REPLACED: 'run.replaced',
+  /** `look_around{radius}` up to 48 (was 32). */
+  LOOK_AROUND_48: 'obs.look_around.48',
+} as const;
+export type ModCapName = (typeof MOD_CAPS)[keyof typeof MOD_CAPS];
+
 /** M→N. First message on every (re)connect. Node answers with `hello.ok` and then re-sends full state. */
 export const Hello = defineMessage('hello', {
   /** Mod version. */
@@ -32,6 +63,11 @@ export const Hello = defineMessage('hello', {
   worldId: WorldId.optional(),
   /** The local player's profile name. */
   playerName: PlayerName.optional(),
+  /**
+   * Optional features this mod build supports (additive; protocol §6.1), e.g. `skill.sequence`, `craft.tree`. Node
+   * uses a feature only when its cap is listed and falls back otherwise, so an older mod (no `caps`) keeps working.
+   */
+  caps: z.array(ModCap).max(64).optional(),
 }).describe('Mod handshake; sent first on every connection.');
 
 /**

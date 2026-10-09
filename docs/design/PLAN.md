@@ -362,6 +362,7 @@ query({ prompt: gatedInbox, options: {
     - Full history lives in AgentScreen and the Crew log.
 - **Layer 1: reflexes** in Java (7.3) act at zero tokens.
 - **Layer 2: Digest.** Info and notable events are prepended to the next turn as one block of about 60 tokens. Every `mc` tool result also ends with a 25-token status footer.
+  - **v2 tools (`MINEVIBE_MC_TOOLS=v2`, docs/design/tools-v2-mc.md §6.4).** The footer ends only world tools, `do`, `job`, `find`, `menu` and `observe` without `status`. Social, memory, mode, Codex, calendar and hire results carry none, because the Digest already has the body state.
   - The block opens with a one-line **scene** on every turn (at most about 50 tokens): `D2 07:40 · in Base (office) · trees 20m NE · Jasper 4m · no threats`, built from `agent.state` (with its `zone`), the clock, the office and the trees the agent's own `look_around` / `find` showed (protocol §7.4.3).
 - **Layer 3: wake rules.**
 
@@ -379,6 +380,8 @@ query({ prompt: gatedInbox, options: {
 
 - **Autonomy.** **Listen (default)**, Helpful or Proactive, plus an autonomous wake budget per agent.
 - **Long jobs.** Each returns `running` plus a `job_id` after `wait_s` (default 20), and the agent is woken later by `job.done`.
+  - **v2 tools (tools-v2-mc.md §7).** There is no `wait_s`. Every world tool answers within 20 s (`sit_at_pc` 60 s). A job still going answers `running` with its id and progress. Then either the turn ends and `[JOB DONE]` / `[JOB FAILED]` wakes the agent, rendered by the same formatter as tool results, or the agent calls `job{action:"wait"}` (≤120 s).
+  - No wake follows a job that the agent stopped or replaced, or that the player's new task cancelled. A replacing call says which job it stopped.
 - **BrainScheduler lanes.** Separate lanes keep long PC turns from blocking chat.
   - **Work lane:** at most 2 concurrent turns, PC sessions included.
   - **Interactive lane:** 1 reserved slot for P0 player messages, resumed answered cards, the meeting speaker, and last words.
@@ -582,6 +585,23 @@ Bubbles show the speaker, and the other attendees turn to look at whoever is tal
 
 ### 7.4 Skill API (`mcp__mc__*`)
 Long jobs use `wait_s` and return `running` plus `job_id`.
+
+**Tools v2** (docs/design/tools-v2-mc.md; `MINEVIBE_MC_TOOLS=v2`, default still v1 until the live A/B):
+- **Fewer tools.** 20 composite tools replace the 54 below:
+
+  | Tools | Kind |
+  |---|---|
+  | `observe`, `find` | read |
+  | `goto`, `gather`, `craft`, `build`, `use`, `items`, `menu`, `do` | world |
+  | `job`, `set_mode`, `say`, `tell`, `remember`, `sit_at_pc`, `stand_up`, `request_hire`, `codex`, `calendar` | the rest |
+
+- **Composite intents run as one job in the mod.**
+  - `do` → `sequence`.
+  - `gather` → `collect` with natural sources, the tools it needs, and animal drops.
+  - `craft` → the craft tree, which crafts intermediates, smelts, places a station outside protected zones, and with `gather_missing` gathers what is missing.
+  - The mod lists these in `hello.caps`; Node falls back with older mods.
+- **Results are compact text with a `next:` hint.**
+- **The model never handles consent tokens.** After the player allows it, the model repeats the exact refused call.
 
 | Group | Tools |
 |---|---|

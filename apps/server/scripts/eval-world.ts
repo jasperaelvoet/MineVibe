@@ -3,6 +3,7 @@
  * instead of breaking the house when nature is out of reach?
  *
  *   npm run eval:world            (root or apps/server; never part of `npm test`)
+ *   npm run eval:world -- --tools v2   (the v2 `mc` tools, docs/design/tools-v2-mc.md; default: MINEVIBE_MC_TOOLS, else v1)
  *
  * Three scenarios, each a fresh world and a fresh CEO session through the real AgentManager (persona, Digest scene,
  * ToolGate, InteractionBroker, `mc` tools) on Haiku at xhigh, with the SDK-bundled `claude` (`MINEVIBE_CLAUDE=bundled`
@@ -26,6 +27,7 @@ import type { Card } from '../src/agents/PendingStore.js';
 import { type QueryFactory, type SDKResultMessage, sdkQueryFactory } from '../src/agents/sdk.js';
 import { FakeOrgApi } from '../src/contracts/FakeOrgApi.js';
 import { FakePcApi } from '../src/contracts/FakePcApi.js';
+import { type McToolsVersion, mcToolsVersion } from '../src/contracts/mcRefs.js';
 import { SERVER_VERSION } from '../src/version.js';
 import {
   AGENT_POS,
@@ -68,7 +70,11 @@ interface ScenarioReport {
   readonly scene: string;
 }
 
-async function runScenario(scenario: ScenarioName, env: NodeJS.ProcessEnv): Promise<ScenarioReport> {
+async function runScenario(
+  scenario: ScenarioName,
+  env: NodeJS.ProcessEnv,
+  mcTools: McToolsVersion,
+): Promise<ScenarioReport> {
   const dir = mkdtempSync(join(tmpdir(), `mv-eval-${scenario}-`));
   const claude = await resolveClaudeBinary({
     env,
@@ -91,6 +97,7 @@ async function runScenario(scenario: ScenarioName, env: NodeJS.ProcessEnv): Prom
     queryFactory: factory,
     chatDebounceMs: 0,
     autonomyTickMs: 0,
+    mcTools,
   });
   let refusals = 0;
   const noteRefusal = manager.consents.noteRefusal.bind(manager.consents);
@@ -208,16 +215,27 @@ async function runScenario(scenario: ScenarioName, env: NodeJS.ProcessEnv): Prom
   };
 }
 
+/** `--tools v1|v2`, else MINEVIBE_MC_TOOLS, else the default. */
+function toolsFlag(argv: readonly string[], env: NodeJS.ProcessEnv): McToolsVersion {
+  const i = argv.indexOf('--tools');
+  const value = i === -1 ? undefined : argv[i + 1];
+  if (value === undefined) return mcToolsVersion(env);
+  if (value !== 'v1' && value !== 'v2') throw new Error(`--tools takes v1 or v2, not ${value}`);
+  return value;
+}
+
 async function main(): Promise<void> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     MINEVIBE_CLAUDE: process.env.MINEVIBE_CLAUDE ?? 'bundled',
   };
+  const mcTools = toolsFlag(process.argv.slice(2), env);
+  process.stdout.write(`mc tools ${mcTools}\n`);
   const reports: ScenarioReport[] = [];
   for (const scenario of ['reachable', 'unreachable', 'legacy'] as const) {
     process.stdout.write(`\n== ${scenario} ==\n`);
     try {
-      const report = await runScenario(scenario, env);
+      const report = await runScenario(scenario, env, mcTools);
       reports.push(report);
       process.stdout.write(`  scene: ${report.scene}\n`);
       for (const line of report.steps) process.stdout.write(`  ${line}\n`);
@@ -250,6 +268,7 @@ async function main(): Promise<void> {
   const summary = {
     at: new Date().toISOString(),
     claude: env.MINEVIBE_CLAUDE,
+    mcTools,
     request: REQUEST,
     pass: reports.every((r) => r.verdict.pass),
     totalCostUsd: Number(reports.reduce((s, r) => s + r.costUsd, 0).toFixed(4)),
