@@ -7,8 +7,8 @@
  * time and wakes the agent with `[JOB DONE]` like the EventRouter would (within the per-run turn cap and the global
  * turn budget), lets the world settle, then evaluates the scenario's checks.
  *
- * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn, the PC session
- * starts seated (no sit/swap turn), WebSearch/WebFetch are denied (the eval PC is offline), question cards are
+ * Eval-only deviations from production, all deliberate: one agent (the CEO Ada) with no welcome turn (its first turn
+ * opens with the mode's MODE banner, as in production), the PC session starts seated (no sit/swap turn), WebSearch/WebFetch are denied (the eval PC is offline), question cards are
  * answered by the scenario at once, and every `mc` tool call costs 2 s of game time ("thinking").
  */
 
@@ -26,9 +26,11 @@ import { summarizeResult } from '../../src/agents/EventRouter.js';
 import { control, newNonce, singleLine } from '../../src/agents/envelope.js';
 import { createInteractionBroker } from '../../src/agents/InteractionBroker.js';
 import { HandoffNotes } from '../../src/agents/memory.js';
+import { modeForSeat } from '../../src/agents/modes.js';
 import { type Card, PendingStore } from '../../src/agents/PendingStore.js';
 import { PlanCapture } from '../../src/agents/PlanCapture.js';
 import { kickoffMessage, rosterContext } from '../../src/agents/prompts/kickoff.js';
+import { modeBanner, stoodUpText } from '../../src/agents/prompts/modes.js';
 import { personaPrompt } from '../../src/agents/prompts/persona.js';
 import type { SeatSnapshot } from '../../src/agents/SeatFSM.js';
 import type {
@@ -264,8 +266,7 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
     requestHire: async () => `Asked ${PLAYER}; you get a [HIRE DECISION] later.`,
     sitAtPc: async () => 'There is no PC in this world.',
     // AgentBrain.standUp's reply while seated (the gate denies stand_up while wandering).
-    standUp: async () =>
-      `Stood up from ${PC_ID}. Your PC tools stop now; tell ${PLAYER} the result if you haven't.`,
+    standUp: async () => stoodUpText({ kind: 'pc', pcId: PC_ID }, PLAYER),
     wait: async (ms, jobId) => {
       if (jobId) {
         try {
@@ -534,6 +535,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
         handoffs: [],
       });
     }
+    // As in production (AgentBrain), the first turn opens with the mode banner: Minecraft mode for mc, PC mode for pc.
+    // The transcript shows the prompt after it (the banner is the same in every run of a suite).
+    let banner: string | null = modeBanner(modeForSeat(seat), { nonce, playerName: PLAYER, mcTools: tools });
     for (let t = 0; ; t++) {
       if (t >= opts.maxRunTurns) {
         stop = 'turn_cap';
@@ -548,7 +552,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
       turnState.startedAt = Date.now();
       metrics.turnTexts = [];
       metrics.transcript.push(`T${turn} > ${clip(text.replace(/\[MV:[0-9a-f]{6} /g, '['), 220)}`);
-      const { result, timedOut } = await sendAndWait(text);
+      const { result, timedOut } = await sendAndWait(banner === null ? text : `${banner}\n\n${text}`);
+      banner = null;
       turns++;
       if (startupProblems.length > 0 && opts.requireSubscription) {
         throw new FatalEvalError(`startup assertions failed: ${startupProblems.join('; ')}`);

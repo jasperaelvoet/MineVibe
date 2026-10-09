@@ -60,6 +60,7 @@ import { CREW_CAP, LAST_WORDS_MS, type McToolsVersion, MOD_AGENT_ID } from './co
 import { EventRouter, type RoutedFor, type RouterAgent } from './EventRouter.js';
 import { control, escapeShared, neutralizeControlTags, newNonce, singleLine, wrapNote } from './envelope.js';
 import { Chronicle, HandoffNotes, MemoryStore } from './memory.js';
+import type { BrainMode } from './modes.js';
 import { type Card, newCardId, PendingStore } from './PendingStore.js';
 import { BARKS } from './prompts/barks.js';
 import {
@@ -186,6 +187,10 @@ export interface ToolObservation {
   readonly toolName: string;
   readonly behavior: 'allow' | 'deny' | 'defer';
   readonly reason: string;
+  /** The deny code (`mode` for a tool outside the agent's mode), null otherwise. */
+  readonly code: string | null;
+  /** The mode of the agent's seat when the call came (agents/modes.ts). */
+  readonly mode: BrainMode;
   readonly effort: string | null;
   readonly permissionMode: string | null;
   readonly model: string | null;
@@ -452,6 +457,8 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
           toolName: o.toolName,
           behavior: o.decision.behavior,
           reason: o.decision.reason,
+          code: o.decision.behavior === 'deny' ? o.decision.code : null,
+          mode: brain.mode,
           effort: o.effort,
           permissionMode: o.permissionMode,
           model: brain.session?.model ?? null,

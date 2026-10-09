@@ -43,6 +43,17 @@ booted a real linux-1 from `npm test`; the doubled status footer had already bee
   a `--tools v1 --mod v2` run would show how much of the gain is W1's protection alone. Production still defaults to
   v1 (`MINEVIBE_MC_TOOLS`); the §14 flip gates call for N=5 runs per scenario and `eval:world -- --tools v2`.
 
+## Found in the mode-profiles work (2026-10-09)
+- **The player's e-mail address reaches every agent prompt.** With the allowlisted env and `settingSources: []`, the
+  CLI still injects `session_context` (the account's e-mail address) and `credential_org` (the organisation id)
+  attachments into agent sessions (spike S3b, `spikes/s3b-mode-switch/result.md`, "Side effects"). Agents can read and
+  repeat them. Source not investigated (presumably the CLI's account profile); decide whether an env switch or a
+  persona rule is needed (PLAN §6.1 env).
+- **Per-turn `ai-title` generation in persisted sessions.** S3b saw an `ai-title` transcript entry after every turn
+  (`persistSession: true`), probably a small background model call per turn that no usage number counts.
+- **`runLock.test.ts` "never shows a reader an empty or partial lock" times out (5 s) under a full `npm test`** on a
+  busy machine (4 of 6 full runs here); it passes alone.
+
 ## Found in the live acceptance run (2026-10-09)
 - **Visible oak is unreachable on most seeds.** `mine oak_log` fails `UNREACHABLE (no_path)` for an exposed oak 11 to
   18 blocks away on seeds `minevibe-e2e` and `42`, from inside the office and again from the porch outside the door;

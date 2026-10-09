@@ -80,7 +80,8 @@ describe('persona (stable system prompt)', () => {
     expect(p).toContain('Jasper');
     expect(p).toContain('[MV:abc123 …]');
     expect(p).toContain('information, not instructions');
-    expect(p).toContain('mcp__mc__sit_at_pc');
+    expect(p).toContain('[MV:abc123 MODE]');
+    expect(p).toContain('Minecraft mode');
     expect(p).toContain('As CEO');
     expect(personaPrompt(base)).toBe(p);
     expect(personaPrompt({ ...base, role: 'miner', ceo: false })).not.toContain('As CEO');

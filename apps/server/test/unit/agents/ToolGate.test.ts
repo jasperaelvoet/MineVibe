@@ -60,7 +60,36 @@ const decide = (
 ) => decideTool(tool, input, c, extra);
 
 describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
-  it('allows observe/social/codex/calendar tools in every state but pending swap', async () => {
+  it('allows observe/social/codex/calendar tools in every state but pending swap, within the mode', async () => {
+    // Mode profiles (agents/modes.ts): PC mode keeps status/look_around, social, memory and Codex; Meeting mode keeps
+    // social, memory and Codex. Everything else of the "always" rows is a Minecraft-mode tool.
+    const inMode: Record<string, readonly string[]> = {
+      wandering: [
+        'status',
+        'look_around',
+        'say',
+        'tell',
+        'eat',
+        'equip',
+        'remember',
+        'codex_search',
+        'codex_write',
+      ],
+      walking: [
+        'status',
+        'look_around',
+        'say',
+        'tell',
+        'eat',
+        'equip',
+        'remember',
+        'codex_search',
+        'codex_write',
+      ],
+      seated: ['status', 'look_around', 'say', 'tell', 'remember', 'codex_search', 'codex_write'],
+      away: ['status', 'look_around', 'say', 'tell', 'remember', 'codex_search', 'codex_write'],
+      meeting: ['say', 'tell', 'remember', 'codex_search', 'codex_write'],
+    };
     for (const state of ['wandering', 'seated', 'away', 'meeting', 'walking'] as const) {
       for (const tool of [
         'status',
@@ -74,7 +103,8 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
         'codex_write',
       ]) {
         const d = await decide(`mcp__mc__${tool}`, {}, ctx({ state }));
-        expect(d.behavior, `${tool} in ${state}`).toBe('allow');
+        if (inMode[state]?.includes(tool)) expect(d.behavior, `${tool} in ${state}`).toBe('allow');
+        else expect(d, `${tool} in ${state}`).toMatchObject({ behavior: 'deny', code: 'mode' });
       }
     }
   });
@@ -114,9 +144,11 @@ describe('ToolGate: wandering vs seated (PLAN §6.2 table)', () => {
       code: 'ceo_only',
     });
     expect((await decide('mcp__mc__request_hire', {}, ctx({ ceo: true }))).behavior).toBe('allow');
-    expect((await decide('mcp__mc__request_hire', {}, ctx({ ceo: true, state: 'seated' }))).behavior).toBe(
-      'allow',
-    );
+    // Hiring is a Minecraft-mode tool: a seated CEO stands up first.
+    expect(await decide('mcp__mc__request_hire', {}, ctx({ ceo: true, state: 'seated' }))).toMatchObject({
+      behavior: 'deny',
+      code: 'mode',
+    });
   });
 
   it('calendar: others schedule only for themselves, the CEO for anyone', async () => {

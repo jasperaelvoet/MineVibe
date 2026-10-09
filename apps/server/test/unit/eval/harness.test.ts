@@ -17,7 +17,7 @@ import { HOUSE_CHEST } from '../../../eval/sim/layout.js';
 import { SimSkillApi } from '../../../eval/sim/SimSkillApi.js';
 import { WANDERING_PROFILE } from '../../../src/agents/constants.js';
 import type { QueryFactory, SDKMessage } from '../../../src/agents/sdk.js';
-import { FakeQuery } from '../../helpers/fakeSdk.js';
+import { FakeQuery, userText } from '../../helpers/fakeSdk.js';
 
 const BUNDLED = { source: 'bundled' as const, path: undefined, version: null };
 
@@ -60,8 +60,12 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       turns: 1,
     });
     expect(pc.transcript.some((l) => /^ {4}x Exit code 1 /.test(l))).toBe(true);
-    // Seated, stand_up answers like AgentBrain.standUp.
-    expect(pc.transcript.some((l) => l.includes('= Stood up from linux-1.'))).toBe(true);
+    // Seated, stand_up answers like AgentBrain.standUp (the shared prompts/modes.ts text).
+    expect(
+      pc.transcript.some((l) =>
+        l.includes('= Stood up from linux-1: Minecraft mode, your PC tools stop now.'),
+      ),
+    ).toBe(true);
     const mc = outcomes.find((o) => o.scenario === 'mc.logs_table' && o.variant === 'good')
       ?.result as RunResult;
     expect(mc).toMatchObject({
@@ -129,6 +133,33 @@ describe('replay mode (scripted model through the real session wiring)', () => {
       }),
     ).rejects.toThrow(FatalEvalError);
     expect((fake as FakeQuery | null)?.interrupted).toBeGreaterThan(0);
+  });
+
+  it('opens the first turn with the MODE banner like production; the transcript shows the prompt, not the banner', async () => {
+    const queries: FakeQuery[] = [];
+    const scripted = scriptedFactory([[{ text: 'On it.' }]]);
+    const factory: QueryFactory = (params) => {
+      const q = scripted(params) as FakeQuery;
+      queries.push(q);
+      return q;
+    };
+    const r = await runScenario(logsAndTable, {
+      mode: 'replay',
+      run: 1,
+      factory,
+      claude: BUNDLED,
+      profile: WANDERING_PROFILE,
+      budget: new TurnBudget(5, 0),
+      maxRunTurns: 1,
+      turnTimeoutMs: 30_000,
+      requireSubscription: false,
+    });
+    const turns = (queries[0]?.sent ?? []).filter((m) => m.shouldQuery !== false).map((m) => userText(m));
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatch(/^\[MV:[0-9a-f]{6} MODE\] Minecraft mode: /);
+    expect(turns[0]).toContain(`\n\nJasper: ${logsAndTable.prompt}`);
+    expect(r.transcript[0]).toMatch(/^T1 > Jasper: /);
+    expect(r.transcript.join('\n')).not.toContain('MODE]');
   });
 
   it('denies web tools on the offline eval PC and counts gate denials as failed calls', async () => {

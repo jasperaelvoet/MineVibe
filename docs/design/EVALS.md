@@ -464,3 +464,79 @@ remaining work is perception and intent, not the tool formats (DEBT.md, "Found i
   protection and the stricter harness; there is no v1 control on the same harness within the 40-turn cap.
 - n = 3 (mc) and 1 (pc), and the §14 flip gates ask for N = 5 and `eval:world -- --tools v2`; this run is evidence
   for flipping the default, not the gate itself.
+
+## Mode profiles (`scripts/tool-tokens.ts`, `test/live/modes.live.ts`)
+
+**Why.** The idea: while an agent sits at a PC its Minecraft tools should be unavailable, and while it wanders its
+PC tools, switched at the same turn boundary as the model swap (Haiku 5.5 xhigh ⇄ Opus 5.5 medium), so each mode's
+prompt is smaller and more focused. Spike S3b (`spikes/s3b-mode-switch/result.md`) showed that Claude Code 2.1.293
+pins the tool list the model is offered to the conversation's first request, so a per-mode list can't be had once the
+conversation exists. What was built instead (PLAN §6.2 "Tools per mode", §6.3 "Mode switch"): ModeProfiles from tags
+in the tool catalog, enforced by ToolGate (code `mode`), and a MODE banner (the mode's persona section, "available
+now", "blocked until …") that opens the first turn after each switch, on the swapped model.
+
+### Tool-list size per profile, 2026-10-09 (SDK 0.3.293, bundled claude 2.1.293, zero model turns)
+
+`npm` has no script for it: `node --conditions=source --import tsx apps/server/scripts/tool-tokens.ts --cli`. Tokens
+are what `getContextUsage()` reports for each MCP tool (what `/context` shows); characters / 4 of the rendered
+`{name, description, input_schema}` in parentheses. The CLI's count is about twice the characters / 4 estimate (JSON
+schemas tokenize densely); both are approximations. The built-ins (AskUserQuestion, ExitPlanMode, WebSearch, WebFetch)
+add 1,472 tokens in every mode.
+
+| Tools | v1 (default) | v2 (`MINEVIBE_MC_TOOLS=v2`) |
+|---|---|---|
+| Every request, in every mode, **before and after** (the pinned list) | 85 tools, 26,201 (13,191) | 51 tools, 17,823 (8,966) |
+| … of which `mc` / `pc` | 54: 16,411 / 31: 9,790 | 20: 8,035 / 31: 9,788 |
+| Minecraft-mode profile (what ToolGate lets through) | 54 `mc`: 16,411 | 20 `mc`: 8,035 |
+| PC-mode profile | 31 `pc` + 15 `mc`: 13,623 | 31 `pc` + 7 `mc`: 12,531 |
+| Meeting-mode profile | 14 `mc`: 3,613 | 6 `mc`: 2,179 |
+
+| Prompt | Before | After |
+|---|---|---|
+| Tool list of each request | the full list | unchanged: the full list (pinned to the first request) |
+| Persona (`systemPrompt.append`, CEO) | v1 4,985 chars (≈1,246 tokens), v2 4,760 (≈1,190) | v1 4,554 (≈1,139), v2 4,329 (≈1,082): −431 chars, ≈ −108 tokens (the "Computers" section and the world-only lines moved into the banners) |
+| Per mode switch | the swap's `/model` entries | + one MODE banner: Minecraft 653 chars (≈163 tokens); PC v1 1,283 (≈321), v2 1,140 (≈285); Meeting v1 735 (≈184), v2 620 (≈155) |
+
+What the numbers say:
+
+- A per-mode list would have saved about 9.8k tokens per wandering request and 12.6k per seated one (v1), or 9.8k and
+  5.3k (v2). It is not reachable inside one conversation (S3b), only with a fresh session per mode, which loses the
+  transcript. The stable list keeps the tools + system prefix the same across agents and sessions, which S3b saw
+  read from the cache by other sessions within the 1 h TTL.
+- What the change buys is focus and enforcement, not size: the model is told which tools it has, and ToolGate refuses
+  the rest with teaching text. Net prompt cost: ≈ −108 tokens on every request (persona), + 155–321 appended tokens
+  per switch.
+- The v2 tool set halves the Minecraft-mode surface regardless of modes (16.4k → 8.0k).
+
+### Live check, 2026-10-09 (6 turns, v1 tools)
+
+`MINEVIBE_CLAUDE=bundled npx vitest run --config vitest.live.config.ts test/live/modes.live.ts` in `apps/server`, through
+the real AgentManager and SDK-bundled claude with the contract fakes as the body. Part 1 (4 turns): a fresh world,
+wander, sit. Part 2 (2 turns): a reopened crew (no welcome turn) the mod reports seated (a worker restart, no turn),
+one PC-mode turn that stands up, one turn after it. Each part caps its turns at the session's input.
+
+| # | Turn | Model / effort | The message opened with | Tool calls (ToolGate) | Reply |
+|---|---|---|---|---|---|
+| 1 | welcome | Haiku | `[MV:… MODE] Minecraft mode: you are on your feet in the world.` | — | "Hi Jasper, Ada here, ready for your instructions." |
+| 2 | wander | Haiku / xhigh | the player's message (no switch, no banner) | `pc__bash` deny `not_seated`, `mc__status` allow | "pc=refused mc=allowed mode=Minecraft mode" |
+| 3 | sit | Haiku / xhigh | the player's message | `mc__sit_at_pc` allow (twice) | "sitting" |
+| 4 | kickoff | Opus / medium | `[MV:… MODE] PC mode: you sit at an office PC.`, then the KICKOFF | `pc__bash` allow, `mc__inventory` deny `mode`, `mc__status` allow, `mc__stand_up` allow | named exactly the 15 PC-mode `mc` tools |
+| 5 | seated (part 2) | Opus / medium | `[MV:… MODE] PC mode: …` | `pc__bash` allow, `mc__inventory` deny `mode`, `mc__stand_up` allow | "… the inventory check was refused because I was still seated at the PC; I've stood up now." |
+| 6 | back (part 2) | Haiku / xhigh | `[MV:… MODE] Minecraft mode: …` | `pc__bash` deny `not_seated`, `mc__inventory` allow | "pc=refused mc=allowed mode=Minecraft mode" |
+
+- Swaps through `applyFlagSettings`, all acknowledged by PostModelSwitch: haiku → opus 20 ms (estimated cache write
+  $0.2666) and opus → haiku 18 ms ($0.0071) in part 1; 558 ms (the session's first request, $0) and 18 ms ($0.0066) in
+  part 2. Debounce 2 s for the check (60 s in production).
+- Cost at list price: part 1 $0.314, part 2 $0.070. The 5-hour window read 0.53 afterwards.
+- `echo pc-ok` printing nothing is the contract fake PC, not the gate.
+
+#### Limits
+
+- "Only pc + minimal mc visible" means what the banner offers and the gate lets through. The model's raw tool list is
+  still the full, pinned one: it could see the other schemas, and in turns 2 and 6 it called a refused tool because
+  the check told it to.
+- Part 1's first version waited for the swap to Opus after the kickoff turn had already stood up and swapped back, so
+  vitest failed it after turn 4 although the recorded turns met every check above. The waits now count turn results;
+  part 1 was not re-run (the 6-turn cap), part 2 ran as written and passed.
+- One sample per edge, v1 tools only. Meeting mode, kick/damage/survival, v2 texts, compaction and the debounce are
+  covered by unit tests (`test/unit/agents/modes.test.ts`, `modeSwitch.test.ts`), not live.
