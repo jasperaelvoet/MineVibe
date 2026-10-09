@@ -27,7 +27,7 @@ Host: MacBook Pro M5 Pro, 18 cores, 48 GiB, macOS 27.0.1 (26A434). Guest: macOS 
 |---|---|
 | Pull (`POST /lume/pull`, async) | 23 825 217 508 B (22.2 GiB) in **314 s** (avg 76 MB/s, peak 114 MB/s); 300 chunks reassembled into `disk.img` (150 GiB sparse, 28.6 GiB allocated). Progress is visible with `GET /lume/vms/<name>`: `status: "pulling"`, `downloadProgress` (%), `downloadedBytes`, `totalBytes`. |
 | Clone (`POST /lume/vms/clone`) | < 1 s (APFS clonefile); a clone gets a new `machineIdentifier` and MAC address. |
-| Configure (`PATCH /lume/vms/<name>`, stopped) | cpu 4, memory 8 GB, display 1280x800: instant; the guest then runs 1280x800 at scale 1. |
+| Configure (`PATCH /lume/vms/<name>`, stopped) | cpu 4, memory 8 GB, display 1280x800: instant. The VM's display is then 1280x800, but a fresh clone's guest starts in a 1024x768 mode (seen in M9); the driver switches it once (it persists). |
 | First boot of a fresh clone | IP after 10.4 s, spacesd SERVING after **26.8 s**. |
 | Warm start (`POST /lume/vms/<name>/run`) | answers 202 at once; IP after 4.2 s; SERVING after **16.7–18.3 s**. |
 | Stop (`POST …/stop`) | **6.3 s**: a hard power-off (VZ `stop`) plus Lume's fixed 5 s "lock clearing" wait. |
@@ -48,7 +48,9 @@ Host: MacBook Pro M5 Pro, 18 cores, 48 GiB, macOS 27.0.1 (26A434). Guest: macOS 
   would start in `--insecure-bootstrap`; the setup share always exists, so that never happens.
 - `sudo` needs the default password `lume`; the driver installs `/etc/sudoers.d/minevibe` once (NOPASSWD for `lume`,
   `env_keep` of `MV_TAG MV_CALL MV_MIRROR`), checked with `visudo -c`. Remote Login is off, nothing but spacesd listens
-  (`*:3211`), screen saver off, display sleep off; automatic update checks are on (the driver turns them off).
+  (`*:3211`), screen saver off, display sleep off; automatic update checks are on and stay on
+  (`softwareupdate --schedule off` exits 0 without effect on macOS 26, and the preference file needs Full Disk Access;
+  DEBT).
 - Tools: `/bin/bash` 3.2, BSD userland (`stat -f`, no `/proc`, no `setsid`), `sha256sum` (GNU format), `jq`, git, Python
   3.9 and Swift from the Command Line Tools. No Homebrew, Node or ripgrep: the driver installs a pinned ripgrep
   (15.2.0, `vendor.lock.json`) from the setup share.
@@ -114,3 +116,32 @@ leaves a `[Process completed]` window, and `osascript` from spacesd's processes 
 `probe.mjs` (auth, caps, screenshots, input, media, loopback, shell, sudo), `type.mjs`, `g.mjs`, `coherence*.mjs`
 (share coherence), `shares.mjs` (share names, symlink roots, stop/start timing), `third.mjs` (Apple's limit),
 `shutdown.mjs`, `mirror*.mjs` (ShellMirror), `tools.mjs` (BSD tool checks), `lume.sh` (the dev Lume CLI).
+
+M9 debugging tools on the server's own code: `m9-hold.ts` boots one macOS PC through PcManager and holds it until
+`out/m9-hold.stop` exists; `vmsh.mjs <vm> '<script>'` runs a script in any running MineVibe VM; `m9-input.mjs`,
+`m9-ops.mjs`, `m9-router.ts`, `m9-mirror.ts`, `m9-open.ts`, `m9-display.ts`, `m9-shot.mjs` probe input, ShellMirror,
+`open`, the display switch and the screen of the held PC; `m9-api.ts` makes raw serve API calls; `m9-clean.ts` removes
+the VMs those tools and test runs left (`minevibe=pc-hold`, `pc-dbg`, `pc-test-*`); `setup-check.ts` runs the guest
+setup and refresh scripts on a spike VM; `display.js` is the JXA display switch.
+
+## Found while building M9 (2026-10-09)
+
+These follow-ups came out of the driver and `npm run test:pcs` (`macPc.int.ts`); PLAN §8.7 has the design.
+
+- **No key or button down/up on macOS.** spacesd's macOS driver answers `CuaError.Unsupported` ("separate key down/up
+  is not available through the macOS driver tools; use press or hotkey", and the same for buttons: "use click or
+  drag"). `press` with modifiers, `hotkey`, `typeText`, pointer `move`, `click` (with a count), `scroll` and `drag`
+  (any button, modifiers) work. The InputRouter turns a macOS PC's downs and ups into presses, clicks and drags.
+- **`GET /lume/vms?storage=…` answers 404.** The list takes no query and spans every location of the config; the
+  driver lists `/lume/vms` and keeps `locationName == minevibe`. `GET /lume/vms/<name>?storage=…` works.
+- **Display.** A fresh clone's guest starts at 1024x768 although its VM display is 1280x800. A Swift script switched
+  it, but its first run in a fresh clone builds the Clang module cache (tens of seconds; the first boot took 66 s to
+  `running`). JavaScript for Automation calling CoreGraphics through the ObjC bridge (`osascript -l JavaScript`, no
+  Apple events, so no Automation consent) does the same in 0.35 s; create to `running` dropped to about 20 s.
+- **Terminal keeps a closed window** in spacesd's window list as `WINDOW_STATE_HIDDEN` without `onScreen`: the
+  ShellMirror window is gone from the screen once its tail dies, but `ListWindows` still names it. PcApi now treats
+  hidden windows as off the screen.
+- **`open --env`** gives an app MineVibe launches `MV_TAG`/`MV_CALL` (the seat's sweep kills TextEdit at stand-up),
+  but only when `open` launches it: a window opened in an app that already runs (Terminal, Finder) is untagged.
+- **The lifeline.** With MineVibe killed (`kill -9`), a supervised `lume serve` stopped itself 9 s later (no lease
+  named a live process) and its VM with it.
