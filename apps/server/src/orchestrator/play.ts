@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -131,17 +131,41 @@ async function resolveModJar(
     if (!existsSync(override)) throw new Error(`${MOD_JAR_ENV} does not exist: ${override}`);
     return override;
   }
-  const jar = repoRoot ? await findDevModJar(repoRoot) : null;
-  if (!jar || !repoRoot) {
-    throw new Error('MineVibe mod jar not found: build it first with `cd apps/mod && ./gradlew build`');
-  }
+  if (!repoRoot) throw new Error(`MineVibe mod jar not found: set ${MOD_JAR_ENV}`);
+  const modDir = join(repoRoot, 'apps', 'mod');
+  const jar = await findDevModJar(repoRoot);
   const [jarTime, srcTime] = await Promise.all([
-    stat(jar).then((s) => s.mtimeMs),
-    newestMtime(join(repoRoot, 'apps', 'mod', 'src')),
+    jar ? stat(jar).then((s) => s.mtimeMs) : 0,
+    Promise.all([
+      newestMtime(join(modDir, 'src')),
+      stat(join(modDir, 'build.gradle.kts')).then((s) => s.mtimeMs),
+    ]).then((times) => Math.max(...times)),
   ]);
-  if (srcTime > jarTime)
-    log.warn({ jar }, 'apps/mod/src is newer than the mod jar; rebuild with ./gradlew build');
-  return jar;
+  if (jar && jarTime >= srcTime) return jar;
+  // A stale jar would launch yesterday's mod (an old world setup, missing features): build it first.
+  log.info(
+    { reason: jar ? 'apps/mod is newer than the jar' : 'no jar yet' },
+    'building the MineVibe mod (./gradlew jar)',
+  );
+  await gradleJar(modDir);
+  const built = await findDevModJar(repoRoot);
+  if (!built) throw new Error('./gradlew jar finished but apps/mod/build/libs has no minevibe jar');
+  return built;
+}
+
+/** `./gradlew jar` in `apps/mod`, its output on this terminal; rejects on a non-zero exit. */
+function gradleJar(modDir: string): Promise<void> {
+  return new Promise((resolveBuild, rejectBuild) => {
+    const child = spawn('./gradlew', ['jar', '--console=plain'], {
+      cwd: modDir,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    child.once('error', rejectBuild);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolveBuild();
+      else rejectBuild(new Error(`./gradlew jar failed (${signal ?? `exit ${code}`})`));
+    });
+  });
 }
 
 /**
