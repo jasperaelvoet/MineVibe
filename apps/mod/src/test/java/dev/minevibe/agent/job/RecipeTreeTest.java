@@ -25,7 +25,7 @@ class RecipeTreeTest {
 	}
 
 	/** A few vanilla recipes, the way the server's book would list them (2x2 first). */
-	static final class TestBook implements RecipeTree.Book {
+	static class TestBook implements RecipeTree.Book {
 		private final Map<Item, List<RecipeTree.CraftOption>> crafts = new HashMap<>();
 		private final Map<Item, List<RecipeTree.SmeltOption>> smelts = new HashMap<>();
 
@@ -211,6 +211,184 @@ class RecipeTreeTest {
 		assertEquals(2, fuel.need(), "600 ticks of smelting = 2 logs of 300");
 		RecipeTree.Plan withPlanks = RecipeTree.plan(book(), Items.IRON_INGOT, 3, inv(Items.RAW_IRON, 3, Items.OAK_PLANKS, 2), BOTH);
 		assertTrue(withPlanks.complete(), "two planks burn 600 ticks: " + withPlanks.missing());
+	}
+
+	/**
+	 * Six kinds of wood, more than the planner tries per slot: planks, sticks, a table and wooden tools take any planks,
+	 * an oak door only oak planks; stone tools take any of the three stones.
+	 */
+	static TestBook woodBook() {
+		TestBook b = new TestBook();
+		Item[][] woods = {
+			{Items.OAK_PLANKS, Items.OAK_LOG}, {Items.ACACIA_PLANKS, Items.ACACIA_LOG}, {Items.BIRCH_PLANKS, Items.BIRCH_LOG},
+			{Items.CHERRY_PLANKS, Items.CHERRY_LOG}, {Items.JUNGLE_PLANKS, Items.JUNGLE_LOG}, {Items.SPRUCE_PLANKS, Items.SPRUCE_LOG},
+		};
+		List<Item> planks = new ArrayList<>();
+		for (Item[] w : woods) {
+			b.craft(w[0], 4, true, n(1, w[1]));
+			planks.add(w[0]);
+		}
+		Item[] any = planks.toArray(Item[]::new);
+		b.craft(Items.STICK, 4, true, n(2, any));
+		b.craft(Items.CRAFTING_TABLE, 1, true, n(4, any));
+		b.craft(Items.WOODEN_PICKAXE, 1, false, concat(n(3, any), n(2, Items.STICK)));
+		b.craft(Items.OAK_DOOR, 3, false, n(6, Items.OAK_PLANKS));
+		// A kind the recipe names (spruce planks) next to an ingredient any wood makes (sticks).
+		b.craft(Items.SPRUCE_FENCE, 3, false, concat(n(4, Items.SPRUCE_PLANKS), n(2, Items.STICK)));
+		b.craft(Items.STONE_PICKAXE, 1, false, concat(n(3, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE, Items.COBBLESTONE), n(2, Items.STICK)));
+		return b;
+	}
+
+	/** The families as the server's tags hold them (natural members only). */
+	static Map<String, List<Item>> families() {
+		return Map.of(
+			"#minecraft:logs", List.of(Items.OAK_LOG, Items.ACACIA_LOG, Items.BIRCH_LOG, Items.CHERRY_LOG, Items.JUNGLE_LOG, Items.SPRUCE_LOG),
+			"#minecraft:stone_tool_materials", List.of(Items.COBBLESTONE, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE));
+	}
+
+	/** The gather ref of the plan's one missing material, the plan made with {@code stations}. */
+	static String gatherRef(final TestBook book, final RecipeTree.Plan p, final Map<Item, Integer> inv, final RecipeTree.Stations stations) {
+		assertEquals(1, p.missing().size(), p.missing().toString());
+		return RecipeTree.gatherRef(book, p, p.missing().getFirst(), inv, stations, families());
+	}
+
+	@Test
+	void aCarriedKindIsUsedEvenWhenTheFamilyHasMoreKindsThanTheCandidates() {
+		// Spruce sorts last: before, only oak, acacia, birch and cherry planks were tried, and spruce logs went unused.
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(Items.SPRUCE_LOG, 3), NONE);
+		assertTrue(p.complete(), p.missing().toString());
+		assertTrue(texts(p).contains("spruce_log 1 → spruce_planks 4"), texts(p).toString());
+		assertFalse(texts(p).toString().contains("oak"), texts(p).toString());
+	}
+
+	@Test
+	void anIngredientAnyWoodMakesIsGatheredAsTheFamily() {
+		// Nothing carried: the plan names oak logs, but any log makes the planks, sticks and table of a wooden pickaxe.
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(), NONE);
+		assertEquals(Items.OAK_LOG, p.missing().getFirst().item());
+		assertEquals("#minecraft:logs", gatherRef(woodBook(), p, inv(), NONE));
+		// What the family gathered (birch, the nearest tree) completes the plan.
+		RecipeTree.Plan birch = RecipeTree.plan(woodBook(), Items.WOODEN_PICKAXE, 1, inv(Items.BIRCH_LOG, 3), NONE);
+		assertTrue(birch.complete(), birch.missing().toString());
+		assertTrue(texts(birch).contains("birch_log 1 → birch_planks 4"), texts(birch).toString());
+	}
+
+	@Test
+	void aKindTheRecipePinsStaysThatKind() {
+		// An oak door takes oak planks only: birch logs would not do, so oak logs are gathered (or the player asked).
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.OAK_DOOR, 3, inv(), BOTH);
+		assertEquals("oak_log", gatherRef(woodBook(), p, inv(), BOTH));
+	}
+
+	@Test
+	void theSticksBesideAKindTheRecipeNamesTakeAnyWood() {
+		// A spruce fence from nothing: spruce logs for its planks (the recipe names them), and oak logs for its sticks
+		// only because nothing is carried. Before, the spruce stand-in went to the planks, the sticks still lacked oak,
+		// and oak looked pinned: in a spruce forest the job stopped NO_NATURAL_SOURCE and the agent asked "use spruce?".
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.SPRUCE_FENCE, 3, inv(), BOTH);
+		assertEquals(2, p.missing().size(), p.missing().toString());
+		Map<Item, String> refs = new HashMap<>();
+		for (RecipeTree.Missing m : p.missing()) {
+			refs.put(m.item(), RecipeTree.gatherRef(woodBook(), p, m, inv(), BOTH, families()));
+		}
+		assertEquals(Map.of(Items.SPRUCE_LOG, "spruce_log", Items.OAK_LOG, "#minecraft:logs"), refs);
+		// What a spruce forest gives for both (the pinned spruce log and the family's nearest kind) completes the plan.
+		RecipeTree.Plan taiga = RecipeTree.plan(woodBook(), Items.SPRUCE_FENCE, 3, inv(Items.SPRUCE_LOG, 2), BOTH);
+		assertTrue(taiga.complete(), taiga.missing().toString());
+		assertFalse(texts(taiga).toString().contains("oak"), texts(taiga).toString());
+	}
+
+	@Test
+	void stoneToolsTakeAnyOfTheThreeStones() {
+		Map<Item, Integer> sticks = inv(Items.STICK, 2);
+		RecipeTree.Plan p = RecipeTree.plan(woodBook(), Items.STONE_PICKAXE, 1, sticks, BOTH);
+		assertEquals(Items.COBBLESTONE, p.missing().getFirst().item(), "cobblestone, the everyday stone: " + p.missing());
+		assertEquals("#minecraft:stone_tool_materials", gatherRef(woodBook(), p, sticks, BOTH));
+		RecipeTree.Plan blackstone = RecipeTree.plan(woodBook(), Items.STONE_PICKAXE, 1, inv(Items.STICK, 2, Items.BLACKSTONE, 3), BOTH);
+		assertTrue(blackstone.complete(), blackstone.missing().toString());
+		assertEquals(List.of("blackstone 3 + stick 2 → stone_pickaxe 1"), texts(blackstone));
+	}
+
+	/**
+	 * Oak, birch and crimson, as in game: crimson stems are in {@code #minecraft:logs} but their planks do not burn and
+	 * they are no {@code #minecraft:logs_that_burn}. Every plank and log of the others burns 300 ticks.
+	 */
+	static TestBook netherWoodBook() {
+		TestBook b = new TestBook() {
+			@Override
+			public int burnTicks(final Item item) {
+				if (item == Items.CRIMSON_PLANKS || item == Items.CRIMSON_STEM) {
+					return 0;
+				}
+				String id = RecipeTree.id(item);
+				return id.endsWith("_planks") || id.endsWith("_log") ? 300 : super.burnTicks(item);
+			}
+		};
+		Item[][] woods = {{Items.OAK_PLANKS, Items.OAK_LOG}, {Items.BIRCH_PLANKS, Items.BIRCH_LOG}, {Items.CRIMSON_PLANKS, Items.CRIMSON_STEM}};
+		List<Item> planks = new ArrayList<>();
+		for (Item[] w : woods) {
+			b.craft(w[0], 4, true, n(1, w[1]));
+			planks.add(w[0]);
+		}
+		Item[] any = planks.toArray(Item[]::new);
+		b.craft(Items.STICK, 4, true, n(2, any));
+		b.craft(Items.CRAFTING_TABLE, 1, true, n(4, any));
+		b.craft(Items.WOODEN_PICKAXE, 1, false, concat(n(3, any), n(2, Items.STICK)));
+		b.craft(Items.FURNACE, 1, false, n(8, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE, Items.COBBLESTONE));
+		b.craft(Items.IRON_PICKAXE, 1, false, concat(n(3, Items.IRON_INGOT), n(2, Items.STICK)));
+		b.smelt(Items.IRON_INGOT, Items.RAW_IRON);
+		// A campfire takes logs that burn (no stems): 3 logs, 3 sticks and a coal.
+		b.craft(Items.CAMPFIRE, 1, false, concat(concat(n(3, Items.OAK_LOG, Items.BIRCH_LOG), n(3, Items.STICK)), n(1, Items.COAL, Items.CHARCOAL)));
+		return b;
+	}
+
+	/** {@link Families#members()} as the server's tags hold them, in its order: the wider logs tag first. */
+	static Map<String, List<Item>> netherFamilies() {
+		Map<String, List<Item>> f = new LinkedHashMap<>();
+		f.put("#minecraft:logs", List.of(Items.OAK_LOG, Items.BIRCH_LOG, Items.CRIMSON_STEM));
+		f.put("#minecraft:logs_that_burn", List.of(Items.OAK_LOG, Items.BIRCH_LOG));
+		f.put("#minecraft:stone_tool_materials", List.of(Items.COBBLESTONE, Items.BLACKSTONE, Items.COBBLED_DEEPSLATE));
+		return f;
+	}
+
+	/** The gather ref of {@code missing} in {@code p}, planned from {@code inv} with {@code stations}. */
+	static String netherRef(final RecipeTree.Plan p, final Item missing, final Map<Item, Integer> inv, final RecipeTree.Stations stations) {
+		RecipeTree.Missing m = p.missing().stream().filter(x -> x.item() == missing).findFirst().orElseThrow(() -> new AssertionError(p.missing().toString()));
+		return RecipeTree.gatherRef(netherWoodBook(), p, m, inv, stations, netherFamilies());
+	}
+
+	@Test
+	void aPlanThatSmeltsTakesAnyLogThatBurns() {
+		// "find me diamonds": an iron pickaxe from raw iron alone. The spare planks are the smelts' fuel, which crimson
+		// planks are not, so the wider #logs fails; any log that burns still does (before: oak_log, and "ask").
+		Map<Item, Integer> ore = inv(Items.RAW_IRON, 3);
+		RecipeTree.Plan p = RecipeTree.plan(netherWoodBook(), Items.IRON_PICKAXE, 1, ore, NONE);
+		assertTrue(p.missing().stream().noneMatch(m -> RecipeTree.FUEL_REF.equals(m.ref())), "the spare planks burn: " + p.missing());
+		assertEquals("#minecraft:logs_that_burn", netherRef(p, Items.OAK_LOG, ore, NONE));
+		assertEquals("#minecraft:stone_tool_materials", netherRef(p, Items.COBBLESTONE, ore, NONE));
+		// What that gathers (birch, blackstone) completes the plan.
+		RecipeTree.Plan got = RecipeTree.plan(netherWoodBook(), Items.IRON_PICKAXE, 1, inv(Items.RAW_IRON, 3, Items.BIRCH_LOG, 2, Items.BLACKSTONE, 8), NONE);
+		assertTrue(got.complete(), got.missing().toString());
+		// A campfire's logs must burn too; a wooden pickaxe takes any log, stems included.
+		RecipeTree.Plan fire = RecipeTree.plan(netherWoodBook(), Items.CAMPFIRE, 1, inv(Items.STICK, 3, Items.COAL, 1), BOTH);
+		assertEquals("#minecraft:logs_that_burn", netherRef(fire, Items.OAK_LOG, inv(Items.STICK, 3, Items.COAL, 1), BOTH));
+		RecipeTree.Plan pick = RecipeTree.plan(netherWoodBook(), Items.WOODEN_PICKAXE, 1, inv(), NONE);
+		assertEquals("#minecraft:logs", netherRef(pick, Items.OAK_LOG, inv(), NONE));
+		// In game the families come from Families.TAGS in this order: the wider logs tag, then the logs that burn.
+		assertEquals(List.of("#minecraft:logs", "#minecraft:logs_that_burn"), Families.TAGS.subList(0, 2));
+	}
+
+	@Test
+	void fuelIsAlreadyAnyLog() {
+		RecipeTree.Plan p = RecipeTree.plan(book(), Items.IRON_INGOT, 3, inv(Items.RAW_IRON, 3), BOTH);
+		assertEquals(RecipeTree.FUEL_REF, gatherRef(book(), p, inv(Items.RAW_IRON, 3), BOTH));
+		// Any log that burns: a gathered crimson stem would never light the furnace.
+		assertEquals("#minecraft:logs_that_burn", RecipeTree.FUEL_REF);
+		RecipeTree.Plan crimson = RecipeTree.plan(netherWoodBook(), Items.IRON_INGOT, 3, inv(Items.RAW_IRON, 3, Items.CRIMSON_PLANKS, 8), BOTH);
+		assertEquals(List.of("#minecraft:logs_that_burn"), crimson.missing().stream().map(RecipeTree.Missing::ref).toList(), "crimson planks are no fuel");
+		assertTrue(CraftTreeJob.replants(RecipeTree.FUEL_REF) && CraftTreeJob.replants("#minecraft:logs") && CraftTreeJob.replants("oak_log"),
+			"felled trees get a sapling");
+		assertFalse(CraftTreeJob.replants("#minecraft:stone_tool_materials") || CraftTreeJob.replants("crimson_stem"), "no tree, no sapling");
 	}
 
 	@Test

@@ -18,6 +18,8 @@ import {
   burnTicks,
   CRAFTING,
   type CraftRecipe,
+  familyMembers,
+  familyOf,
   matches,
   NS,
   normId,
@@ -77,6 +79,7 @@ function gained(world: SimWorld, before: ReadonlyMap<string, number>): Record<st
 /** Item ids whose block is not the item itself. */
 const DROPS: Readonly<Record<string, readonly string[]>> = {
   [`${NS}cobblestone`]: [`${NS}stone`, `${NS}cobblestone`],
+  [`${NS}cobbled_deepslate`]: [`${NS}deepslate`, `${NS}cobbled_deepslate`],
   [`${NS}coal`]: [`${NS}coal_ore`],
   [`${NS}raw_iron`]: [`${NS}iron_ore`],
   [`${NS}dirt`]: [`${NS}dirt`, `${NS}grass_block`],
@@ -95,7 +98,9 @@ function sourcesOf(ref: string): ((id: string) => boolean) | null {
     const tag = TAGS[r.slice(1)];
     if (!tag) return null;
     const kinds = tag.filter((id) => !buildingVariant(id));
-    return kinds.length > 0 ? (id) => kinds.includes(id) : null;
+    // A family such as stone_tool_materials: its kinds' blocks and the blocks that drop them (stone, deepslate).
+    const drops = kinds.flatMap((k) => DROPS[k] ?? []);
+    return kinds.length > 0 ? (id) => kinds.includes(id) || drops.includes(id) : null;
   }
   if (buildingVariant(r)) return null;
   const extra = DROPS[r];
@@ -291,7 +296,12 @@ export function gatherJob(world: SimWorld, args: Record<string, unknown>, skill 
     const what = shortId(ref);
     const here = world.agent.pos;
     const player = world.player.name;
-    const hint = `Don't take anything else instead. Tell ${player} what you found and ask what to do (another place, or permission).`;
+    // `SkillJob.noNaturalSource`: one kind of a family (oak logs) is a hard stop only when the player named it, unless
+    // the craft tree pinned it (a recipe names that kind).
+    const family = args.pinned === true ? null : familyOf(what);
+    const hint = family
+      ? `If ${player} named this kind, don't take another instead: tell ${player} what you found and ask. If it is only an ingredient (planks, sticks, tools, a furnace), any kind will do: gather ${family} (the nearest kind), no need to ask.`
+      : `Don't take anything else instead. Tell ${player} what you found and ask what to do (another place, or permission).`;
     let msg = `No reachable natural ${what} within ${radius} blocks`;
     if (list.length > 0) msg += `. Seen: ${list.map((c) => describeCandidate(c, here)).join('; ')}`;
     msg += `. ${hint}`;
@@ -409,9 +419,18 @@ interface TreeStep {
   readonly table: boolean;
 }
 
+interface TreeMissing {
+  item: string;
+  need: number;
+  have: number;
+  for: string | null;
+  /** The family any kind of which would do (`RecipeTree.gatherRef`), when the item is only the planner's pick. */
+  any?: string;
+}
+
 interface TreePlan {
   readonly steps: TreeStep[];
-  readonly missing: { item: string; need: number; have: number; for: string | null }[];
+  readonly missing: TreeMissing[];
   readonly needsTable: boolean;
   readonly needsFurnace: boolean;
 }
@@ -434,11 +453,19 @@ function pickFor(ref: string, inv: Map<string, number>): string {
   return options.find((id) => id.includes('oak')) ?? options[0] ?? r;
 }
 
-/** Plans `count` of `item` from the inventory (the mod's RecipeTree, simplified). */
-export function planTree(world: SimWorld, item: string, count: number): TreePlan {
-  const inv = new Map(world.agent.inventory);
+/**
+ * Plans `count` of `item` from the inventory (the mod's RecipeTree, simplified); `inventory` stands in for the agent's
+ * (the family test of {@link gatherRefOf}).
+ */
+export function planTree(
+  world: SimWorld,
+  item: string,
+  count: number,
+  inventory: ReadonlyMap<string, number> = world.agent.inventory,
+): TreePlan {
+  const inv = new Map(inventory);
   const steps: TreeStep[] = [];
-  const missing = new Map<string, { item: string; need: number; have: number; for: string | null }>();
+  const missing = new Map<string, TreeMissing>();
   let needsTable = false;
   let needsFurnace = false;
   let smelts = 0;
@@ -526,9 +553,58 @@ export function planTree(world: SimWorld, item: string, count: number): TreePlan
     inv.set(id, n - use);
     ticks -= use * burn;
   }
-  if (ticks > 0) lack('#minecraft:logs', Math.ceil(ticks / 300), null);
+  // `RecipeTree.FUEL_REF`: any log that burns (no stems).
+  if (ticks > 0) lack('#minecraft:logs_that_burn', Math.ceil(ticks / 300), null);
   for (const m of missing.values()) m.have = world.count((i) => i === normId(m.item));
   return { steps, missing: [...missing.values()], needsTable, needsFurnace };
+}
+
+/**
+ * `RecipeTree.gatherRef`: what to gather for a missing material. Its family (`#minecraft:logs`) when the same plan,
+ * given that much of every other natural kind of the family instead, lacks neither (the plan named oak only because
+ * nothing was carried); else the item itself (a kind the recipe names, such as the oak planks of an oak door). A kind
+ * the plan already lacks for itself (the spruce logs of a spruce fence) is given on top of that.
+ */
+export function gatherRefOf(
+  world: SimWorld,
+  item: string,
+  count: number,
+  plan: TreePlan,
+  m: TreeMissing,
+): string {
+  if (m.item.startsWith('#')) return m.item;
+  const id = normId(m.item);
+  const lacking = plan.missing.reduce((n, x) => n + x.need, 0);
+  for (const [tag, members] of familyMembers()) {
+    if (!members.includes(id)) continue;
+    const all = members.every((other) => {
+      if (other === id) return true;
+      const own = plan.missing.find((x) => normId(x.item) === other)?.need ?? 0;
+      const inv = new Map(world.agent.inventory);
+      inv.set(other, (inv.get(other) ?? 0) + m.need + own);
+      const p = planTree(world, item, count, inv);
+      const left = p.missing.reduce((n, x) => n + x.need, 0);
+      const short = p.missing.some((x) => normId(x.item) === id || normId(x.item) === other);
+      return !short && left <= lacking - m.need - own;
+    });
+    if (all) return tag;
+  }
+  return m.item;
+}
+
+/** The plan's missing materials with `any` where a family would do, and what to gather for each (by item). */
+function familyRefs(
+  world: SimWorld,
+  item: string,
+  count: number,
+  plan: TreePlan,
+): { missing: TreeMissing[]; refs: Map<string, string> } {
+  const refs = new Map(plan.missing.map((m) => [m.item, gatherRefOf(world, item, count, plan, m)]));
+  const missing = plan.missing.map((m) => {
+    const ref = refs.get(m.item) ?? m.item;
+    return ref === m.item ? m : { ...m, any: ref };
+  });
+  return { missing, refs };
 }
 
 /** `obs.query recipe{item, count, tree:true}` (M5). */
@@ -558,7 +634,7 @@ export function recipeTree(world: SimWorld, item: string, count: number): Record
       count: s.made,
       from: Object.fromEntries(Object.entries(s.from).map(([k, v]) => [shortId(k), v])),
     })),
-    missing: p.missing,
+    missing: familyRefs(world, item, count, p).missing,
     stations,
   };
 }
@@ -685,22 +761,28 @@ export function craftTreeJob(
           return fail('NO_RECIPE', `nothing crafts or smelts ${item}; gather it instead`, report());
         }
         if (plan.missing.length > 0) {
+          const { missing, refs } = familyRefs(world, item, count, plan);
           if (!gatherMissing || rounds >= 3) {
-            const text = plan.missing.map((m) => `${m.item} ${m.need}`).join(', ');
-            return fail(
-              'MISSING_INGREDIENTS',
-              `raw materials missing: ${text}`,
-              report({ missing: plan.missing }),
-            );
+            const text = missing
+              .map((m) => `${m.item} ${m.need}${m.any ? ` (any ${m.any})` : ''}`)
+              .join(', ');
+            return fail('MISSING_INGREDIENTS', `raw materials missing: ${text}`, report({ missing }));
           }
           rounds++;
           phase = 'gather';
-          queue = plan.missing.map((m) => ({
-            label: `gather ${m.item}`,
+          // A family is gathered as a whole (the nearest log of any kind for planks); an item stays pinned.
+          const needs = new Map<string, number>();
+          for (const m of plan.missing) {
+            const ref = refs.get(m.item) ?? m.item;
+            needs.set(ref, (needs.get(ref) ?? 0) + m.need);
+          }
+          queue = [...needs].map(([ref, need]) => ({
+            label: `gather ${ref}`,
             logic: () =>
               gatherJob(world, {
-                item: m.item.includes(':') ? m.item : m.item.startsWith('#') ? m.item : `${NS}${m.item}`,
-                count: m.need,
+                item: ref.includes(':') || ref.startsWith('#') ? ref : `${NS}${ref}`,
+                count: need,
+                ...(ref.startsWith('#') ? {} : { pinned: true }),
               }),
           }));
           continue;

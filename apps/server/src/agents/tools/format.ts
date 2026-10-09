@@ -20,6 +20,7 @@
 
 import type { BlockPos, SkillName } from '@minevibe/protocol';
 import { escapeShared, singleLine } from '../envelope.js';
+import { familyOf } from '../world/families.js';
 import { CONSENT_SKILLS_V2 } from './host.js';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -505,7 +506,9 @@ export function failureDetails(
       const need = num(m.need) ?? 0;
       const have = num(m.have) ?? 0;
       const forWhat = idText(m.for);
-      return `${item} ${need} (have ${have})${forWhat ? `, for ${forWhat}` : ''}`;
+      // The mod's `any`: the family any kind of which would do (the item is only the planner's pick).
+      const any = idText(m.any);
+      return `${item} ${need} (have ${have}${any ? `; or any ${any}` : ''})${forWhat ? `, for ${forWhat}` : ''}`;
     });
     out.push(`need: ${parts.join('; ')}`);
   } else {
@@ -653,8 +656,15 @@ export function hintFor(
       return item
         ? `pick another spot from ${call('find', { target: item })}, goto nearer, or ask ${p}`
         : `goto nearer first, or ask ${p}`;
-    case 'NO_NATURAL_SOURCE':
-      return `ask ${p} (AskUserQuestion: go further / use something else / skip). Never take ${item ? short(item) : 'it'} from buildings.`;
+    case 'NO_NATURAL_SOURCE': {
+      const kind = item ? short(item) : 'it';
+      // One kind of a family (oak logs): a hard stop only when the player named it; for an ingredient, any kind does.
+      const family = meta.tool === 'gather' && item ? familyOf(item) : null;
+      if (family) {
+        return `if ${p} named ${kind}: ask; else ${call('gather', { item: family, count })} (an ingredient: any kind, no question)`;
+      }
+      return `ask ${p} (AskUserQuestion: go further / use something else / skip). Never take ${kind} from buildings.`;
+    }
     case 'PROTECTED':
       // Only skills whose args take allow_protected can carry the player's consent (protocol `CONSENT_SKILLS`, right-
       // clicks and menu clicks included); for any other an "Allow" could not unlock it.

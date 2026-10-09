@@ -100,7 +100,9 @@ describe('v2 mc tool list (tools-v2-mc.md §3, §13)', () => {
     for (const t of tools)
       expect(t.description).toBe(MC_V2_DESCRIPTIONS[t.name as keyof typeof MC_V2_DESCRIPTIONS]);
     expect(instructions).toBe(MC_V2_INSTRUCTIONS);
-    expect(instructions).toContain('PROTECTED and NO_NATURAL_SOURCE are hard stops');
+    expect(instructions).toContain(
+      'PROTECTED, and NO_NATURAL_SOURCE for what the player named, are hard stops: ask the player, never substitute. Ingredients they did not name can be any kind.',
+    );
   });
 
   it('every example in a description is a valid call of that tool', () => {
@@ -201,6 +203,14 @@ describe('v2 world tools (§5)', () => {
     const { reg, fake } = v2Host({}, []);
     await call(reg, 'gather', { item: 'oak_log', count: 3, near: '9 67 -12' });
     expect(fake.runs[0]?.args).toEqual({ item: 'oak_log', count: 3, radius: 48, replant: true });
+    // The logs families fell trees too (a plan that burns its planks names #logs_that_burn); stone has no stumps.
+    for (const item of ['#logs', '#minecraft:logs_that_burn', '#stone_tool_materials'])
+      await call(reg, 'gather', { item, count: 2 });
+    expect(fake.runs.slice(1).map((r) => (r.args as { replant?: boolean }).replant === true)).toEqual([
+      true,
+      true,
+      false,
+    ]);
   });
 
   it('gather of a block that drops something else asks for the drop (never breaks every stone in reach)', async () => {
@@ -631,7 +641,7 @@ describe('v2 do (§5.10)', () => {
     expect(fake.runs.map((r) => r.skill)).toEqual(['collect']);
     expect(res.isError).toBe(true);
     expect(res.text).toMatch(
-      /^failed: do step 1\/2 gather \| NO_NATURAL_SOURCE: no reachable natural oak_log within 48m\n 1 gather oak_log 0\/10 failed\n 2 craft crafting_table skipped\nnext: ask Jordan/,
+      /^failed: do step 1\/2 gather \| NO_NATURAL_SOURCE: no reachable natural oak_log within 48m\n 1 gather oak_log 0\/10 failed\n 2 craft crafting_table skipped\nnext: if Jordan named oak_log: ask; else gather/,
     );
     const cont = v2Host({}, []);
     cont.fake.skillHandler = fake.skillHandler;

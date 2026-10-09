@@ -252,12 +252,15 @@ public final class ProtectionGameTests {
 				helper.assertTrue(d != null, "result.noNaturalSource: " + result(oak));
 				helper.assertValueEqual(Skills.NO_NATURAL_SOURCE.validate(d), List.of(), "noNaturalSource matches the protocol");
 				helper.assertTrue(d.toString().contains("unreachable"), "the pillar oak is listed as unreachable: " + d);
-				helper.assertTrue(error(oak).contains("Don't take anything else instead"), "teaches not to substitute: " + error(oak));
+				// Oak is one kind of a family: a hard stop only when the player named it; an ingredient takes any log.
+				helper.assertTrue(error(oak).contains("named this kind, don't take another instead"), "teaches not to substitute: " + error(oak));
+				helper.assertTrue(error(oak).contains("gather #minecraft:logs"), "an ingredient takes any kind: " + error(oak));
 				tag.set(run(helper, agent, "collect", "{\"item\":\"#minecraft:logs\",\"count\":3,\"radius\":16}"));
 			})
 			.thenWaitUntil(() -> helper.assertTrue(status(tag.get()) != null, "collect #logs still running"))
 			.thenExecute(() -> {
 				assertFailed(helper, tag.get(), "NO_NATURAL_SOURCE", "collect #minecraft:logs next to a log house");
+				helper.assertTrue(error(tag.get()).contains("Don't take anything else instead"), "no kind in reach: ask: " + error(tag.get()));
 				assertIntact(helper, house, "the house");
 				assertAll(helper, pillarTree, true, "the pillar tree");
 				assertValid(helper, agent);

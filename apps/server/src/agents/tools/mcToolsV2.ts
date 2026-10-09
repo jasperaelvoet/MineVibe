@@ -126,9 +126,9 @@ export const MC_V2_DESCRIPTIONS: Readonly<Record<McV2ToolName, string>> = {
   find: 'Find the nearest blocks, mobs or dropped items of one kind, with distance, direction, reachability and natural vs player-built. Read-only. Use it to pick a spot or to check that something exists; gather and craft find their own sources.\nExample: {"target":"iron_ore"}',
   goto: 'Walk somewhere. to: "x y z", "player", a crew @handle, a mob type, or a place: office, home, spawn, bed, chest, crafting_table, furnace, codex, pc:<id>, or a Codex places page title. A job.\nExample: {"to":"crafting_table"}',
   gather:
-    'Use for any "get / collect / mine / chop N of X" request. Gets count of an item into your inventory end to end: picks up loose drops, harvests NATURAL sources (whole tree trunks, natural stone and ores, animals for meat, leather, wool), takes or makes the right tool, and collects the drops. Never breaks player-built blocks or the Base; #logs means natural logs only. When nothing natural is reachable it fails with NO_NATURAL_SOURCE: then ask the player, never substitute. A job.\nExample: {"item":"oak_log","count":10}',
+    'Use for any "get / collect / mine / chop N of X" request. Gets count of an item into your inventory end to end: picks up loose drops, harvests NATURAL sources (whole tree trunks, natural stone and ores, animals for meat, leather, wool), takes or makes the right tool, and collects the drops. Never breaks player-built blocks or the Base; #logs means natural logs only. When nothing natural is reachable it fails with NO_NATURAL_SOURCE: for a kind the player named, ask them, never substitute; an ingredient can be any kind ("#logs"). A job.\nExample: {"item":"oak_log","count":10}',
   craft:
-    'Use for any "make / craft / smelt X" request. Makes count of an item and resolves the whole recipe tree: crafts intermediates (logs to planks to sticks), smelts in a furnace when needed, and uses a nearby crafting table or furnace, or places one (crafting it first if needed). gather_missing:true also gathers missing raw materials from nature. plan:true only shows the tree and what is missing. A job.\nExample: {"item":"crafting_table"}',
+    'Use for any "make / craft / smelt X" request. Makes count of an item and resolves the whole recipe tree: crafts intermediates (logs to planks to sticks), smelts in a furnace when needed, and uses a nearby crafting table or furnace, or places one (crafting it first if needed). gather_missing:true also gathers missing raw materials from nature, any kind the recipe takes (birch logs for planks). plan:true only shows the tree and what is missing. A job.\nExample: {"item":"crafting_table"}',
   build:
     'Build, clear or farm an area. blueprint builds a built-in plan at "x y z": shelter, wall_ring, torch_ring, bridge, stairs_down, farm_plot (a shelter takes 71 blocks: when the Base or a house is near, take the player there instead). dig clears every block in the box from..to (at most 1024). farm tills, plants and harvests the box. Never changes player-built blocks or the Base. A job.\nExample: {"action":"blueprint","blueprint":"shelter","at":"10 64 -3"}',
   use: 'One hands-on action. place item at target "x y z"; break the one block at target; interact (right-click) a block or entity: door, lever, bed, chest, villager; use_item (item, or the held one), optionally on target: bucket, bone_meal, flint_and_steel; attack target until it dies; ride / dismount; sleep in the nearest bed (or target) at night. Player-built blocks and the Base are refused unless the player agreed. A job.\nExample: {"action":"place","item":"crafting_table","target":"6 66 1"}',
@@ -160,7 +160,7 @@ export const MC_V2_INSTRUCTIONS = [
   '- One request, one composite call: "get N X" → gather; "make X" → craft; several known steps → do. Don\'t chain low-level use/goto calls for these.',
   '- Unsure where you are or what is around? observe first (read-only; may run in parallel with find).',
   '- World tools may answer "running": end your turn; [JOB DONE] or [JOB FAILED] wakes you with the result.',
-  '- Failures end with "next:"; follow it. PROTECTED and NO_NATURAL_SOURCE are hard stops: ask the player, never substitute other blocks.',
+  '- Failures end with "next:"; follow it. PROTECTED, and NO_NATURAL_SOURCE for what the player named, are hard stops: ask the player, never substitute. Ingredients they did not name can be any kind.',
   '- Positions are "x y z" strings; copy them from results.',
 ].join('\n');
 
@@ -1175,7 +1175,7 @@ export function renderPlan(
     }
     if (missing.length > 0) {
       lines.push(
-        ` missing raw: ${missing.map((m) => `${idText(m.item) ?? '?'} ${num(m.need) ?? 0}`).join(', ')}`,
+        ` missing raw: ${missing.map((m) => `${idText(m.item) ?? '?'} ${num(m.need) ?? 0}${idText(m.any) ? ` (or any ${idText(m.any)})` : ''}`).join(', ')}`,
       );
       lines.push(
         nextLine(

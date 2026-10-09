@@ -205,6 +205,108 @@ public final class SkillsV2GameTests {
 		});
 	}
 
+	/**
+	 * Any wood makes a wooden pickaxe: with only a birch in reach (no oak anywhere) the tree gathers the logs as their
+	 * family and makes birch planks; it does not stop at "no oak" (the live run asked "Use birch?").
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 3000)
+	public void craftTreeTakesAnyWoodInReach(final GameTestHelper helper) {
+		List<BlockPos> birch = plantTree(helper, TREE, 5, Blocks.BIRCH_LOG, Blocks.BIRCH_LEAVES);
+		AgentPlayer agent = spawnAgent(helper, "Woody", AgentRole.BUILDER, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"wooden_pickaxe\",\"count\":1,\"tree\":true,\"gather_missing\":true}");
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "craft tree");
+			JsonObject res = result(r);
+			helper.assertValueEqual(Inv.count(agent, Items.WOODEN_PICKAXE), 1, "the pickaxe: " + res);
+			helper.assertTrue(res.getAsJsonObject("gathered").has("birch_log"), "gathered birch logs: " + res);
+			helper.assertTrue(res.getAsJsonArray("steps").toString().contains("birch_planks"), "birch planks: " + res);
+			helper.assertTrue(!helper.getLevel().getBlockState(birch.getFirst()).is(Blocks.BIRCH_LOG), "the birch was felled");
+			assertValid(helper, agent);
+		});
+	}
+
+	/** Stone tools take cobblestone, blackstone or cobbled deepslate: with only blackstone around, blackstone it is. */
+	@GameTest(structure = WIDE_YARD, maxTicks = 2400)
+	public void craftTreeMakesStoneToolsFromBlackstone(final GameTestHelper helper) {
+		for (int i = 0; i < 4; i++) {
+			helper.setBlock(new BlockPos(22 + i, 1, 18), Blocks.BLACKSTONE);
+		}
+		helper.setBlock(new BlockPos(20, 1, 23), Blocks.CRAFTING_TABLE);
+		AgentPlayer agent = spawnAgent(helper, "Mason", AgentRole.MINER, 20, 1, 20);
+		agent.getInventory().setItem(0, new ItemStack(Items.WOODEN_PICKAXE));
+		agent.getInventory().setItem(1, new ItemStack(Items.STICK, 2));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"stone_pickaxe\",\"count\":1,\"tree\":true,\"gather_missing\":true}");
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "stone pickaxe");
+			JsonObject res = result(r);
+			helper.assertValueEqual(Inv.count(agent, Items.STONE_PICKAXE), 1, "the stone pickaxe: " + res);
+			helper.assertTrue(res.getAsJsonObject("gathered").has("blackstone"), "gathered blackstone: " + res);
+			helper.assertTrue(res.getAsJsonArray("steps").toString().contains("blackstone 3"), "made of blackstone: " + res);
+			assertValid(helper, agent);
+		});
+	}
+
+	/**
+	 * A family is gathered from nature only: Steve's wall of cobblestone and blackstone stands nearer than the natural
+	 * blackstone, and the stone pickaxe is made from the natural one while the wall stays whole.
+	 */
+	@GameTest(structure = WIDE_YARD, maxTicks = 2400)
+	public void craftTreeFamilySparesAPlayersStoneWall(final GameTestHelper helper) {
+		ServerLevel level = helper.getLevel();
+		Owner steve = Owner.player(UUID.nameUUIDFromBytes("steve".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "Steve");
+		Map<BlockPos, BlockState> wall = new LinkedHashMap<>();
+		for (int x = 0; x < 4; x++) {
+			for (int y = 1; y <= 2; y++) {
+				BlockPos rel = new BlockPos(18 + x, y, 22);
+				helper.setBlock(rel, (x + y) % 2 == 0 ? Blocks.COBBLESTONE : Blocks.BLACKSTONE);
+				BlockPos abs = helper.absolutePos(rel);
+				Provenance.mark(level, abs, steve);
+				wall.put(abs, level.getBlockState(abs));
+			}
+		}
+		for (int i = 0; i < 4; i++) {
+			helper.setBlock(new BlockPos(28 + i, 1, 12), Blocks.BLACKSTONE);
+		}
+		helper.setBlock(new BlockPos(16, 1, 20), Blocks.CRAFTING_TABLE);
+		AgentPlayer agent = spawnAgent(helper, "Mason", AgentRole.MINER, 20, 1, 20);
+		agent.getInventory().setItem(0, new ItemStack(Items.WOODEN_PICKAXE));
+		agent.getInventory().setItem(1, new ItemStack(Items.STICK, 2));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"stone_pickaxe\",\"count\":1,\"tree\":true,\"gather_missing\":true}");
+		helper.onEachTick(() -> assertIntact(helper, wall, "Steve's wall"));
+		helper.succeedWhen(() -> {
+			assertDone(helper, r, "stone pickaxe");
+			JsonObject res = result(r);
+			helper.assertValueEqual(Inv.count(agent, Items.STONE_PICKAXE), 1, "the stone pickaxe: " + res);
+			helper.assertTrue(res.getAsJsonArray("steps").toString().contains("blackstone 3"), "made of the natural blackstone: " + res);
+			helper.assertValueEqual(Inv.count(agent, Items.COBBLESTONE), 0, "none of Steve's cobblestone");
+			assertIntact(helper, wall, "Steve's wall");
+			assertValid(helper, agent);
+		});
+	}
+
+	/**
+	 * A kind the recipe names stays that kind: oak planks need oak logs, so with only a birch in reach the tree fails
+	 * NO_NATURAL_SOURCE (a question for the player) and the birch stands.
+	 */
+	@GameTest(structure = FOREST, environment = DAY, maxTicks = 1200)
+	public void craftTreeKeepsTheKindTheRecipeNames(final GameTestHelper helper) {
+		List<BlockPos> birch = plantTree(helper, TREE, 5, Blocks.BIRCH_LOG, Blocks.BIRCH_LEAVES);
+		AgentPlayer agent = spawnAgent(helper, "Picky", AgentRole.BUILDER, AGENT.getX(), AGENT.getY(), AGENT.getZ());
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"oak_planks\",\"count\":4,\"tree\":true,\"gather_missing\":true}");
+		helper.succeedWhen(() -> {
+			helper.assertTrue(r.isDone(), "still running");
+			helper.assertTrue("failed".equals(status(r)), "expected failure, got " + status(r) + " " + result(r));
+			helper.assertTrue(error(r).contains("NO_NATURAL_SOURCE") && error(r).contains("oak_log"), "no oak: " + error(r));
+			// The recipe pins the kind: no "any kind will do" here, the player decides.
+			helper.assertTrue(error(r).contains("Don't take anything else instead") && !error(r).contains("any kind"), "a hard stop: " + error(r));
+			for (BlockPos p : birch) {
+				helper.assertTrue(helper.getLevel().getBlockState(p).is(Blocks.BIRCH_LOG), "the birch lost a log at " + p.toShortString());
+			}
+			helper.assertValueEqual(Inv.count(agent, Items.BIRCH_LOG), 0, "no birch taken");
+			assertValid(helper, agent);
+		});
+	}
+
 	/** Without gather_missing nothing is crafted: MISSING_INGREDIENTS lists the raw materials. */
 	@GameTest(maxTicks = 200)
 	public void craftTreeListsMissingRawMaterials(final GameTestHelper helper) {
@@ -218,6 +320,26 @@ public final class SkillsV2GameTests {
 			String missing = result(r).getAsJsonArray("missing").toString();
 			helper.assertTrue(missing.contains("raw_iron"), "raw iron is missing: " + missing);
 			helper.assertValueEqual(Inv.count(agent, Items.STICK), 2, "sticks untouched");
+		});
+	}
+
+	/**
+	 * "find me diamonds" with only raw iron carried: the logs (planks for the table and sticks, the spare ones for the
+	 * smelts' fuel) are any log that burns, not oak, and the furnace's stone is any of the three. With the server's
+	 * tags: #minecraft:logs holds the nether stems, whose planks do not burn, so it is logs_that_burn.
+	 */
+	@GameTest(maxTicks = 200)
+	public void craftTreeNamesTheFamiliesOfAnIronPickaxe(final GameTestHelper helper) {
+		AgentPlayer agent = spawnAgent(helper, "Prospector", AgentRole.MINER, 3, 0, 3);
+		agent.getInventory().setItem(0, new ItemStack(Items.RAW_IRON, 3));
+		CompletableFuture<Map<String, Object>> r = run(helper, agent, "craft", "{\"item\":\"iron_pickaxe\",\"count\":1,\"tree\":true}");
+		helper.succeedWhen(() -> {
+			helper.assertTrue(r.isDone(), "still running");
+			helper.assertTrue(error(r).contains("MISSING_INGREDIENTS"), "error " + error(r));
+			String missing = result(r).getAsJsonArray("missing").toString();
+			helper.assertTrue(missing.contains("\"any\":\"#minecraft:logs_that_burn\""), "any log that burns: " + missing);
+			helper.assertTrue(missing.contains("\"any\":\"#minecraft:stone_tool_materials\""), "any stone: " + missing);
+			helper.assertTrue(error(r).contains("(any #minecraft:logs_that_burn)"), "the message names it: " + error(r));
 		});
 	}
 

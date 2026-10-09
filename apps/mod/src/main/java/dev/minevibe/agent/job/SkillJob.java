@@ -136,6 +136,8 @@ public abstract class SkillJob implements Job {
 
 	private boolean allowProtected;
 	private boolean consented;
+	/** See {@link #pinKind()}. */
+	private boolean kindPinned;
 
 	/**
 	 * {@code args.allow_protected} as asked, and whether Node's {@code consent} token was valid (then {@code Consents}
@@ -185,8 +187,19 @@ public abstract class SkillJob implements Job {
 	}
 
 	/**
+	 * The kind asked for is the only one that will do (the craft tree gathers it for a recipe that names it, such as
+	 * the oak logs of oak planks): {@code NO_NATURAL_SOURCE} never offers its family then.
+	 */
+	final SkillJob pinKind() {
+		this.kindPinned = true;
+		return this;
+	}
+
+	/**
 	 * Fails with {@code NO_NATURAL_SOURCE}: nothing natural and reachable of {@code what} within {@code radius}. Lists
-	 * the nearest sources it saw and why they were no good, and says never to take something else instead.
+	 * the nearest sources it saw and why they were no good, and says never to take something else instead: unless
+	 * {@code what} is one kind of a material family ({@link Families}, oak logs), when that holds only if the player
+	 * named the kind; an ingredient they did not name is gathered as its family, without asking.
 	 */
 	protected final Status noNaturalSource(
 		final AgentPlayer agent, final String what, final int radius, final java.util.List<dev.minevibe.agent.perception.Sources.Candidate> candidates
@@ -200,7 +213,11 @@ public abstract class SkillJob implements Job {
 		}
 		d.add("candidates", arr);
 		String player = Protection.playerName(agent.level().getServer());
-		String hint = "Don't take anything else instead. Tell " + player + " what you found and ask what to do (another place, or permission).";
+		String family = this.kindPinned ? null : Families.of(what);
+		String hint = family == null
+			? "Don't take anything else instead. Tell " + player + " what you found and ask what to do (another place, or permission)."
+			: "If " + player + " named this kind, don't take another instead: tell " + player + " what you found and ask. If it is only an ingredient"
+				+ " (planks, sticks, tools, a furnace), any kind will do: gather " + family + " (the nearest kind), no need to ask.";
 		d.addProperty("hint", hint);
 		this.result.add("noNaturalSource", d);
 		StringBuilder msg = new StringBuilder("No reachable natural ").append(what).append(" within ").append(radius).append(" blocks");

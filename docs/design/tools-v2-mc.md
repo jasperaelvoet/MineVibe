@@ -210,7 +210,7 @@ Totals: 8 calls over 2 turns (turn 1: 5 calls, 38.5 s; turn 2: 3 calls, 7.9 s), 
 1. **One tool per intent.** "Get N of X" is `gather`, "make X" is `craft`, a known multi-step request is `do`, and "what's around me" is `observe`. Low-level operations on the same object and gate fold into one tool with an `action` enum (`use`, `items`, `build`, `menu`, `job`, `codex`, `calendar`). Folding stops where an enum would mix very different semantics or gate categories without a clear rule.
 2. **Descriptions say when to use the tool** ("Use for any 'get / collect / mine / chop N of X' request") and give one example each. Schemas carry only what the model must fill in. Cross-field rules live in the handler, and their errors include a corrected example.
 3. **High-signal results.** Results are text lines with `minecraft:` stripped, positions as `x y z`, integer distances with a compass direction, and capped lists ending in `+N more`. There is a `next:` line only on running, failed, empty or truncated results.
-4. **Errors teach.** Every failure code maps to a one-line next step (§8). PROTECTED and NO_NATURAL_SOURCE are hard stops: the model asks the player and never substitutes.
+4. **Errors teach.** Every failure code maps to a one-line next step (§8). PROTECTED is a hard stop, and so is NO_NATURAL_SOURCE for what the player named: the model asks the player and never substitutes. An ingredient the player did not name can be any kind of its family (any log for planks): the craft tree takes the nearest, and gather's hint names the family tag.
 5. **Meaningful defaults.** observe = status+scene, find source = natural, gather radius = 48, craft count = 1, goto range = 1.5, a fixed 20 s answer time.
 6. **Safety lives in the mod (W1)**, not in prompt text. Composites inherit protection. The consent token is never a model argument; Node attaches it.
 7. **Parallel-safe reads.** `observe` and `find` are `readOnlyHint`, and Node fans observe sections out in parallel.
@@ -417,7 +417,7 @@ next: codex{"action":"search","query":"mine"} or give "x y z"
 
 ### 5.4 `gather` (composite)
 Description:
-> Use for any "get / collect / mine / chop N of X" request. Gets count of an item into your inventory end to end: picks up loose drops, harvests NATURAL sources (whole tree trunks, natural stone and ores, animals for meat, leather, wool), takes or makes the right tool, and collects the drops. Never breaks player-built blocks or the Base; #logs means natural logs only. When nothing natural is reachable it fails with NO_NATURAL_SOURCE: then ask the player, never substitute. A job.
+> Use for any "get / collect / mine / chop N of X" request. Gets count of an item into your inventory end to end: picks up loose drops, harvests NATURAL sources (whole tree trunks, natural stone and ores, animals for meat, leather, wool), takes or makes the right tool, and collects the drops. Never breaks player-built blocks or the Base; #logs means natural logs only. When nothing natural is reachable it fails with NO_NATURAL_SOURCE: for a kind the player named, ask them, never substitute; an ingredient can be any kind ("#logs"). A job.
 > Example: {"item":"oak_log","count":10}
 
 Schema:
@@ -452,7 +452,7 @@ next: ask Player (AskUserQuestion: go further / another wood / skip). Never take
 
 ### 5.5 `craft` (composite)
 Description:
-> Use for any "make / craft / smelt X" request. Makes count of an item and resolves the whole recipe tree: crafts intermediates (logs to planks to sticks), smelts in a furnace when needed, and uses a nearby crafting table or furnace, or places one (crafting it first if needed). gather_missing:true also gathers missing raw materials from nature. plan:true only shows the tree and what is missing. A job.
+> Use for any "make / craft / smelt X" request. Makes count of an item and resolves the whole recipe tree: crafts intermediates (logs to planks to sticks), smelts in a furnace when needed, and uses a nearby crafting table or furnace, or places one (crafting it first if needed). gather_missing:true also gathers missing raw materials from nature, any kind the recipe takes (birch logs for planks). plan:true only shows the tree and what is missing. A job.
 > Example: {"item":"crafting_table"}
 
 Schema:
@@ -858,7 +858,7 @@ Failures render as `failed: <what> <progress> | <CODE>: <msg>`, then detail line
 | UNKNOWN_PLACE | Node (goto) | `to` matches nothing | `codex{"action":"search","query":"<to>"}` or give "x y z" | no |
 | NOT_FOUND | mod | Nothing of that kind seen within radius (loaded chunks) | `find{"target":…,"radius":64}`, or goto elsewhere, or ask Player | no |
 | UNREACHABLE | mod | Targets exist, no path; candidates listed (M3) | pick another from `find`, goto nearer, or ask Player | no |
-| NO_NATURAL_SOURCE | W1 mod | Only built, protected or unreachable sources; candidates and reasons listed | ask Player (AskUserQuestion: go further / use X instead / skip); never substitute | **yes** |
+| NO_NATURAL_SOURCE | W1 mod | Only built, protected or unreachable sources; candidates and reasons listed | ask Player (AskUserQuestion: go further / use X instead / skip); never substitute. As built (question quality, 2026-10-09): a `gather` of one kind of a material family says `if Player named oak_log: ask; else gather{"item":"#logs","count":10} (an ingredient: any kind, no question)` | **yes**, for what the player named |
 | PROTECTED | W1 mod | Target is player-built or Base (`what`, `owner`, pos) | ask Player first; if they agree, repeat the same call (Node attaches consent) | **yes** |
 | OTHER_DIMENSION | mod | Target in another dimension | goto a portal, or ask | no |
 | NEEDS_TOOL | mod | Block drops nothing without the tool and gather could not make one | as built (§16.10): the tier the block needs, `craft{"item":"wooden_pickaxe","gather_missing":true}` with the craft tree; on an older mod, what to get first by the inventory | no |
@@ -1134,7 +1134,7 @@ How to use the mc tools:
 - One request, one composite call: "get N X" → gather; "make X" → craft; several known steps → do. Don't chain low-level use/goto calls for these.
 - Unsure where you are or what is around? observe first (read-only; may run in parallel with find).
 - World tools may answer "running": end your turn; [JOB DONE] or [JOB FAILED] wakes you with the result.
-- Failures end with "next:"; follow it. PROTECTED and NO_NATURAL_SOURCE are hard stops: ask the player, never substitute other blocks.
+- Failures end with "next:"; follow it. PROTECTED, and NO_NATURAL_SOURCE for what the player named, are hard stops: ask the player, never substitute. Ingredients they did not name can be any kind.
 - Positions are "x y z" strings; copy them from results.
 ```
 

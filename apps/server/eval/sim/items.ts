@@ -33,9 +33,8 @@ function logsOf(wood: string): string[] {
 export const TAGS: Readonly<Record<string, readonly string[]>> = {
   'minecraft:logs': WOODS.flatMap(logsOf),
   'minecraft:logs_that_burn': WOODS.flatMap(logsOf),
-  'minecraft:oak_logs': logsOf('oak'),
-  'minecraft:birch_logs': logsOf('birch'),
-  'minecraft:spruce_logs': logsOf('spruce'),
+  // Every wood's own logs tag (`#oak_logs`, …): its planks recipe takes any of them.
+  ...Object.fromEntries(WOODS.map((w) => [`minecraft:${w}_logs`, logsOf(w)])),
   'minecraft:planks': ids(WOODS.map((w) => `${w}_planks`)),
   'minecraft:leaves': ids(WOODS.map((w) => `${w}_leaves`)),
   'minecraft:iron_ores': ids(['iron_ore', 'deepslate_iron_ore']),
@@ -47,6 +46,35 @@ export const TAGS: Readonly<Record<string, readonly string[]>> = {
   'minecraft:doors': ids(['oak_door', 'spruce_door']),
   'minecraft:wooden_doors': ids(['oak_door', 'spruce_door']),
 };
+
+/** The mod's `Families.TAGS`, in order: material families whose kinds stand in for each other as ingredients. */
+export const FAMILY_TAGS: readonly string[] = [
+  'minecraft:logs',
+  // The mod's next try when a stem would not do (a plan that smelts); the sim has no stems, so `logs` always wins.
+  'minecraft:logs_that_burn',
+  'minecraft:stone_tool_materials',
+  'minecraft:stone_crafting_materials',
+  'minecraft:coals',
+  'minecraft:wool',
+];
+
+/** `Families.members`: each family's natural kinds (no stripped logs, wood or planks), families of one left out. */
+export function familyMembers(): ReadonlyMap<string, readonly string[]> {
+  const out = new Map<string, readonly string[]>();
+  for (const tag of FAMILY_TAGS) {
+    const members = (TAGS[tag] ?? []).filter((id) => !/^minecraft:stripped_|_(wood|hyphae|planks)$/.test(id));
+    if (members.length > 1) out.set(`#${tag}`, members);
+  }
+  return out;
+}
+
+/** `Families.of`: the family of an item id (`oak_log` → `#minecraft:logs`), or null (a tag, or no family). */
+export function familyOf(ref: string): string | null {
+  const id = normId(ref.trim().split(/\s+/)[0] ?? '');
+  if (id.startsWith('#')) return null;
+  for (const [tag, members] of familyMembers()) if (members.includes(id)) return tag;
+  return null;
+}
 
 /** Whether `id` (namespaced) matches `ref` (an id or a `#tag`, any namespace form). */
 export function matches(ref: string, id: string): boolean {
@@ -86,6 +114,9 @@ const more: [string, BlockSpec][] = [
   ['dirt', spec(`${NS}dirt`, 0.5, 'shovel')],
   ['stone', spec(`${NS}cobblestone`, 1.5, 'pickaxe', { needs: 'wooden' })],
   ['cobblestone', spec(`${NS}cobblestone`, 2, 'pickaxe', { needs: 'wooden' })],
+  ['deepslate', spec(`${NS}cobbled_deepslate`, 3, 'pickaxe', { needs: 'wooden' })],
+  ['cobbled_deepslate', spec(`${NS}cobbled_deepslate`, 3.5, 'pickaxe', { needs: 'wooden' })],
+  ['blackstone', spec(`${NS}blackstone`, 1.5, 'pickaxe', { needs: 'wooden' })],
   ['iron_ore', spec(`${NS}raw_iron`, 3, 'pickaxe', { needs: 'stone' })],
   ['coal_ore', spec(`${NS}coal`, 3, 'pickaxe', { needs: 'wooden' })],
   ['crafting_table', spec(`${NS}crafting_table`, 2.5, 'axe')],
@@ -250,6 +281,39 @@ export const CRAFTING: readonly CraftRecipe[] = [
     [
       ['#stone_tool_materials', 2],
       ['stick', 1],
+    ],
+    false,
+  ),
+  craft(
+    'stone_shovel',
+    'stone_shovel',
+    1,
+    [
+      ['#stone_tool_materials', 1],
+      ['stick', 2],
+    ],
+    false,
+  ),
+  craft(
+    'stone_hoe',
+    'stone_hoe',
+    1,
+    [
+      ['#stone_tool_materials', 2],
+      ['stick', 2],
+    ],
+    false,
+  ),
+  // A kind the recipe names: oak planks only (the family test keeps oak logs for it).
+  craft('oak_door', 'oak_door', 3, [['oak_planks', 6]], false),
+  // A named kind beside an ingredient any wood makes: spruce planks, and sticks.
+  craft(
+    'spruce_fence',
+    'spruce_fence',
+    3,
+    [
+      ['spruce_planks', 4],
+      ['stick', 2],
     ],
     false,
   ),

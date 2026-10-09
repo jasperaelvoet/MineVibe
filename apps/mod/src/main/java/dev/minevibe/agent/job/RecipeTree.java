@@ -2,6 +2,7 @@ package dev.minevibe.agent.job;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,10 +27,13 @@ import org.jspecify.annotations.Nullable;
  *       block), and an ingredient that is only a compressed or uncompressed form of the item itself (a block of 9
  *       ingots, log ↔ wood) is used only when the inventory holds it.</li>
  *   <li>What cannot be made is a raw leaf ({@link Missing}): gathered when asked ({@code gather_missing}), else the
- *       job fails {@code MISSING_INGREDIENTS} with the list.</li>
+ *       job fails {@code MISSING_INGREDIENTS} with the list. A leaf any member of its material family would replace
+ *       (oak logs for planks, with nothing carried) is gathered as the family ({@link #gatherRef}): the nearest kind.</li>
+ *   <li>Carried items come first in a slot, then what they make in one step (spruce planks from carried spruce logs),
+ *       then the most basic kinds.</li>
  *   <li>A 3x3 recipe needs a crafting table and smelting a furnace: when none is near and none is carried, making one is
  *       planned first (a furnace needs a table too). Smelting needs fuel: carried fuel the plan does not use, else
- *       logs to gather.</li>
+ *       logs that burn to gather (no nether stems).</li>
  * </ul>
  *
  * <p>The planner is pure: recipes come from a {@link Book} (the server's RecipeManager in game, a table in tests).
@@ -42,8 +46,11 @@ public final class RecipeTree {
 	private static final int MAX_COMBOS = 8;
 	/** Furnace ticks per smelted item. */
 	public static final int SMELT_TICKS = 200;
-	/** Fuel gathered when the inventory has none: any natural log (300 ticks each). */
-	public static final String FUEL_REF = "#minecraft:logs";
+	/**
+	 * Fuel gathered when the inventory has none: any natural log that burns (300 ticks each). Not {@code #minecraft:logs},
+	 * which holds the crimson and warped stems too: no furnace takes those.
+	 */
+	public static final String FUEL_REF = "#minecraft:logs_that_burn";
 	private static final int LOG_BURN_TICKS = 300;
 
 	/** A crafting recipe as the planner sees it: what it makes, how many, and the item choices of each grid slot. */
@@ -155,6 +162,61 @@ public final class RecipeTree {
 		}
 		return new Plan(target, count, smeltsLate(t.steps), List.copyOf(t.missing.values()), t.needsTable, t.needsFurnace,
 			makeTable, makeFurnace, t.smelts, Map.copyOf(t.fuelUse));
+	}
+
+	/**
+	 * What to gather for a missing raw material: its material family ({@code #minecraft:logs}) when any member would do
+	 * as well, else the item itself. With nothing carried the plan names one kind (oak logs for planks); it is only the
+	 * planner's pick when the same plan, given that much of every other natural member of a family instead, lacks
+	 * neither. A kind the recipe pins (oak planks for an oak door, white wool for a white bed) keeps the plan short with
+	 * any other member, so it stays. A member the plan already lacks for a kind of its own (the spruce logs of a spruce
+	 * fence, whose sticks named oak) is given for both. {@code families}: tag → natural members ({@link Families#members()}
+	 * in game).
+	 */
+	public static String gatherRef(final Book book, final Plan plan, final Missing m, final Map<Item, Integer> inventory, final Stations stations,
+		final Map<String, List<Item>> families) {
+		if (m.item() == null) {
+			return m.ref();
+		}
+		int lacking = 0;
+		Map<Item, Integer> lacks = new HashMap<>();
+		for (Missing x : plan.missing()) {
+			lacking += x.need();
+			if (x.item() != null) {
+				lacks.merge(x.item(), x.need(), Integer::sum);
+			}
+		}
+		for (Map.Entry<String, List<Item>> f : families.entrySet()) {
+			if (!f.getValue().contains(m.item())) {
+				continue;
+			}
+			boolean all = true;
+			for (Item other : f.getValue()) {
+				if (other == m.item()) {
+					continue;
+				}
+				// What the plan already lacks of `other` itself comes on top: else that need eats the stand-in (spruce
+				// logs for a spruce fence's planks), the sticks still lack oak, and oak looks pinned when it is not.
+				int own = lacks.getOrDefault(other, 0);
+				Map<Item, Integer> inv = new LinkedHashMap<>(inventory);
+				inv.merge(other, m.need() + own, Integer::sum);
+				Plan p = plan(book, plan.item(), plan.count(), inv, stations);
+				int left = 0;
+				boolean stillShort = false;
+				for (Missing x : p.missing()) {
+					left += x.need();
+					stillShort |= x.ref().equals(m.ref()) || x.item() == other;
+				}
+				if (stillShort || left > lacking - m.need() - own) {
+					all = false;
+					break;
+				}
+			}
+			if (all) {
+				return f.getKey();
+			}
+		}
+		return m.ref();
 	}
 
 	/**
@@ -334,10 +396,35 @@ public final class RecipeTree {
 			}
 		}
 		held.sort(Comparator.comparingInt((Item o) -> -this.have(o)));
-		usable.sort(Comparator.comparingInt(RecipeTree::preference).thenComparing(RecipeTree::id));
+		// What the inventory makes in one step comes first (spruce planks with spruce logs carried): a family with more
+		// kinds than candidates (planks) must still reach the carried one.
+		usable.sort(Comparator.comparingInt((Item o) -> this.madeFromHeld(o) ? 0 : 1).thenComparingInt(RecipeTree::preference)
+			.thenComparing(RecipeTree::id));
 		List<Item> out = new ArrayList<>(held);
 		out.addAll(usable);
 		return out.size() > MAX_CANDIDATES ? out.subList(0, MAX_CANDIDATES) : out;
+	}
+
+	/** Whether one recipe makes {@code item} from what the inventory holds (every slot has a carried item). */
+	private boolean madeFromHeld(final Item item) {
+		for (CraftOption o : this.book.crafting(item)) {
+			boolean all = !o.slots().isEmpty();
+			for (List<Item> slot : o.slots()) {
+				if (slot.stream().noneMatch(i -> this.have(i) > 0)) {
+					all = false;
+					break;
+				}
+			}
+			if (all) {
+				return true;
+			}
+		}
+		for (SmeltOption o : this.book.smelting(item)) {
+			if (o.inputs().stream().anyMatch(i -> this.have(i) > 0)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Whether {@code form} is only a storage form of {@code of}: a recipe makes it from {@code of} alone. */
@@ -414,7 +501,7 @@ public final class RecipeTree {
 		}
 	}
 
-	/** Fuel for every planned smelt: carried fuel the plan does not use up, else logs to gather. */
+	/** Fuel for every planned smelt: carried fuel the plan does not use up, else logs that burn to gather ({@link #FUEL_REF}). */
 	private void fuel() {
 		int ticks = this.smelts * SMELT_TICKS;
 		if (ticks <= 0) {

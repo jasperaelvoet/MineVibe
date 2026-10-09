@@ -457,11 +457,23 @@ describe('(f) the simulated mod speaks W1: the scene, PROTECTED, NO_NATURAL_SOUR
     });
     expect(logs.error?.code).toBe('NO_NATURAL_SOURCE');
     expect(logs.error?.msg).toMatch(
-      /^No reachable natural oak_log within 48 blocks\. Seen: oak tree \d+m [NESW]+ at -?\d+ 64 -?\d+ \(unreachable\);.*Don't take anything else instead\. Tell Jordan what you found/,
+      /^No reachable natural oak_log within 48 blocks\. Seen: oak tree \d+m [NESW]+ at -?\d+ 64 -?\d+ \(unreachable\);.*If Jordan named this kind, don't take another instead/,
     );
+    // Oak is one kind of the logs (the mod's Families): a hard stop only when Jordan named it.
     expect(logs.result?.noNaturalSource).toMatchObject({
       what: 'oak_log',
       radius: 48,
+      hint: "If Jordan named this kind, don't take another instead: tell Jordan what you found and ask. If it is only an ingredient (planks, sticks, tools, a furnace), any kind will do: gather #minecraft:logs (the nearest kind), no need to ask.",
+    });
+    // The family itself coming up empty (no reachable tree at all): ask, as before.
+    const tag = await none.runSkill({
+      agentId: 'ada',
+      skill: 'collect',
+      args: { item: '#minecraft:logs', count: 10 },
+      waitMs: 120_000,
+      replace: true,
+    });
+    expect(tag.result?.noNaturalSource).toMatchObject({
       hint: "Don't take anything else instead. Tell Jordan what you found and ask what to do (another place, or permission).",
     });
     // find: provenance with owner and zone, reachability on the nearest three natural matches, the protected note.

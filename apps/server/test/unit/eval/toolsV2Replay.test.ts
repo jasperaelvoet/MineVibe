@@ -14,7 +14,7 @@ describe('eval with the v2 tools (tools-v2-mc.md §14)', () => {
     const outcomes = await runReplays(selectScenarios('mc', []), { tools: 'v2' });
     const wrong = outcomes.filter((o) => o.result.success !== o.expected);
     expect(wrong.map((o) => `${o.scenario}/${o.variant}: ${JSON.stringify(o.result.checks)}`)).toEqual([]);
-    expect(outcomes).toHaveLength(10);
+    expect(outcomes).toHaveLength(16);
     const s1 = get(outcomes, 'mc.logs_table', 'good');
     expect(s1).toMatchObject({ tools: 'v2', toolCalls: 1, failedCalls: 0, turns: 2, stop: 'done' });
     expect(s1.checks.find((c) => c.name === 'house_intact')?.pass).toBe(true);

@@ -21,13 +21,15 @@ import org.jspecify.annotations.Nullable;
 /**
  * {@code craft{item, count, table?, tree:true, gather_missing?}} (docs/design/tools-v2-mc.md M4): makes {@code count}
  * of an item end to end. It plans the recipe tree ({@link RecipeTree}) from the inventory, gathers missing raw
- * materials from nature when {@code gather_missing} (child {@code collect} jobs, natural sources only), plans again,
+ * materials from nature when {@code gather_missing} (child {@code collect} jobs, natural sources only; a material that
+ * any kind of its family would replace, such as the logs for planks, as the whole family: the nearest kind), plans again,
  * then runs the steps as child {@code craft} / {@code smelt} jobs, crafting a table or furnace first when none is near
  * or carried (the child jobs use a station within 24 blocks, the one at {@code table}, or put the agent's own down).
  *
  * <p>Without {@code gather_missing}, missing raw materials fail the job with {@code MISSING_INGREDIENTS} and
- * {@code result.missing: [{item, need, have, for}]} before anything is crafted. The result: {@code {item, crafted, have,
- * steps: ["oak_log 1 → oak_planks 4", …], station: {kind, pos, placed}, gathered: {…}}}.
+ * {@code result.missing: [{item, need, have, for, any?}]} before anything is crafted ({@code any}: the family that
+ * would do as well). The result: {@code {item, crafted, have, steps: ["oak_log 1 → oak_planks 4", …], station: {kind,
+ * pos, placed}, gathered: {…}}}.
  */
 public final class CraftTreeJob extends SkillJob {
 	/** Rounds of gather → plan before giving up (a gather that comes back short). */
@@ -140,24 +142,32 @@ public final class CraftTreeJob extends SkillJob {
 	private Status planNow(final AgentPlayer agent) {
 		ServerLevel level = agent.level();
 		RecipeTree.Stations stations = stations(agent, this.table);
-		RecipeTree.Plan p = RecipeTree.plan(Recipes.book(level), this.item, this.count, Recipes.inventory(agent), stations);
+		RecipeTree.Book book = Recipes.book(level);
+		Map<Item, Integer> inv = Recipes.inventory(agent);
+		RecipeTree.Plan p = RecipeTree.plan(book, this.item, this.count, inv, stations);
 		this.plan = p;
 		if (p.steps().isEmpty() && p.missing().size() == 1 && p.missing().getFirst().item() == this.item) {
 			return this.fail("NO_RECIPE", "nothing crafts or smelts " + Refs.itemId(this.item) + "; gather it instead");
 		}
 		if (!p.complete()) {
+			Map<String, String> gather = gatherRefs(book, p, inv, stations);
 			if (!this.gatherMissing || this.rounds >= MAX_ROUNDS) {
-				this.putMissing(p);
+				this.putMissing(p, gather);
 				this.report(agent);
-				return this.fail("MISSING_INGREDIENTS", "raw materials missing: " + missingText(p) + (this.gatherMissing ? " (gathered what nature had)" : ""));
+				return this.fail("MISSING_INGREDIENTS", "raw materials missing: " + missingText(p, gather) + (this.gatherMissing ? " (gathered what nature had)" : ""));
 			}
 			this.rounds++;
+			Map<String, Integer> needs = new LinkedHashMap<>();
 			for (RecipeTree.Missing m : p.missing()) {
-				Refs.ItemMatcher what = Refs.item(m.ref());
+				needs.merge(gather.get(m.ref()), m.need(), Integer::sum);
+			}
+			for (Map.Entry<String, Integer> g : needs.entrySet()) {
 				// As the v2 gather does: replant felled trees, and make the tool a source needs (a wooden pickaxe for
-				// the cobblestone of a furnace) from what is carried instead of failing NEEDS_TOOL.
-				boolean logs = m.ref().endsWith("_log") || m.ref().equals(RecipeTree.FUEL_REF);
-				this.queue.add(new GatherJobs.Collect(what, m.need(), GATHER_RADIUS, logs, null, true));
+				// the cobblestone of a furnace) from what is carried instead of failing NEEDS_TOOL. A family is
+				// gathered as a whole: the nearest log of any kind for planks, so a missing oak tree is no dead end.
+				SkillJob collect = new GatherJobs.Collect(Refs.item(g.getKey()), g.getValue(), GATHER_RADIUS, replants(g.getKey()), null, true);
+				// An item (no family) is one the recipe names, or of no family at all: none of its kin would do.
+				this.queue.add(g.getKey().startsWith("#") ? collect : collect.pinKind());
 			}
 			this.phase = Phase.GATHER;
 			return Status.RUNNING;
@@ -282,7 +292,37 @@ public final class CraftTreeJob extends SkillJob {
 		}
 	}
 
-	private void putMissing(final RecipeTree.Plan p) {
+	/**
+	 * Whether gathering {@code ref} fells trees, so their stumps get a sapling: one kind of log, the logs family, or the
+	 * logs that burn (the fuel, and the family of a plan that smelts).
+	 */
+	static boolean replants(final String ref) {
+		return ref.endsWith("_log") || ref.equals("#minecraft:logs") || ref.equals(RecipeTree.FUEL_REF);
+	}
+
+	private void putMissing(final RecipeTree.Plan p, final Map<String, String> gather) {
+		this.put("missing", missingJson(p, gather));
+	}
+
+	/**
+	 * What to gather for each missing raw material (by its ref): the family when any member would do
+	 * ({@link RecipeTree#gatherRef}: the nearest log of any kind for planks), else the item itself.
+	 */
+	static Map<String, String> gatherRefs(final RecipeTree.Book book, final RecipeTree.Plan p, final Map<Item, Integer> inv,
+		final RecipeTree.Stations stations) {
+		Map<String, List<Item>> families = Families.members();
+		Map<String, String> out = new LinkedHashMap<>();
+		for (RecipeTree.Missing m : p.missing()) {
+			out.put(m.ref(), RecipeTree.gatherRef(book, p, m, inv, stations, families));
+		}
+		return out;
+	}
+
+	/**
+	 * {@code [{item, need, have, for?, any?}]}: {@code any} names the family when any of its kinds would do (the item
+	 * is only the planner's pick), so neither the agent nor the player has to choose a kind.
+	 */
+	private static JsonArray missingJson(final RecipeTree.Plan p, final Map<String, String> gather) {
 		JsonArray arr = new JsonArray();
 		for (RecipeTree.Missing m : p.missing()) {
 			JsonObject o = new JsonObject();
@@ -292,18 +332,27 @@ public final class CraftTreeJob extends SkillJob {
 			if (m.forItem() != null) {
 				o.addProperty("for", RecipeTree.id(m.forItem()));
 			}
+			String any = gather.getOrDefault(m.ref(), m.ref());
+			if (!any.equals(m.ref())) {
+				o.addProperty("any", any);
+			}
 			arr.add(o);
 		}
-		this.put("missing", arr);
+		return arr;
 	}
 
-	static String missingText(final RecipeTree.Plan p) {
+	/** {@code oak_log 3 (any #minecraft:logs), raw_iron 3, #logs (fuel) 2}. */
+	static String missingText(final RecipeTree.Plan p, final Map<String, String> gather) {
 		StringBuilder b = new StringBuilder();
 		for (RecipeTree.Missing m : p.missing()) {
 			if (!b.isEmpty()) {
 				b.append(", ");
 			}
 			b.append(m.item() == null ? m.ref().replace("minecraft:", "") + " (fuel)" : RecipeTree.id(m.item())).append(' ').append(m.need());
+			String any = gather.getOrDefault(m.ref(), m.ref());
+			if (!any.equals(m.ref())) {
+				b.append(" (any ").append(any).append(')');
+			}
 		}
 		return b.toString();
 	}
@@ -328,7 +377,9 @@ public final class CraftTreeJob extends SkillJob {
 	public static JsonObject planJson(final AgentPlayer agent, final Item item, final int count) {
 		ServerLevel level = agent.level();
 		RecipeTree.Stations stations = stations(agent, null);
-		RecipeTree.Plan p = RecipeTree.plan(Recipes.book(level), item, count, Recipes.inventory(agent), stations);
+		RecipeTree.Book book = Recipes.book(level);
+		Map<Item, Integer> inv = Recipes.inventory(agent);
+		RecipeTree.Plan p = RecipeTree.plan(book, item, count, inv, stations);
 		JsonObject o = new JsonObject();
 		o.addProperty("item", Refs.itemId(item));
 		o.addProperty("count", count);
@@ -363,18 +414,7 @@ public final class CraftTreeJob extends SkillJob {
 			steps.add(e);
 		}
 		o.add("steps", steps);
-		JsonArray missing = new JsonArray();
-		for (RecipeTree.Missing m : p.missing()) {
-			JsonObject e = new JsonObject();
-			e.addProperty("item", m.item() == null ? m.ref() : RecipeTree.id(m.item()));
-			e.addProperty("need", m.need());
-			e.addProperty("have", m.have());
-			if (m.forItem() != null) {
-				e.addProperty("for", RecipeTree.id(m.forItem()));
-			}
-			missing.add(e);
-		}
-		o.add("missing", missing);
+		o.add("missing", missingJson(p, p.complete() ? Map.of() : gatherRefs(book, p, inv, stations)));
 		JsonObject st = new JsonObject();
 		if (p.needsTable()) {
 			st.add("table", stationJson(agent, s -> s.is(Blocks.CRAFTING_TABLE), Items.CRAFTING_TABLE, p.makesTable()));

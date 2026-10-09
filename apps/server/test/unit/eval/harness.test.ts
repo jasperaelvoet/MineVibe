@@ -45,7 +45,7 @@ describe('replay mode (scripted model through the real session wiring)', () => {
     const outcomes = await runReplays(selectScenarios('all', []), { tools: 'v1' });
     const wrong = outcomes.filter((o) => o.result.success !== o.expected);
     expect(wrong.map((o) => `${o.scenario}/${o.variant}: ${JSON.stringify(o.result.checks)}`)).toEqual([]);
-    expect(outcomes).toHaveLength(16);
+    expect(outcomes).toHaveLength(22);
     // The incident replay is caught by the house check.
     const incident = outcomes.find((o) => o.scenario === 'mc.logs_table' && o.variant === 'bad');
     expect(incident?.result.checks.find((c) => c.name === 'house_intact')).toMatchObject({ pass: false });
@@ -369,9 +369,9 @@ describe('cli', () => {
     const cli = parseCli(['--suite', 'all', '--mode', 'live', '--budget', '40']);
     expect(cli).toMatchObject({ suite: 'all', mode: 'live', budget: 40, runs: null });
     const plan = planLive(selectScenarios(cli.suite, []), cli.runs);
-    expect(plan).toHaveLength(3 + 5 * 3);
+    expect(plan).toHaveLength(3 + 8 * 3);
     expect(plan.slice(0, 3).every((p) => p.scenario.suite === 'pc')).toBe(true);
-    expect(plan.slice(3, 8).map((p) => p.run)).toEqual([1, 1, 1, 1, 1]);
+    expect(plan.slice(3, 11).map((p) => p.run)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
     expect(plan.at(-1)?.run).toBe(3);
     expect(() => parseCli(['--mode', 'fast'])).toThrow(/replay or live/);
     expect(selectScenarios('mc', ['mc.iron']).map((s) => s.id)).toEqual(['mc.iron']);

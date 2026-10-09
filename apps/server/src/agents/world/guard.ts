@@ -22,6 +22,7 @@ import {
   type Vec3Like,
 } from '../../world/baseArea.js';
 import { singleLine } from '../envelope.js';
+import { familyOf } from './families.js';
 
 export const PROTECTED = WORLD_GUARD_CODES.PROTECTED;
 export const NO_NATURAL_SOURCE = WORLD_GUARD_CODES.NO_NATURAL_SOURCE;
@@ -185,7 +186,11 @@ export function failureText(input: FailureInput): string {
             (c) => c && typeof c === 'object' && (c as Record<string, unknown>).why === 'protected',
           ).length;
     const skipped = protectedCount > 0 ? ` ${protectedCount} protected ones were left alone.` : '';
-    return `${head}.${seen}${skipped} A hard stop: don't substitute another block or a #tag, and never take protected ones. Tell ${p} and ask with AskUserQuestion, e.g. options "Go further for ${what}", "Use something else instead", "Skip".`;
+    const stop = `${head}.${seen}${skipped} A hard stop: don't substitute another block or a #tag, and never take protected ones. Tell ${p} and ask with AskUserQuestion, e.g. options "Go further for ${what}", "Use something else instead", "Skip".`;
+    // One kind of a material family (oak logs): that holds only when the player named the kind.
+    return familyOf(what)
+      ? `${stop} That is if ${p} named ${what}; if it is only an ingredient (planks, sticks, tools, a furnace), any kind will do: take the nearest natural one you can reach, no question.`
+      : stop;
   }
   if ((input.code === 'NOT_FOUND' || input.code === 'UNREACHABLE') && GATHERING.has(input.skill)) {
     return `${head}. If ${p} asked for this, don't switch to another block or a #tag on your own: say what you found and ask ${p} (AskUserQuestion: go further, use something else, or skip).`;

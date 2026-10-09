@@ -228,6 +228,10 @@ public final class Recipes {
 		if (stack.is(Items.COAL) || stack.is(Items.CHARCOAL)) {
 			return 1600;
 		}
+		if (stack.is(ItemTags.NON_FLAMMABLE_WOOD)) {
+			// Crimson and warped wood: logs and planks like any other, but no furnace takes them.
+			return 0;
+		}
 		if (stack.is(ItemTags.LOGS) || stack.is(ItemTags.PLANKS) || stack.is(Items.CRAFTING_TABLE) || stack.is(ItemTags.WOODEN_SLABS)) {
 			return stack.is(ItemTags.WOODEN_SLABS) ? 150 : 300;
 		}

@@ -13,6 +13,7 @@
 
 import type { BlockPos, ObsQueryName, PayloadOf } from '@minevibe/protocol';
 import { compassDir, where } from '../../eval/sim/scene.js';
+import { familyOf } from '../../src/agents/world/families.js';
 import { FakeSkillApi } from '../../src/contracts/FakeSkillApi.js';
 import type { McToolsVersion } from '../../src/contracts/mcRefs.js';
 import type { SkillRunRequest } from '../../src/contracts/SkillApi.js';
@@ -122,6 +123,9 @@ const FOOTER_LEGACY = 'HP 20/20 food 18 | day 2 07:40 | 6 65 5 overworld | idle 
 const BASE_HINT = `That's part of ${PLAYER}'s base — ask ${PLAYER} before changing it.`;
 /** `SkillJob.noNaturalSource`'s teaching line. */
 const NNS_HINT = `Don't take anything else instead. Tell ${PLAYER} what you found and ask what to do (another place, or permission).`;
+/** The hint for one kind of a material family (`oak_log`): a hard stop only when the player named the kind. */
+const familyHint = (family: string) =>
+  `If ${PLAYER} named this kind, don't take another instead: tell ${PLAYER} what you found and ask. If it is only an ingredient (planks, sticks, tools, a furnace), any kind will do: gather ${family} (the nearest kind), no need to ask.`;
 
 /** The fake mod of one scenario: the W1 mod (`reachable`, `unreachable`) or one from before W1 (`legacy`). */
 export class EvalWorldSkills extends FakeSkillApi {
@@ -355,11 +359,13 @@ export class EvalWorldSkills extends FakeSkillApi {
       (c) => `${c.block} ${c.distance}m ${c.dir} at ${posText(c.pos)} (unreachable)`,
     );
     const name = what.replace(/^#/, '');
+    const family = familyOf(what);
+    const hint = family ? familyHint(family.replace(/^#/, '#minecraft:')) : NNS_HINT;
     return {
       status: 'failed' as const,
       code: 'NO_NATURAL_SOURCE',
-      msg: `No reachable natural ${name} within ${radius} blocks${seen.length > 0 ? `. Seen: ${seen.join('; ')}` : ''}. ${NNS_HINT}`,
-      result: { ...report, noNaturalSource: { what: name, radius, candidates, hint: NNS_HINT } },
+      msg: `No reachable natural ${name} within ${radius} blocks${seen.length > 0 ? `. Seen: ${seen.join('; ')}` : ''}. ${hint}`,
+      result: { ...report, noNaturalSource: { what: name, radius, candidates, hint } },
     };
   }
 
