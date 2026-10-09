@@ -9,8 +9,10 @@
  * inventories, and the runtime's own events (turns with their model, tool calls with model and effort, swaps).
  *
  * Steps (each records PASS/FAIL and numbers):
- *   1 cold boot   2 CEO at the door   3 logs + crafting table   4 ask flow   5 PC flow (body → desk → body)   6 kick
- *   7 Codex + calendar   8 hardcore death -> World #2   9 quit: no orphans
+ *   1 cold boot   2 CEO at the door   3 logs + crafting table   4 ask flow   5 PC flow (body → desk → body)
+ *   10 desk resume (sit again: the same desk session, it remembers step 5)   11 sessions: each session's tool list,
+ *   handoffs, titles, tokens per request, no account e-mail in bubbles, chat or the Codex
+ *   6 kick   7 Codex + calendar   8 hardcore death -> World #2   9 quit: no orphans
  *
  * Usage (repo root, after `npm install` and `cd apps/mod && ./gradlew build`):
  *   node --conditions=source --import tsx scripts/e2e/run-scenario.ts [options]
@@ -21,6 +23,8 @@
  *     --steps 1,2,3            run only these steps (9 always runs last)
  *     --seed <seed>            MINEVIBE_WORLD_SEED for repeatable terrain
  *     --max-turns <n>          stop prompting the crew after n agent turns (default 40)
+ *     --hard-cap               and end the session (step 9 still runs) once the crew used n turns
+ *     --pc-line <text>         step 5's line to the CEO (default: uname -a and ls /mnt/codex, kernel, stand up)
  *
  * Output: scripts/e2e/out/<run>/ (result.json, summary.md, events.jsonl, samples.jsonl, server.log, screenshots,
  * the game's console log). The temporary home is removed at the end unless --keep-home, and so is its PC instance
@@ -29,9 +33,17 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { cp, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pino } from 'pino';
@@ -107,7 +119,11 @@ interface Ev {
 interface TurnRec {
   at: number;
   agentId: string;
+  /** Which of the agent's sessions ran the turn: `body` or `desk` (PLAN §6.1). */
+  session: string;
   sessionModel: string | null;
+  /** The turn's `result.usage`: prompt = uncached input + cache reads + cache writes, over all its requests. */
+  tokens: { prompt: number; cacheRead: number; cacheWrite: number; output: number } | null;
   usageModels: string[];
   subtype: string;
   numTurns: number | null;
@@ -143,7 +159,18 @@ interface ManagerLike {
   crewState(): {
     crew: Array<{ agentId: string; handle: string; name: string; ceo: boolean; status: string }>;
   };
-  brain(agentId: string): { status: string; model: string } | undefined;
+  brain(agentId: string): BrainLike | undefined;
+  /** The outbound redactor (agents/redact.ts): learns the account from each session's startup check. */
+  redactor: { noteAccount(account: { email?: string | null } | null | undefined): void; active: boolean };
+}
+interface BrainLike {
+  status: string;
+  model: string;
+  activeSession: string;
+  record: {
+    sessionId: string;
+    desks?: Record<string, { sessionId: string; sessionStarted: boolean; lastActiveAt: number }>;
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -165,6 +192,10 @@ const onlySteps = arg('steps')
 const wants = (n: number) => !onlySteps || onlySteps.includes(n) || n === 9;
 const seed = arg('seed');
 const maxTurns = Number(arg('max-turns') ?? 40);
+const hardCap = argv.includes('--hard-cap');
+const pcLine =
+  arg('pc-line') ??
+  '@ceo sit at linux-1, run uname -a and ls /mnt/codex in the terminal, then tell me the kernel version and stand up';
 const keepHome = argv.includes('--keep-home');
 
 const T0 = Date.now();
@@ -333,13 +364,34 @@ function instrument(rt: Runtime): void {
   });
   const mgr = rt.agents?.manager as unknown as ManagerLike | undefined;
   if (mgr) {
+    // The account's e-mail address, as the sessions' startup checks report it: kept in memory for step 11's privacy
+    // check, never written anywhere.
+    const noteAccount = mgr.redactor.noteAccount.bind(mgr.redactor);
+    mgr.redactor.noteAccount = (account) => {
+      const email = account?.email?.trim().toLowerCase();
+      if (email?.includes('@')) accountEmail = email;
+      noteAccount(account);
+    };
     mgr.on('turn', (e) => {
       const result = (e.result ?? {}) as Json;
       const usage = (result.modelUsage ?? {}) as Json;
+      const u = (result.usage ?? null) as Record<string, number | undefined> | null;
       const rec: TurnRec = {
         at: Date.now(),
         agentId: String(e.agentId),
+        session: String(e.session ?? ''),
         sessionModel: (e.model as string | null) ?? null,
+        tokens: u
+          ? {
+              prompt:
+                (u.input_tokens ?? 0) +
+                (u.cache_read_input_tokens ?? 0) +
+                (u.cache_creation_input_tokens ?? 0),
+              cacheRead: u.cache_read_input_tokens ?? 0,
+              cacheWrite: u.cache_creation_input_tokens ?? 0,
+              output: u.output_tokens ?? 0,
+            }
+          : null,
         usageModels: Object.keys(usage),
         subtype: String(result.subtype ?? ''),
         numTurns: typeof result.num_turns === 'number' ? result.num_turns : null,
@@ -349,8 +401,13 @@ function instrument(rt: Runtime): void {
       turns.push(rec);
       record('ev', 'turn', rec as unknown as Json);
       say(
-        `turn #${turns.length} ${rec.agentId}: ${rec.subtype}, ${rec.usageModels.join('+') || rec.sessionModel}, ${rec.durationMs ?? '?'} ms`,
+        `turn #${turns.length} ${rec.agentId} ${rec.session}: ${rec.subtype}, ${rec.usageModels.join('+') || rec.sessionModel}, ${rec.durationMs ?? '?'} ms, ${rec.numTurns ?? '?'} requests, ${rec.tokens?.prompt ?? '?'} prompt / ${rec.tokens?.output ?? '?'} output tokens`,
       );
+      if (hardCap && turns.length >= maxTurns && !stopRequested) {
+        say(`hard cap: ${turns.length}/${maxTurns} turns used, ending the session`);
+        stopRequested = true;
+        stopSession?.();
+      }
     });
     mgr.on('tool', (e) => {
       const rec: ToolRec = {
@@ -394,6 +451,10 @@ const runningJobs = new Set<string>();
 const approvedPlans = new Set<string>();
 const autoApprovePlans = true;
 let playExit: { code: number | null; at: number } | null = null;
+/** Asks the game session to stop (as Ctrl+C on `npm run play`), for `--hard-cap`. */
+let stopSession: (() => void) | null = null;
+/** The account's e-mail address (from the sessions' startup checks): in memory only, for step 11. */
+let accountEmail: string | null = null;
 
 class Timeout extends Error {}
 async function waitFor<T>(
@@ -588,6 +649,10 @@ function needTurns(r: StepResult, n: number): boolean {
 }
 
 let firstWorld: string | null = null;
+/** linux-1's kernel (`uname -r` in the guest, step 5). */
+let guestKernel = '';
+/** The CEO's desk session for linux-1 after step 5. */
+let deskSessionId: string | null = null;
 /** The temporary MINEVIBE_HOME (the game's own log is `game/logs/latest.log` under it). */
 let gameHome: string | null = null;
 
@@ -1063,16 +1128,16 @@ async function step4(r: StepResult): Promise<void> {
 }
 
 async function step5(r: StepResult): Promise<void> {
-  if (!needTurns(r, 6)) return;
+  // Three turns with dual sessions: the body's sit, the desk's task, the body's DESK REPORT.
+  if (!needTurns(r, 3)) return;
   const boss = ceo();
   if (!boss) throw new Error('no CEO');
   const kernel = await guest('linux-1', 'uname -r').catch(() => ({ code: null, out: '' }));
   r.numbers.guestKernel = kernel.out;
+  guestKernel = kernel.out;
   const hashBefore = monitor('linux-1')?.hash ?? null;
   const at = Date.now();
-  await chat(
-    '@ceo sit at linux-1, run uname -a and ls /mnt/codex in the terminal, then tell me the kernel version and stand up',
-  );
+  await chat(pcLine);
   const sit = await waitFor(
     'sit_at_pc',
     180_000,
@@ -1153,7 +1218,23 @@ async function step5(r: StepResult): Promise<void> {
   const kVer = kernel.out.split('-')[0] ?? '';
   check(r, kVer !== '' && replies.includes(kVer), `the kernel version reported (${kernel.out})`);
   const seatedTurns = turnsSince(at, boss.agentId);
-  r.numbers.turns = seatedTurns.map((t) => t.sessionModel);
+  r.numbers.turns = seatedTurns.map((t) => `${t.session}:${t.sessionModel}`);
+  // Dual sessions (PLAN §6.1): the sit in the body, the task in a new desk session, the DESK REPORT in the body.
+  const desk = manager().brain(boss.agentId)?.record.desks?.['linux-1'] ?? null;
+  deskSessionId = desk?.sessionId ?? null;
+  r.numbers.deskSession = desk ? `${desk.sessionId.slice(0, 8)} (started ${desk.sessionStarted})` : null;
+  check(r, desk?.sessionStarted === true, 'a desk session for linux-1 was created');
+  check(
+    r,
+    seatedTurns.some((t) => t.session === 'desk' && String(t.sessionModel).includes('opus')) &&
+      seatedTurns.every((t) => (t.session === 'desk') === String(t.sessionModel).includes('opus')),
+    'desk turns on Opus, body turns on Haiku',
+  );
+  check(
+    r,
+    seatedTurns.at(-1)?.session === 'body',
+    'the body took back after standing (the DESK REPORT turn)',
+  );
   check(
     r,
     seatedTurns.some((t) => String(t.sessionModel).includes('opus')),
@@ -1182,6 +1263,299 @@ async function step5(r: StepResult): Promise<void> {
     haiku !== null && opusBrain !== null,
     `Opus/medium at the sit boundary, Haiku/xhigh after standing (${r.numbers.backToHaikuMs ?? '-'} ms)`,
   );
+}
+
+/** The agent's own transcript lines since `at`, with the session that said them (`body` / `desk`). */
+function sessionLinesSince(at: number, agentId: string): Array<{ session: string; text: string }> {
+  return events
+    .filter((e) => e.dir === 'ev' && e.t === 'chat' && e.at >= at && e.p.agentId === agentId)
+    .map((e) => e.p.entry as Json | undefined)
+    .filter((entry) => entry?.kind === 'agent' && typeof entry.text === 'string')
+    .map((entry) => ({ session: String(entry?.session ?? 'body'), text: String(entry?.text) }));
+}
+
+/** The JSON lines of this run's server log (pino), parsed. */
+function serverLog(): Json[] {
+  const f = join(outDir, 'server.log');
+  if (!existsSync(f)) return [];
+  const out: Json[] = [];
+  for (const line of readFileSync(f, 'utf8').split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      out.push(JSON.parse(line) as Json);
+    } catch {
+      // torn line
+    }
+  }
+  return out;
+}
+
+async function step10(r: StepResult): Promise<void> {
+  if (!needTurns(r, 3)) return;
+  const boss = ceo();
+  if (!boss) throw new Error('no CEO');
+  const before = manager().brain(boss.agentId)?.record.desks?.['linux-1'] ?? null;
+  if (!check(r, before?.sessionStarted === true, 'a desk session for linux-1 from step 5')) return;
+  const at = Date.now();
+  await chat('@ceo sit at linux-1 again and tell me what you did last time');
+  const sit = await waitFor(
+    'sit_at_pc',
+    180_000,
+    () => toolsSince(at, boss.agentId).find((t) => /sit_at_pc/.test(t.toolName)),
+    500,
+  );
+  r.numbers.sitTool = `${sit.model}/${String(sit.effort)}`;
+  const deskTurn = await waitFor(
+    'a desk turn',
+    240_000,
+    () => turnsSince(at, boss.agentId).find((t) => t.session === 'desk'),
+    500,
+  ).catch(() => null);
+  check(
+    r,
+    deskTurn !== null && String(deskTurn.sessionModel).includes('opus'),
+    `a desk turn on Opus (${deskTurn?.sessionModel ?? '-'})`,
+  );
+  const after = manager().brain(boss.agentId)?.record.desks?.['linux-1'] ?? null;
+  r.numbers.deskSession = `${before?.sessionId.slice(0, 8)} -> ${after?.sessionId.slice(0, 8) ?? '-'}`;
+  check(
+    r,
+    after?.sessionId === before?.sessionId,
+    'the same desk session id as in step 5 (resumed, not new)',
+  );
+  const took = serverLog().filter(
+    (l) => l.msg === 'desk session took over' && typeof l.time === 'number' && l.time >= at,
+  );
+  r.numbers.tookOverLog = took.map((l) => `resumed=${String(l.resumed)}`);
+  if (took.length > 0)
+    check(
+      r,
+      took.every((l) => l.resumed === true),
+      'server log: the desk resumed',
+    );
+  // The KICKOFF tells the desk to stand up when done; a desk still seated is asked once.
+  const standOf = () => toolsSince(at, boss.agentId).find((t) => /stand_up/.test(t.toolName));
+  let stand = await waitFor('stand_up', 150_000, standOf, 500).catch(() => null);
+  if (!stand && turnsLeft() >= 2 && agentOnClient(boss.agentId)?.atPc) {
+    r.notes.push('the desk did not stand up on its own: asked it to');
+    await chat('@ceo stand up');
+    stand = await waitFor('stand_up', 150_000, standOf, 500).catch(() => null);
+  }
+  check(r, stand !== null, `stood up (${stand ? `${stand.model}/${String(stand.effort)}` : '-'})`);
+  await waitSettled(boss.agentId, at, 240_000).catch((e: Error) => r.notes.push(e.message));
+  const lines = sessionLinesSince(at, boss.agentId);
+  r.numbers.reply = lines
+    .map((l) => `${l.session}: ${l.text}`)
+    .join(' | ')
+    .slice(0, 600);
+  const deskText = lines
+    .filter((l) => l.session === 'desk')
+    .map((l) => l.text)
+    .join(' ');
+  const kVer = guestKernel.split('-')[0] ?? '';
+  // The kernel version is only in the desk's own transcript (step 5's tool output); "uname" is also in the player's
+  // lines the KICKOFF quotes.
+  r.numbers.remembersKernel = kVer !== '' && deskText.includes(kVer);
+  r.numbers.mentionsUname = /uname/i.test(deskText);
+  check(
+    r,
+    r.numbers.remembersKernel === true || r.numbers.mentionsUname === true,
+    `the desk remembers step 5 (kernel ${kVer || '?'}: ${String(r.numbers.remembersKernel)}, uname: ${String(r.numbers.mentionsUname)})`,
+  );
+  const mine = turnsSince(at, boss.agentId);
+  r.numbers.turns = mine.map((t) => `${t.session}:${t.sessionModel}`);
+  check(r, mine.at(-1)?.session === 'body', 'the body took back after standing (the DESK REPORT turn)');
+}
+
+interface TranscriptInfo {
+  types: Record<string, number>;
+  /** The tool names of the session's last prompt snapshot (what its requests offer), or null. */
+  tools: string[] | null;
+  /** The user messages' text (never written out: a transcript holds the account's e-mail address). */
+  userTexts: string[];
+  /** One per API request (assistant messages by id): its model and tokens. */
+  requests: Array<{ model: string; prompt: number; cacheRead: number; cacheWrite: number; output: number }>;
+}
+
+/** A session's transcript, `~/.claude/projects/<cwd slug>/<sessionId>.jsonl`, read in memory. */
+function readTranscript(sessionId: string): TranscriptInfo | null {
+  const root = join(homedir(), '.claude', 'projects');
+  if (!existsSync(root)) return null;
+  const dir = readdirSync(root).find((d) => existsSync(join(root, d, `${sessionId}.jsonl`)));
+  if (!dir) return null;
+  const info: TranscriptInfo = { types: {}, tools: null, userTexts: [], requests: [] };
+  const seen = new Set<string>();
+  for (const line of readFileSync(join(root, dir, `${sessionId}.jsonl`), 'utf8').split('\n')) {
+    if (line.trim().length === 0) continue;
+    let e: Json;
+    try {
+      e = JSON.parse(line) as Json;
+    } catch {
+      info.types['(torn)'] = (info.types['(torn)'] ?? 0) + 1;
+      continue;
+    }
+    const type = String(e.type ?? '?');
+    info.types[type] = (info.types[type] ?? 0) + 1;
+    const att = e.attachment as Json | undefined;
+    if (type === 'attachment' && att?.type === 'prompt_snapshot' && Array.isArray(att.tools))
+      info.tools = (att.tools as Json[]).map((t) => String(t.name));
+    const msg = e.message as Json | undefined;
+    if (type === 'user' && msg) {
+      const c = msg.content;
+      if (typeof c === 'string') info.userTexts.push(c);
+      else if (Array.isArray(c))
+        for (const b of c as Json[])
+          if (b.type === 'text' && typeof b.text === 'string') info.userTexts.push(b.text);
+    }
+    if (type === 'assistant' && msg && typeof msg.id === 'string' && !seen.has(msg.id)) {
+      const model = String(msg.model ?? '');
+      const u = msg.usage as Record<string, number | undefined> | undefined;
+      if (model === '<synthetic>' || !u) continue;
+      seen.add(msg.id);
+      const cacheRead = u.cache_read_input_tokens ?? 0;
+      const cacheWrite = u.cache_creation_input_tokens ?? 0;
+      info.requests.push({
+        model,
+        prompt: (u.input_tokens ?? 0) + cacheRead + cacheWrite,
+        cacheRead,
+        cacheWrite,
+        output: u.output_tokens ?? 0,
+      });
+    }
+  }
+  return info;
+}
+
+/** Prompt tokens per request of one session: count, mean, min, max, and the share read from the cache. */
+function requestStats(reqs: TranscriptInfo['requests']): Json {
+  if (reqs.length === 0) return { n: 0 };
+  const prompts = reqs.map((q) => q.prompt);
+  const sum = prompts.reduce((a, b) => a + b, 0);
+  return {
+    n: reqs.length,
+    models: [...new Set(reqs.map((q) => q.model))],
+    meanPrompt: Math.round(sum / reqs.length),
+    minPrompt: Math.min(...prompts),
+    maxPrompt: Math.max(...prompts),
+    cacheReadShare: round(reqs.reduce((a, q) => a + q.cacheRead, 0) / Math.max(1, sum), 3),
+    cacheWrite: reqs.reduce((a, q) => a + q.cacheWrite, 0),
+    output: reqs.reduce((a, q) => a + q.output, 0),
+  };
+}
+
+/** Text files under `dir` (no `.git`), at most 1 MB each. */
+function textFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (name === '.git') continue;
+    const f = join(dir, name);
+    const st = statSync(f);
+    if (st.isDirectory()) out.push(...textFiles(f));
+    else if (st.isFile() && st.size <= 1_000_000) out.push(f);
+  }
+  return out;
+}
+
+async function step11(r: StepResult): Promise<void> {
+  const boss = ceo();
+  if (!boss) throw new Error('no CEO');
+  const brain = manager().brain(boss.agentId);
+  const bodyId = brain?.record.sessionId ?? null;
+  const deskId = brain?.record.desks?.['linux-1']?.sessionId ?? deskSessionId;
+  const body = bodyId ? readTranscript(bodyId) : null;
+  const desk = deskId ? readTranscript(deskId) : null;
+  check(r, body !== null, `the body session's transcript (${bodyId?.slice(0, 8) ?? '-'})`);
+  check(r, desk !== null, `the desk session's transcript (${deskId?.slice(0, 8) ?? '-'})`);
+  // Each session's own tool list, from its prompt snapshot (what every request of it offers).
+  const split = (tools: string[] | null) => ({
+    mc: (tools ?? []).filter((t) => t.startsWith('mcp__mc__')).map((t) => t.slice(9)),
+    pc: (tools ?? []).filter((t) => t.startsWith('mcp__pc__')).map((t) => t.slice(9)),
+    other: (tools ?? []).filter((t) => !t.startsWith('mcp__mc__') && !t.startsWith('mcp__pc__')),
+  });
+  const bt = split(body?.tools ?? null);
+  const dt = split(desk?.tools ?? null);
+  r.numbers.bodyTools = { mc: bt.mc.length, pc: bt.pc.length, other: bt.other };
+  r.numbers.deskTools = { pc: dt.pc.length, mc: dt.mc, other: dt.other };
+  check(
+    r,
+    body?.tools != null && bt.pc.length === 0 && bt.mc.length > 0,
+    `body session: ${bt.mc.length} mc tools, ${bt.pc.length} pc tools`,
+  );
+  check(
+    r,
+    desk?.tools != null && dt.pc.length > 0 && dt.mc.length > 0 && dt.mc.length < bt.mc.length,
+    `desk session: ${dt.pc.length} pc tools and the minimal mc set (${dt.mc.length})`,
+  );
+  // Handoffs: the KICKOFF (desk) carries the player's instruction, the DESK REPORT (body) the result.
+  const kickoffs = (desk?.userTexts ?? []).filter((t) => t.includes('KICKOFF'));
+  const reports = (body?.userTexts ?? []).filter((t) => t.includes('DESK REPORT'));
+  r.numbers.kickoffs = kickoffs.length;
+  r.numbers.deskReports = reports.length;
+  check(
+    r,
+    kickoffs[0]?.includes('uname -a') === true,
+    'the first KICKOFF carries the instruction (uname -a)',
+  );
+  if (wants(10))
+    check(
+      r,
+      kickoffs.length >= 2 && /sat down at linux-1 again/.test(kickoffs[1] ?? ''),
+      'the second KICKOFF went to the same transcript as a resume ("sat down at linux-1 again")',
+    );
+  const kVer = guestKernel.split('-')[0] ?? '';
+  check(
+    r,
+    reports.length > 0 && (kVer === '' || reports[0]?.includes(kVer) === true),
+    `a DESK REPORT reached the body${kVer ? ` with the kernel ${kVer}` : ''}`,
+  );
+  // Fixed titles: no AI title generation for either session.
+  const titles = (t: TranscriptInfo | null) => ({
+    ai: t?.types['ai-title'] ?? 0,
+    custom: t?.types['custom-title'] ?? 0,
+  });
+  r.numbers.titles = { body: titles(body), desk: titles(desk) };
+  check(
+    r,
+    titles(body).ai === 0 && titles(desk).ai === 0 && titles(body).custom > 0,
+    'no ai-title entries in either transcript (custom titles only)',
+  );
+  // Tokens per API request, per session.
+  r.numbers.requests = { body: requestStats(body?.requests ?? []), desk: requestStats(desk?.requests ?? []) };
+  r.numbers.turnTokens = turns
+    .filter((t) => t.agentId === boss.agentId)
+    .map((t) => `${t.session}:${t.numTurns ?? '?'}req:${t.tokens?.prompt ?? '?'}/${t.tokens?.output ?? '?'}`);
+  // Privacy: the account e-mail (in memory only) in nothing that left a session.
+  const email = accountEmail;
+  check(r, email !== null, 'the sessions reported the account (its e-mail kept in memory only)');
+  if (email) {
+    const has = (text: string) => text.toLowerCase().includes(email);
+    const leaks = {
+      clientBubbles: bubblesSeen.filter((b) => has(b.text)).length,
+      says: events.filter((e) => e.dir === 'ev' && e.t === 'say' && has(JSON.stringify(e.p))).length,
+      chat: events.filter((e) => e.dir === 'ev' && e.t === 'chat' && has(JSON.stringify(e.p))).length,
+      cardsAndToasts: events.filter(
+        (e) => e.dir === 'ev' && (e.t === 'card' || e.t === 'toast') && has(JSON.stringify(e.p)),
+      ).length,
+      toTheMod: events.filter((e) => e.dir === 'out' && has(JSON.stringify(e.p))).length,
+      codexFiles: gameHome
+        ? textFiles(join(gameHome, 'codex')).filter((f) => has(readFileSync(f, 'utf8'))).length
+        : 0,
+    };
+    r.numbers.emailHits = leaks;
+    r.numbers.scanned = {
+      clientBubbles: bubblesSeen.length,
+      chat: events.filter((e) => e.dir === 'ev' && e.t === 'chat').length,
+      toTheMod: events.filter((e) => e.dir === 'out').length,
+      codexFiles: gameHome ? textFiles(join(gameHome, 'codex')).length : 0,
+    };
+    check(
+      r,
+      Object.values(leaks).every((n) => n === 0),
+      'the account e-mail is in no bubble, chat line, card, Codex file or message to the mod',
+    );
+  }
+  check(r, manager().redactor.active, 'the outbound redactor learned the account');
 }
 
 async function step6(r: StepResult): Promise<void> {
@@ -1733,9 +2107,13 @@ function writeResults(): void {
     seed: seed ?? null,
     turns: turns.length,
     maxTurns,
-    // total_cost_usd is cumulative per session: the last turn of each agent holds its session's total.
+    // total_cost_usd is cumulative per session (across a desk's resumes too): the last turn of each agent's body and
+    // desk sessions holds that session's total. Two desks of one agent (two PCs) count as one here.
     costUsd: round(
-      [...new Map(turns.map((t) => [t.agentId, t.costUsd ?? 0])).values()].reduce((n, c) => n + c, 0),
+      [...new Map(turns.map((t) => [`${t.agentId}:${t.session}`, t.costUsd ?? 0])).values()].reduce(
+        (n, c) => n + c,
+        0,
+      ),
       4,
     ),
     results,
@@ -1814,6 +2192,7 @@ async function session(home: string): Promise<void> {
     pino.destination({ dest: join(outDir, 'server.log'), sync: true }),
   );
   const control: PlayControl = { onStopRequest: null };
+  stopSession = () => control.onStopRequest?.('turn cap');
   let gotRuntime: (r: Runtime) => void = () => {};
   const runtimeReady = new Promise<Runtime>((res) => {
     gotRuntime = res;
@@ -1874,6 +2253,8 @@ async function session(home: string): Promise<void> {
       await step(3, '@ceo collect 10 oak logs and make a crafting table (Haiku/xhigh)', step3);
       await step(4, 'Ask flow: question card, ApproachPlayer, "@ceo 2" reaches the model', step4);
       await step(5, 'PC flow: sit, Opus/medium, pc bash, ShellMirror, stand, Haiku/xhigh', step5);
+      await step(10, 'Desk resume: sit again, the same desk session remembers step 5, stand', step10);
+      await step(11, 'Sessions: tool lists, handoffs, titles, tokens, no account e-mail out', step11);
       await step(6, 'Kick during a long PC task', step6);
       await step(7, 'Codex page + real-clock calendar task', step7);
       await step(8, 'Hardcore: death -> Game Over -> Begin -> World #2', step8);
