@@ -252,3 +252,89 @@ THINKING head icon in both modes.
 also removed `0fa3430b`, the leaked E2E instance listed in `out/leaked-instances.txt` (DEBT, D2 sweep). The dev
 engine still holds the other 13 instances it held before (12 unregistered, plus the play home). No temporary home, game,
 node or VM process is left.
+
+## Dual sessions, live (2026-10-09)
+
+A small live check of dual sessions (PLAN §6.1, §6.3) on `main` right after they merged (`4a72fe4`): the E2E
+harness with the real game, linux-1 on the Apple `container` engine and the SDK-bundled `claude`, seed
+`mv-forest-1`, a hard cap of 12 agent turns for the whole check. Steps 1, 2 and 5, and two new steps: 10 (sit at
+linux-1 again: the same desk session, and it remembers) and 11 (each session's tool list, the handoffs, titles,
+tokens per request and the account e-mail, read from both sessions' transcripts and everything the run sent out).
+Run A used 7 turns; run B, after the fixes below, ran steps 1, 2, 5 and 11 in 4 more (11 of 12).
+
+```sh
+node --conditions=source --import tsx scripts/e2e/run-scenario.ts --steps 1,2,5,10,11 --seed mv-forest-1 \
+  --max-turns 12 --hard-cap --pc-line '@ceo sit at linux-1, run uname -a, tell me the kernel, then stand up'
+```
+
+**Result: every step passed in both runs.** Run A found two small issues, fixed with tests (below), and one
+more, left in DEBT.md. The harness also had a cost bug of its own (fixed).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| The CEO wanders in its body session | PASS | Welcome turn on `claude-haiku-5-5`. The body transcript's prompt snapshot offers 20 `mc` tools and AskUserQuestion: **no `pc` tool**. |
+| `@ceo sit at linux-1, run uname -a, tell me the kernel, then stand up` | PASS | `sit_at_pc` on Haiku/xhigh; a new desk session took over 2.9 s later (2.4 s in run B). Its snapshot: 31 `pc` tools, 7 `mc` (calendar, codex, observe, remember, say, stand_up, tell), AskUserQuestion, WebFetch, WebSearch. `pc__bash` and `stand_up` ran on `claude-opus-5-5`/medium; ShellMirror changed the monitor twice. |
+| Handoffs | PASS | The KICKOFF in the desk transcript carries the instruction (the task and the player's line, `uname -a`). The DESK REPORT in the body transcript carries the kernel, 6.18.35 (`uname -r` in the guest). The body was back 1.3 s after the stand (2.5 s in run B). |
+| Report to the player | PASS | Desk: "Linux-1 is running Linux kernel 6.18.35 on aarch64, built June 15, 2026. I've stood up from the PC." Run A's body then said the kernel again (fixed in `ad5bb75`); run B's body stayed silent. |
+| `@ceo sit at linux-1 again and tell me what you did last time` | PASS | The same desk session id (`774671b1`), server log `desk session took over` with `resumed: true`, and a second KICKOFF ("You sat down at linux-1 again") in the same transcript. The desk: "Last time I ran uname -a on linux-1. It showed Linux kernel 6.18.35 on aarch64, built June 15, 2026, and then I stood up." The version is only in the desk's own transcript (the KICKOFF quotes the player's lines, which name `uname`, not the version). It stood up by itself; the body took back. |
+| Titles | PASS | 0 `ai-title` entries in the body and desk transcripts of both runs (2 `custom-title` each). The single-session E2E runs of 2026-10-08 wrote 4 (run 4) and 8 (run 2). |
+| Account e-mail | PASS | The address, learned from the sessions' startup check and held in memory only, is in none of 7 client bubbles, 14 chat entries, 110 messages to the mod and 2 Codex files (run A; run B: 3, 7, 73, 2). The outbound redactor knew the account. |
+| Quit | PASS | `npm run play` returned in 2.7 s (4.3 s); no orphans, linux-1's VM gone, the PC instance removed, the engine stopped. |
+
+### Tokens
+
+Per turn, run A (`result.usage`; prompt = uncached input + cache reads + cache writes, over the turn's requests):
+
+| # | Turn | Session | Requests | Prompt tokens (cache read / write) | Output |
+| --- | --- | --- | --- | --- | --- |
+| 1 | welcome | body, Haiku | 1 | 14,035 (0 / 14,033) | 202 |
+| 2 | sit | body | 2 | 28,863 (28,386 / 473) | 135 |
+| 3 | KICKOFF: `uname -a`, stand up | desk, Opus (new) | 3 | 52,656 (34,956 / 17,694) | 200 |
+| 4 | DESK REPORT | body | 1 | 14,781 (14,506 / 273) | 227 |
+| 5 | sit again | body | 2 | 30,644 (29,895 / 745) | 401 |
+| 6 | KICKOFF: "what you did last time", stand up | desk, Opus (resumed) | 2 | 37,217 (36,240 / 973) | 90 |
+| 7 | DESK REPORT | body | 1 | 15,801 (15,524 / 275) | 191 |
+
+Per request, from the transcripts, against the single-session E2E runs of 2026-10-08:
+
+| Session | Requests | Prompt tokens per request: mean (range) |
+| --- | --- | --- |
+| Body (Haiku), run A / run B | 7 / 4 | 14,875 (14,035-15,801) / 14,471 (14,052-14,854) |
+| Desk (Opus), run A / run B | 5 / 3 | 17,975 (17,385-18,669) / 17,539 (17,391-17,673) |
+| One session, Haiku: run 4 / run 2 of 2026-10-08 | 3 / 19 | 27,040 (26,739-27,298) / 30,003 (26,744-34,610) |
+| One session, Opus: run 4 / run 2 | 5 / 7 | 31,507 (29,634-32,591) / 32,774 (31,755-33,449) |
+
+- Per request, the body costs 12.2k fewer prompt tokens than the old session on Haiku (−45%), the desk 13.5k fewer
+  than on Opus (−43%). The old runs offered 79 tools on every request (54 v1 `mc`, 20 v1 `pc`, 5 built-ins), so this
+  mixes the split with tools v2; EVALS.md ("Tool-list size per session") puts the split alone at −11.3k per body
+  request and −5.3k per desk request against a v2 single session.
+- One PC task (sit to body back) took 96.3k prompt tokens in 3 turns and 6 requests (96.4k in run B), against 211.9k
+  in 2 turns and 7 requests in run 4 (sit 54.4k, then 157.5k for the seated turn). Not like for like: run 4 was
+  plan-first and swapped models inside one session.
+- What the split costs instead: the sit is a body turn of 2 requests (`sit_at_pc`, then end the turn), and the DESK
+  REPORT one more body request (≈15k). A new desk writes its prompt prefix to the cache on its first request (17.7k
+  tokens on Opus, $0.15 of run A's $0.17); run B, 4 minutes later, found it cached (3.8k written) and cost $0.045 in
+  all. The resumed desk read its transcript from the cache (36.2k read, 1.0k written).
+
+SDK estimates: run A $0.174 (body $0.0046, desk $0.169), run B $0.045 (body $0.0018, desk $0.043).
+
+### Fixed on `main`
+
+| Commit | Fix |
+| --- | --- |
+| `72c191e` | The body answers a DESK REPORT it has nothing to add to with `(silent)`, as the report asks; the brain skipped the bubble but still wrote `(silent)` to the merged transcript, so the player's chat log showed it after a PC session (run A, step 10). A silent reply now leaves neither. Test in `dualSessions.test.ts`. |
+| `ad5bb75` | In run A's step 5 the body repeated the kernel version the desk had just said: the report left it to guess ("If Jasper already heard the result"). The report's summary is always the desk's final text, which was said aloud, so the report now says so; with no last words it asks the body for the result. Run B's body stayed silent. Test in `prompts.test.ts`. |
+| `3bb41ca` | Harness: steps 10 and 11, each turn's session and tokens, `--hard-cap` (ends the session at `--max-turns`) and `--pc-line`. The run's cost took one session per agent (run A printed $0.0046 for $0.174); it now adds the body and desk sessions. Step 5 needs 3 turns now (sit, desk, report), not 6. |
+
+### Found, not fixed
+
+- **The body answers before its desk** (DEBT.md). In step 10 the body's sit turn already said "Last time I ran uname
+  -a there, got Linux 6.18.35 on aarch64, and stood up." from its own DESK REPORT, and the desk said the same 3.6
+  s later, so the player heard it twice.
+
+### Limits
+
+Two runs, one seed, one PC, 11 turns. Kick, damage, meetings, the TTL, crashes and cards in the desk are covered by
+the unit tests only (EVALS.md "Dual sessions"). The comparison numbers come from the single-session runs of
+2026-10-08 (v1 tools, plan-first). The runs' transcripts stay under `~/.claude/projects/`, as every E2E run's do;
+they hold the account e-mail in Claude Code's own `session_context` attachment (DEBT.md).

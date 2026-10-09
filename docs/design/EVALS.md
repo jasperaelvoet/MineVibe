@@ -779,5 +779,7 @@ through the real AgentManager and SDK-bundled claude with the contract fakes as 
 - One sample per edge. Kick, damage, survival, PC down, meeting pulls, resumes, the TTL, crashes, cards in both
   sessions, chat routing, the merged transcript and the redactor are covered by unit tests with the fake SDK
   (`test/unit/agents/dualSessions.test.ts`, `seats.test.ts`, `modeSwitch.test.ts`, `redact.test.ts`), not live.
+  The E2E check in the real game (ACCEPTANCE.md "Dual sessions, live", v2 tools) adds three sits, a resume, both
+  sessions' tool lists from their transcripts and the prompt tokens per request (body ≈14.9k, desk ≈18.0k).
 - The tool evals (`npm run eval:tools`) were not re-run live after the switch; their replays pass with the new session
   options.

@@ -24,7 +24,8 @@ safe" after those fixes (the agents now use the house) and scores `eval:world`'s
 Dual sessions (2026-10-09, PLAN §6.1) fixed "wandering agents carry the 31 `pc` tools" (the body
 session has no `pc` server; EVALS.md "Dual sessions") and the per-turn `ai-title` question (a fixed session `title`
 skips the AI title generation, verified live), and mitigated the account e-mail in agent prompts (outbound redactor
-and persona rule; what is left is below).
+and persona rule; what is left is below). The live dual-sessions check (2026-10-09, ACCEPTANCE.md "Dual sessions,
+live") fixed a `(silent)` reply showing in the player's chat log and the body repeating what its desk had just said.
 
 ## Found by navigation v2 (2026-10-09)
 - **High logs of a felled tree stay up.** Felling a tree whole (W1), the miner gives up on logs that neither a Tier-2
@@ -156,8 +157,16 @@ and persona rule; what is left is below).
   the player's lines reach the desk anyway (the KICKOFF quotes them, and wakes wait for the desk since the review).
 - **A PC recreated under the same id resumes the old desk session** within the TTL: the desk record is keyed by the
   PC id only, so the desk "remembers" work on a disk that no longer exists until it looks.
-- **Only one live sample of the handoffs** (EVALS.md "Dual sessions": 4 turns); the tool evals were not re-run live
-  after the switch (their replays pass). `test/live/brain.live.ts` was rewritten for dual sessions but not re-run.
+- **Few live samples of the handoffs**: the live check (EVALS.md "Dual sessions": 4 turns) and the E2E check in the
+  real game (ACCEPTANCE.md "Dual sessions, live": three sits, one resume, 11 turns). The tool evals were not re-run
+  live after the switch (their replays pass). `test/live/brain.live.ts` was rewritten for dual sessions but not re-run.
+
+## Found in the live dual-sessions check (2026-10-09, ACCEPTANCE.md "Dual sessions, live")
+- **The body answers before its desk.** Asked "sit at linux-1 again and tell me what you did last time", the body's
+  sit turn already answered from its own DESK REPORT ("Last time I ran uname -a there, got Linux 6.18.35 …"), and the
+  desk said the same 3.6 s later: the player heard it twice. The body knows every DESK REPORT, so a question about PC
+  work gets answered at the sit. One sample; the `sit_at_pc` result ("End your turn now; your PC session takes over
+  from here.") could ask for a short line that leaves the task to the desk.
 
 ## Found in the D2 sweep (2026-10-09)
 - **PC instances from before the registry stay in the dev engine.** `doctor --clean-orphans` knows an instance's home
