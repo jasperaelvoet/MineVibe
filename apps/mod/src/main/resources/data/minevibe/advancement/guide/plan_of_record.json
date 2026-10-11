@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/your_call",
+  "criteria": {
+    "approved": {
+      "conditions": {
+        "milestone": "plan_approved"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:map"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.plan_of_record.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.plan_of_record.description"
+    }
+  },
+  "requirements": [
+    [
+      "approved"
+    ]
+  ]
+}

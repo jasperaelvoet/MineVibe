@@ -11,7 +11,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Common entrypoint of the survival start (PLAN 7.5 "Agent Core", 7.9): a new world begins with nothing, and the player
- * earns the crew. Registers the Agent Core and the guide's triggers, answers Node's {@code hire.pay} on the integrated
+ * earns the crew. Registers the Agent Core and the guide's triggers and milestones, answers Node's {@code hire.pay} on the integrated
  * server, and gives the first-join hint. The awakening ritual itself is the core's {@link AgentCoreItem#useOn}. Listed
  * under {@code main} in {@code fabric.mod.json}; the client side (item tooltips) is
  * {@code dev.minevibe.client.progression.ProgressionClientInit}.
@@ -22,7 +22,9 @@ public final class ProgressionModInit implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		ProgressionContent.register();
+		Milestones.register();
 		GuideHint.registerEvents();
+		Milestones.registerEvents();
 		Awakening.registerEvents();
 		ServerLifecycleEvents.SERVER_STARTED.register(s -> server = s);
 		ServerLifecycleEvents.SERVER_STOPPED.register(s -> {

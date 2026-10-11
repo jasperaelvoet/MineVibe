@@ -1,9 +1,12 @@
 package dev.minevibe.world.grave;
 
+import dev.minevibe.progression.Milestone;
+import dev.minevibe.progression.Milestones;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
@@ -51,6 +54,9 @@ public final class GraveBlock extends BaseEntityBlock {
 		if (level instanceof ServerLevel && level.getBlockEntity(pos) instanceof GraveBlockEntity grave) {
 			player.sendSystemMessage(Component.literal("Here lies " + grave.name() + ", " + grave.role() + ", Day " + grave.day() + "."));
 			grave.dropItems();
+			if (player instanceof ServerPlayer opener) {
+				Milestones.award(opener, Milestone.GRAVE_OPENED);
+			}
 		}
 		return InteractionResult.SUCCESS;
 	}

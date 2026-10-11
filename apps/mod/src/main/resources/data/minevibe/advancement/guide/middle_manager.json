@@ -1,0 +1,82 @@
+{
+  "parent": "minevibe:guide/plan_of_record",
+  "criteria": {
+    "card_answered_5": {
+      "conditions": {
+        "milestone": "card_answered",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "card_answered_10": {
+      "conditions": {
+        "milestone": "card_answered",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "card_answered_15": {
+      "conditions": {
+        "milestone": "card_answered",
+        "value": {
+          "min": 15
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "card_answered_20": {
+      "conditions": {
+        "milestone": "card_answered",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "card_answered_25": {
+      "conditions": {
+        "milestone": "card_answered",
+        "value": {
+          "min": 25
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:lectern"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.middle_manager.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.middle_manager.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "card_answered_5"
+    ],
+    [
+      "card_answered_10"
+    ],
+    [
+      "card_answered_15"
+    ],
+    [
+      "card_answered_20"
+    ],
+    [
+      "card_answered_25"
+    ]
+  ],
+  "rewards": {
+    "experience": 150
+  }
+}

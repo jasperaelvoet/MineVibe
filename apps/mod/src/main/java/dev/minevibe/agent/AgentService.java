@@ -517,6 +517,7 @@ public final class AgentService {
 				"day", Integer.toString(day)
 			)
 		);
+		dev.minevibe.progression.Milestones.awardLocal(this.server, dev.minevibe.progression.Milestone.AGENT_LOST);
 		// Disconnect on the next tick, not in the middle of the damage/tick that killed it.
 		this.pending.add(new Pending(this.server.getTickCount() + 1, () -> {
 			this.removeBody(agent);

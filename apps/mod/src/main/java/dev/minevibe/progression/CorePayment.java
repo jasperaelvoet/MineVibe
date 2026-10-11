@@ -1,6 +1,5 @@
 package dev.minevibe.progression;
 
-import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.bridge.BridgeException;
 import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.bridge.protocol.Messages;
@@ -93,12 +92,7 @@ public final class CorePayment {
 
 	/** The human player of the integrated server (agents are server players too), or null. */
 	static @Nullable ServerPlayer localPlayer(final MinecraftServer server) {
-		for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-			if (!(p instanceof AgentPlayer)) {
-				return p;
-			}
-		}
-		return null;
+		return Milestones.localPlayer(server);
 	}
 
 	/** Removes one Agent Core from {@code inventory}, the selected slot first; false when there is none. */

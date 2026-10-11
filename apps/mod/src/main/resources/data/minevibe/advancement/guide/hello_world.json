@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/desk",
+  "criteria": {
+    "sat": {
+      "conditions": {
+        "milestone": "pc_sat"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:office_chair"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.hello_world.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.hello_world.description"
+    }
+  },
+  "requirements": [
+    [
+      "sat"
+    ]
+  ]
+}

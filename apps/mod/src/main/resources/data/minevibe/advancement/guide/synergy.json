@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/meeting",
+  "criteria": {
+    "held": {
+      "conditions": {
+        "milestone": "meeting_held"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:bell"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.synergy.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.synergy.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "held"
+    ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
+}

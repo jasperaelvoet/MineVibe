@@ -3,6 +3,8 @@ package dev.minevibe.pc;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.bridge.msg.Seats;
 import dev.minevibe.bridge.msg.Types;
+import dev.minevibe.progression.Milestone;
+import dev.minevibe.progression.Milestones;
 import dev.minevibe.world.seat.SeatEntity;
 import java.util.HashMap;
 import java.util.Map;
@@ -293,6 +295,10 @@ public final class PcRegistry {
 				// A chair kept for an agent (away asking the player, or walking over) is the player's now.
 				PcSeatRegistry.INSTANCE.playerSat(is.getValue());
 				sink.seat(is.getValue(), Types.Occupant.player());
+				ServerPlayer player = server.getPlayerList().getPlayer(is.getKey());
+				if (player != null) {
+					Milestones.award(player, Milestone.PC_SAT);
+				}
 			}
 		}
 	}

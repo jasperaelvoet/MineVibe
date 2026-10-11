@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/team",
+  "criteria": {
+    "declined": {
+      "conditions": {
+        "milestone": "hire_declined"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:red_dye"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.not_right_now.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.not_right_now.description"
+    }
+  },
+  "requirements": [
+    [
+      "declined"
+    ]
+  ]
+}

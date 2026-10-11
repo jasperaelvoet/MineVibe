@@ -1,0 +1,94 @@
+{
+  "parent": "minevibe:guide/root",
+  "criteria": {
+    "day_2": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 2
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_3": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 3
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_4": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 4
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_5": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_6": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 6
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_7": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 7
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:red_bed"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.week_one.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.week_one.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "day_2"
+    ],
+    [
+      "day_3"
+    ],
+    [
+      "day_4"
+    ],
+    [
+      "day_5"
+    ],
+    [
+      "day_6"
+    ],
+    [
+      "day_7"
+    ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
+}

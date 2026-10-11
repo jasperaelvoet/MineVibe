@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/say_my_name",
+  "criteria": {
+    "order": {
+      "conditions": {
+        "milestone": "order_given"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:lead"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.chain_of_command.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.chain_of_command.description"
+    }
+  },
+  "requirements": [
+    [
+      "order"
+    ]
+  ]
+}

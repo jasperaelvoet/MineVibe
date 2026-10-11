@@ -1,0 +1,58 @@
+{
+  "parent": "minevibe:guide/second_life",
+  "criteria": {
+    "world_3": {
+      "conditions": {
+        "milestone": "world",
+        "value": {
+          "min": 3
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "world_4": {
+      "conditions": {
+        "milestone": "world",
+        "value": {
+          "min": 4
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "world_5": {
+      "conditions": {
+        "milestone": "world",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:recovery_compass"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.serial_founder.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.serial_founder.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "world_3"
+    ],
+    [
+      "world_4"
+    ],
+    [
+      "world_5"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

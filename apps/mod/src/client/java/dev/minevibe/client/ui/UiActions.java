@@ -11,6 +11,8 @@ import dev.minevibe.bridge.protocol.Messages;
 import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
 import dev.minevibe.bridge.TaskQueue;
+import dev.minevibe.client.progression.ClientMilestones;
+import dev.minevibe.progression.Milestone;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -74,21 +76,28 @@ public final class UiActions {
 	}
 
 	private static CompletableFuture<String> chat(JsonElement to, String text, @Nullable String mode) {
-		return echo(UiTransport.current().request(Messages.CHAT_SEND, new Messages.ChatSend(to, text, mode)));
+		return ClientMilestones.onSuccess(
+				echo(UiTransport.current().request(Messages.CHAT_SEND, new Messages.ChatSend(to, text, mode))), Milestone.CHAT_SENT);
 	}
 
 	public static CompletableFuture<String> answer(String agentId, String pendingId, Ui.CardAnswer answer) {
-		return echo(UiTransport.current().request(Ui.PENDING_ANSWER, new Ui.PendingAnswer(agentId, pendingId, answer)));
+		return ClientMilestones.onSuccess(
+				echo(UiTransport.current().request(Ui.PENDING_ANSWER, new Ui.PendingAnswer(agentId, pendingId, answer))),
+				Milestone.CARD_ANSWERED);
 	}
 
 	public static CompletableFuture<String> plan(String agentId, String pendingId, boolean approve, @Nullable String feedback) {
-		return echo(UiTransport.current().request(
-				Ui.PLAN_DECISION, new Ui.PlanDecision(agentId, pendingId, approve ? "approve" : "revise", approve ? null : feedback)));
+		return ClientMilestones.onSuccess(
+				echo(UiTransport.current().request(
+						Ui.PLAN_DECISION, new Ui.PlanDecision(agentId, pendingId, approve ? "approve" : "revise", approve ? null : feedback))),
+				approve ? new Milestone[] {Milestone.CARD_ANSWERED, Milestone.PLAN_APPROVED} : new Milestone[] {Milestone.CARD_ANSWERED});
 	}
 
 	public static CompletableFuture<String> hire(String pendingId, boolean approve, @Nullable String note) {
-		return echo(UiTransport.current().request(
-				Ui.HIRE_DECISION, new Ui.HireDecision(pendingId, approve ? "approve" : "decline", approve ? null : note(note))));
+		return ClientMilestones.onSuccess(
+				echo(UiTransport.current().request(
+						Ui.HIRE_DECISION, new Ui.HireDecision(pendingId, approve ? "approve" : "decline", approve ? null : note(note)))),
+				approve ? new Milestone[] {Milestone.CARD_ANSWERED} : new Milestone[] {Milestone.CARD_ANSWERED, Milestone.HIRE_DECLINED});
 	}
 
 	/** Hire and calendar decline notes are limited to this many characters by the protocol. */
@@ -101,7 +110,17 @@ public final class UiActions {
 	}
 
 	public static CompletableFuture<String> command(String agentId, String cmd, @Nullable Boolean on, @Nullable String level) {
-		return echo(UiTransport.current().request(Ui.AGENT_CMD, new Ui.AgentCmd(agentId, cmd, on, level)));
+		return ClientMilestones.onSuccess(
+				echo(UiTransport.current().request(Ui.AGENT_CMD, new Ui.AgentCmd(agentId, cmd, on, level))), commandMilestones(cmd));
+	}
+
+	/** Follow, Stay, Guard, Wander and Stop are orders (the guide counts them); Dismiss is its own milestone. */
+	static Milestone[] commandMilestones(String cmd) {
+		return switch (cmd) {
+			case "follow", "stay", "guard", "wander", "stop" -> new Milestone[] {Milestone.ORDER_GIVEN};
+			case "dismiss" -> new Milestone[] {Milestone.AGENT_DISMISSED};
+			default -> new Milestone[0];
+		};
 	}
 
 	/** A page of an agent's transcript; the page is also merged into {@link UiState}. */

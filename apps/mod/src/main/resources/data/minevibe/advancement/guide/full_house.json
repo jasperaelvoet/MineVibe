@@ -1,0 +1,70 @@
+{
+  "parent": "minevibe:guide/team",
+  "criteria": {
+    "crew_size_1": {
+      "conditions": {
+        "milestone": "crew_size",
+        "value": {
+          "min": 1
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "crew_size_2": {
+      "conditions": {
+        "milestone": "crew_size",
+        "value": {
+          "min": 2
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "crew_size_3": {
+      "conditions": {
+        "milestone": "crew_size",
+        "value": {
+          "min": 3
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "crew_size_4": {
+      "conditions": {
+        "milestone": "crew_size",
+        "value": {
+          "min": 4
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:cake"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.full_house.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.full_house.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "crew_size_1"
+    ],
+    [
+      "crew_size_2"
+    ],
+    [
+      "crew_size_3"
+    ],
+    [
+      "crew_size_4"
+    ]
+  ],
+  "rewards": {
+    "experience": 250
+  }
+}

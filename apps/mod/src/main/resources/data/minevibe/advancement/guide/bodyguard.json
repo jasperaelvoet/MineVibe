@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/alive",
+  "criteria": {
+    "guarded": {
+      "conditions": {
+        "milestone": "guarded"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:iron_sword"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.bodyguard.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.bodyguard.description"
+    }
+  },
+  "requirements": [
+    [
+      "guarded"
+    ]
+  ]
+}

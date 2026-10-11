@@ -25,6 +25,8 @@ import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
 import dev.minevibe.org.office.OfficeLayout;
 import dev.minevibe.org.office.OfficeService;
+import dev.minevibe.progression.Milestone;
+import dev.minevibe.progression.Milestones;
 import dev.minevibe.world.provenance.Consents;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -716,6 +718,7 @@ public final class SkillService {
 			this.seated.put(agent.agentId(), new Seated(job.target(), job.epoch(), job.chair().dim(), job.chair().pos()));
 			if (pcId != null) {
 				Seats.pcs().onSeated(pcId, Types.Occupant.agent(agent.agentId()), job.epoch());
+				Milestones.awardLocal(this.server, Milestone.AGENT_AT_PC);
 			}
 		} else if (pcId != null) {
 			PcRegistry.Reservation r = Seats.pcs().reservation(pcId);

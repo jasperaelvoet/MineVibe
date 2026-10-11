@@ -1,0 +1,130 @@
+{
+  "parent": "minevibe:guide/dear_codex",
+  "criteria": {
+    "codex_written_2": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 2
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_3": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 3
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_4": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 4
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_5": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_6": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 6
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_7": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 7
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_8": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 8
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_9": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 9
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "codex_written_10": {
+      "conditions": {
+        "milestone": "codex_written",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:chiseled_bookshelf"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.librarian.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.librarian.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "codex_written_2"
+    ],
+    [
+      "codex_written_3"
+    ],
+    [
+      "codex_written_4"
+    ],
+    [
+      "codex_written_5"
+    ],
+    [
+      "codex_written_6"
+    ],
+    [
+      "codex_written_7"
+    ],
+    [
+      "codex_written_8"
+    ],
+    [
+      "codex_written_9"
+    ],
+    [
+      "codex_written_10"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

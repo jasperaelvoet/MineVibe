@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/say_my_name",
+  "criteria": {
+    "answered": {
+      "conditions": {
+        "milestone": "card_answered"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:oak_sign"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.your_call.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.your_call.description"
+    }
+  },
+  "requirements": [
+    [
+      "answered"
+    ]
+  ]
+}

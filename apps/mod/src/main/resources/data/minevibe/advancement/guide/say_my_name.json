@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/alive",
+  "criteria": {
+    "chat": {
+      "conditions": {
+        "milestone": "chat_sent"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:name_tag"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.say_my_name.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.say_my_name.description"
+    }
+  },
+  "requirements": [
+    [
+      "chat"
+    ]
+  ]
+}

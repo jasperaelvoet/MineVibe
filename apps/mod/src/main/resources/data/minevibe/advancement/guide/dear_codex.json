@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/codex",
+  "criteria": {
+    "written": {
+      "conditions": {
+        "milestone": "codex_written"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:writable_book"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.dear_codex.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.dear_codex.description"
+    }
+  },
+  "requirements": [
+    [
+      "written"
+    ]
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/calendar",
+  "criteria": {
+    "booked": {
+      "conditions": {
+        "milestone": "calendar_booked"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:paper"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.penciled_in.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.penciled_in.description"
+    }
+  },
+  "requirements": [
+    [
+      "booked"
+    ]
+  ]
+}

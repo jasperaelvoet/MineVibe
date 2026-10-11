@@ -5,6 +5,8 @@ import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.job.Tossed;
 import dev.minevibe.agent.skill.BodyEvents;
 import dev.minevibe.agent.skill.Refs;
+import dev.minevibe.progression.Milestone;
+import dev.minevibe.progression.Milestones;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -125,6 +127,7 @@ final class FeedPlayerReflex extends TossFoodReflex {
 		if (tossed != null && receiver instanceof ServerPlayer player) {
 			BodyEvents.emit(agent, "fed_player", BodyEvents.INFO, "tossed " + Refs.itemId(tossed).replace("minecraft:", "") + " to " + player.getGameProfile().name(),
 				Map.of("item", Refs.itemId(tossed), "playerFood", player.getFoodData().getFoodLevel()), 0);
+			Milestones.award(player, Milestone.FED_BY_AGENT);
 		}
 	}
 }

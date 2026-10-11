@@ -9,6 +9,8 @@ import dev.minevibe.bridge.protocol.MessageType;
 import dev.minevibe.bridge.protocol.Messages.Codes;
 import dev.minevibe.bridge.protocol.ProtocolCodec;
 import dev.minevibe.bridge.protocol.Schema;
+import dev.minevibe.client.progression.ClientMilestones;
+import dev.minevibe.progression.Milestone;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -41,7 +43,7 @@ public final class BridgeOrgBackend implements OrgBackend {
 
 	@Override
 	public CompletableFuture<Org.CodexPutResult> codexPut(final Org.CodexPut put) {
-		return this.request(Org.CODEX_PUT, put, Org.CODEX_PUT_RESULT, Org.CodexPutResult.class);
+		return ClientMilestones.onSuccess(this.request(Org.CODEX_PUT, put, Org.CODEX_PUT_RESULT, Org.CodexPutResult.class), Milestone.CODEX_WRITTEN);
 	}
 
 	@Override
@@ -51,7 +53,8 @@ public final class BridgeOrgBackend implements OrgBackend {
 
 	@Override
 	public CompletableFuture<Org.CalendarPutResult> calendarPut(final Org.CalendarPut put) {
-		return this.request(Org.CALENDAR_PUT, put, Org.CALENDAR_PUT_RESULT, Org.CalendarPutResult.class);
+		return ClientMilestones.onSuccess(
+			this.request(Org.CALENDAR_PUT, put, Org.CALENDAR_PUT_RESULT, Org.CalendarPutResult.class), Milestone.CALENDAR_BOOKED);
 	}
 
 	@Override
@@ -61,7 +64,8 @@ public final class BridgeOrgBackend implements OrgBackend {
 
 	@Override
 	public CompletableFuture<Org.MeetingStartResult> meetingStart(final Org.MeetingStart start) {
-		return this.request(Org.MEETING_START, start, Org.MEETING_START_RESULT, Org.MeetingStartResult.class);
+		return ClientMilestones.onSuccess(
+			this.request(Org.MEETING_START, start, Org.MEETING_START_RESULT, Org.MeetingStartResult.class), Milestone.MEETING_HELD);
 	}
 
 	@Override

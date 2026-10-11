@@ -17,12 +17,13 @@ import org.jspecify.annotations.Nullable;
  * Client side of the survival start (PLAN 7.5 "Agent Core"): every MineVibe item says what it is for in its tooltip.
  * One grey line ({@code item.minevibe.<id>.tooltip}, or {@code block.minevibe.<id>.tooltip} for block items), and,
  * while Shift is held, how to use it ({@code ….tooltip.detail}); otherwise a "Hold Shift" hint. Items without those
- * lang keys get nothing.
+ * lang keys get nothing. Also reports the guide milestones only the client sees ({@link ClientMilestones}).
  */
 public final class ProgressionClientInit implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		ItemTooltipCallback.EVENT.register((stack, context, flag, lines) -> append(stack, lines));
+		ClientMilestones.registerEvents();
 	}
 
 	static void append(final ItemStack stack, final List<Component> lines) {

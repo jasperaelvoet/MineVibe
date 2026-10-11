@@ -1,0 +1,142 @@
+{
+  "parent": "minevibe:guide/say_my_name",
+  "criteria": {
+    "chat_sent_10": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_20": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_30": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 30
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_40": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 40
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_50": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 50
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_60": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 60
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_70": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 70
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_80": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 80
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_90": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 90
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "chat_sent_100": {
+      "conditions": {
+        "milestone": "chat_sent",
+        "value": {
+          "min": 100
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:goat_horn"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.chatterbox.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.chatterbox.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "chat_sent_10"
+    ],
+    [
+      "chat_sent_20"
+    ],
+    [
+      "chat_sent_30"
+    ],
+    [
+      "chat_sent_40"
+    ],
+    [
+      "chat_sent_50"
+    ],
+    [
+      "chat_sent_60"
+    ],
+    [
+      "chat_sent_70"
+    ],
+    [
+      "chat_sent_80"
+    ],
+    [
+      "chat_sent_90"
+    ],
+    [
+      "chat_sent_100"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

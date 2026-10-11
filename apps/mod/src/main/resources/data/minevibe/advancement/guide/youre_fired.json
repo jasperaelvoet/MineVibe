@@ -1,0 +1,28 @@
+{
+  "parent": "minevibe:guide/chain_of_command",
+  "criteria": {
+    "dismissed": {
+      "conditions": {
+        "milestone": "agent_dismissed"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:barrier"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.youre_fired.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.youre_fired.description"
+    },
+    "hidden": true
+  },
+  "requirements": [
+    [
+      "dismissed"
+    ]
+  ]
+}

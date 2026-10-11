@@ -1,0 +1,28 @@
+{
+  "parent": "minevibe:guide/bodyguard",
+  "criteria": {
+    "lost": {
+      "conditions": {
+        "milestone": "agent_lost"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:skeleton_skull"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.gone_not_forgotten.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.gone_not_forgotten.description"
+    },
+    "hidden": true
+  },
+  "requirements": [
+    [
+      "lost"
+    ]
+  ]
+}

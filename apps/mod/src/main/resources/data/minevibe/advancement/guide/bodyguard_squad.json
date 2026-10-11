@@ -1,0 +1,82 @@
+{
+  "parent": "minevibe:guide/bodyguard",
+  "criteria": {
+    "guarded_5": {
+      "conditions": {
+        "milestone": "guarded",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "guarded_10": {
+      "conditions": {
+        "milestone": "guarded",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "guarded_15": {
+      "conditions": {
+        "milestone": "guarded",
+        "value": {
+          "min": 15
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "guarded_20": {
+      "conditions": {
+        "milestone": "guarded",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "guarded_25": {
+      "conditions": {
+        "milestone": "guarded",
+        "value": {
+          "min": 25
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:shield"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.bodyguard_squad.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.bodyguard_squad.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "guarded_5"
+    ],
+    [
+      "guarded_10"
+    ],
+    [
+      "guarded_15"
+    ],
+    [
+      "guarded_20"
+    ],
+    [
+      "guarded_25"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

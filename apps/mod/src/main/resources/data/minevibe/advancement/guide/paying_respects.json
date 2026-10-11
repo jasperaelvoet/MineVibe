@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/gone_not_forgotten",
+  "criteria": {
+    "opened": {
+      "conditions": {
+        "milestone": "grave_opened"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:poppy"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.paying_respects.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.paying_respects.description"
+    }
+  },
+  "requirements": [
+    [
+      "opened"
+    ]
+  ]
+}

@@ -1,5 +1,5 @@
 {
-  "parent": "minevibe:guide/meeting",
+  "parent": "minevibe:guide/alive",
   "criteria": {
     "hired": {
       "trigger": "minevibe:approved_hire"
@@ -15,11 +15,14 @@
     "description": {
       "translate": "advancements.minevibe.guide.team.description"
     },
-    "frame": "challenge"
+    "frame": "goal"
   },
   "requirements": [
     [
       "hired"
     ]
-  ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
 }

@@ -29,7 +29,7 @@ keeps guarding you while you read.
 
 | Input | What it does |
 | --- | --- |
-| **L** | Opens the advancements screen. Its **MineVibe** tab is the guide: what to craft and do next. |
+| **L** | Opens the advancements screen. Its **MineVibe** tab is the guide: what to craft and do next, and what to try with your crew. |
 | Use an Agent Core on the top of two stacked copper blocks | Awakens your CEO (see [Starting out](#starting-out)). |
 | **Esc** | Opens the MineVibe menu (the world keeps running): Resume, Crew, PCs & Resources, Brains, Options, Quit MineVibe. |
 | **T** or **Enter** | Opens chat. Start with `@name` to talk to one agent; no mention talks to everyone. See [Chat routing](#chat-routing). |
@@ -308,11 +308,27 @@ guide.
 
 ### The MineVibe guide
 
-Press **L** (the advancements key) and open the **MineVibe** tab ("Start with nothing"). It is a chain of steps,
-each saying exactly what to do: **Spark** (an amethyst shard), **Heart of an agent** (an Agent Core), **It's
-alive!** (awaken a CEO), **A desk job** (place a workstation), **Shared memory** (a Codex), **Mark the date** (a
-calendar), **All hands** (a meeting table) and **Growing the team** (approve a hire). Each one shows a toast when you
-get it, and the recipes appear in your recipe book as soon as you hold a key ingredient.
+Press **L** (the advancements key) and open the **MineVibe** tab ("Start with nothing"). Every step says exactly
+what to do, shows a toast when you get it, and the bigger ones give experience. The guide is a tree:
+
+- **The spine.** **Spark** (an amethyst shard), **Heart of an agent** (an Agent Core) and **It's alive!** (awaken a
+  CEO). Everything about the crew and the office branches off It's alive!.
+- **Survival.** **One week in** (live to day 7) and **The long haul** (day 30), straight off the root, because you
+  need no crew to stay alive.
+- **The office.** **A desk job** (place a workstation), then **Hello, world** (sit at a PC yourself), **Hot
+  desking** (an agent sits down to work) and **Cross-platform** (own a Linux and a Mac workstation). Then **Shared
+  memory** (a Codex), **Dear Codex** (write a page) and **Librarian** (10 pages). Last, **Mark the date** (a
+  calendar), **Penciled in** (book an event), **All hands** (a meeting table) and **Synergy** (start a meeting).
+- **The crew.** **Say my name** (talk to an agent), **Chatterbox** (100 messages), **Your call** (answer a card),
+  **Plan of record** (approve a plan), **Middle manager** (25 cards) and **Chain of command** (give an order).
+  **Growing the team** (approve a hire) leads to **Full house** (four agents at once) and **Not right now** (decline
+  a hire). **Bodyguard** (an agent kills a monster near you) leads to **Safe hands** (25 of them) and **Room
+  service** (an agent feeds you).
+- **Hidden steps** appear only once you earn them. Some are about losing agents, some about losing the world.
+
+Steps that count ("10 pages", "four agents") show a progress bar. The running totals are also in the
+**Statistics** screen under General: messages sent, cards answered, Codex pages written, monsters your guards killed,
+and so on. Like the rest of a world, the guide and its totals start over in World #N+1.
 
 Every MineVibe item says what it is for in its tooltip; hold **Shift** to read how to use it.
 

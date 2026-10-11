@@ -8,6 +8,8 @@ import dev.minevibe.bridge.msg.Bodies;
 import dev.minevibe.bridge.msg.Ui;
 import dev.minevibe.progression.Awakening;
 import dev.minevibe.progression.CorePayment;
+import dev.minevibe.progression.Milestone;
+import dev.minevibe.progression.Milestones;
 import dev.minevibe.progression.ProgressionContent;
 import io.netty.channel.embedded.EmbeddedChannel;
 import java.lang.reflect.Field;
@@ -18,6 +20,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
+import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.AdvancementProgress;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
@@ -33,6 +37,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
+import net.minecraft.stats.Stats;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Inventory;
@@ -49,9 +54,9 @@ import net.minecraft.world.phys.Vec3;
 /**
  * Server GameTests for the survival start (PLAN 7.5 "Agent Core"): the awakening ritual on two stacked copper blocks
  * (accepted: blocks and core spent, {@code agent.awaken} sent; refused: both given back; anything but a copper stack:
- * nothing happens), hires paid with a core, and every MineVibe placeable craftable in survival. Node is a stand-in
- * answering {@code agent.awaken} per player ({@link Awakening#setRequester}). Test ids are
- * {@code minevibe-gametest:progression_game_tests_<method>}.
+ * nothing happens), hires paid with a core, the guide's milestones, and every MineVibe placeable craftable in
+ * survival. Node is a stand-in answering {@code agent.awaken} per player ({@link Awakening#setRequester}). Test ids
+ * are {@code minevibe-gametest:progression_game_tests_<method>}.
  */
 public final class ProgressionGameTests {
 	/** How each stand-in player's ritual is answered, by player name (tests run side by side). */
@@ -274,6 +279,60 @@ public final class ProgressionGameTests {
 		helper.succeed();
 	}
 
+	// ------------------------------------------------------------------ guide milestones
+
+	@GameTest(maxTicks = 20)
+	public void countedMilestonesKeepAStatisticAndEarnTheirSteps(final GameTestHelper helper) {
+		ServerPlayer player = standIn(helper, 1, 0, 1);
+		helper.assertFalse(done(player, "dear_codex"), "nothing written yet");
+		Milestones.award(player, Milestone.CODEX_WRITTEN);
+		helper.assertTrue(done(player, "dear_codex"), "the first page earns Dear Codex");
+		helper.assertTrue(stat(player, Milestone.CODEX_WRITTEN) == 1, "one page counted");
+		for (int i = 2; i <= 9; i++) {
+			Milestones.award(player, Milestone.CODEX_WRITTEN);
+		}
+		helper.assertFalse(done(player, "librarian"), "9 pages are not 10");
+		helper.assertTrue(progress(player, "librarian").getPercent() > 0.8F, "the bar is nearly full");
+		Milestones.award(player, Milestone.CODEX_WRITTEN);
+		helper.assertTrue(done(player, "librarian"), "10 pages earn Librarian");
+		helper.assertTrue(stat(player, Milestone.CODEX_WRITTEN) == 10, "ten pages counted");
+		helper.succeed();
+	}
+
+	@GameTest(maxTicks = 20)
+	public void gaugesEarnTheirStepsAtTheirValue(final GameTestHelper helper) {
+		ServerPlayer player = standIn(helper, 1, 0, 1);
+		Milestones.reach(player, Milestone.CREW_SIZE, 3);
+		helper.assertFalse(done(player, "full_house"), "three agents are not a full house");
+		Milestones.reach(player, Milestone.CREW_SIZE, 4);
+		helper.assertTrue(done(player, "full_house"), "four agents are");
+		Milestones.reach(player, Milestone.DAY, 7);
+		helper.assertTrue(done(player, "week_one"), "day 7 earns One week in");
+		helper.assertFalse(done(player, "long_haul"), "not day 30 yet");
+		Milestones.reach(player, Milestone.WORLD, 5);
+		helper.assertTrue(done(player, "second_life") && done(player, "serial_founder"), "World #5 earns both world steps");
+		// Gauges are not statistics, and a counted milestone is never reached as a gauge.
+		Milestones.reach(player, Milestone.CODEX_WRITTEN, 10);
+		helper.assertFalse(done(player, "dear_codex"), "a counted milestone only counts up");
+		helper.succeed();
+	}
+
+	private static AdvancementProgress progress(final ServerPlayer player, final String step) {
+		AdvancementHolder adv = player.level().getServer().getAdvancements().get(MineVibeMod.id("guide/" + step));
+		if (adv == null) {
+			throw new IllegalStateException("no guide advancement " + step);
+		}
+		return player.getAdvancements().getOrStartProgress(adv);
+	}
+
+	private static boolean done(final ServerPlayer player, final String step) {
+		return progress(player, step).isDone();
+	}
+
+	private static int stat(final ServerPlayer player, final Milestone milestone) {
+		return player.getStats().getValue(Stats.CUSTOM.get(milestone.stat()));
+	}
+
 	// ------------------------------------------------------------------ crafting
 
 	@GameTest(maxTicks = 5)
@@ -287,7 +346,9 @@ public final class ProgressionGameTests {
 		}
 		ResourceKey<net.minecraft.world.item.crafting.Recipe<?>> grave = ResourceKey.create(Registries.RECIPE, MineVibeMod.id("grave"));
 		helper.assertFalse(server.getRecipeManager().byKey(grave).isPresent(), "graves are never crafted");
-		for (String step : List.of("root", "spark", "heart", "alive", "desk", "codex", "calendar", "meeting", "team")) {
+		for (String step : List.of(
+			"root", "spark", "heart", "alive", "desk", "codex", "calendar", "meeting", "team", "hello_world", "librarian", "full_house",
+			"middle_manager", "paying_respects", "serial_founder")) {
 			helper.assertTrue(server.getAdvancements().get(MineVibeMod.id("guide/" + step)) != null, "guide advancement " + step);
 		}
 		helper.succeed();

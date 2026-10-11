@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/root",
+  "criteria": {
+    "world_2": {
+      "conditions": {
+        "milestone": "world",
+        "value": {
+          "min": 2
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:totem_of_undying"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.second_life.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.second_life.description"
+    },
+    "hidden": true
+  },
+  "requirements": [
+    [
+      "world_2"
+    ]
+  ]
+}

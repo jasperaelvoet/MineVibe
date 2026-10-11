@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/bodyguard",
+  "criteria": {
+    "fed": {
+      "conditions": {
+        "milestone": "fed_by_agent"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:bread"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.room_service.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.room_service.description"
+    }
+  },
+  "requirements": [
+    [
+      "fed"
+    ]
+  ]
+}

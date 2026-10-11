@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hello_world",
+  "criteria": {
+    "agent_at_pc": {
+      "conditions": {
+        "milestone": "agent_at_pc"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:redstone_lamp"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.hot_desking.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.hot_desking.description"
+    }
+  },
+  "requirements": [
+    [
+      "agent_at_pc"
+    ]
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "parent": "minevibe:guide/week_one",
+  "criteria": {
+    "day_10": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_15": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 15
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_20": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_25": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 25
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "day_30": {
+      "conditions": {
+        "milestone": "day",
+        "value": {
+          "min": 30
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:clock"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.long_haul.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.long_haul.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "day_10"
+    ],
+    [
+      "day_15"
+    ],
+    [
+      "day_20"
+    ],
+    [
+      "day_25"
+    ],
+    [
+      "day_30"
+    ]
+  ],
+  "rewards": {
+    "experience": 250
+  }
+}

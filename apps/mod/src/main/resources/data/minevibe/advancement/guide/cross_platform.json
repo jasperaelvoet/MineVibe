@@ -1,0 +1,47 @@
+{
+  "parent": "minevibe:guide/desk",
+  "criteria": {
+    "linux": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:linux_workstation"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    },
+    "mac": {
+      "conditions": {
+        "items": [
+          {
+            "items": "minevibe:mac_workstation"
+          }
+        ]
+      },
+      "trigger": "minecraft:inventory_changed"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:mac_workstation"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.cross_platform.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.cross_platform.description"
+    }
+  },
+  "requirements": [
+    [
+      "linux"
+    ],
+    [
+      "mac"
+    ]
+  ],
+  "rewards": {
+    "experience": 25
+  }
+}
