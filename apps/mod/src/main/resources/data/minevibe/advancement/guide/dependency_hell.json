@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hello_shell",
+  "criteria": {
+    "installed": {
+      "conditions": {
+        "milestone": "package_installed"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:chest"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.dependency_hell.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.dependency_hell.description"
+    }
+  },
+  "requirements": [
+    [
+      "installed"
+    ]
+  ]
+}

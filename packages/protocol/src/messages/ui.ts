@@ -304,6 +304,17 @@ export const HirePay = defineMessage('hire.pay', {
 }).describe('Takes (or gives back) the Agent Core a hire costs.');
 
 /**
+ * N→M event (PLAN §7.5 "Guide"). Computer work Node saw the crew do, for the guide's advancements: a PC booted, a desk
+ * session, a command or a commit, a pull request, tests, the web, the Codex, a meeting, usage. `milestone` names one of
+ * the mod's counted milestones; the mod adds `amount` (default 1) to the local player's statistic and ignores names it
+ * does not know.
+ */
+export const ProgressMilestone = defineMessage('progress.milestone', {
+  milestone: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  amount: z.number().int().min(1).max(1_000_000_000).optional(),
+}).describe('Counts a milestone of computer work towards the guide.');
+
+/**
  * M→N request. An AgentScreen command. `plan_first` and `ping_instead` need `on`; `autonomy` needs `level`.
  * `follow|stay|guard|wander` set the idle mode (Node answers with `agent.mode`); `kick` stands a seated agent
  * up; `retry_brain` restarts an offline brain.
@@ -395,6 +406,12 @@ export const uiMessages = {
     direction: 'node_to_mod',
     group: 'ui',
     summary: 'Request: take the Agent Core an approved hire costs from the player (or give it back).',
+  },
+  'progress.milestone': {
+    schema: ProgressMilestone,
+    direction: 'node_to_mod',
+    group: 'ui',
+    summary: 'Count a milestone of computer work towards the guide.',
   },
   'hire.decision': {
     schema: HireDecision,

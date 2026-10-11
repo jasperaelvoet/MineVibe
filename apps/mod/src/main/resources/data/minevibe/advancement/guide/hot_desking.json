@@ -1,5 +1,5 @@
 {
-  "parent": "minevibe:guide/hello_world",
+  "parent": "minevibe:guide/it_boots",
   "criteria": {
     "agent_at_pc": {
       "conditions": {

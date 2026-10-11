@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "web": {
+      "conditions": {
+        "milestone": "web_used"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:ender_eye"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.let_me_google.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.let_me_google.description"
+    }
+  },
+  "requirements": [
+    [
+      "web"
+    ]
+  ]
+}

@@ -53,7 +53,7 @@ import type { JobEnd, SkillApi } from '../contracts/SkillApi.js';
 import { writeFileAtomic } from '../util/atomicFile.js';
 import { TypedEmitter } from '../util/TypedEmitter.js';
 import { type BaseArea, baseAreaOf, type OfficeLayout } from '../world/baseArea.js';
-import { AgentBrain, type AgentRecord, type BrainEnv } from './AgentBrain.js';
+import { AgentBrain, type AgentRecord, type BrainEnv, type DeskWork } from './AgentBrain.js';
 import { BrainScheduler } from './BrainScheduler.js';
 import { BrainSupervisor, type SupervisorOptions } from './BrainSupervisor.js';
 import { type CardInterpretation, grammarCard, interpretWireAnswer } from './cardAnswers.js';
@@ -188,6 +188,8 @@ export type ManagerEvents = CrewEvents & {
   meetingMessage: [payload: { readonly text: string; readonly agentIds: readonly string[] }];
   /** A ToolGate decision, with the model the session ran and the effort the CLI applied. */
   tool: [payload: ToolObservation];
+  /** Computer work at a PC: a desk session took over, a command finished, a file was written. */
+  work: [payload: DeskWork & { readonly agentId: string }];
   /** A real turn of an agent ended (in its body or desk session). */
   turn: [
     payload: {
@@ -490,6 +492,7 @@ export class AgentManager extends TypedEmitter<ManagerEvents> implements CrewApi
           ttlMs: 15_000,
         }),
       turnEnded: (brain, result, session) => this.#onTurnEnded(brain, result, session),
+      workObserved: (brain, work) => this.emit('work', { ...work, agentId: brain.agentId }),
       toolObserved: (brain, o) =>
         this.emit('tool', {
           agentId: brain.agentId,

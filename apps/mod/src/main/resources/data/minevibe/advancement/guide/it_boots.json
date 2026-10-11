@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/desk",
+  "criteria": {
+    "booted": {
+      "conditions": {
+        "milestone": "pc_booted"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:redstone_torch"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.it_boots.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.it_boots.description"
+    }
+  },
+  "requirements": [
+    [
+      "booted"
+    ]
+  ]
+}

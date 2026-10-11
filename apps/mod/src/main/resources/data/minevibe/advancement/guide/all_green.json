@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/hello_shell",
+  "criteria": {
+    "passed": {
+      "conditions": {
+        "milestone": "tests_passed"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:lime_dye"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.all_green.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.all_green.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "passed"
+    ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
+}

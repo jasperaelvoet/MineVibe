@@ -150,7 +150,13 @@ export interface CodexHistoryEntry {
 }
 
 export type CodexChange =
-  | { readonly type: 'write'; readonly id: string; readonly created: boolean }
+  | {
+      readonly type: 'write';
+      readonly id: string;
+      readonly created: boolean;
+      /** Who wrote it (the guide counts the pages agents write on their own). */
+      readonly authorKind: 'agent' | 'player' | 'system';
+    }
   | { readonly type: 'delete'; readonly id: string }
   | { readonly type: 'pin'; readonly id: string; readonly pinned: boolean }
   | { readonly type: 'world'; readonly worldId: string | null }

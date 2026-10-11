@@ -203,6 +203,14 @@ export type OrgEvents = {
    */
   calendarFired: [payload: PayloadOf<'calendar.fired'>];
   meetingState: [payload: PayloadOf<'meeting.state'>];
+  /** A Codex page was written (in-process only: no protocol message; the guide's milestones read it). */
+  codexWritten: [
+    payload: {
+      readonly pageId: string;
+      readonly created: boolean;
+      readonly authorKind: 'agent' | 'player' | 'system';
+    },
+  ];
 };
 
 export interface OrgApi extends Subscribable<OrgEvents> {

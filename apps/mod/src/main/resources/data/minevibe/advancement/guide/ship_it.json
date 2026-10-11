@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/initial_commit",
+  "criteria": {
+    "push": {
+      "conditions": {
+        "milestone": "git_push"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:firework_rocket"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.ship_it.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.ship_it.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "push"
+    ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
+}

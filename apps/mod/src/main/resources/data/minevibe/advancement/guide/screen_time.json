@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "opened": {
+      "conditions": {
+        "milestone": "app_opened"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:glass_pane"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.screen_time.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.screen_time.description"
+    }
+  },
+  "requirements": [
+    [
+      "opened"
+    ]
+  ]
+}

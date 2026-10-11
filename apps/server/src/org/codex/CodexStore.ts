@@ -824,7 +824,7 @@ export class CodexStore extends TypedEmitter<CodexEvents> {
       budgetLeft = Math.max(0, this.#budgetPerDay - (this.#state.budget.counts[actor.id] ?? 0));
       await this.#saveState();
     }
-    this.emit('changed', { type: 'write', id: page.id, created: !existing });
+    this.emit('changed', { type: 'write', id: page.id, created: !existing, authorKind: actor.kind });
     return { ok: true, page, created: !existing, notes, budgetLeft };
   }
 

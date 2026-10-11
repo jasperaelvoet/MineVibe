@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/big_thinker",
+  "criteria": {
+    "tired": {
+      "conditions": {
+        "milestone": "brains_tired"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:campfire"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.running_on_fumes.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.running_on_fumes.description"
+    }
+  },
+  "requirements": [
+    [
+      "tired"
+    ]
+  ]
+}

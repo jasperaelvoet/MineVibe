@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "resumed": {
+      "conditions": {
+        "milestone": "desk_resumed"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:compass"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.where_was_i.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.where_was_i.description"
+    }
+  },
+  "requirements": [
+    [
+      "resumed"
+    ]
+  ]
+}

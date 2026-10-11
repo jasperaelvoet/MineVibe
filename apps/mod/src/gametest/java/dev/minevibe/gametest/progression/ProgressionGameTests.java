@@ -317,6 +317,26 @@ public final class ProgressionGameTests {
 		helper.succeed();
 	}
 
+	@GameTest(maxTicks = 20)
+	public void nodeReportsComputerWorkTowardsTheGuide(final GameTestHelper helper) {
+		ServerPlayer player = standIn(helper, 1, 0, 1);
+		MinecraftServer server = helper.getLevel().getServer();
+		// progress.milestone counts for the local player; a stand-in is the only human in a GameTest world only
+		// sometimes, so the counting is checked on the player directly, the message mapping through onProgress.
+		Milestones.award(player, Milestone.GIT_COMMIT);
+		helper.assertTrue(done(player, "initial_commit"), "a commit earns Initial commit");
+		Milestones.award(player, Milestone.TOKENS, 450_000);
+		helper.assertTrue(stat(player, Milestone.TOKENS) == 450_000, "tokens add up by the amount");
+		helper.assertFalse(done(player, "big_thinker"), "not a million yet");
+		Milestones.award(player, Milestone.TOKENS, 600_000);
+		helper.assertTrue(done(player, "big_thinker"), "a million tokens earn Million-token mind");
+		// Unknown names and gauges from Node do nothing (and never throw on the bridge thread's handler).
+		Milestones.onProgress(server, new Ui.ProgressMilestone("no_such_milestone", null));
+		Milestones.onProgress(server, new Ui.ProgressMilestone("world", 9));
+		Milestones.onProgress(null, new Ui.ProgressMilestone("git_commit", null));
+		helper.succeed();
+	}
+
 	private static AdvancementProgress progress(final ServerPlayer player, final String step) {
 		AdvancementHolder adv = player.level().getServer().getAdvancements().get(MineVibeMod.id("guide/" + step));
 		if (adv == null) {
@@ -348,7 +368,8 @@ public final class ProgressionGameTests {
 		helper.assertFalse(server.getRecipeManager().byKey(grave).isPresent(), "graves are never crafted");
 		for (String step : List.of(
 			"root", "spark", "heart", "alive", "desk", "codex", "calendar", "meeting", "team", "hello_world", "librarian", "full_house",
-			"middle_manager", "paying_respects", "serial_founder")) {
+			"middle_manager", "paying_respects", "serial_founder", "it_boots", "think_different", "initial_commit", "ready_for_review",
+			"all_green", "power_user", "minutes", "big_thinker", "lights_out")) {
 			helper.assertTrue(server.getAdvancements().get(MineVibeMod.id("guide/" + step)) != null, "guide advancement " + step);
 		}
 		helper.succeed();

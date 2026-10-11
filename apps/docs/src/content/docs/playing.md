@@ -315,10 +315,21 @@ what to do, shows a toast when you get it, and the bigger ones give experience. 
   CEO). Everything about the crew and the office branches off It's alive!.
 - **Survival.** **One week in** (live to day 7) and **The long haul** (day 30), straight off the root, because you
   need no crew to stay alive.
-- **The office.** **A desk job** (place a workstation), then **Hello, world** (sit at a PC yourself), **Hot
-  desking** (an agent sits down to work) and **Cross-platform** (own a Linux and a Mac workstation). Then **Shared
-  memory** (a Codex), **Dear Codex** (write a page) and **Librarian** (10 pages). Last, **Mark the date** (a
-  calendar), **Penciled in** (book an event), **All hands** (a meeting table) and **Synergy** (start a meeting).
+- **The office.** **A desk job** (place a workstation), then **Hello, world** (sit at a PC yourself) and
+  **Cross-platform** (own a Linux and a Mac workstation). Then **Shared memory** (a Codex), **Dear Codex** (write a
+  page), **Taking notes** (an agent writes one) and **Librarian** (10 pages). Last, **Mark the date** (a calendar),
+  **Penciled in** (book an event), **Right on time** (an event comes due), **All hands** (a meeting table),
+  **Synergy** (start a meeting) and **Minutes of the meeting** (hold one to the end).
+- **The machines.** What your crew does at its computers, as the agent server sees it:
+  - **It boots!** (your first PC is up) and **Think different** (a macOS PC).
+  - **Hot desking** (an agent sits down to work) and **Where was I?** (it resumes its desk session).
+  - **Hello, shell** (its first command), then **Exit code 1** (a command fails), **Dependency hell** (it installs a
+    package), **All green** (a test suite passes) and **Power user** (250 commands).
+  - **First draft** (a file written) and **10x engineer** (100 files).
+  - **Initial commit**, then **Commit early, commit often** (25 commits), **Ship it** (`git push`) and **Ready for
+    review** (`gh pr create`).
+  - **Let me google that** (the web) and **Screen time** (an app or browser on the PC's screen).
+  - **Million-token mind** (the crew thinks through a million tokens) and **Running on fumes** (your usage runs low).
 - **The crew.** **Say my name** (talk to an agent), **Chatterbox** (100 messages), **Your call** (answer a card),
   **Plan of record** (approve a plan), **Middle manager** (25 cards) and **Chain of command** (give an order).
   **Growing the team** (approve a hire) leads to **Full house** (four agents at once) and **Not right now** (decline
@@ -327,8 +338,8 @@ what to do, shows a toast when you get it, and the bigger ones give experience. 
 - **Hidden steps** appear only once you earn them. Some are about losing agents, some about losing the world.
 
 Steps that count ("10 pages", "four agents") show a progress bar. The running totals are also in the
-**Statistics** screen under General: messages sent, cards answered, Codex pages written, monsters your guards killed,
-and so on. Like the rest of a world, the guide and its totals start over in World #N+1.
+**Statistics** screen under General: messages sent, cards answered, commits, commands run, tokens used, monsters your
+guards killed, and so on. Like the rest of a world, the guide and its totals start over in World #N+1.
 
 Every MineVibe item says what it is for in its tooltip; hold **Shift** to read how to use it.
 

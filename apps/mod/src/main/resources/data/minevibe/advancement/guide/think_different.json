@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/it_boots",
+  "criteria": {
+    "mac": {
+      "conditions": {
+        "milestone": "mac_booted"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minevibe:mac_workstation"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.think_different.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.think_different.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "mac"
+    ]
+  ],
+  "rewards": {
+    "experience": 50
+  }
+}

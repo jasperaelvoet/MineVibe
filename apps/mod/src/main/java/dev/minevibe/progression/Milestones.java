@@ -3,6 +3,7 @@ package dev.minevibe.progression;
 import dev.minevibe.MineVibeMod;
 import dev.minevibe.agent.AgentPlayer;
 import dev.minevibe.agent.AgentService;
+import dev.minevibe.bridge.msg.Ui;
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.Registry;
@@ -65,10 +66,15 @@ public final class Milestones {
 
 	/** One more of a counted milestone for {@code player}. */
 	public static void award(final ServerPlayer player, final Milestone milestone) {
-		if (player instanceof AgentPlayer || !milestone.counted() || TRIGGER == null) {
+		award(player, milestone, 1);
+	}
+
+	/** {@code amount} more of a counted milestone for {@code player} (tokens come in thousands). */
+	public static void award(final ServerPlayer player, final Milestone milestone, final int amount) {
+		if (player instanceof AgentPlayer || !milestone.counted() || TRIGGER == null || amount <= 0) {
 			return;
 		}
-		player.awardStat(milestone.stat());
+		player.awardStat(milestone.stat(), amount);
 		TRIGGER.trigger(player, milestone, player.getStats().getValue(Stats.CUSTOM.get(milestone.stat())));
 	}
 
@@ -82,10 +88,23 @@ public final class Milestones {
 
 	/** {@link #award} for the human player of the integrated server, when one is online. */
 	public static void awardLocal(final MinecraftServer server, final Milestone milestone) {
+		awardLocal(server, milestone, 1);
+	}
+
+	public static void awardLocal(final MinecraftServer server, final Milestone milestone, final int amount) {
 		ServerPlayer player = localPlayer(server);
 		if (player != null) {
-			award(player, milestone);
+			award(player, milestone, amount);
 		}
+	}
+
+	/** Node's {@code progress.milestone}: counted for the local player; unknown names and gauges are ignored. */
+	public static void onProgress(final @Nullable MinecraftServer server, final Ui.ProgressMilestone msg) {
+		Milestone m = Milestone.byId(msg.milestone());
+		if (server == null || m == null || !m.counted()) {
+			return;
+		}
+		awardLocal(server, m, msg.amount() == null ? 1 : msg.amount());
 	}
 
 	/** The human player of the integrated server (agents are server players too), or null. */

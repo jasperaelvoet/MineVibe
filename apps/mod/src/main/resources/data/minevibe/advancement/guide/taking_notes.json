@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/codex",
+  "criteria": {
+    "agent_page": {
+      "conditions": {
+        "milestone": "agent_codex"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:book"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.taking_notes.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.taking_notes.description"
+    }
+  },
+  "requirements": [
+    [
+      "agent_page"
+    ]
+  ]
+}

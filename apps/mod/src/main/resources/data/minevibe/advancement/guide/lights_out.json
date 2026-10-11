@@ -1,0 +1,28 @@
+{
+  "parent": "minevibe:guide/running_on_fumes",
+  "criteria": {
+    "asleep": {
+      "conditions": {
+        "milestone": "brains_asleep"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:black_bed"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.lights_out.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.lights_out.description"
+    },
+    "hidden": true
+  },
+  "requirements": [
+    [
+      "asleep"
+    ]
+  ]
+}

@@ -466,6 +466,7 @@ an envelope key: page and event ids travel as `pageId` / `eventId`.
 | `pending.answer` | ui | M→N | `ChatSendResult` | Request: answer, park or decide a card from AgentScreen, G or Alt+1-4. |
 | `plan.decision` | ui | M→N | `ChatSendResult` | Request: approve or revise a plan card. |
 | `hire.pay` | ui | N→M |  | Request: take the Agent Core an approved hire costs from the player (or give it back). |
+| `progress.milestone` | ui | N→M |  | Count a milestone of computer work towards the guide. |
 | `hire.decision` | ui | M→N | `ChatSendResult` | Request: approve or decline a hire card. |
 | `agent.cmd` | ui | M→N |  | Request: AgentScreen command (follow, stay, stop, interrupt, kick, dismiss, toggles). |
 | `brains.state` | ui | N→M |  | Brain scheduler and usage state (normal, tired, asleep). |
@@ -878,6 +879,12 @@ these rules (persona, tool descriptions, failure texts) and only it can lift the
   nothing, and a refund gives back only a core really taken for that card, once (nothing after a creative approval).
   Node applies one decision per card at a time (a second approve or decline meanwhile gets `err NOT_READY`). A
   successful take grants the "Growing the team" advancement.
+- `progress.milestone` (N→M event): `{ milestone, amount? }`. Computer work Node saw the crew do, for the MineVibe
+  guide (PLAN §7.5): `pc_booted`, `mac_booted`, `desk_session`, `desk_resumed`, `command_run`, `command_failed`,
+  `package_installed`, `tests_passed`, `git_commit`, `git_push`, `pr_opened`, `file_written`, `web_used`,
+  `app_opened`, `agent_codex`, `meeting_minutes`, `calendar_fired`, `tokens` (`amount` = the tokens of a turn),
+  `brains_tired`, `brains_asleep`. The mod adds `amount` (default 1) to the local player's statistic of that name and
+  fires the `minevibe:milestone` criterion with the new total; names it does not know are ignored.
 - `agent.cmd` (request): `{ agentId, cmd, on?, level? }`, `cmd` one of `follow`, `stay`, `guard`, `wander`,
   `stop`, `interrupt`, `kick`, `dismiss`, `plan_first` (needs `on`), `ping_instead` (needs `on`), `autonomy`
   (needs `level`), `retry_brain`.

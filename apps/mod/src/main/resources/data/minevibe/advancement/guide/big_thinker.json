@@ -1,0 +1,142 @@
+{
+  "parent": "minevibe:guide/alive",
+  "criteria": {
+    "tokens_100000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 100000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_200000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 200000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_300000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 300000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_400000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 400000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_500000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 500000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_600000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 600000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_700000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 700000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_800000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 800000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_900000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 900000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "tokens_1000000": {
+      "conditions": {
+        "milestone": "tokens",
+        "value": {
+          "min": 1000000
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:experience_bottle"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.big_thinker.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.big_thinker.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "tokens_100000"
+    ],
+    [
+      "tokens_200000"
+    ],
+    [
+      "tokens_300000"
+    ],
+    [
+      "tokens_400000"
+    ],
+    [
+      "tokens_500000"
+    ],
+    [
+      "tokens_600000"
+    ],
+    [
+      "tokens_700000"
+    ],
+    [
+      "tokens_800000"
+    ],
+    [
+      "tokens_900000"
+    ],
+    [
+      "tokens_1000000"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

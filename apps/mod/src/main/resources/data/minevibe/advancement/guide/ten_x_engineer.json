@@ -1,0 +1,142 @@
+{
+  "parent": "minevibe:guide/first_draft",
+  "criteria": {
+    "file_written_10": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_20": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_30": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 30
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_40": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 40
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_50": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 50
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_60": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 60
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_70": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 70
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_80": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 80
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_90": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 90
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "file_written_100": {
+      "conditions": {
+        "milestone": "file_written",
+        "value": {
+          "min": 100
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:enchanted_book"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.ten_x_engineer.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.ten_x_engineer.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "file_written_10"
+    ],
+    [
+      "file_written_20"
+    ],
+    [
+      "file_written_30"
+    ],
+    [
+      "file_written_40"
+    ],
+    [
+      "file_written_50"
+    ],
+    [
+      "file_written_60"
+    ],
+    [
+      "file_written_70"
+    ],
+    [
+      "file_written_80"
+    ],
+    [
+      "file_written_90"
+    ],
+    [
+      "file_written_100"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

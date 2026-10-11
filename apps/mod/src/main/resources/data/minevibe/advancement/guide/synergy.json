@@ -17,15 +17,11 @@
     },
     "description": {
       "translate": "advancements.minevibe.guide.synergy.description"
-    },
-    "frame": "goal"
+    }
   },
   "requirements": [
     [
       "held"
     ]
-  ],
-  "rewards": {
-    "experience": 50
-  }
+  ]
 }

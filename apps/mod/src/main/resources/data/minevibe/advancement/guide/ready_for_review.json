@@ -1,0 +1,31 @@
+{
+  "parent": "minevibe:guide/ship_it",
+  "criteria": {
+    "pr": {
+      "conditions": {
+        "milestone": "pr_opened"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:spyglass"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.ready_for_review.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.ready_for_review.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "pr"
+    ]
+  ],
+  "rewards": {
+    "experience": 150
+  }
+}

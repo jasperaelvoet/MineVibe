@@ -55,7 +55,7 @@ class MsgCatalogTest {
 		for (List<MessageType<?>> group : List.of(Bodies.TYPES, Skills.TYPES, Seats.TYPES, Ui.TYPES, Pc.TYPES, Org.TYPES, Debug.TYPES)) {
 			for (MessageType<?> type : group) assertSame(type, Messages.byName(type.name()), type.name());
 		}
-		assertEquals(71, Messages.catalog().size(), "the catalog has every type of registry.ts");
+		assertEquals(72, Messages.catalog().size(), "the catalog has every type of registry.ts");
 	}
 
 	@Test
@@ -177,6 +177,10 @@ class MsgCatalogTest {
 		assertEquals("Bram", pay.name());
 		assertFalse(pay.refund());
 		assertTrue(parse(Ui.HIRE_PAY, "ui", "hire.pay--refund.json").refund());
+		Ui.ProgressMilestone commit = parse(Ui.PROGRESS_MILESTONE, "ui", "progress.milestone.json");
+		assertEquals("git_commit", commit.milestone());
+		assertNull(commit.amount());
+		assertEquals(48211, parse(Ui.PROGRESS_MILESTONE, "ui", "progress.milestone--amount.json").amount());
 		Pc.PcAction create = parse(Pc.PC_ACTION, "pc", "pc.action--create-placed.json");
 		assertEquals(List.of("linux-2"), create.placed());
 		assertNull(parse(Pc.PC_ACTION, "pc", "pc.action.json").placed());

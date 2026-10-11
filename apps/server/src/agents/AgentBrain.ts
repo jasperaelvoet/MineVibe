@@ -144,6 +144,12 @@ export interface AgentRecord {
 }
 
 /** Crew-level services a brain needs (implemented by the AgentManager). */
+/** Computer work at a PC, as it happens (the guide's milestones, progress/MilestoneWatcher.ts). */
+export type DeskWork =
+  | { readonly kind: 'desk'; readonly pcId: string; readonly resumed: boolean }
+  | { readonly kind: 'command'; readonly pcId: string; readonly command: string; readonly exitCode: number }
+  | { readonly kind: 'file'; readonly pcId: string; readonly path: string };
+
 export interface BrainEnv {
   readonly scheduler: BrainScheduler;
   readonly governor: UsageGovernor;
@@ -189,6 +195,8 @@ export interface BrainEnv {
   turnEnded(brain: AgentBrain, result: SDKResultMessage, session: SessionKind): void;
   /** Every ToolGate decision (activity log, debugging, the live smoke). */
   toolObserved?(brain: AgentBrain, observation: GateObservation): void;
+  /** A desk session took over, a foreground command finished, or a file was written at a PC. */
+  workObserved?(brain: AgentBrain, work: DeskWork): void;
   /** A card went up or ended (approach queue, toasts). */
   cardRaised(brain: AgentBrain, card: Card): void;
   /** `mode` per settings ("subscription" unless API-key mode). */
@@ -1822,6 +1830,7 @@ export class AgentBrain {
     this.fsm.boundary();
     this.bark(BARKS.satAtPc);
     this.#log.info({ pcId, resumed, sessionId: record.sessionId }, 'desk session took over');
+    env.workObserved?.(this, { kind: 'desk', pcId, resumed });
     await this.#queueKickoff(this.fsm.snapshot, resumed);
     env.brainChanged(this);
   }
@@ -2606,12 +2615,14 @@ export class AgentBrain {
         this.#deskListeners.push(listener);
       },
       onCommand: ({ pcId, command, exitCode }) => {
+        env.workObserved?.(this, { kind: 'command', pcId, command, exitCode });
         const desk = this.#desk;
         if (desk?.pcId !== pcId) return;
         desk.commands.push({ command, exitCode });
         if (desk.commands.length > DESK_COMMANDS_KEPT) desk.commands.shift();
       },
       onFileChanged: ({ pcId, path }) => {
+        env.workObserved?.(this, { kind: 'file', pcId, path });
         const desk = this.#desk;
         if (desk?.pcId !== pcId) return;
         desk.changedFiles.push(path);

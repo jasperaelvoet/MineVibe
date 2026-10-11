@@ -1,0 +1,82 @@
+{
+  "parent": "minevibe:guide/initial_commit",
+  "criteria": {
+    "git_commit_5": {
+      "conditions": {
+        "milestone": "git_commit",
+        "value": {
+          "min": 5
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "git_commit_10": {
+      "conditions": {
+        "milestone": "git_commit",
+        "value": {
+          "min": 10
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "git_commit_15": {
+      "conditions": {
+        "milestone": "git_commit",
+        "value": {
+          "min": 15
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "git_commit_20": {
+      "conditions": {
+        "milestone": "git_commit",
+        "value": {
+          "min": 20
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "git_commit_25": {
+      "conditions": {
+        "milestone": "git_commit",
+        "value": {
+          "min": 25
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:oak_log"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.commit_often.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.commit_often.description"
+    },
+    "frame": "goal"
+  },
+  "requirements": [
+    [
+      "git_commit_5"
+    ],
+    [
+      "git_commit_10"
+    ],
+    [
+      "git_commit_15"
+    ],
+    [
+      "git_commit_20"
+    ],
+    [
+      "git_commit_25"
+    ]
+  ],
+  "rewards": {
+    "experience": 100
+  }
+}

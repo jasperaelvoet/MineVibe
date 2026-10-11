@@ -317,6 +317,11 @@ export class OrgModuleImpl implements OrgModule {
       crew: () => view.orgCrew(),
       playerName: () => this.#playerName,
     });
+    this.services.codex.on('changed', (c) => {
+      if (c.type === 'write') {
+        this.orgApi.publish('codexWritten', { pageId: c.id, created: c.created, authorKind: c.authorKind });
+      }
+    });
   }
 
   // -------------------------------------------------------------------------------------------

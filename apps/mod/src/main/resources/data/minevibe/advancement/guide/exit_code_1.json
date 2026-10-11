@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hello_shell",
+  "criteria": {
+    "failed": {
+      "conditions": {
+        "milestone": "command_failed"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:tnt"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.exit_code_1.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.exit_code_1.description"
+    }
+  },
+  "requirements": [
+    [
+      "failed"
+    ]
+  ]
+}

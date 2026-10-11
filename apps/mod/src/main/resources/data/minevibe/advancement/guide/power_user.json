@@ -1,0 +1,142 @@
+{
+  "parent": "minevibe:guide/hello_shell",
+  "criteria": {
+    "command_run_25": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 25
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_50": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 50
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_75": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 75
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_100": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 100
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_125": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 125
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_150": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 150
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_175": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 175
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_200": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 200
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_225": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 225
+        }
+      },
+      "trigger": "minevibe:milestone"
+    },
+    "command_run_250": {
+      "conditions": {
+        "milestone": "command_run",
+        "value": {
+          "min": 250
+        }
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:repeating_command_block"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.power_user.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.power_user.description"
+    },
+    "frame": "challenge"
+  },
+  "requirements": [
+    [
+      "command_run_25"
+    ],
+    [
+      "command_run_50"
+    ],
+    [
+      "command_run_75"
+    ],
+    [
+      "command_run_100"
+    ],
+    [
+      "command_run_125"
+    ],
+    [
+      "command_run_150"
+    ],
+    [
+      "command_run_175"
+    ],
+    [
+      "command_run_200"
+    ],
+    [
+      "command_run_225"
+    ],
+    [
+      "command_run_250"
+    ]
+  ],
+  "rewards": {
+    "experience": 150
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "run": {
+      "conditions": {
+        "milestone": "command_run"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:command_block"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.hello_shell.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.hello_shell.description"
+    }
+  },
+  "requirements": [
+    [
+      "run"
+    ]
+  ]
+}

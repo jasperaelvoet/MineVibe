@@ -30,6 +30,7 @@ import type { InputRouter } from './InputRouter.js';
 import { registryDirFor } from './InstanceRegistry.js';
 import { PcBridgeGlue } from './PcBridgeGlue.js';
 import { PcManager } from './PcManager.js';
+import { PC_TYPE_SPECS, type PcFamily } from './PcTypes.js';
 import { SeatBook } from './SeatBook.js';
 import { ShellMirror } from './ShellMirror.js';
 import { SpacesdPool } from './SpacesdPool.js';
@@ -310,6 +311,17 @@ export class PcModuleImpl implements PcModule {
     } catch {
       return 1; // ImageFormat.Jpeg
     }
+  }
+
+  onPcBooted(listener: (pc: { readonly pcId: string; readonly family: PcFamily }) => void): () => void {
+    const last = new Map<string, string>();
+    return this.manager.on('pc.status', (pcId, info) => {
+      const before = last.get(pcId);
+      last.set(pcId, info.status);
+      const record = this.manager.get(pcId);
+      if (info.status !== 'running' || before === 'running' || !record) return;
+      listener({ pcId, family: PC_TYPE_SPECS[record.type].family });
+    });
   }
 
   start(): Promise<void> {

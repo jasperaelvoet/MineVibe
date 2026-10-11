@@ -166,6 +166,9 @@ public final class Ui {
 	 */
 	public record HirePay(String pendingId, String name, boolean refund) {}
 
+	/** {@code progress.milestone}: computer work Node saw the crew do, counted towards the guide ({@code amount} default 1). */
+	public record ProgressMilestone(String milestone, @Nullable Integer amount) {}
+
 	/** M→N request. {@code on} for plan_first / ping_instead, {@code level} for autonomy. */
 	public record AgentCmd(String agentId, String cmd, @Nullable Boolean on, @Nullable String level) {
 		public static AgentCmd of(String agentId, String cmd) {
@@ -276,6 +279,11 @@ public final class Ui {
 			.req("name", DISPLAY_NAME)
 			.req("refund", bool()));
 
+	public static final MessageType<ProgressMilestone> PROGRESS_MILESTONE =
+			type("progress.milestone", Direction.NODE_TO_MOD, ProgressMilestone.class, object()
+					.req("milestone", string(1, 64, "[a-z][a-z0-9_]{0,63}", "a milestone name"))
+					.opt("amount", integer(1, 1_000_000_000)));
+
 	public static final MessageType<AgentCmd> AGENT_CMD = type("agent.cmd", Direction.MOD_TO_NODE, AgentCmd.class, object()
 			.req("agentId", AGENT_ID)
 			.req("cmd", oneOf(COMMANDS.toArray(String[]::new)))
@@ -294,7 +302,7 @@ public final class Ui {
 
 	public static final List<MessageType<?>> TYPES = List.of(
 			AGENT_BRAIN, AGENT_PENDING, AGENT_APPROACH, CHAT_APPEND, CHAT_HISTORY, PENDING_ANSWER, PLAN_DECISION, HIRE_PAY,
-			HIRE_DECISION, AGENT_CMD, BRAINS_STATE);
+			HIRE_DECISION, AGENT_CMD, BRAINS_STATE, PROGRESS_MILESTONE);
 
 	static @Nullable String str(@Nullable JsonElement e) {
 		return e instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null;

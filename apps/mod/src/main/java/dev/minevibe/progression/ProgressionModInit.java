@@ -36,5 +36,6 @@ public final class ProgressionModInit implements ModInitializer {
 
 	private static void attach(final BridgeClient bridge) {
 		bridge.handle(Ui.HIRE_PAY, Route.SERVER, req -> CorePayment.pay(server, req));
+		bridge.on(Ui.PROGRESS_MILESTONE, Route.SERVER, msg -> Milestones.onProgress(server, msg));
 	}
 }

@@ -44,6 +44,7 @@ import type { CrewApi } from '../contracts/CrewApi.js';
 import { ApiError } from '../contracts/common.js';
 import { FakeCrewApi } from '../contracts/FakeCrewApi.js';
 import { DEFAULT_PLAYER_NAME } from '../launcher/settings.js';
+import { MilestoneWatcher } from '../progress/MilestoneWatcher.js';
 import { ScriptedCrew } from '../ui/ScriptedCrew.js';
 import { UiHub } from '../ui/UiHub.js';
 import { SERVER_VERSION } from '../version.js';
@@ -442,6 +443,18 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
     hooks = noCrewHooks();
   }
   orgModule.bindCrew(crew, hooks);
+  // The guide's technical milestones (PLAN §7.5 "Guide"): the crew's computer work, counted towards advancements.
+  const milestones = new MilestoneWatcher((milestone, amount) => {
+    try {
+      bridge.send('progress.milestone', amount === undefined ? { milestone } : { milestone, amount });
+    } catch (err) {
+      log.warn({ err, milestone }, 'progress.milestone failed validation');
+    }
+  }).watch({
+    ...(agents ? { crew: agents.manager, usage: agents.manager.governor } : {}),
+    org: orgModule.orgApi,
+    pcs: pcModule,
+  });
 
   function snapshot(): ReturnType<NonNullable<WorldLifecycleOptions['snapshot']>> {
     if (agents) {
@@ -579,6 +592,7 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
   } catch (err) {
     ui?.dispose();
     scriptedCrew?.dispose();
+    milestones.stop();
     await agents?.dispose().catch(() => {});
     await orgModule.stop().catch(() => {});
     await pcModule.stop().catch(() => {});
@@ -632,6 +646,7 @@ export async function startRuntime(options: RuntimeOptions): Promise<Runtime> {
         for (const wake of [...doorWaiters]) wake();
         ui?.dispose();
         scriptedCrew?.dispose();
+        milestones.stop();
         // Sessions close first (they resume next time) and no new brain starts; then the world event in flight
         // finishes (bounded), so the modules never hear of a world after they stopped; then the services and the
         // bridge.

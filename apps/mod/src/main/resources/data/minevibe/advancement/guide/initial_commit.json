@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "commit": {
+      "conditions": {
+        "milestone": "git_commit"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:oak_sapling"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.initial_commit.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.initial_commit.description"
+    }
+  },
+  "requirements": [
+    [
+      "commit"
+    ]
+  ]
+}

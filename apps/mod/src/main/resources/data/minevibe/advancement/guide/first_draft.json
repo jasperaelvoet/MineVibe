@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/hot_desking",
+  "criteria": {
+    "written": {
+      "conditions": {
+        "milestone": "file_written"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:feather"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.first_draft.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.first_draft.description"
+    }
+  },
+  "requirements": [
+    [
+      "written"
+    ]
+  ]
+}

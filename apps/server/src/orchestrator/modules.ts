@@ -85,6 +85,10 @@ export interface CrewHooks {
 
 export interface PcModule extends Partial<WorldEvents> {
   readonly pcApi: PcApi;
+  /** A PC finished booting (any status to `running`), with its family. Returns the unsubscribe. */
+  onPcBooted?(
+    listener: (pc: { readonly pcId: string; readonly family: 'linux' | 'macos' | 'windows' }) => void,
+  ): () => void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }

@@ -1,0 +1,27 @@
+{
+  "parent": "minevibe:guide/penciled_in",
+  "criteria": {
+    "fired": {
+      "conditions": {
+        "milestone": "calendar_fired"
+      },
+      "trigger": "minevibe:milestone"
+    }
+  },
+  "display": {
+    "icon": {
+      "id": "minecraft:clock"
+    },
+    "title": {
+      "translate": "advancements.minevibe.guide.right_on_time.title"
+    },
+    "description": {
+      "translate": "advancements.minevibe.guide.right_on_time.description"
+    }
+  },
+  "requirements": [
+    [
+      "fired"
+    ]
+  ]
+}
